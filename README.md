@@ -19,18 +19,42 @@ A small macOS LaunchAgent that runs Claude Code as a background service so you c
 
 ## Install
 
-### 1. Sign into Tailscale and enable HTTPS
+### 1. Set up Tailscale
 
-Install Tailscale and sign into your tailnet. Then enable HTTPS certificates and MagicDNS for the tailnet in the admin console — follow Tailscale's [HTTPS / MagicDNS setup guide](https://tailscale.com/kb/1153/enabling-https). The daemon needs both: MagicDNS gives your Mac a stable `<host>.ts.net` name, and the HTTPS feature lets you provision a real cert for it in the next step.
+Tailscale is the encrypted private network that connects your phone to your laptop. It needs to be installed and signed in on **both devices** under the same Tailscale account — that's what makes them mutually reachable without exposing anything to the public internet.
 
-Confirm Tailscale is up and figure out your tailnet hostname:
+**1a. On the laptop (the one that will run the daemon):**
+
+```bash
+brew install --cask tailscale-app   # or download from https://tailscale.com/download/mac
+```
+
+Open the Tailscale menu-bar app and sign in. After signing in, verify it's running:
+
+```bash
+tailscale status
+```
+
+The first line should show your Mac with a `100.x.y.z` IP. If not, click the menu-bar icon → "Connect."
+
+**1b. On the phone:**
+
+Install the Tailscale app ([iOS](https://apps.apple.com/us/app/tailscale/id1470499037) / [Android](https://play.google.com/store/apps/details?id=com.tailscale.ipn)) and sign in with the **same account** you used on the laptop. Once signed in, the phone shows up in your tailnet and the two devices can talk to each other.
+
+**1c. Enable HTTPS + MagicDNS for the tailnet:**
+
+This is a one-time setting in the Tailscale admin console (not on the device). It gives your Mac a stable `<host>.ts.net` DNS name and lets you provision a real TLS cert for it — both of which the daemon needs.
+
+Follow Tailscale's [HTTPS / MagicDNS setup guide](https://tailscale.com/kb/1153/enabling-https). You'll be enabling two features in the admin console: **MagicDNS** and **HTTPS Certificates**.
+
+**1d. Get your laptop's tailnet hostname** (run this on the laptop):
 
 ```bash
 tailscale status --json | jq -r '.Self.DNSName' | sed 's/\.$//'
 # → e.g. davids-macbook-pro.tail1234.ts.net
 ```
 
-Save that hostname — you'll use it in the next step.
+Save that hostname — you'll use it in the next step, and again at the end when you open the PWA from your phone.
 
 ### 2. Provision a TLS cert+key for that hostname
 
@@ -75,9 +99,17 @@ This writes `~/Library/LaunchAgents/local.claude-relay.$USER.plist`, loads it, a
 
 ### 6. Open the PWA
 
-From any device on your tailnet, open `https://<your-tailnet-hostname>.ts.net:8443/`. 
+On your **phone**, make sure the Tailscale app is signed in and toggled on (Tailscale only routes traffic while it's actively connected). Then open this URL in the phone's browser:
+
+```
+https://<your-tailnet-hostname>.ts.net:8443/
+```
+
+…using the hostname you saved in step 1d.
 
 On iPhone with Chrome, click the share button in the top right, then "View More", then "Add to Home Screen" to make it feel like a native app.
+
+If the page doesn't load, the usual culprit is Tailscale being toggled off on the phone — open the app and check that it's connected.
 
 ## Configuration
 
