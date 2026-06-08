@@ -1,0 +1,532 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1">
+  <title>Claude Relay</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-512.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#0a0a0a">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --bg-elev: #131313;
+      --bg-elev-2: #1a1a1a;
+      --line: #262626;
+      --line-soft: #1d1d1d;
+      --text: #e9e6dd;
+      --text-mute: #807a6d;
+      --text-dim: #4a463e;
+      --amber: #f4b91a;
+      --amber-soft: rgba(244, 185, 26, 0.12);
+      --red: #e83a3a;
+      --red-soft: rgba(232, 58, 58, 0.12);
+      --serif: 'Instrument Serif', 'Times New Roman', serif;
+      --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); }
+    body {
+      font-family: var(--mono);
+      font-size: 14px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior: none;
+    }
+
+    a { color: var(--amber); text-decoration: none; }
+    button { font-family: inherit; font-size: inherit; }
+
+    /* Top-level layout: a flex column that fills the viewport so the composer can sit
+       naturally at the bottom without position:fixed hacks (which were causing the empty
+       space below the textbox on iOS standalone PWAs). */
+    .app {
+      display: flex; flex-direction: column;
+      height: 100dvh; min-height: 100dvh;
+      width: 100%;
+    }
+    /* The root container holds the live view (list or session). Make it part of the
+       flex chain so its child .transcript / .session-list can be the actual scroll
+       region — otherwise the whole page scrolls and the header disappears. */
+    #root {
+      flex: 1; min-height: 0;
+      display: flex; flex-direction: column;
+    }
+
+    /* ───── Header ──────────────────────────────────────────────── */
+    header {
+      flex: none;
+      padding: max(14px, env(safe-area-inset-top)) 20px 12px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg);
+      display: flex; align-items: baseline; gap: 14px;
+    }
+    header .brand {
+      font-family: var(--serif);
+      font-size: 26px; font-weight: 400; letter-spacing: -0.01em;
+      font-style: italic;
+      color: var(--text);
+    }
+    header .brand::before {
+      content: '';
+      display: inline-block;
+      width: 8px; height: 8px;
+      background: var(--amber);
+      margin-right: 10px; transform: translateY(-3px);
+      animation: pulse 2.4s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.45; }
+    }
+    header .meta {
+      font-family: var(--mono); font-size: 10px;
+      letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--text-mute);
+      margin-left: auto;
+    }
+    header .back {
+      font-family: var(--mono); font-size: 12px;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--amber);
+      padding: 4px 0;
+    }
+
+    /* ───── Session list view ───────────────────────────────────── */
+    .session-list {
+      flex: 1; min-height: 0; overflow-y: auto;
+      padding: 20px;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .list-label {
+      font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--text-mute);
+      padding: 6px 4px 16px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .list-label::after {
+      content: ''; flex: 1; height: 1px; background: var(--line);
+    }
+
+    .new-session {
+      width: 100%;
+      background: transparent;
+      color: var(--text);
+      border: 1px solid var(--line);
+      padding: 16px 18px;
+      font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: space-between;
+      transition: border-color 0.15s ease, background 0.15s ease;
+      margin-bottom: 24px;
+    }
+    .new-session:active { background: var(--amber-soft); border-color: var(--amber); }
+    .new-session .plus {
+      font-family: var(--serif); font-size: 22px; line-height: 1;
+      color: var(--amber); font-style: italic;
+    }
+
+    .empty-state {
+      padding: 40px 20px; text-align: center;
+      color: var(--text-mute); font-size: 13px;
+      font-style: italic; font-family: var(--serif); letter-spacing: 0.01em;
+    }
+
+    /* Swipe-to-delete row container. The visible row sits above an absolutely-positioned
+       red delete action; horizontal drag uncovers the action. */
+    .session-row-wrap {
+      position: relative;
+      border-bottom: 1px solid var(--line-soft);
+      overflow: hidden;
+    }
+    .session-row-wrap:first-of-type { border-top: 1px solid var(--line-soft); }
+
+    .session-row {
+      padding: 18px 4px;
+      background: var(--bg);
+      display: flex; align-items: flex-start; gap: 14px;
+      position: relative; z-index: 1;
+      transform: translateX(0);
+      transition: transform 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+      will-change: transform;
+      touch-action: pan-y;
+      cursor: pointer;
+    }
+    .session-row.swiping { transition: none; }
+
+    .session-row .marker {
+      flex: none;
+      font-family: var(--serif); font-style: italic; font-size: 14px;
+      color: var(--text-dim);
+      padding-top: 1px; width: 26px;
+    }
+    .session-row .body { flex: 1; min-width: 0; }
+    .session-row .title {
+      font-weight: 500; color: var(--text);
+      font-size: 14px; line-height: 1.4;
+      overflow: hidden; text-overflow: ellipsis;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    }
+    .session-row .meta {
+      margin-top: 6px;
+      color: var(--text-mute); font-size: 11px;
+      letter-spacing: 0.08em; text-transform: uppercase;
+      display: flex; gap: 10px;
+      flex-wrap: wrap; row-gap: 4px;
+    }
+    .session-row .meta .sep { color: var(--text-dim); }
+
+    /* Pending-approval badge on the meta line. Amber, with a pulsing dot that ties
+       back to the brand-dot pulse motif. */
+    .pending-badge {
+      color: var(--amber);
+      display: inline-flex; align-items: center; gap: 7px;
+    }
+    .pending-badge .dot {
+      width: 5px; height: 5px; border-radius: 50%;
+      background: var(--amber);
+      animation: pulse 2.4s ease-in-out infinite;
+    }
+    /* When a row has pending approvals, the marker numeral switches from dim to amber.
+       Subtle reinforcement of the meta-line badge. */
+    .session-row .marker.pending { color: var(--amber); }
+
+    .delete-action {
+      position: absolute; top: 0; right: 0; bottom: 0;
+      background: var(--red); color: white;
+      display: flex; align-items: center; justify-content: center;
+      width: 92px;
+      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 600;
+      border: none; cursor: pointer;
+      /* Hidden off-screen at rest so it never flickers behind the row during scroll
+         (iOS compositor briefly exposes layers behind elements with will-change:transform).
+         JS slides it in during a swipe in lockstep with the row's leftward drag. */
+      transform: translateX(100%);
+      transition: transform 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+      will-change: transform;
+    }
+    .delete-action.swiping { transition: none; }
+    .delete-action:active { background: #c12d2d; }
+
+    /* ───── In-session view ─────────────────────────────────────── */
+    .transcript {
+      flex: 1; min-height: 0; overflow-y: auto;
+      padding: 20px 20px 12px;
+      -webkit-overflow-scrolling: touch;
+    }
+
+    .msg {
+      margin: 14px 0; max-width: 100%;
+      white-space: pre-wrap; word-wrap: break-word;
+      font-size: 14px; line-height: 1.6;
+    }
+    .msg .role {
+      display: inline-block;
+      font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--text-mute);
+      margin-bottom: 6px; padding-right: 10px;
+      border-right: 1px solid var(--line);
+      margin-right: 10px;
+    }
+    .msg.user { color: var(--text); }
+    .msg.user .role { color: var(--amber); }
+    .msg.assistant { color: var(--text); }
+    .msg.tool_use {
+      color: var(--text-mute); font-size: 12px;
+      background: var(--bg-elev); padding: 10px 12px;
+      border-left: 2px solid var(--text-dim);
+    }
+    .msg.tool_use .role { color: var(--text-dim); border-color: var(--text-dim); }
+    .msg.error {
+      color: #f4a0a0;
+      background: var(--red-soft); padding: 10px 12px;
+      border-left: 2px solid var(--red);
+    }
+    .msg.error .role { color: var(--red); border-color: var(--red); }
+
+    /* ── Rendered markdown inside assistant messages ───────────── */
+    .msg .body-text > :first-child { margin-top: 0; }
+    .msg .body-text > :last-child  { margin-bottom: 0; }
+
+    .md-p { margin: 0 0 10px; }
+    .md-p:last-child { margin-bottom: 0; }
+
+    .md-h { font-family: var(--mono); letter-spacing: 0.04em; margin: 18px 0 8px; }
+    .md-h1 { font-size: 18px; font-weight: 600; }
+    .md-h2 { font-size: 15px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; }
+    .md-h3 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-mute); }
+    .md-h4, .md-h5, .md-h6 { font-size: 13px; font-weight: 600; color: var(--text-mute); }
+
+    .md-hr { border: none; border-top: 1px solid var(--line); margin: 14px 0; }
+
+    .md-list { margin: 0 0 10px; padding-left: 22px; }
+    .md-list li { margin: 3px 0; }
+    .md-list li::marker { color: var(--text-dim); }
+
+    .md-link {
+      color: var(--amber);
+      text-decoration: underline;
+      text-decoration-color: rgba(244, 185, 26, 0.35);
+      text-underline-offset: 3px;
+      word-break: break-word;
+    }
+    .md-link:active { text-decoration-color: var(--amber); }
+
+    .md-code {
+      font-family: var(--mono); font-size: 0.92em;
+      background: var(--bg-elev-2);
+      color: var(--amber);
+      padding: 1px 6px;
+      border: 1px solid var(--line);
+      word-break: break-word;
+    }
+
+    .md-pre {
+      margin: 12px 0;
+      background: var(--bg-elev-2);
+      border-left: 2px solid var(--amber);
+      padding: 10px 12px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+    }
+    .md-pre code {
+      font-family: var(--mono); font-size: 13px; line-height: 1.55;
+      color: var(--text);
+      background: transparent; border: none; padding: 0;
+      white-space: pre;
+      display: block; min-width: max-content;
+    }
+
+    .md-quote {
+      margin: 10px 0; padding: 6px 0 6px 14px;
+      border-left: 2px solid var(--line);
+      color: var(--text-mute);
+      font-style: italic; font-family: var(--serif); font-size: 16px;
+    }
+
+    .md-table-wrap {
+      margin: 12px 0;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      border: 1px solid var(--line);
+    }
+    .md-table {
+      width: 100%; border-collapse: collapse;
+      font-size: 13px;
+    }
+    .md-table th {
+      text-align: left;
+      font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--text-mute); font-weight: 600;
+      padding: 8px 12px;
+      background: var(--bg-elev);
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+    .md-table td {
+      padding: 8px 12px;
+      border-top: 1px solid var(--line-soft);
+      vertical-align: top;
+    }
+    .md-table tr:first-child td { border-top: none; }
+
+    .md-table code { font-size: 0.85em; }
+
+    /* Stronger / italicized inline text — defaults are fine but normalize colour */
+    .body-text strong { font-weight: 600; color: var(--text); }
+    .body-text em { color: var(--text); }
+    .body-text del { color: var(--text-mute); }
+
+    /* ───── Composer ────────────────────────────────────────────── */
+    .composer {
+      flex: none;
+      background: var(--bg);
+      border-top: 1px solid var(--line);
+      padding: 10px 18px 10px;
+      display: flex; align-items: flex-end; gap: 12px;
+    }
+    .composer .field {
+      flex: 1; min-width: 0;
+      font-family: var(--mono); font-size: 15px; line-height: 1.45;
+      color: var(--text);
+      background: transparent;
+      outline: none;
+      max-height: 30vh; overflow-y: auto;
+      caret-color: var(--amber);
+      padding: 6px 0;
+    }
+    .composer .field:empty::before {
+      content: attr(data-placeholder);
+      color: var(--text-dim);
+      font-style: italic; font-family: var(--serif); font-size: 16px;
+    }
+    .composer .send {
+      flex: none;
+      width: 38px; height: 38px;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--text-mute);
+      font-family: var(--serif); font-style: italic; font-size: 22px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+    }
+    .composer .send.armed { color: var(--amber); border-color: var(--amber); }
+    .composer .send.armed:active { background: var(--amber-soft); }
+
+    /* ───── Approval card ───────────────────────────────────────── */
+    .approval-card {
+      margin: 16px 0;
+      background: var(--bg-elev);
+      border: 1px solid var(--amber);
+      box-shadow: 0 0 0 4px var(--amber-soft);
+      padding: 16px 16px 14px;
+      position: relative;
+    }
+    .approval-card .label {
+      font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--amber); margin-bottom: 6px;
+    }
+    .approval-card .tool {
+      font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 10px;
+    }
+    .approval-card .summary {
+      font-size: 12px; color: var(--text-mute); line-height: 1.5;
+      background: var(--bg);
+      border-left: 2px solid var(--line);
+      padding: 8px 10px;
+      margin-bottom: 14px;
+      word-break: break-word;
+      max-height: 8em; overflow-y: auto;
+    }
+    .approval-card .actions {
+      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
+    }
+    .approval-card .actions button {
+      padding: 12px 0;
+      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 600;
+      cursor: pointer;
+      border: 1px solid var(--line);
+      background: transparent;
+      color: var(--text-mute);
+      transition: all 0.12s ease;
+    }
+    .approval-card .actions .approve { color: var(--amber); border-color: var(--amber); }
+    .approval-card .actions .approve:active { background: var(--amber-soft); }
+    .approval-card .actions .reject { color: var(--red); border-color: var(--red); }
+    .approval-card .actions .reject:active { background: var(--red-soft); }
+
+    /* ───── Thinking indicator ──────────────────────────────────────
+       Shown as a pseudo-assistant message tile while waiting for a response.
+       Uses the same italic-serif idiom as other quiet-state text (empty list,
+       composer placeholder), with a mono amber underscore caret that blinks
+       like a terminal cursor — both motifs of the app in one tile. */
+    .msg.thinking .body-text {
+      font-family: var(--serif); font-style: italic; font-size: 16px;
+      color: var(--text-mute);
+      letter-spacing: 0.005em;
+    }
+    .msg.thinking .body-text .caret {
+      display: inline-block;
+      margin-left: 3px;
+      color: var(--amber);
+      font-family: var(--mono); font-style: normal; font-weight: 500;
+      animation: caret-blink 1.05s steps(1, end) infinite;
+    }
+    @keyframes caret-blink {
+      0%, 50% { opacity: 1; }
+      50.01%, 100% { opacity: 0; }
+    }
+
+    /* ───── Cross-session approval toast ────────────────────────────
+       Slides down from above the header when an approval arrives on a session
+       OTHER than the one currently in view. Tap to jump to that session.
+       Auto-dismisses after 7s. Matches the approval-card chrome (amber border
+       + amber-soft outline + dark elev) for visual consistency. */
+    .toast {
+      position: fixed;
+      top: calc(max(14px, env(safe-area-inset-top)) + 56px);
+      left: 50%;
+      width: min(360px, calc(100vw - 32px));
+      transform: translateX(-50%) translateY(-160%);
+      background: var(--bg-elev);
+      border: 1px solid var(--amber);
+      box-shadow: 0 0 0 4px var(--amber-soft), 0 14px 36px rgba(0, 0, 0, 0.5);
+      padding: 12px 14px 13px;
+      z-index: 100;
+      cursor: pointer;
+      animation:
+        toast-in 0.34s cubic-bezier(0.32, 0.72, 0, 1) forwards,
+        toast-out 0.34s cubic-bezier(0.55, 0, 0.45, 0.95) 6.6s forwards;
+    }
+    .toast:active { background: var(--bg-elev-2); }
+    .toast .top-line {
+      display: flex; align-items: baseline; justify-content: space-between;
+      gap: 14px;
+    }
+    .toast .label {
+      font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--amber);
+    }
+    .toast .arrow {
+      font-family: var(--serif); font-style: italic; font-size: 20px;
+      line-height: 1; color: var(--amber);
+      transform: translateY(2px);
+    }
+    .toast .tool {
+      margin-top: 6px;
+      font-size: 14px; font-weight: 600; color: var(--text);
+    }
+    .toast .session-ref {
+      margin-top: 3px;
+      font-size: 11px; letter-spacing: 0.06em;
+      color: var(--text-mute);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    @keyframes toast-in {
+      from { transform: translateX(-50%) translateY(-160%); }
+      to   { transform: translateX(-50%) translateY(0); }
+    }
+    @keyframes toast-out {
+      from { transform: translateX(-50%) translateY(0); opacity: 1; }
+      to   { transform: translateX(-50%) translateY(-160%); opacity: 0; }
+    }
+
+    /* Scrollbar — invisible on touch, restrained on desktop */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 0; }
+    ::-webkit-scrollbar-track { background: transparent; }
+  </style>
+</head>
+<body>
+  <div class="app" id="app">
+    <header id="header">
+      <span class="brand">Claude Relay</span>
+      <span class="meta" id="header-meta"></span>
+    </header>
+    <!-- Initial shell rendered server-side so first paint is immediate; JS replaces
+         the list contents once /api/sessions resolves. -->
+    <div id="root">
+      <div class="session-list">
+        <button class="new-session" id="new-session-initial">
+          <span>New session</span>
+          <span class="plus">+</span>
+        </button>
+        <div class="list-label">Recent</div>
+        <div class="empty-state" id="sessions-loading">Loading…</div>
+      </div>
+    </div>
+  </div>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>
