@@ -31,10 +31,6 @@ const state = {
 // first paint, before /api/sessions resolves. The full list renders in once loadSessions does.
 const initialButton = document.getElementById('new-session-initial');
 if (initialButton) initialButton.onclick = () => openSession(null);
-{
-  const meta = document.getElementById('header-meta');
-  if (meta) meta.textContent = formatNow();
-}
 
 async function loadSessions() {
   try {
@@ -62,11 +58,15 @@ function setHeader(mode) {
     const brand = document.createElement('span');
     brand.className = 'brand';
     brand.textContent = 'Claude Relay';
-    const m = document.createElement('span');
-    m.className = 'meta';
-    m.textContent = formatNow();
+    // Gear settings button, far right. The date/time meta was redundant on a phone
+    // (the OS shows it in the status bar) so it's been removed; the gear takes its slot.
+    const gear = document.createElement('button');
+    gear.className = 'settings-btn';
+    gear.setAttribute('aria-label', 'Settings');
+    gear.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+    gear.onclick = openSettings;
     header.appendChild(brand);
-    header.appendChild(m);
+    header.appendChild(gear);
   } else {
     const back = document.createElement('a');
     back.href = '#';
@@ -82,12 +82,6 @@ function setHeader(mode) {
     header.appendChild(back);
     header.appendChild(m);
   }
-}
-
-function formatNow() {
-  const d = new Date();
-  const pad = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} · ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 function renderList() {
@@ -658,5 +652,80 @@ function timeAgo(t) {
   return `${Math.floor(s/86400)}d ago`;
 }
 
+/* ───── Settings sheet ──────────────────────────────────────────
+   Theme + mode picker. The pre-render script in <head> already applied the
+   saved values to <html data-theme data-mode>; this code just keeps the sheet
+   UI in sync and writes back to localStorage on selection. */
+
+const VALID_THEMES = ['livekit', 'almanac', 'terminal'];
+const VALID_MODES = ['light', 'dark'];
+
+function currentTheme() {
+  const t = document.documentElement.getAttribute('data-theme');
+  return VALID_THEMES.includes(t) ? t : 'livekit';
+}
+function currentMode() {
+  const m = document.documentElement.getAttribute('data-mode');
+  return VALID_MODES.includes(m) ? m : 'dark';
+}
+
+function applyTheme(theme) {
+  if (!VALID_THEMES.includes(theme)) return;
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('cr:theme', theme);
+  refreshSheetSelection();
+  syncThemeColorMeta();
+}
+function applyMode(mode) {
+  if (!VALID_MODES.includes(mode)) return;
+  document.documentElement.setAttribute('data-mode', mode);
+  localStorage.setItem('cr:mode', mode);
+  refreshSheetSelection();
+  syncThemeColorMeta();
+}
+
+// Keep <meta name="theme-color"> in sync with the active theme's --bg so the iOS
+// Safari address bar / PWA status bar tint matches when the user switches palette.
+function syncThemeColorMeta() {
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta && bg) meta.setAttribute('content', bg);
+}
+
+function refreshSheetSelection() {
+  const theme = currentTheme();
+  const mode = currentMode();
+  for (const card of document.querySelectorAll('.theme-card')) {
+    card.classList.toggle('selected', card.dataset.themeKey === theme);
+  }
+  for (const btn of document.querySelectorAll('.mode-toggle button')) {
+    btn.classList.toggle('active', btn.dataset.mode === mode);
+  }
+}
+
+function openSettings() {
+  refreshSheetSelection();
+  document.getElementById('sheet-backdrop').classList.add('open');
+  document.getElementById('sheet').classList.add('open');
+}
+function closeSettings() {
+  document.getElementById('sheet-backdrop').classList.remove('open');
+  document.getElementById('sheet').classList.remove('open');
+}
+
+// Sheet UI wiring. Event delegation on the picker containers so the handlers stay
+// stable even if the sheet's markup gets re-rendered.
+document.getElementById('sheet-close').onclick = closeSettings;
+document.getElementById('sheet-backdrop').onclick = closeSettings;
+document.getElementById('theme-grid').addEventListener('click', (e) => {
+  const card = e.target.closest('.theme-card');
+  if (card?.dataset.themeKey) applyTheme(card.dataset.themeKey);
+});
+document.getElementById('mode-toggle').addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-mode]');
+  if (btn?.dataset.mode) applyMode(btn.dataset.mode);
+});
+
+syncThemeColorMeta();
 loadSessions();
 connectNotificationWs();

@@ -8,14 +8,84 @@
   <link rel="apple-touch-icon" href="/icon-512.png">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="theme-color" content="#0a0a0a">
+  <meta name="theme-color" content="#070707">
 
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Public+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
+
+  <!-- Apply persisted theme before the first paint so there's no FOUC on theme switch.
+       Reads localStorage; default is LiveKit dark. -->
+  <script>
+    (function () {
+      var validThemes = ['livekit', 'almanac', 'terminal'];
+      var validModes = ['light', 'dark'];
+      var theme = localStorage.getItem('cr:theme');
+      var mode = localStorage.getItem('cr:mode');
+      if (validThemes.indexOf(theme) === -1) theme = 'livekit';
+      if (validModes.indexOf(mode) === -1) mode = 'dark';
+      document.documentElement.setAttribute('data-theme', theme);
+      document.documentElement.setAttribute('data-mode', mode);
+    })();
+  </script>
 
   <style>
-    :root {
+    /* ───── Theme tokens ────────────────────────────────────────────
+       Each theme provides a full set of token values for its dark and light
+       variants. The pre-render script in <head> applies data-theme + data-mode
+       on <html>; defaults to livekit/dark.
+
+       Token families:
+         --bg, --bg-elev, --bg-elev-2     surfaces (deepest → most elevated)
+         --line, --line-soft              dividers
+         --text, --text-mute, --text-dim  text levels (brightest → dimmest)
+         --accent, --accent-soft          brand / selection / pending
+         --danger, --danger-soft          destructive / errors
+         --font-display                   italic / display flourishes
+         --font-body                      everything else
+         --font-mono                      explicit code & terminal-caret
+    */
+
+    /* LiveKit — vivid cyan-on-graphite, sans throughout. Default. */
+    [data-theme="livekit"][data-mode="dark"] {
+      --bg: #070707;
+      --bg-elev: #131313;
+      --bg-elev-2: #1f1f1f;
+      --line: #2a2a2a;
+      --line-soft: #1a1a1a;
+      --text: #ffffff;
+      --text-mute: #999999;
+      --text-dim: #555555;
+      --accent: #1fd5f9;
+      --accent-soft: rgba(31, 213, 249, 0.14);
+      --danger: #fa4c39;
+      --danger-soft: rgba(250, 76, 57, 0.14);
+      --font-display: 'Public Sans', system-ui, sans-serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="livekit"][data-mode="light"] {
+      --bg: #fdfdfc;
+      --bg-elev: #ffffff;
+      --bg-elev-2: #efefec;
+      --line: #dbdbd8;
+      --line-soft: #ececea;
+      --text: #000000;
+      --text-mute: #636363;
+      --text-dim: #b5b5b0;
+      --accent: #0a259f;
+      --accent-soft: rgba(10, 37, 159, 0.10);
+      --danger: #b32909;
+      --danger-soft: rgba(179, 41, 9, 0.10);
+      --font-display: 'Public Sans', system-ui, sans-serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Almanac — editorial italic serif + tracked mono, amber signal.
+       Feels like a Penguin paperback in light mode, like a private library
+       reading lamp in dark mode. */
+    [data-theme="almanac"][data-mode="dark"] {
       --bg: #0a0a0a;
       --bg-elev: #131313;
       --bg-elev-2: #1a1a1a;
@@ -24,18 +94,74 @@
       --text: #e9e6dd;
       --text-mute: #807a6d;
       --text-dim: #4a463e;
-      --amber: #f4b91a;
-      --amber-soft: rgba(244, 185, 26, 0.12);
-      --red: #e83a3a;
-      --red-soft: rgba(232, 58, 58, 0.12);
-      --serif: 'Instrument Serif', 'Times New Roman', serif;
-      --mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --accent: #f4b91a;
+      --accent-soft: rgba(244, 185, 26, 0.12);
+      --danger: #e83a3a;
+      --danger-soft: rgba(232, 58, 58, 0.12);
+      --font-display: 'Instrument Serif', 'Times New Roman', serif;
+      --font-body: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="almanac"][data-mode="light"] {
+      --bg: #faf7ef;
+      --bg-elev: #ffffff;
+      --bg-elev-2: #f2ede0;
+      --line: #d4cfc0;
+      --line-soft: #e8e3d3;
+      --text: #1c1814;
+      --text-mute: #6b6553;
+      --text-dim: #b3ac96;
+      --accent: #9a6300;
+      --accent-soft: rgba(154, 99, 0, 0.10);
+      --danger: #a31f1f;
+      --danger-soft: rgba(163, 31, 31, 0.10);
+      --font-display: 'Instrument Serif', 'Times New Roman', serif;
+      --font-body: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Terminal — brutalist achromatic body (black/white/grey, mono everywhere)
+       lit by a single CRT-phosphor green accent. Same structural posture as
+       LiveKit and Almanac, just with #00ff41 in place of cyan/amber. */
+    [data-theme="terminal"][data-mode="dark"] {
+      --bg: #000000;
+      --bg-elev: #0a0a0a;
+      --bg-elev-2: #161616;
+      --line: #2a2a2a;
+      --line-soft: #181818;
+      --text: #f0f0f0;
+      --text-mute: #808080;
+      --text-dim: #3a3a3a;
+      --accent: #00ff41;
+      --accent-soft: rgba(0, 255, 65, 0.14);
+      --danger: #ff3050;
+      --danger-soft: rgba(255, 48, 80, 0.12);
+      --font-display: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-body: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="terminal"][data-mode="light"] {
+      --bg: #ffffff;
+      --bg-elev: #fafafa;
+      --bg-elev-2: #f0f0f0;
+      --line: #d4d4d4;
+      --line-soft: #e8e8e8;
+      --text: #000000;
+      --text-mute: #707070;
+      --text-dim: #c0c0c0;
+      --accent: #009633;
+      --accent-soft: rgba(0, 150, 51, 0.10);
+      --danger: #a01f1f;
+      --danger-soft: rgba(160, 31, 31, 0.10);
+      --font-display: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-body: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
     }
 
     * { box-sizing: border-box; }
     html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); }
     body {
-      font-family: var(--mono);
+      font-family: var(--font-body);
       font-size: 14px;
       line-height: 1.55;
       -webkit-font-smoothing: antialiased;
@@ -43,7 +169,7 @@
       overscroll-behavior: none;
     }
 
-    a { color: var(--amber); text-decoration: none; }
+    a { color: var(--accent); text-decoration: none; }
     button { font-family: inherit; font-size: inherit; }
 
     /* Top-level layout: a flex column that fills the viewport so the composer can sit
@@ -71,7 +197,7 @@
       display: flex; align-items: baseline; gap: 14px;
     }
     header .brand {
-      font-family: var(--serif);
+      font-family: var(--font-display);
       font-size: 26px; font-weight: 400; letter-spacing: -0.01em;
       font-style: italic;
       color: var(--text);
@@ -80,7 +206,7 @@
       content: '';
       display: inline-block;
       width: 8px; height: 8px;
-      background: var(--amber);
+      background: var(--accent);
       margin-right: 10px; transform: translateY(-3px);
       animation: pulse 2.4s ease-in-out infinite;
     }
@@ -89,15 +215,15 @@
       50% { opacity: 0.45; }
     }
     header .meta {
-      font-family: var(--mono); font-size: 10px;
+      font-family: var(--font-body); font-size: 10px;
       letter-spacing: 0.16em; text-transform: uppercase;
       color: var(--text-mute);
       margin-left: auto;
     }
     header .back {
-      font-family: var(--mono); font-size: 12px;
+      font-family: var(--font-body); font-size: 12px;
       letter-spacing: 0.08em; text-transform: uppercase;
-      color: var(--amber);
+      color: var(--accent);
       padding: 4px 0;
     }
 
@@ -130,16 +256,16 @@
       transition: border-color 0.15s ease, background 0.15s ease;
       margin-bottom: 24px;
     }
-    .new-session:active { background: var(--amber-soft); border-color: var(--amber); }
+    .new-session:active { background: var(--accent-soft); border-color: var(--accent); }
     .new-session .plus {
-      font-family: var(--serif); font-size: 22px; line-height: 1;
-      color: var(--amber); font-style: italic;
+      font-family: var(--font-display); font-size: 22px; line-height: 1;
+      color: var(--accent); font-style: italic;
     }
 
     .empty-state {
       padding: 40px 20px; text-align: center;
       color: var(--text-mute); font-size: 13px;
-      font-style: italic; font-family: var(--serif); letter-spacing: 0.01em;
+      font-style: italic; font-family: var(--font-display); letter-spacing: 0.01em;
     }
 
     /* Swipe-to-delete row container. The visible row sits above an absolutely-positioned
@@ -166,7 +292,7 @@
 
     .session-row .marker {
       flex: none;
-      font-family: var(--serif); font-style: italic; font-size: 14px;
+      font-family: var(--font-display); font-style: italic; font-size: 14px;
       color: var(--text-dim);
       padding-top: 1px; width: 26px;
     }
@@ -189,21 +315,21 @@
     /* Pending-approval badge on the meta line. Amber, with a pulsing dot that ties
        back to the brand-dot pulse motif. */
     .pending-badge {
-      color: var(--amber);
+      color: var(--accent);
       display: inline-flex; align-items: center; gap: 7px;
     }
     .pending-badge .dot {
       width: 5px; height: 5px; border-radius: 50%;
-      background: var(--amber);
+      background: var(--accent);
       animation: pulse 2.4s ease-in-out infinite;
     }
     /* When a row has pending approvals, the marker numeral switches from dim to amber.
        Subtle reinforcement of the meta-line badge. */
-    .session-row .marker.pending { color: var(--amber); }
+    .session-row .marker.pending { color: var(--accent); }
 
     .delete-action {
       position: absolute; top: 0; right: 0; bottom: 0;
-      background: var(--red); color: white;
+      background: var(--danger); color: white;
       display: flex; align-items: center; justify-content: center;
       width: 92px;
       font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 600;
@@ -216,7 +342,7 @@
       will-change: transform;
     }
     .delete-action.swiping { transition: none; }
-    .delete-action:active { background: #c12d2d; }
+    .delete-action:active { filter: brightness(0.85); }
 
     /* ───── In-session view ─────────────────────────────────────── */
     .transcript {
@@ -239,7 +365,7 @@
       margin-right: 10px;
     }
     .msg.user { color: var(--text); }
-    .msg.user .role { color: var(--amber); }
+    .msg.user .role { color: var(--accent); }
     .msg.assistant { color: var(--text); }
     .msg.tool_use {
       color: var(--text-mute); font-size: 12px;
@@ -249,10 +375,10 @@
     .msg.tool_use .role { color: var(--text-dim); border-color: var(--text-dim); }
     .msg.error {
       color: #f4a0a0;
-      background: var(--red-soft); padding: 10px 12px;
-      border-left: 2px solid var(--red);
+      background: var(--danger-soft); padding: 10px 12px;
+      border-left: 2px solid var(--danger);
     }
-    .msg.error .role { color: var(--red); border-color: var(--red); }
+    .msg.error .role { color: var(--danger); border-color: var(--danger); }
 
     /* ── Rendered markdown inside assistant messages ───────────── */
     .msg .body-text > :first-child { margin-top: 0; }
@@ -261,7 +387,7 @@
     .md-p { margin: 0 0 10px; }
     .md-p:last-child { margin-bottom: 0; }
 
-    .md-h { font-family: var(--mono); letter-spacing: 0.04em; margin: 18px 0 8px; }
+    .md-h { font-family: var(--font-body); letter-spacing: 0.04em; margin: 18px 0 8px; }
     .md-h1 { font-size: 18px; font-weight: 600; }
     .md-h2 { font-size: 15px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.12em; }
     .md-h3 { font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.14em; color: var(--text-mute); }
@@ -274,18 +400,18 @@
     .md-list li::marker { color: var(--text-dim); }
 
     .md-link {
-      color: var(--amber);
+      color: var(--accent);
       text-decoration: underline;
       text-decoration-color: rgba(244, 185, 26, 0.35);
       text-underline-offset: 3px;
       word-break: break-word;
     }
-    .md-link:active { text-decoration-color: var(--amber); }
+    .md-link:active { text-decoration-color: var(--accent); }
 
     .md-code {
-      font-family: var(--mono); font-size: 0.92em;
+      font-family: var(--font-mono); font-size: 0.92em;
       background: var(--bg-elev-2);
-      color: var(--amber);
+      color: var(--accent);
       padding: 1px 6px;
       border: 1px solid var(--line);
       word-break: break-word;
@@ -294,13 +420,13 @@
     .md-pre {
       margin: 12px 0;
       background: var(--bg-elev-2);
-      border-left: 2px solid var(--amber);
+      border-left: 2px solid var(--accent);
       padding: 10px 12px;
       overflow-x: auto;
       -webkit-overflow-scrolling: touch;
     }
     .md-pre code {
-      font-family: var(--mono); font-size: 13px; line-height: 1.55;
+      font-family: var(--font-mono); font-size: 13px; line-height: 1.55;
       color: var(--text);
       background: transparent; border: none; padding: 0;
       white-space: pre;
@@ -311,7 +437,7 @@
       margin: 10px 0; padding: 6px 0 6px 14px;
       border-left: 2px solid var(--line);
       color: var(--text-mute);
-      font-style: italic; font-family: var(--serif); font-size: 16px;
+      font-style: italic; font-family: var(--font-display); font-size: 16px;
     }
 
     .md-table-wrap {
@@ -357,18 +483,18 @@
     }
     .composer .field {
       flex: 1; min-width: 0;
-      font-family: var(--mono); font-size: 15px; line-height: 1.45;
+      font-family: var(--font-body); font-size: 15px; line-height: 1.45;
       color: var(--text);
       background: transparent;
       outline: none;
       max-height: 30vh; overflow-y: auto;
-      caret-color: var(--amber);
+      caret-color: var(--accent);
       padding: 6px 0;
     }
     .composer .field:empty::before {
       content: attr(data-placeholder);
       color: var(--text-dim);
-      font-style: italic; font-family: var(--serif); font-size: 16px;
+      font-style: italic; font-family: var(--font-display); font-size: 16px;
     }
     .composer .send {
       flex: none;
@@ -376,26 +502,26 @@
       border: 1px solid var(--line);
       background: transparent;
       color: var(--text-mute);
-      font-family: var(--serif); font-style: italic; font-size: 22px;
+      font-family: var(--font-display); font-style: italic; font-size: 22px;
       cursor: pointer;
       display: flex; align-items: center; justify-content: center;
       transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
     }
-    .composer .send.armed { color: var(--amber); border-color: var(--amber); }
-    .composer .send.armed:active { background: var(--amber-soft); }
+    .composer .send.armed { color: var(--accent); border-color: var(--accent); }
+    .composer .send.armed:active { background: var(--accent-soft); }
 
     /* ───── Approval card ───────────────────────────────────────── */
     .approval-card {
       margin: 16px 0;
       background: var(--bg-elev);
-      border: 1px solid var(--amber);
-      box-shadow: 0 0 0 4px var(--amber-soft);
+      border: 1px solid var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft);
       padding: 16px 16px 14px;
       position: relative;
     }
     .approval-card .label {
       font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
-      color: var(--amber); margin-bottom: 6px;
+      color: var(--accent); margin-bottom: 6px;
     }
     .approval-card .tool {
       font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 10px;
@@ -421,10 +547,10 @@
       color: var(--text-mute);
       transition: all 0.12s ease;
     }
-    .approval-card .actions .approve { color: var(--amber); border-color: var(--amber); }
-    .approval-card .actions .approve:active { background: var(--amber-soft); }
-    .approval-card .actions .reject { color: var(--red); border-color: var(--red); }
-    .approval-card .actions .reject:active { background: var(--red-soft); }
+    .approval-card .actions .approve { color: var(--accent); border-color: var(--accent); }
+    .approval-card .actions .approve:active { background: var(--accent-soft); }
+    .approval-card .actions .reject { color: var(--danger); border-color: var(--danger); }
+    .approval-card .actions .reject:active { background: var(--danger-soft); }
 
     /* ───── Thinking indicator ──────────────────────────────────────
        Shown as a pseudo-assistant message tile while waiting for a response.
@@ -432,15 +558,15 @@
        composer placeholder), with a mono amber underscore caret that blinks
        like a terminal cursor — both motifs of the app in one tile. */
     .msg.thinking .body-text {
-      font-family: var(--serif); font-style: italic; font-size: 16px;
+      font-family: var(--font-display); font-style: italic; font-size: 16px;
       color: var(--text-mute);
       letter-spacing: 0.005em;
     }
     .msg.thinking .body-text .caret {
       display: inline-block;
       margin-left: 3px;
-      color: var(--amber);
-      font-family: var(--mono); font-style: normal; font-weight: 500;
+      color: var(--accent);
+      font-family: var(--font-mono); font-style: normal; font-weight: 500;
       animation: caret-blink 1.05s steps(1, end) infinite;
     }
     @keyframes caret-blink {
@@ -460,8 +586,8 @@
       width: min(360px, calc(100vw - 32px));
       transform: translateX(-50%) translateY(-160%);
       background: var(--bg-elev);
-      border: 1px solid var(--amber);
-      box-shadow: 0 0 0 4px var(--amber-soft), 0 14px 36px rgba(0, 0, 0, 0.5);
+      border: 1px solid var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft), 0 14px 36px rgba(0, 0, 0, 0.5);
       padding: 12px 14px 13px;
       z-index: 100;
       cursor: pointer;
@@ -476,11 +602,11 @@
     }
     .toast .label {
       font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
-      color: var(--amber);
+      color: var(--accent);
     }
     .toast .arrow {
-      font-family: var(--serif); font-style: italic; font-size: 20px;
-      line-height: 1; color: var(--amber);
+      font-family: var(--font-display); font-style: italic; font-size: 20px;
+      line-height: 1; color: var(--accent);
       transform: translateY(2px);
     }
     .toast .tool {
@@ -502,6 +628,197 @@
       to   { transform: translateX(-50%) translateY(-160%); opacity: 0; }
     }
 
+    /* ───── Settings button (header, list view only) ─────────────────
+       Sits between brand and date in the list header. Currentcolor so it
+       inherits whichever theme's accent treatment makes sense.  */
+    .settings-btn {
+      flex: none;
+      width: 30px; height: 30px;
+      margin-left: auto;
+      background: transparent; border: none;
+      color: var(--text-mute);
+      padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      border-radius: 0;
+      transition: color 0.15s ease, transform 0.4s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+    .settings-btn:active {
+      color: var(--accent);
+      transform: rotate(60deg);
+    }
+    .settings-btn svg { display: block; }
+
+    /* ───── Settings sheet ──────────────────────────────────────────
+       Bottom sheet with backdrop. Slides up from the bottom on open, drops
+       back down on close. The backdrop fades in/out independently so taps
+       outside the sheet feel responsive. */
+    .sheet-backdrop {
+      position: fixed; inset: 0;
+      background: rgba(0, 0, 0, 0.55);
+      z-index: 90;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.28s ease;
+    }
+    .sheet-backdrop.open {
+      opacity: 1;
+      pointer-events: auto;
+    }
+    .sheet {
+      position: fixed; left: 0; right: 0; bottom: 0;
+      z-index: 91;
+      background: var(--bg-elev);
+      border-top: 1px solid var(--line);
+      padding: 18px 20px calc(28px + env(safe-area-inset-bottom));
+      transform: translateY(100%);
+      transition: transform 0.36s cubic-bezier(0.32, 0.72, 0, 1);
+      box-shadow: 0 -16px 48px rgba(0, 0, 0, 0.45);
+    }
+    .sheet.open { transform: translateY(0); }
+    .sheet .grabber {
+      width: 36px; height: 3px;
+      background: var(--line);
+      border-radius: 2px;
+      margin: -4px auto 18px;
+    }
+    .sheet .header-row {
+      display: flex; align-items: baseline; justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .sheet .sheet-title {
+      font-family: var(--font-display); font-style: italic;
+      font-size: 22px; letter-spacing: -0.01em;
+      color: var(--text);
+    }
+    .sheet .sheet-close {
+      background: transparent; border: none;
+      color: var(--text-mute);
+      font-size: 18px;
+      cursor: pointer;
+      padding: 4px 6px;
+    }
+    .sheet .sheet-close:active { color: var(--accent); }
+
+    .sheet-section-label {
+      font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--text-mute);
+      margin: 4px 0 10px;
+      display: flex; align-items: center; gap: 10px;
+    }
+    .sheet-section-label::after {
+      content: ''; flex: 1; height: 1px; background: var(--line);
+    }
+
+    /* Theme cards: each one is rendered in its OWN palette, so you see a
+       miniature preview rather than just reading a label. Hardcoded colors
+       intentional — these previews don't follow the active theme. */
+    .theme-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 22px;
+    }
+    .theme-card {
+      position: relative;
+      padding: 14px 12px 12px;
+      border: 1px solid transparent;
+      cursor: pointer;
+      text-align: left;
+      transition: transform 0.18s ease;
+      overflow: hidden;
+    }
+    .theme-card:active { transform: scale(0.97); }
+    .theme-card.selected {
+      outline: 1px solid var(--accent);
+      outline-offset: 2px;
+    }
+    .theme-card .preview-stripe {
+      display: flex; gap: 4px;
+      margin-bottom: 12px;
+    }
+    .theme-card .swatch {
+      width: 12px; height: 12px; border-radius: 50%;
+    }
+    .theme-card .preview-text {
+      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase;
+      font-weight: 600;
+    }
+    .theme-card .preview-sub {
+      font-size: 10px; margin-top: 2px;
+      opacity: 0.6;
+    }
+
+    /* Per-card preview palettes — these don't reference the active theme. */
+    .theme-card[data-theme-key="livekit"] {
+      background: #070707;
+      color: #ffffff;
+      font-family: 'Public Sans', system-ui, sans-serif;
+    }
+    .theme-card[data-theme-key="livekit"] .swatch.s1 { background: #1fd5f9; }
+    .theme-card[data-theme-key="livekit"] .swatch.s2 { background: #ffffff; }
+    .theme-card[data-theme-key="livekit"] .swatch.s3 { background: #555555; }
+
+    .theme-card[data-theme-key="almanac"] {
+      background: #0a0a0a;
+      color: #e9e6dd;
+      font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    }
+    .theme-card[data-theme-key="almanac"] .preview-text {
+      font-family: 'Instrument Serif', serif; font-style: italic;
+      letter-spacing: 0;
+      text-transform: none;
+      font-size: 16px;
+    }
+    .theme-card[data-theme-key="almanac"] .swatch.s1 { background: #f4b91a; }
+    .theme-card[data-theme-key="almanac"] .swatch.s2 { background: #e9e6dd; }
+    .theme-card[data-theme-key="almanac"] .swatch.s3 { background: #4a463e; }
+
+    /* Achromatic body, phosphor-green accent — the green swatch goes first so it
+       reads as the dominant signal color, the way the LiveKit and Almanac cards
+       lead with their own accents. */
+    .theme-card[data-theme-key="terminal"] {
+      background: #000;
+      color: #f0f0f0;
+      font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace;
+    }
+    .theme-card[data-theme-key="terminal"] .swatch.s1 { background: #00ff41; }
+    .theme-card[data-theme-key="terminal"] .swatch.s2 { background: #f0f0f0; }
+    .theme-card[data-theme-key="terminal"] .swatch.s3 { background: #3a3a3a; }
+
+    /* Mode segmented control. Two equal-width tabs, the active one in accent. */
+    .mode-toggle {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      border: 1px solid var(--line);
+    }
+    .mode-toggle button {
+      background: transparent; border: none;
+      color: var(--text-mute);
+      padding: 13px 0;
+      font-family: var(--font-body);
+      font-size: 11px; letter-spacing: 0.16em; text-transform: uppercase;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      transition: color 0.15s ease, background 0.15s ease;
+    }
+    .mode-toggle button + button { border-left: 1px solid var(--line); }
+    .mode-toggle button.active {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .mode-toggle button .glyph {
+      width: 11px; height: 11px;
+      border-radius: 50%;
+      display: inline-block;
+      background: currentColor;
+    }
+    .mode-toggle button[data-mode="light"] .glyph {
+      background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+      border: 1px solid currentColor;
+    }
+
     /* Scrollbar — invisible on touch, restrained on desktop */
     ::-webkit-scrollbar { width: 6px; height: 6px; }
     ::-webkit-scrollbar-thumb { background: var(--line); border-radius: 0; }
@@ -512,7 +829,6 @@
   <div class="app" id="app">
     <header id="header">
       <span class="brand">Claude Relay</span>
-      <span class="meta" id="header-meta"></span>
     </header>
     <!-- Initial shell rendered server-side so first paint is immediate; JS replaces
          the list contents once /api/sessions resolves. -->
@@ -527,6 +843,48 @@
       </div>
     </div>
   </div>
+  <!-- Settings sheet — hidden until app.js opens it. The backdrop sits below the sheet
+       in z-order so taps outside the sheet bubble up to the backdrop's close handler. -->
+  <div class="sheet-backdrop" id="sheet-backdrop" aria-hidden="true"></div>
+  <aside class="sheet" id="sheet" aria-hidden="true" role="dialog" aria-label="Settings">
+    <div class="grabber"></div>
+    <div class="header-row">
+      <span class="sheet-title">Appearance</span>
+      <button class="sheet-close" id="sheet-close" aria-label="Close settings">✕</button>
+    </div>
+
+    <div class="sheet-section-label">Theme</div>
+    <div class="theme-grid" id="theme-grid">
+      <button class="theme-card" data-theme-key="livekit">
+        <div class="preview-stripe">
+          <span class="swatch s1"></span><span class="swatch s2"></span><span class="swatch s3"></span>
+        </div>
+        <div class="preview-text">LiveKit</div>
+        <div class="preview-sub">Cyan · Sans</div>
+      </button>
+      <button class="theme-card" data-theme-key="almanac">
+        <div class="preview-stripe">
+          <span class="swatch s1"></span><span class="swatch s2"></span><span class="swatch s3"></span>
+        </div>
+        <div class="preview-text">Almanac</div>
+        <div class="preview-sub">Amber · Serif</div>
+      </button>
+      <button class="theme-card" data-theme-key="terminal">
+        <div class="preview-stripe">
+          <span class="swatch s1"></span><span class="swatch s2"></span><span class="swatch s3"></span>
+        </div>
+        <div class="preview-text">Terminal</div>
+        <div class="preview-sub">Green · Mono</div>
+      </button>
+    </div>
+
+    <div class="sheet-section-label">Mode</div>
+    <div class="mode-toggle" id="mode-toggle">
+      <button data-mode="light"><span class="glyph"></span>Light</button>
+      <button data-mode="dark"><span class="glyph"></span>Dark</button>
+    </div>
+  </aside>
+
   <script src="/app.js" type="module"></script>
 </body>
 </html>

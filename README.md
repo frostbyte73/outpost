@@ -15,6 +15,8 @@ A small macOS LaunchAgent that runs Claude Code as a background service so you c
 - **Node.js 22+** on `PATH`.
 - **Claude Code CLI** (`claude`) installed and authenticated for the user the daemon runs as.
 
+> **The laptop has to stay awake.** The daemon runs locally on your Mac, so if the machine sleeps, the PWA can't reach it. The installer wraps the daemon in `caffeinate -is` to block idle and AC-power system sleep, but closing the lid on a Mac without an external display still triggers sleep regardless. In practice that means: **leave it plugged in with the lid open** while you want to be reachable from your phone.
+
 ## Install
 
 ### 1. Sign into Tailscale and enable HTTPS
@@ -73,7 +75,9 @@ This writes `~/Library/LaunchAgents/local.claude-relay.$USER.plist`, loads it, a
 
 ### 6. Open the PWA
 
-From any device on your tailnet, open `https://<your-tailnet-hostname>.ts.net:8443/`. On iOS, "Add to Home Screen" makes it feel like a native app.
+From any device on your tailnet, open `https://<your-tailnet-hostname>.ts.net:8443/`. 
+
+On iPhone with Chrome, click the share button in the top right, then "View More", then "Add to Home Screen" to make it feel like a native app.
 
 ## Configuration
 
