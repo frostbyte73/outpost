@@ -9,6 +9,23 @@ export interface SessionInfo {
   path: string;
 }
 
+export interface SubagentCompletion {
+  status: string;
+  summary?: string;
+  result?: string;
+  completedAt: number;
+}
+
+export interface SubagentInfo {
+  agentId: string;
+  agentType: string;
+  description?: string;
+  parentToolUseId?: string;
+  firstSeenAt: number;
+  entries: TranscriptMessage[];
+  completion: SubagentCompletion | null;
+}
+
 export interface TranscriptMessage {
   role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
   text: string;
@@ -248,6 +265,92 @@ function extractTranscriptMessages(obj: unknown, taskToolUseIds: Set<string>): T
   return parts;
 }
 
+// Pull the subagent-completion events out of a parent session's JSONL. Claude Code
+// emits these in two different shapes depending on whether the Agent dispatch was
+// async or sync — we handle both:
+//   1. Async style: a synthetic user-role string message beginning <task-notification>
+//      with task-id/status/summary/result as XML children. Used when the agent runs
+//      detached and the parent continues working.
+//   2. Sync style: a normal user-role array message containing a tool_result block
+//      whose top-level `toolUseResult` field carries `{agentId, status, ...}`. Used
+//      when the parent waits inline for the agent.
+// Returns a map of agent_id → completion. Resilient to missing fields (status defaults
+// to 'completed').
+function readTaskNotifications(parentJsonlPath: string): Map<string, SubagentCompletion> {
+  const completions = new Map<string, SubagentCompletion>();
+  let content: string;
+  try {
+    content = readFileSync(parentJsonlPath, 'utf8');
+  } catch {
+    return completions;
+  }
+  const parser = new LineParser();
+  parser.onLine = (obj) => {
+    const o = obj as RawSessionRecord & {
+      timestamp?: string;
+      toolUseResult?: { status?: string; agentId?: string; content?: unknown };
+    };
+    if (o.type !== 'user') return;
+    const ts = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
+    const completedAt = Number.isNaN(ts) ? Date.now() : ts;
+
+    // Sync shape: the toolUseResult sidecar on the record carries agentId + status.
+    // Only stamp when status is a terminal state (completed/killed/error) — the same
+    // record can also appear with status='async_launched' at dispatch time.
+    const tur = o.toolUseResult;
+    if (tur && typeof tur.agentId === 'string' && tur.status && tur.status !== 'async_launched') {
+      const completion: SubagentCompletion = { status: tur.status, completedAt };
+      const summary = firstTextOfToolResult(o.message?.content);
+      if (summary) completion.summary = summary;
+      completions.set(tur.agentId, completion);
+      return;
+    }
+
+    // Async shape: synthetic user message with <task-notification> XML.
+    const c = o.message?.content;
+    if (typeof c !== 'string') return;
+    if (!c.trimStart().startsWith('<task-notification>')) return;
+    const get = (tag: string): string | undefined => {
+      const re = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`);
+      const m = re.exec(c);
+      return m ? m[1]!.trim() : undefined;
+    };
+    const taskId = get('task-id');
+    if (!taskId) return;
+    const completion: SubagentCompletion = {
+      status: get('status') ?? 'completed',
+      completedAt,
+    };
+    const summary = get('summary');
+    if (summary) completion.summary = summary;
+    const result = get('result');
+    if (result) completion.result = result;
+    completions.set(taskId, completion);
+  };
+  parser.write(content);
+  return completions;
+}
+
+// Pull a short human-readable summary out of a tool_result message's content array.
+// Claude Code formats agent responses as two text blocks: [agent's reply, metadata
+// (agentId + <usage> XML)]. The first one is the agent's actual answer — exactly what
+// we want as the "summary" line in the completion tile. Returns undefined if the
+// shape doesn't match (e.g., for non-agent tool results that flow through this path).
+function firstTextOfToolResult(content: unknown): string | undefined {
+  if (!Array.isArray(content)) return undefined;
+  for (const block of content) {
+    const b = block as RawContentBlock;
+    if (b.type !== 'tool_result' || !Array.isArray(b.content)) continue;
+    for (const inner of b.content) {
+      const t = inner as RawContentBlock;
+      if (t.type === 'text' && typeof t.text === 'string' && !t.text.startsWith('agentId:')) {
+        return t.text.trim();
+      }
+    }
+  }
+  return undefined;
+}
+
 export class SessionStore {
   private readonly dir: string;
 
@@ -276,6 +379,81 @@ export class SessionStore {
       for (const m of extractTranscriptMessages(obj, taskToolUseIds)) out.push(m);
     };
     parser.write(content);
+    return out;
+  }
+
+  // Walk the parent session's JSONL + its subagents/ sidecar directory and reconstruct
+  // each subagent's full transcript for the PWA's agents sheet. Per-subagent files live
+  // at <sessionDir>/<sessionId>/subagents/agent-<id>.{jsonl,meta.json}:
+  //   - meta.json carries the binding metadata (agentType, description, parent tool_use_id)
+  //   - .jsonl is a normal session log: same line shape as the parent, isSidechain=true
+  // Completion data is sourced from the parent JSONL: it emits a synthetic user message
+  // with <task-notification>…</task-notification> when a subagent finishes (task-id =
+  // agent_id). We extract status/summary/result/timestamp and bind by task-id.
+  readSubagents(id: string): SubagentInfo[] {
+    if (!/^[\w-]+$/.test(id)) return [];
+    const subagentDir = join(this.dir, id, 'subagents');
+    let metaFiles: string[];
+    try {
+      metaFiles = readdirSync(subagentDir).filter((f) => f.endsWith('.meta.json'));
+    } catch {
+      return [];
+    }
+    // Pre-scan parent JSONL for task-notifications so we can stamp completion onto each
+    // subagent bucket in one pass. Cheap relative to the subagent reads below — task-
+    // notifications are rare lines and we only parse the user-role ones.
+    const completions = readTaskNotifications(join(this.dir, `${id}.jsonl`));
+    const out: SubagentInfo[] = [];
+    for (const metaFile of metaFiles) {
+      const agentId = metaFile.replace(/^agent-/, '').replace(/\.meta\.json$/, '');
+      const metaPath = join(subagentDir, metaFile);
+      const jsonlPath = join(subagentDir, `agent-${agentId}.jsonl`);
+      let meta: { agentType?: string; description?: string; toolUseId?: string };
+      try {
+        meta = JSON.parse(readFileSync(metaPath, 'utf8'));
+      } catch {
+        continue;
+      }
+      let jsonlContent = '';
+      let firstSeenAt = 0;
+      try {
+        jsonlContent = readFileSync(jsonlPath, 'utf8');
+        firstSeenAt = statSync(jsonlPath).mtimeMs;
+      } catch {
+        // Meta without a jsonl — agent was registered but never wrote any entries.
+        // Surface it anyway with an empty feed.
+      }
+      const entries: TranscriptMessage[] = [];
+      const taskToolUseIds = new Set<string>();
+      let firstTimestamp: number | null = null;
+      const parser = new LineParser();
+      parser.onLine = (obj) => {
+        const o = obj as RawSessionRecord & { timestamp?: string };
+        if (firstTimestamp === null && typeof o.timestamp === 'string') {
+          const t = Date.parse(o.timestamp);
+          if (!Number.isNaN(t)) firstTimestamp = t;
+        }
+        for (const m of extractTranscriptMessages(obj, taskToolUseIds)) {
+          // Subagent feeds in the PWA only render tool tiles, not the dispatch prompt
+          // (we already show the parent's Agent tool_use in the main transcript) or the
+          // subagent's free-form replies. Drop user/assistant text entries to keep the
+          // feed focused on what the agent DID.
+          if (m.role !== 'tool_use' && m.role !== 'tool_result') continue;
+          entries.push(m);
+        }
+      };
+      parser.write(jsonlContent);
+      out.push({
+        agentId,
+        agentType: meta.agentType ?? 'agent',
+        ...(meta.description ? { description: meta.description } : {}),
+        ...(meta.toolUseId ? { parentToolUseId: meta.toolUseId } : {}),
+        firstSeenAt: firstTimestamp ?? firstSeenAt,
+        entries,
+        completion: completions.get(agentId) ?? null,
+      });
+    }
+    out.sort((a, b) => a.firstSeenAt - b.firstSeenAt);
     return out;
   }
 

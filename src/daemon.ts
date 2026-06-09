@@ -151,6 +151,20 @@ async function main() {
     res.end(JSON.stringify({ messages }));
   });
 
+  // Per-session subagent history. Each entry includes the agent's metadata + the
+  // flattened tool_use stream from its sidecar JSONL + (if it finished) the parsed
+  // <task-notification> completion. Used by the PWA to repopulate the agents sheet
+  // when reopening a session — without this endpoint, only currently-pending agents
+  // would survive the reopen.
+  server.route('GET', '/api/sessions/:id/subagents', (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/subagents$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const subagents = sessionStore.readSubagents(m[1]!);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ subagents }));
+  });
+
   // Delete a session — kills the subprocess AND removes the .jsonl from disk. Unrecoverable.
   server.route('DELETE', '/api/sessions/:id', async (req, res) => {
     const id = (req.url ?? '').split('/').pop()!;

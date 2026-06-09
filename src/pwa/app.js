@@ -354,6 +354,17 @@ async function openSession(id) {
   document.getElementById('toast')?.remove();
   render();
   if (!isNew) {
+    // Kick off the subagents fetch in parallel with /messages — they're independent and
+    // we want the agents sheet to be populated as soon as possible. Race the response
+    // against currentSessionId so a fast tab-switch doesn't leak buckets across sessions.
+    fetch(`/api/sessions/${encodeURIComponent(id)}/subagents`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((body) => {
+        if (!body || state.currentSessionId !== id) return;
+        applyDiskSubagents(body.subagents || []);
+        if (state.view === 'session') renderSession();
+      })
+      .catch((e) => console.warn('failed to load subagents:', e));
     try {
       const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages`);
       if (r.ok) {
@@ -373,6 +384,17 @@ async function openSession(id) {
             if (m.role === 'assistant' && m.msgId) state.seenBlockSigs.add(`${m.msgId}|${m.text}`);
             if (applyTaskTranscriptMessage(m)) continue;
             if (applyAskTranscriptMessage(m, filtered)) continue;
+            // Parent's Agent invocations from disk feed the same description-binding
+            // path as the live stream. Without this, reopening a session loses the
+            // descriptions of every subagent that's still running (the snapshot rebuild
+            // at openSession only has hook payloads, not the parent's input).
+            if (m.role === 'tool_use' && m.toolName === 'Agent' && m.toolInput && typeof m.toolInput === 'object') {
+              recordParentAgentInvocation({
+                toolUseId: m.toolUseId,
+                subagentType: m.toolInput.subagent_type,
+                description: m.toolInput.description,
+              });
+            }
             filtered.push(m);
           }
           state.transcript = filtered;
@@ -511,11 +533,10 @@ function handleWsMessage(msg) {
         // Agent call — so we squirrel away that metadata here and bind it when a
         // matching subagent first appears (addSubagentEntry handles the bind).
         if (b.name === 'Agent' && b.input && typeof b.input === 'object') {
-          state.unboundAgentInvocations.push({
+          recordParentAgentInvocation({
             toolUseId: b.id,
             subagentType: b.input.subagent_type,
             description: b.input.description,
-            seenAt: Date.now(),
           });
         }
         // Carry structured fields so toolUseHtml() can render a tool-specific summary on
@@ -605,11 +626,41 @@ function handleWsMessage(msg) {
       if (b?.type !== 'tool_result') continue;
       const useId = b.tool_use_id;
       if (!useId) continue;
+      const innerBlocks = Array.isArray(b.content) ? b.content : null;
       const text = typeof b.content === 'string'
         ? b.content
-        : Array.isArray(b.content)
-          ? b.content.filter((x) => x?.type === 'text').map((x) => x.text).join('\n')
+        : innerBlocks
+          ? innerBlocks.filter((x) => x?.type === 'text').map((x) => x.text).join('\n')
           : '';
+      // Agent completion (sync style): the tool_result text contains an "agentId: <hex>"
+      // line that identifies the subagent that just finished. Stream-JSON doesn't expose
+      // the JSONL's `toolUseResult` sidecar, so the regex on text is the only signal we
+      // have. The first text block (before the "agentId:" metadata) is the agent's reply
+      // — use it as the completion summary. Async-style completions (<task-notification>
+      // string content) are handled earlier in the function and never reach this branch.
+      const agentMatch = /agentId:\s*([a-f0-9]+)/i.exec(text);
+      if (agentMatch) {
+        const agentId = agentMatch[1];
+        const bucket = state.subagents.get(agentId);
+        if (bucket && !bucket.completion) {
+          let summary = null;
+          if (innerBlocks) {
+            for (const inner of innerBlocks) {
+              if (inner?.type === 'text' && typeof inner.text === 'string' && !inner.text.startsWith('agentId:')) {
+                summary = inner.text.trim();
+                break;
+              }
+            }
+          }
+          bucket.completion = {
+            status: 'completed',
+            summary,
+            result: null,
+            completedAt: Date.now(),
+          };
+          touched = true;
+        }
+      }
       // Route to whichever pending pairer holds this id. Each id only sits in one set
       // at a time (Task creates and Ask uses are distinct), so the first match wins.
       if (state.pendingCreates.has(useId)) {
@@ -637,10 +688,13 @@ function handleWsMessage(msg) {
 function handleNotificationMessage(msg) {
   if (msg.type === 'notifications_snapshot') {
     state.pendingApprovals = Array.isArray(msg.approvals) ? msg.approvals : [];
-    // Rebuild subagent buckets from the snapshot for the current session. Snapshots
-    // only carry pending approvals, so any previously-resolved entries are lost on
-    // reconnect — that's fine for v1 (subagent activity is ephemeral until session end).
-    state.subagents = new Map();
+    // Re-apply pending approvals to subagent buckets without wiping existing state.
+    // Completed agents and resolved-entry history live in state.subagents permanently
+    // for the session (we hydrate disk history via /api/sessions/:id/subagents on
+    // openSession), so a reconnect should be additive: addSubagentEntry will dedupe
+    // pending entries by approvalId and create buckets only for agents we hadn't yet
+    // heard about. Without this, every reconnect dropped completed agents and resolved
+    // entries on the floor.
     for (const a of state.pendingApprovals) {
       if (a.sessionId !== state.currentSessionId) continue;
       if (a.agentId) {
@@ -718,7 +772,9 @@ function handleNotificationMessage(msg) {
 // Parse a <task-notification> XML blob and stamp the completion onto its agent's
 // bucket. Claude Code emits one of these as a synthetic user message whenever a
 // subagent (or backgrounded Bash task) finishes — the <task-id> matches our agent_id,
-// so we can correlate cleanly. Returns true if a bucket was updated.
+// so we can correlate cleanly. Completed agents stay in state.subagents so they
+// remain in the tab list (visually demoted to a "completed" section) — they aren't
+// deleted. Returns true if a bucket was updated.
 function applyTaskNotification(text) {
   const get = (tag) => {
     const re = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`);
@@ -731,12 +787,12 @@ function applyTaskNotification(text) {
   // agent_id ones have a matching bucket; Bash background notifications are no-ops here.
   const bucket = state.subagents.get(taskId);
   if (!bucket) return false;
-  // Finished agents disappear from the strip + tab rail entirely (per user request:
-  // five completed agents shouldn't keep occupying the rail and inflating the count).
-  // If the active tab was this agent, clear it so the next render picks a new active.
-  state.subagents.delete(taskId);
-  state.agentTabOrder = state.agentTabOrder.filter((id) => id !== taskId);
-  if (state.activeAgentId === taskId) state.activeAgentId = null;
+  bucket.completion = {
+    status: get('status') ?? 'completed',
+    summary: get('summary') ?? null,
+    result: get('result') ?? null,
+    completedAt: Date.now(),
+  };
   return true;
 }
 
@@ -744,6 +800,39 @@ function applyTaskNotification(text) {
 // both shapes:
 //   - Pending approval (a.approvalId set, a.decision unset) — from approval_pending
 //   - Pre-resolved activity (a.toolUseId set, a.decision='allow') — from agent_activity
+// Record a parent's Agent tool_use invocation so its description can be bound to the
+// subagent's bucket. Bind is bidirectional because the parent's assistant stream and
+// the subagent's hook stream arrive over two independent WebSockets — either can win
+// the race. If a same-type bucket already exists without a description (the hook
+// landed first), bind directly. Otherwise queue for the next subagent of this type
+// (the hook will arrive later). Earliest-seen unbound bucket wins so parallel same-
+// type dispatches bind in dispatch order.
+function recordParentAgentInvocation({ toolUseId, subagentType, description }) {
+  if (!description) return;
+  // Claude Code's Agent tool defaults subagent_type to 'general-purpose' when the model
+  // omits it (which it usually does — only specialized subagents like Explore / Plan get
+  // an explicit type). Without this default, description-binding silently fails for the
+  // common case and every general-purpose agent shows up as "general-purpose" in the
+  // tab list instead of its description.
+  const type = subagentType || 'general-purpose';
+  let candidate = null;
+  for (const [, b] of state.subagents) {
+    if (b.agentType !== type) continue;
+    if (b.description) continue;
+    if (!candidate || b.firstSeenAt < candidate.firstSeenAt) candidate = b;
+  }
+  if (candidate) {
+    candidate.description = description;
+    return;
+  }
+  state.unboundAgentInvocations.push({
+    toolUseId,
+    subagentType: type,
+    description,
+    seenAt: Date.now(),
+  });
+}
+
 // when the tool was auto-allowed by the allowlist before reaching the approval queue.
 // Either id is fine for dedup; UUIDs and toolu_* IDs occupy disjoint namespaces.
 function addSubagentEntry(a) {
@@ -767,6 +856,7 @@ function addSubagentEntry(a) {
       description,
       firstSeenAt: a.enqueuedAt || Date.now(),
       entries: [],
+      completion: null,
     };
     state.subagents.set(a.agentId, bucket);
     // New agents land at the END of the tab rail; only approval_pending arrivals
@@ -786,6 +876,60 @@ function addSubagentEntry(a) {
     decision: a.decision ?? null,
     enqueuedAt: a.enqueuedAt || Date.now(),
   });
+}
+
+// Merge disk-replayed subagents into state.subagents. Disk entries are historical
+// (all auto-resolved as 'allow' from our perspective — the subagent only writes to
+// disk after a tool call ran, which means it was either auto-allowed or the user
+// approved it). They prepend any in-memory pending entries that the snapshot
+// rehydration already added during openSession, so the feed reads top-to-bottom in
+// time order. If a bucket already exists (rare — the snapshot rebuild beat us to
+// it), we splice disk entries in front of its existing entries without re-adding any
+// that match an existing toolUseId.
+function applyDiskSubagents(subagents) {
+  if (!Array.isArray(subagents)) return;
+  for (const s of subagents) {
+    if (!s || !s.agentId) continue;
+    const existing = state.subagents.get(s.agentId);
+    const diskEntries = (s.entries || [])
+      .filter((m) => m && m.role === 'tool_use' && m.toolName)
+      .map((m) => ({
+        approvalId: null,
+        toolUseId: m.toolUseId ?? null,
+        toolName: m.toolName,
+        toolInput: m.toolInput,
+        decision: 'allow',
+        enqueuedAt: 0,
+      }));
+    if (existing) {
+      const seenIds = new Set(existing.entries.map((e) => e.toolUseId).filter(Boolean));
+      const prepend = diskEntries.filter((e) => !e.toolUseId || !seenIds.has(e.toolUseId));
+      existing.entries = [...prepend, ...existing.entries];
+      if (!existing.description && s.description) existing.description = s.description;
+      if (s.completion && !existing.completion) existing.completion = s.completion;
+      if (s.firstSeenAt && (!existing.firstSeenAt || s.firstSeenAt < existing.firstSeenAt)) {
+        existing.firstSeenAt = s.firstSeenAt;
+      }
+    } else {
+      state.subagents.set(s.agentId, {
+        agentType: s.agentType || 'agent',
+        description: s.description ?? null,
+        firstSeenAt: s.firstSeenAt || Date.now(),
+        entries: diskEntries,
+        completion: s.completion ?? null,
+      });
+      if (!state.agentTabOrder.includes(s.agentId)) state.agentTabOrder.push(s.agentId);
+    }
+  }
+  if (!state.activeAgentId) {
+    // Prefer the first agent that's still running so the user lands on something live
+    // instead of a stale completed agent if there are any active.
+    const running = state.agentTabOrder.find((id) => {
+      const b = state.subagents.get(id);
+      return b && !b.completion;
+    });
+    state.activeAgentId = running || state.agentTabOrder[0] || null;
+  }
 }
 
 // Move an agent_id to the front of the tab rail. Called when a new pending approval
@@ -920,7 +1064,11 @@ function renderSession() {
 function agentsStripHtml() {
   if (state.subagents.size === 0) return '';
   const agents = [...state.subagents.values()];
-  const agentCount = agents.length;
+  // "Active" = anything without a completion stamp. Completed agents still show up in
+  // the sheet (in the bottom "Done" group), but the strip headline counts only what's
+  // running so the user has a clean signal of in-flight work without the count
+  // ballooning across the session.
+  const activeCount = agents.filter((b) => !b.completion).length;
   const pending = agents.reduce(
     (n, b) => n + b.entries.filter((e) => e.decision === null).length,
     0,
@@ -931,7 +1079,8 @@ function agentsStripHtml() {
   return `
     <button class="agents-strip${pending > 0 ? ' agents-strip-attention' : ''}" type="button" id="agents-strip" aria-label="Open agent activity">
       <span class="agents-strip-label">Agents</span>
-      <span class="agents-strip-count">${escapeHtml(String(agentCount))}</span>
+      <span class="agents-strip-sep" aria-hidden="true">·</span>
+      <span class="agents-strip-count">${escapeHtml(String(activeCount))} Active</span>
       ${pendingHtml}
       <span class="agents-strip-expand" aria-hidden="true">↗</span>
     </button>
@@ -940,14 +1089,14 @@ function agentsStripHtml() {
 
 function openAgentsSheet() {
   closeAgentsSheet();
-  // Snap to the leftmost agent with pending approvals whenever the user opens the
+  // Snap to the topmost agent with pending approvals whenever the user opens the
   // sheet — otherwise we'd land on whatever tab was last viewed, which is rarely the
   // one needing action. Falls through to the existing active tab if nothing's pending.
-  const leftmostPending = state.agentTabOrder.find((id) => {
+  const topPending = state.agentTabOrder.find((id) => {
     const b = state.subagents.get(id);
     return b && b.entries.some((e) => e.decision === null);
   });
-  if (leftmostPending) state.activeAgentId = leftmostPending;
+  if (topPending) state.activeAgentId = topPending;
   const backdrop = document.createElement('div');
   backdrop.className = 'sheet-backdrop agents-sheet-backdrop';
   backdrop.id = 'agents-sheet-backdrop';
@@ -959,12 +1108,15 @@ function openAgentsSheet() {
   sheet.innerHTML = agentsSheetBodyHtml();
   document.body.appendChild(backdrop);
   document.body.appendChild(sheet);
+  pinSheetBelowHeader(sheet, { fillVertical: true });
   requestAnimationFrame(() => {
     backdrop.classList.add('open');
     sheet.classList.add('open');
   });
   backdrop.onclick = closeAgentsSheet;
   wireAgentsSheetHandlers(sheet);
+  makeSheetDismissible(sheet, closeAgentsSheet);
+  noteSheetOpen();
   // Land on the latest entries when the sheet first opens. After this, the
   // sticky-bottom heuristic in refreshAgentsSheet decides whether to follow
   // newly-arriving entries based on whether the user has scrolled up.
@@ -987,9 +1139,10 @@ function refreshAgentsSheet(opts) {
   const sheet = document.getElementById('agents-sheet');
   if (!sheet) return;
   const resetFeedScroll = opts?.resetFeedScroll === true;
+  const resetTabsScroll = opts?.resetTabsScroll === true;
   const oldTabs = sheet.querySelector('.agents-tabs');
   const oldFeed = sheet.querySelector('.agents-sheet-feed');
-  const tabsScrollLeft = oldTabs?.scrollLeft ?? 0;
+  const tabsScrollTop = oldTabs?.scrollTop ?? 0;
   const feedScrollTop = oldFeed?.scrollTop ?? 0;
   // Treat "within 80px of bottom" as stuck-to-bottom — same fudge factor chat apps
   // use to absorb a few pixels of finger overshoot or browser sub-pixel rounding.
@@ -999,9 +1152,18 @@ function refreshAgentsSheet(opts) {
 
   sheet.innerHTML = agentsSheetBodyHtml();
   wireAgentsSheetHandlers(sheet);
+  // innerHTML rebuild discarded the old grabber node, so re-attach the dismiss
+  // gesture handlers to the fresh one.
+  makeSheetDismissible(sheet, closeAgentsSheet);
 
+  // Preserve the tab-list scroll position on refresh, EXCEPT when the caller explicitly
+  // requests a reset (clicking a pending agent — that row should already be at the
+  // top of the list, so snapping there is a no-op visually but keeps the user oriented
+  // when their tap moved the selection to a different group). Without preservation,
+  // every refresh — including ones triggered by background events — would yank the
+  // scroll back to the top mid-read.
   const newTabs = sheet.querySelector('.agents-tabs');
-  if (newTabs) newTabs.scrollLeft = tabsScrollLeft;
+  if (newTabs) newTabs.scrollTop = resetTabsScroll ? 0 : tabsScrollTop;
   const newFeed = sheet.querySelector('.agents-sheet-feed');
   if (newFeed) {
     if (resetFeedScroll || wasAtBottom) {
@@ -1018,10 +1180,113 @@ function closeAgentsSheet() {
   if (!backdrop && !sheet) return;
   backdrop?.classList.remove('open');
   sheet?.classList.remove('open');
+  noteSheetClose();
   setTimeout(() => {
     backdrop?.remove();
     sheet?.remove();
   }, 380);
+}
+
+// Refcount the number of open sheets and toggle a body class while any are open.
+// CSS targets that class to lock the underlying scroll containers (transcript /
+// #root) so touch-drags on the sheet's non-scrollable regions can't leak through
+// to the page beneath. Use a counter rather than a boolean because two sheets can
+// briefly overlap (e.g., the ask popup arriving while the agents sheet is up).
+let _openSheetCount = 0;
+function noteSheetOpen() {
+  _openSheetCount += 1;
+  document.body.classList.add('sheet-open');
+}
+function noteSheetClose() {
+  _openSheetCount = Math.max(0, _openSheetCount - 1);
+  if (_openSheetCount === 0) document.body.classList.remove('sheet-open');
+}
+
+// Cap a sheet's vertical extent so it never grows tall enough to cover the page
+// header. Two modes:
+//   - default: set max-height so the sheet sizes naturally to its content but stops
+//     at the header's bottom. Used by todos / ask / settings — they're often shorter
+//     than the available space and shouldn't push to the top when they don't need to.
+//   - fillVertical: set top: <header.bottom> so the sheet pins to that line regardless
+//     of content height. Used by the agents sheet, where we want fixed dimensions so
+//     swapping between agents with different feeds doesn't change the sheet's outer
+//     size — only the inner feed scrolls.
+// Re-measure the header on every call: safe-area insets shift between portrait /
+// landscape and the keyboard can move the header on iOS.
+function pinSheetBelowHeader(sheet, opts) {
+  if (!sheet) return;
+  const header = document.getElementById('header');
+  if (!header) return;
+  const top = Math.round(header.getBoundingClientRect().bottom);
+  if (opts && opts.fillVertical) {
+    sheet.style.top = `${top}px`;
+    sheet.style.maxHeight = '';
+  } else {
+    sheet.style.maxHeight = `calc(100dvh - ${top}px)`;
+    sheet.style.top = '';
+  }
+}
+
+// Wire drag-to-dismiss on a sheet's grabber. Re-callable: rebinding a fresh handle
+// after a sheet's inner HTML is rebuilt (refreshAgentsSheet, etc.) is safe — we
+// replace any prior _outpostDismissBound flag and let the old listeners drop with
+// the discarded node. Dismiss fires either on a sufficient downward drag distance
+// (~25% of viewport) or on a strong downward flick (so a quick swipe works even
+// without crossing the distance threshold).
+function makeSheetDismissible(sheetEl, closeFn) {
+  if (!sheetEl) return;
+  // Drag-handle region = grabber + the title header-row. A bigger target for the
+  // common case where a thumb starts the gesture slightly below the visual bar. The
+  // close button lives inside the header-row, so the down handler skips when the
+  // touch lands on any interactive element — taps still work, drags initiated from
+  // the title text or empty header space still dismiss.
+  const handles = [...sheetEl.querySelectorAll(':scope > .grabber, :scope > .header-row')];
+  if (handles.length === 0) return;
+  let startY = 0;
+  let lastY = 0;
+  let lastT = 0;
+  let active = false;
+  let activeHandle = null;
+  const isInteractive = (target) =>
+    !!target.closest('button, a, input, textarea, select, [role="button"], [contenteditable="true"]');
+  const onDown = (e) => {
+    if (isInteractive(e.target)) return;
+    active = true;
+    activeHandle = e.currentTarget;
+    startY = e.clientY;
+    lastY = startY;
+    lastT = e.timeStamp;
+    sheetEl.classList.add('sheet-dragging');
+    try { activeHandle.setPointerCapture(e.pointerId); } catch { /* not supported */ }
+  };
+  const onMove = (e) => {
+    if (!active) return;
+    const dy = Math.max(0, e.clientY - startY);
+    sheetEl.style.transform = `translateY(${dy}px)`;
+    lastY = e.clientY;
+    lastT = e.timeStamp;
+  };
+  const onUp = (e) => {
+    if (!active) return;
+    active = false;
+    sheetEl.classList.remove('sheet-dragging');
+    sheetEl.style.transform = '';
+    const dy = Math.max(0, e.clientY - startY);
+    const dt = Math.max(1, e.timeStamp - lastT);
+    const flickVelocity = (e.clientY - lastY) / dt; // px/ms, positive = downward
+    const threshold = Math.min(window.innerHeight * 0.25, 220);
+    if (dy > threshold || flickVelocity > 0.6) closeFn();
+    try { activeHandle?.releasePointerCapture(e.pointerId); } catch { /* fine */ }
+    activeHandle = null;
+  };
+  for (const handle of handles) {
+    if (handle._outpostDismissBound) continue;
+    handle._outpostDismissBound = true;
+    handle.addEventListener('pointerdown', onDown);
+    handle.addEventListener('pointermove', onMove);
+    handle.addEventListener('pointerup', onUp);
+    handle.addEventListener('pointercancel', onUp);
+  }
 }
 
 // Sheet body is rebuilt from scratch on every refresh — keeps tab state in sync with
@@ -1045,46 +1310,98 @@ function agentsSheetBodyHtml() {
       <div class="empty-state">No subagent activity yet.</div>
     `;
   }
-  // Snap active tab onto a still-existing agent if the previously-active one is gone
-  // (e.g., after a snapshot rebuild).
-  let active = state.activeAgentId;
-  if (!agents.find(([id]) => id === active)) {
-    active = agents[0][0];
-    state.activeAgentId = active;
+  // Three-way partition so the user always sees what most needs attention at the top:
+  //   1. pending  — active agents with at least one undecided approval card
+  //   2. active   — running agents currently quiet (no pendings)
+  //   3. completed — finished agents, sorted by completion time DESCENDING (newest at
+  //                  the top of the completed section, oldest sinking to the bottom)
+  // Within the pending and active groups we preserve the dispatch order encoded in
+  // state.agentTabOrder so positions don't shuffle every time a tool finishes. The
+  // pending vs active split itself happens here on every render, so the moment a new
+  // approval lands the agent jumps to the top without needing a separate bump call.
+  const pending = [];
+  const active = [];
+  const completed = [];
+  for (const pair of agents) {
+    if (pair[1].completion) {
+      completed.push(pair);
+    } else if (pair[1].entries.some((e) => e.decision === null)) {
+      pending.push(pair);
+    } else {
+      active.push(pair);
+    }
+  }
+  completed.sort((a, b) => (b[1].completion.completedAt || 0) - (a[1].completion.completedAt || 0));
+
+  // Snap active tab onto a still-existing agent if the previously-active one is gone.
+  // Land order: agents needing approval first, then running, then completed — same
+  // priority as the rendered list so the default selection always matches what the
+  // user's eye lands on at the top.
+  let activeId = state.activeAgentId;
+  const stillExists = agents.find(([id]) => id === activeId);
+  if (!stillExists) {
+    activeId = pending[0]?.[0] || active[0]?.[0] || completed[0]?.[0] || null;
+    state.activeAgentId = activeId;
   }
 
-  const totalPending = agents.reduce(
+  const runningCount = pending.length + active.length;
+  const totalPending = pending.reduce(
     (sum, [, b]) => sum + b.entries.filter((e) => e.decision === null).length,
     0,
   );
-  const summary = `${agents.length} agent${agents.length === 1 ? '' : 's'}${totalPending ? ` · ${totalPending} awaiting approval` : ''}`;
+  const summary = `${runningCount} active${completed.length ? ` · ${completed.length} done` : ''}${totalPending ? ` · ${totalPending} awaiting approval` : ''}`;
 
-  const tabs = agents.map(([id, b]) => {
+  const renderTab = ([id, b]) => {
     const pending = b.entries.filter((e) => e.decision === null).length;
-    const isActive = id === active;
+    const isActive = id === activeId;
+    const isCompleted = !!b.completion;
+    const isKilled = isCompleted && b.completion.status === 'killed';
     const badge = pending > 0
       ? `<span class="agents-tab-badge">${escapeHtml(String(pending))}</span>`
       : '';
+    // Description (from parent's Agent invocation, best-effort bound by subagent_type
+    // when the bucket was created) IS the agent's identity — promote it to the primary
+    // tab label so users can scan all parallel agents at once instead of tapping
+    // through to read each one. Fall back to the agent type when no description is
+    // bound. Meta line is just the 8-char hash so the row stays wide enough to show
+    // the description even on narrow phone widths. Completed agents get a small glyph
+    // (✓ / ✕) in front of the hash as the visual signal that they're done.
+    const primary = b.description || b.agentType;
+    const doneGlyph = isCompleted
+      ? `<span class="agents-tab-done-glyph" aria-hidden="true">${isKilled ? '✕' : '✓'}</span>`
+      : '';
+    const classes = [
+      'agents-tab',
+      isActive ? 'active' : '',
+      pending > 0 ? 'has-pending' : '',
+      isCompleted ? 'completed' : '',
+      isKilled ? 'killed' : '',
+    ].filter(Boolean).join(' ');
     return `
-      <button class="agents-tab${isActive ? ' active' : ''}${pending > 0 ? ' has-pending' : ''}" type="button" data-agent-id="${escapeHtml(id)}" role="tab" aria-selected="${isActive ? 'true' : 'false'}">
-        <span class="agents-tab-type">${escapeHtml(b.agentType)}</span>
+      <button class="${classes}" type="button" data-agent-id="${escapeHtml(id)}" role="tab" aria-selected="${isActive ? 'true' : 'false'}">
+        <span class="agents-tab-label">${escapeHtml(primary)}</span>
         <span class="agents-tab-meta">
+          ${doneGlyph}
           <span class="agents-tab-id">${escapeHtml(id.slice(0, 8))}</span>
           ${badge}
         </span>
       </button>
     `;
-  }).join('');
+  };
 
-  const activeBucket = state.subagents.get(active);
-  const feed = activeBucket ? agentFeedHtml(activeBucket) : '';
-  // Italic-display description sourced from the parent's Agent invocation (bound
-  // best-effort by subagent_type when the bucket was created). Pinned above the
-  // scrollable feed area so it stays visible while the user scrolls back through
-  // history; if there's no description, the row collapses entirely.
-  const descBlock = activeBucket?.description
-    ? `<div class="agents-sheet-description">${escapeHtml(activeBucket.description)}</div>`
+  const pendingTabs = pending.map(renderTab).join('');
+  const activeTabs = active.map(renderTab).join('');
+  const completedTabs = completed.map(renderTab).join('');
+  // Only render a "Done" divider when there's both running activity above and finished
+  // agents below it — a label with nothing above is just visual noise. We don't need a
+  // divider between pending and active: the left-edge accent bar on pending tabs is the
+  // visual signal that those rows need attention.
+  const doneDivider = ((pending.length + active.length) > 0 && completed.length > 0)
+    ? `<div class="agents-tabs-divider">Done</div>`
     : '';
+
+  const activeBucket = activeId ? state.subagents.get(activeId) : null;
+  const feed = activeBucket ? agentFeedHtml(activeBucket) : '';
 
   return `
     <div class="grabber"></div>
@@ -1095,8 +1412,7 @@ function agentsSheetBodyHtml() {
       </div>
       <button class="sheet-close" id="agents-sheet-close" aria-label="Close">✕</button>
     </div>
-    <div class="agents-tabs" role="tablist">${tabs}</div>
-    ${descBlock}
+    <div class="agents-tabs" role="tablist">${pendingTabs}${activeTabs}${doneDivider}${completedTabs}</div>
     <div class="agents-sheet-feed">${feed}</div>
   `;
 }
@@ -1104,12 +1420,16 @@ function agentsSheetBodyHtml() {
 // One agent's feed = a mini-transcript. Pending entries render as full approval cards
 // (the same chrome the parent feed uses for its own approvals); resolved entries
 // transform into plain tool tiles, with a "rejected" wrapper-class on deny so the user
-// can see "Claude wanted to do this and you said no."
+// can see "Claude wanted to do this and you said no." If the agent has finished, the
+// completion tile (parsed from <task-notification>) gets appended after the entries
+// as the visual "fin." marker — the user can scroll to it to see status + summary.
 function agentFeedHtml(bucket) {
-  if (bucket.entries.length === 0) {
+  const tiles = bucket.entries.map((entry) => agentEntryHtml(entry));
+  if (bucket.completion) tiles.push(agentCompletionTileHtml(bucket.completion));
+  if (tiles.length === 0) {
     return `<div class="empty-state">Waiting for activity…</div>`;
   }
-  return bucket.entries.map((entry) => agentEntryHtml(entry)).join('');
+  return tiles.join('');
 }
 
 // Footer tile shown once the subagent emits its <task-notification>. Mirrors the
@@ -1189,8 +1509,13 @@ function wireAgentsSheetHandlers(sheet) {
       if (!id || id === state.activeAgentId) return;
       state.activeAgentId = id;
       // Tab switch: feed content swaps entirely, so the previous scrollTop is
-      // meaningless. Tab rail's horizontal scroll stays where the user left it.
-      refreshAgentsSheet({ resetFeedScroll: true });
+      // meaningless. The tab list's vertical scroll stays where the user left it,
+      // EXCEPT when switching to a pending-approval agent — those always sort to
+      // the very top of the list, so we snap the list there to keep the freshly
+      // selected row in view.
+      const target = state.subagents.get(id);
+      const targetHasPending = target?.entries.some((e) => e.decision === null) ?? false;
+      refreshAgentsSheet({ resetFeedScroll: true, resetTabsScroll: targetHasPending });
     };
   }
   // Approval card buttons inside the agent feed. stopPropagation so they don't also
@@ -1254,10 +1579,13 @@ function openAskSheet(approval) {
   sheet.innerHTML = askSheetBodyHtml(approval);
   document.body.appendChild(backdrop);
   document.body.appendChild(sheet);
+  pinSheetBelowHeader(sheet);
   requestAnimationFrame(() => {
     backdrop.classList.add('open');
     sheet.classList.add('open');
   });
+  makeSheetDismissible(sheet, closeAskSheet);
+  noteSheetOpen();
 
   const questions = Array.isArray(approval.toolInput?.questions) ? approval.toolInput.questions : [];
   // Auto-submit on a single tap is only safe when there's exactly ONE single-select
@@ -1340,6 +1668,7 @@ function closeAskSheet() {
   if (!backdrop && !sheet) return;
   backdrop?.classList.remove('open');
   sheet?.classList.remove('open');
+  noteSheetClose();
   setTimeout(() => {
     backdrop?.remove();
     sheet?.remove();
@@ -2194,6 +2523,9 @@ function openTodosSheet() {
   });
   backdrop.onclick = closeTodosSheet;
   sheet.querySelector('#todos-sheet-close').onclick = closeTodosSheet;
+  pinSheetBelowHeader(sheet);
+  makeSheetDismissible(sheet, closeTodosSheet);
+  noteSheetOpen();
 }
 
 function todosSheetBodyHtml() {
@@ -2268,6 +2600,7 @@ function closeTodosSheet() {
   if (!backdrop && !sheet) return;
   backdrop?.classList.remove('open');
   sheet?.classList.remove('open');
+  noteSheetClose();
   // Wait out the transition duration before removing — matches .sheet's 0.36s transform.
   setTimeout(() => {
     backdrop?.remove();
@@ -2780,19 +3113,26 @@ function setAcceptEdits(v) {
 }
 
 function openSettings() {
+  if (document.getElementById('sheet').classList.contains('open')) return;
   refreshSheetSelection();
+  const sheet = document.getElementById('sheet');
+  pinSheetBelowHeader(sheet);
   document.getElementById('sheet-backdrop').classList.add('open');
-  document.getElementById('sheet').classList.add('open');
+  sheet.classList.add('open');
+  noteSheetOpen();
 }
 function closeSettings() {
+  if (!document.getElementById('sheet').classList.contains('open')) return;
   document.getElementById('sheet-backdrop').classList.remove('open');
   document.getElementById('sheet').classList.remove('open');
+  noteSheetClose();
 }
 
 // Sheet UI wiring. Event delegation on the picker containers so the handlers stay
 // stable even if the sheet's markup gets re-rendered.
 document.getElementById('sheet-close').onclick = closeSettings;
 document.getElementById('sheet-backdrop').onclick = closeSettings;
+makeSheetDismissible(document.getElementById('sheet'), closeSettings);
 document.getElementById('theme-grid').addEventListener('click', (e) => {
   const card = e.target.closest('.theme-card');
   if (card?.dataset.themeKey) applyTheme(card.dataset.themeKey);

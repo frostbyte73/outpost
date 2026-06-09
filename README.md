@@ -19,7 +19,7 @@ Rich tool tiles, multi-agent isolation, a task list panel, themed UI, accept-edi
 |----------------------------------------------------------------------------------------------------------------------|---|---|
 | <img src="docs/screenshots/tools.png" width="240" alt="Per-tool chrome — Read, Edit (with diff), and Bash blocks" /> | <img src="docs/screenshots/approvals.png" width="240" alt="Pending approval card with Approve / Reject buttons" /> | <img src="docs/screenshots/agents.png" width="240" alt="Per-agent tabbed feed, separate from the parent transcript" /> |
 | Expandable tool cards                                                                                                | Approve / reject privileged calls | Per-agent tabbed feeds |
-| <img src="docs/screenshots/tasks.png" width="240" alt="Tasks panel showing in-progress and completed todos" />       | <img src="docs/screenshots/ask.png" width="240" alt="AskUserQuestion card rendered inline in the transcript" /> | <img src="docs/screenshots/themes.png" width="240" alt="Appearance settings — theme picker and accept-edits toggle" /> |
+| <img src="docs/screenshots/tasks.png" width="240" alt="Tasks panel showing in-progress and completed todos" />       | <img src="docs/screenshots/ask.png" width="240" alt="AskUserQuestion card rendered inline in the transcript" /> | <img src="docs/screenshots/themes.png" width="240" alt="Settings — theme picker, light/dark mode, and accept-edits toggle" /> |
 | Task list                                                                                                            | Inline `AskUserQuestion` | Themes & accept-edits |
 
 ## Prerequisites
