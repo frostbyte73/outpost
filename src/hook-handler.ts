@@ -5,6 +5,12 @@ export interface HookInput {
   tool_name: string;
   tool_input: unknown;
   session_id: string;
+  // Claude Code's PreToolUse hook sets these for tool calls coming from a subagent
+  // (Explore / general-purpose / etc.). Absent for the parent session's own calls.
+  // We pass them through so the PWA can route subagent approvals into a dedicated
+  // agents feed instead of mixing them into the parent transcript.
+  agent_id?: string;
+  agent_type?: string;
 }
 
 export interface HookResponse {
@@ -34,6 +40,8 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
     sessionId: hookInput.session_id,
     toolName: hookInput.tool_name,
     toolInput: hookInput.tool_input,
+    agentId: hookInput.agent_id,
+    agentType: hookInput.agent_type,
   });
   const pending = queue.listPending().at(-1);
   if (pending) onNotify(pending);

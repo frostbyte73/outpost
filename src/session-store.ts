@@ -46,6 +46,11 @@ function isSystemInjection(text: string): boolean {
     t.startsWith('<system-reminder>') ||
     t.startsWith('<bash-input>') ||
     t.startsWith('<bash-stdout>') ||
+    // Synthetic user message Claude injects when a subagent (or backgrounded Bash task)
+    // finishes. Useful context for Claude itself; pure XML noise to a human reader. The
+    // PWA picks up the same blob on the live WS path and folds the result into the
+    // matching agent's feed in the agents sheet — that's where it should be read.
+    t.startsWith('<task-notification>') ||
     t.startsWith('Caveat: ');
 }
 

@@ -48,6 +48,33 @@ const state = {
   // Keys are tool_use_ids; values are direct references into state.transcript so when the
   // result arrives we can fill in the answer field in place without a full re-render.
   pendingAsks: new Map(),
+  // Subagent activity feeds. Each agent_id (from the PreToolUse hook for tool calls
+  // made by Explore / general-purpose / etc. subagents) gets its own ordered list of
+  // entries representing every tool call that subagent makes. Entries stay in the list
+  // after they're decided, so the agent feed reads as a continuous mini-transcript
+  // (pending approvals + already-resolved tool calls) the same way the parent does.
+  //   subagents: Map<agentId, { agentType, firstSeenAt, entries: [
+  //     { approvalId, toolName, toolInput, decision: null|'allow'|'deny', enqueuedAt }
+  //   ]}>
+  //   activeAgentId: which tab is currently selected in the agents sheet
+  subagents: new Map(),
+  activeAgentId: null,
+  // Stable tab display order. Agents are added at the END when first seen; an
+  // incoming approval_pending bumps that agent's id to the FRONT (so the user's
+  // attention-needing agents are always leftmost without us live-resorting on every
+  // decision). Resets per session in openSession.
+  agentTabOrder: [],
+  // Parent's Agent tool_use invocations the PWA has seen but hasn't yet been able to
+  // bind to a subagent. The hook payload that drives subagents has agent_id + agent_type
+  // but no description; the parent's Agent call has description + subagent_type. We
+  // best-effort bind them by subagent_type ordering — works perfectly for unique types,
+  // is a reasonable guess for parallel same-type spawns.
+  unboundAgentInvocations: [],
+  // Accept-edits mode (mirrors the CLI's --permission-mode=acceptEdits). When on,
+  // file-edit tools (Edit / Write / NotebookEdit / MultiEdit) skip the approval card
+  // entirely and get auto-allowed the moment they're proposed. Toggled from the
+  // appearance sheet, persisted in localStorage so it survives reload.
+  acceptEdits: localStorage.getItem('cr:acceptEdits') === 'true',
   // "Thinking" tile telemetry. thinkingStartedAt is the wall-clock at which we started
   // waiting. thinkingOutputTokens is what's shown; it's the max of two sources, since
   // Anthropic's streaming only emits one authoritative `message_delta` per message
@@ -65,6 +92,11 @@ const state = {
 // Tools we absorb into the todos panel rather than rendering as transcript entries. Must
 // stay in sync with the matching constant in src/session-store.ts.
 const TASK_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet']);
+
+// File-edit tools auto-approved when state.acceptEdits is on. Mirrors the set the CLI's
+// --permission-mode=acceptEdits covers; Bash / Read / Grep stay user-approvable since
+// they're not strictly edits and have a wider blast radius.
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 
 // Apply a Task* tool_use block to state.todos. TaskCreate gets parked in pendingCreates
 // until its tool_result arrives (because the assigned task id lives in the result, not the
@@ -186,7 +218,7 @@ function setHeader(mode) {
   if (mode === 'list') {
     const brand = document.createElement('span');
     brand.className = 'brand';
-    brand.textContent = 'Claude Relay';
+    brand.textContent = 'Outpost';
     // Gear settings button, far right. The date/time meta was redundant on a phone
     // (the OS shows it in the status bar) so it's been removed; the gear takes its slot.
     const gear = document.createElement('button');
@@ -209,6 +241,15 @@ function setHeader(mode) {
     m.className = 'meta';
     m.textContent = state.currentSessionId ? state.currentSessionId.slice(0, 8) : '';
     header.appendChild(back);
+    // Surface accept-edits mode in the session header — small accent-bordered chip
+    // sits between the back link and the session-id meta. Easy to glance at while
+    // burning through approvals, and a constant reminder the mode is on.
+    if (state.acceptEdits) {
+      const chip = document.createElement('span');
+      chip.className = 'header-mode-chip';
+      chip.textContent = 'accept edits';
+      header.appendChild(chip);
+    }
     header.appendChild(m);
   }
 }
@@ -293,6 +334,19 @@ async function openSession(id) {
   state.consumedTaskResults = new Set();
   state.expandedTools = new Set();
   state.pendingAsks = new Map();
+  state.subagents = new Map();
+  state.activeAgentId = null;
+  state.agentTabOrder = [];
+  state.unboundAgentInvocations = [];
+  // Rehydrate per-session subagent buckets from the global approval queue. The
+  // notification WS holds approvals across sessions, so when the user navigates from
+  // session A to B (e.g. tapping a cross-session subagent approval toast), B's pending
+  // agents are already sitting in state.pendingApprovals — re-route them here so the
+  // agents strip and sheet aren't empty on arrival. Auto-allowed (agent_activity)
+  // history is lost on session change; it's resolved-only and doesn't need user action.
+  for (const a of state.pendingApprovals) {
+    if (a.sessionId === id && a.agentId) addSubagentEntry(a);
+  }
   stopThinking();
   state.transcriptLoading = !isNew;
   // Dismiss any cross-session toast — it's either about this session (we're already
@@ -343,6 +397,7 @@ function leaveSession() {
   document.getElementById('toast')?.remove();
   closeTodosSheet();
   closeAskSheet();
+  closeAgentsSheet();
   loadSessions();
 }
 
@@ -450,6 +505,19 @@ function handleWsMessage(msg) {
           processed = true;
           continue;
         }
+        // Parent-side Agent invocations: capture their description so we can show it
+        // in the agents sheet later. The hook stream only gives us agent_id +
+        // agent_type for a subagent's tools — not the description from the parent's
+        // Agent call — so we squirrel away that metadata here and bind it when a
+        // matching subagent first appears (addSubagentEntry handles the bind).
+        if (b.name === 'Agent' && b.input && typeof b.input === 'object') {
+          state.unboundAgentInvocations.push({
+            toolUseId: b.id,
+            subagentType: b.input.subagent_type,
+            description: b.input.description,
+            seenAt: Date.now(),
+          });
+        }
         // Carry structured fields so toolUseHtml() can render a tool-specific summary on
         // both live and disk-replayed paths. The fallback `text` stays for unknown tools
         // and any edge case where toolInput is missing.
@@ -516,10 +584,21 @@ function handleWsMessage(msg) {
       }
     }
   } else if (msg.type === 'user') {
-    // Claude's own feedback to itself (tool_result blocks). Most are noise we drop, but
-    // results tied to a pending TaskCreate carry the freshly-assigned task id we need to
-    // populate the todos panel.
-    const blocks = msg.message?.content;
+    // Claude's own feedback to itself. Two shapes:
+    //   1. string content — a synthetic user message Claude Code injects. The one we
+    //      care about is <task-notification>…</task-notification>, fired when a subagent
+    //      (or backgrounded Bash task) finishes. We parse it and stamp the completion
+    //      onto the matching agent's bucket in state.subagents so the agent feed gets
+    //      a "Completed" tile instead of a wall of XML in the parent transcript.
+    //   2. array content with tool_result blocks — handled below for Task/Ask pairers.
+    const content = msg.message?.content;
+    if (typeof content === 'string') {
+      if (content.trimStart().startsWith('<task-notification>')) {
+        if (applyTaskNotification(content)) renderSession();
+      }
+      return;
+    }
+    const blocks = content;
     if (!Array.isArray(blocks)) return;
     let touched = false;
     for (const b of blocks) {
@@ -557,15 +636,16 @@ function handleWsMessage(msg) {
 
 function handleNotificationMessage(msg) {
   if (msg.type === 'notifications_snapshot') {
-    // Replace the entire local pending list with the server's authoritative snapshot.
-    // Sent on attach (cold start AND reconnect-after-background), so it doubles as a
-    // recovery mechanism for any approvals the client missed while disconnected.
     state.pendingApprovals = Array.isArray(msg.approvals) ? msg.approvals : [];
-    // Seed inline ask tiles for any Ask approvals on the current session. Necessary
-    // because the session WS can lag behind the notification WS, so we can't rely on
-    // the assistant message arriving in time to populate the transcript.
+    // Rebuild subagent buckets from the snapshot for the current session. Snapshots
+    // only carry pending approvals, so any previously-resolved entries are lost on
+    // reconnect — that's fine for v1 (subagent activity is ephemeral until session end).
+    state.subagents = new Map();
     for (const a of state.pendingApprovals) {
-      if (a.toolName === 'AskUserQuestion' && a.sessionId === state.currentSessionId) {
+      if (a.sessionId !== state.currentSessionId) continue;
+      if (a.agentId) {
+        addSubagentEntry(a);
+      } else if (a.toolName === 'AskUserQuestion') {
         ensureAskInlineTile({ toolInput: a.toolInput });
       }
     }
@@ -573,18 +653,56 @@ function handleNotificationMessage(msg) {
     else if (state.view === 'session') renderSession();
     return;
   }
+  if (msg.type === 'agent_activity') {
+    // Auto-allowed subagent tool call. Daemon emits this in addition to (well, instead
+    // of) approval_pending when the allowlist short-circuits — populates the agent
+    // feed for read-only subagents that would otherwise run invisibly.
+    if (msg.sessionId !== state.currentSessionId) return;
+    addSubagentEntry({
+      toolUseId: msg.toolUseId,
+      toolName: msg.toolName,
+      toolInput: msg.toolInput,
+      agentId: msg.agentId,
+      agentType: msg.agentType,
+      decision: 'allow',
+    });
+    if (state.view === 'session') renderSession();
+    else if (state.view === 'list') renderList();
+    return;
+  }
   if (msg.type === 'approval_pending') {
-    // Live new arrival. Dedupe (a reconnect could race against the snapshot) and route
-    // either to an inline card (if its session is in view) or a toast (if not). The Ask
-    // sheet branch is taken inside renderSession via ensureAskSheet for the in-session
-    // path; cross-session asks still show a toast so the user can navigate over and
-    // answer them.
     if (state.pendingApprovals.some((a) => a.approvalId === msg.approvalId)) return;
+    // Accept-edits mode: file edits never even surface as a card. We send the decision
+    // straight to the WS without pushing onto pendingApprovals, so the card never
+    // renders in either the parent feed or the agents sheet.
+    if (state.acceptEdits && EDIT_TOOLS.has(msg.toolName)) {
+      state.ws?.send(JSON.stringify({ type: 'approval_decide', approvalId: msg.approvalId, decision: 'allow' }));
+      return;
+    }
     state.pendingApprovals.push(msg);
-    // Ask approvals for the current session: seed the inline tile NOW so it's visible
-    // immediately, regardless of whether the matching assistant message has arrived on
-    // the session WS yet. The session-WS path will later attach toolUseId/msgId to
-    // the same entry (ensureAskInlineTile dedupes by "pending ask in transcript").
+    // Subagent approvals route to their own feed, not the parent inline cards. Sheet
+    // refreshes if open. No cross-session toast — subagents always run nested under a
+    // session the user is already in.
+    if (msg.agentId && msg.sessionId === state.currentSessionId) {
+      const wasNew = !state.subagents.has(msg.agentId);
+      addSubagentEntry(msg);
+      // Approval-pending arrivals bump the agent to the front of the tab rail so the
+      // user can find it without scrolling. wasNew=true already inserted at end; we
+      // still want it at the front since it's demanding immediate attention.
+      bringAgentToFront(msg.agentId);
+      // Auto-switch: if the user is currently viewing an idle agent (no pendings),
+      // snap to the agent that just woke up. If they're actively approving in some
+      // other tab (it has pendings), don't yank their context.
+      const cur = state.activeAgentId ? state.subagents.get(state.activeAgentId) : null;
+      const curHasPending = cur ? cur.entries.some((e) => e.decision === null) : false;
+      if (!curHasPending) state.activeAgentId = msg.agentId;
+      if (state.view === 'session') renderSession();
+      else if (state.view === 'list') renderList();
+      // Mark wasNew unused — only kept for future use if we want to distinguish
+      // first-pending vs nth-pending behavior; tab front-bump applies to both.
+      void wasNew;
+      return;
+    }
     if (msg.toolName === 'AskUserQuestion' && msg.sessionId === state.currentSessionId) {
       ensureAskInlineTile({ toolInput: msg.toolInput });
     }
@@ -597,6 +715,87 @@ function handleNotificationMessage(msg) {
   }
 }
 
+// Parse a <task-notification> XML blob and stamp the completion onto its agent's
+// bucket. Claude Code emits one of these as a synthetic user message whenever a
+// subagent (or backgrounded Bash task) finishes — the <task-id> matches our agent_id,
+// so we can correlate cleanly. Returns true if a bucket was updated.
+function applyTaskNotification(text) {
+  const get = (tag) => {
+    const re = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`);
+    const m = re.exec(text);
+    return m ? m[1].trim() : null;
+  };
+  const taskId = get('task-id');
+  if (!taskId) return false;
+  // task-id can be either an agent_id (long hex) or a background Bash task id. Only
+  // agent_id ones have a matching bucket; Bash background notifications are no-ops here.
+  const bucket = state.subagents.get(taskId);
+  if (!bucket) return false;
+  // Finished agents disappear from the strip + tab rail entirely (per user request:
+  // five completed agents shouldn't keep occupying the rail and inflating the count).
+  // If the active tab was this agent, clear it so the next render picks a new active.
+  state.subagents.delete(taskId);
+  state.agentTabOrder = state.agentTabOrder.filter((id) => id !== taskId);
+  if (state.activeAgentId === taskId) state.activeAgentId = null;
+  return true;
+}
+
+// Push (or no-op if already present) a subagent tool call into its bucket. Handles
+// both shapes:
+//   - Pending approval (a.approvalId set, a.decision unset) — from approval_pending
+//   - Pre-resolved activity (a.toolUseId set, a.decision='allow') — from agent_activity
+// when the tool was auto-allowed by the allowlist before reaching the approval queue.
+// Either id is fine for dedup; UUIDs and toolu_* IDs occupy disjoint namespaces.
+function addSubagentEntry(a) {
+  if (!a.agentId) return;
+  let bucket = state.subagents.get(a.agentId);
+  if (!bucket) {
+    // Best-effort bind to the parent's Agent invocation by subagent_type. Pops the
+    // first unbound invocation matching this agent_type — perfect for unique types,
+    // a reasonable guess for parallel same-type spawns (the order they arrive is
+    // typically the order they were issued).
+    let description = null;
+    const idx = state.unboundAgentInvocations.findIndex(
+      (inv) => inv.subagentType === a.agentType,
+    );
+    if (idx >= 0) {
+      description = state.unboundAgentInvocations[idx].description ?? null;
+      state.unboundAgentInvocations.splice(idx, 1);
+    }
+    bucket = {
+      agentType: a.agentType || 'agent',
+      description,
+      firstSeenAt: a.enqueuedAt || Date.now(),
+      entries: [],
+    };
+    state.subagents.set(a.agentId, bucket);
+    // New agents land at the END of the tab rail; only approval_pending arrivals
+    // bump to the FRONT (see bringAgentToFront callers). Default active tab only
+    // gets set if nothing else is selected — explicit user/auto switches override.
+    if (!state.agentTabOrder.includes(a.agentId)) state.agentTabOrder.push(a.agentId);
+    if (!state.activeAgentId) state.activeAgentId = a.agentId;
+  }
+  const id = a.approvalId || a.toolUseId;
+  if (!id) return;
+  if (bucket.entries.some((e) => (e.approvalId || e.toolUseId) === id)) return;
+  bucket.entries.push({
+    approvalId: a.approvalId ?? null,
+    toolUseId: a.toolUseId ?? null,
+    toolName: a.toolName,
+    toolInput: a.toolInput,
+    decision: a.decision ?? null,
+    enqueuedAt: a.enqueuedAt || Date.now(),
+  });
+}
+
+// Move an agent_id to the front of the tab rail. Called when a new pending approval
+// arrives for that agent — pending agents are always leftmost without us live-sorting
+// on every decision (which previously made approved-and-done agents slide right
+// mid-tap).
+function bringAgentToFront(agentId) {
+  state.agentTabOrder = [agentId, ...state.agentTabOrder.filter((id) => id !== agentId)];
+}
+
 function renderSession() {
   const loading = state.transcriptLoading
     ? `<div class="empty-state">Loading history…</div>`
@@ -605,14 +804,19 @@ function renderSession() {
     ? `<div class="empty-state">No messages yet — say something.</div>`
     : '';
   // Approval cards are scoped to the current session only; cross-session approvals live
-  // in state.pendingApprovals too but surface as toasts, not inline cards. AskUserQuestion
-  // approvals are also excluded — they get a dedicated popup (see ensureAskSheet) where
-  // the user picks an option or types a reply, instead of an Approve/Reject pair.
+  // in state.pendingApprovals too but surface as toasts, not inline cards.
+  // Excluded from inline rendering:
+  //   - AskUserQuestion (gets its own popup via ensureAskSheet)
+  //   - any approval with an agentId (routed to the agents sheet instead, so subagent
+  //     hooks don't dump 30 tool calls per minute into the parent feed)
   const cards = state.pendingApprovals.filter((a) =>
-    a.sessionId === state.currentSessionId && a.toolName !== 'AskUserQuestion'
+    a.sessionId === state.currentSessionId
+    && a.toolName !== 'AskUserQuestion'
+    && !a.agentId
   );
   const thinkingTile = state.thinking ? thinkingTileHtml() : '';
   const todos = todosPanelHtml();
+  const agents = agentsStripHtml();
   root.innerHTML = `
     <div class="transcript" id="transcript">
       ${loading}
@@ -621,6 +825,7 @@ function renderSession() {
       ${thinkingTile}
       ${cards.map((a) => approvalCardHtml(a)).join('')}
     </div>
+    ${agents}
     ${todos}
     <div class="composer">
       <div class="field" id="composer" contenteditable="true"
@@ -660,6 +865,11 @@ function renderSession() {
 
   const todosBtn = document.getElementById('todos-panel');
   if (todosBtn) todosBtn.onclick = openTodosSheet;
+  const agentsBtn = document.getElementById('agents-strip');
+  if (agentsBtn) agentsBtn.onclick = openAgentsSheet;
+  // Live-refresh the agents sheet contents if it's open, so new hooks / decisions
+  // surface without the user needing to close and reopen.
+  refreshAgentsSheet();
 
   // AskUserQuestion popups stay in sync with state.pendingApprovals — opens the sheet when
   // a new ask arrives, closes it if the approval got resolved elsewhere (e.g. timed out).
@@ -696,6 +906,313 @@ function renderSession() {
   refreshTodosSheet();
 
   scrollTranscriptBottom();
+}
+
+// ─────────────────────── Agents strip + sheet ───────────────────────
+// Subagent tool calls (Explore / general-purpose / code-architect / etc.) flow through
+// the hook system with agent_id set. We route them out of the parent transcript and into
+// a dedicated tabbed sheet — one tab per agent, content per tab reads as a mini-
+// transcript (pending approvals + already-decided tool tiles, chronological).
+//
+// The strip in the main layout is the always-visible entry point: a compact one-liner
+// showing agent + pending counts, with an accent pulse when approvals are waiting.
+
+function agentsStripHtml() {
+  if (state.subagents.size === 0) return '';
+  const agents = [...state.subagents.values()];
+  const agentCount = agents.length;
+  const pending = agents.reduce(
+    (n, b) => n + b.entries.filter((e) => e.decision === null).length,
+    0,
+  );
+  const pendingHtml = pending > 0
+    ? `<span class="agents-strip-pending"><span class="agents-strip-pulse" aria-hidden="true"></span>${escapeHtml(String(pending))} pending</span>`
+    : '';
+  return `
+    <button class="agents-strip${pending > 0 ? ' agents-strip-attention' : ''}" type="button" id="agents-strip" aria-label="Open agent activity">
+      <span class="agents-strip-label">Agents</span>
+      <span class="agents-strip-count">${escapeHtml(String(agentCount))}</span>
+      ${pendingHtml}
+      <span class="agents-strip-expand" aria-hidden="true">↗</span>
+    </button>
+  `;
+}
+
+function openAgentsSheet() {
+  closeAgentsSheet();
+  // Snap to the leftmost agent with pending approvals whenever the user opens the
+  // sheet — otherwise we'd land on whatever tab was last viewed, which is rarely the
+  // one needing action. Falls through to the existing active tab if nothing's pending.
+  const leftmostPending = state.agentTabOrder.find((id) => {
+    const b = state.subagents.get(id);
+    return b && b.entries.some((e) => e.decision === null);
+  });
+  if (leftmostPending) state.activeAgentId = leftmostPending;
+  const backdrop = document.createElement('div');
+  backdrop.className = 'sheet-backdrop agents-sheet-backdrop';
+  backdrop.id = 'agents-sheet-backdrop';
+  const sheet = document.createElement('aside');
+  sheet.className = 'sheet agents-sheet';
+  sheet.id = 'agents-sheet';
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-label', 'Subagent activity');
+  sheet.innerHTML = agentsSheetBodyHtml();
+  document.body.appendChild(backdrop);
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => {
+    backdrop.classList.add('open');
+    sheet.classList.add('open');
+  });
+  backdrop.onclick = closeAgentsSheet;
+  wireAgentsSheetHandlers(sheet);
+  // Land on the latest entries when the sheet first opens. After this, the
+  // sticky-bottom heuristic in refreshAgentsSheet decides whether to follow
+  // newly-arriving entries based on whether the user has scrolled up.
+  const feed = sheet.querySelector('.agents-sheet-feed');
+  if (feed) feed.scrollTop = feed.scrollHeight;
+}
+
+// Refresh rebuilds the sheet's innerHTML to pick up new entries/decisions. Without
+// the scroll preservation below, the tab rail snaps to scrollLeft=0 on every refresh
+// (lost off-screen tabs) and the feed snaps to scrollTop=0 (yanks the approval button
+// out from under your finger mid-tap).
+//
+// Feed scroll uses a sticky-bottom strategy: if the user was already at/near the
+// bottom of the feed before refresh, pin them to the new bottom afterward (so an
+// arriving entry stays in view). If they had scrolled UP to read history, preserve
+// the exact scrollTop so we don't yank them. Tab rail scroll is always preserved.
+// `resetFeedScroll` is the explicit reset path (tab switches show a different agent's
+// history, so previous scrollTop is meaningless).
+function refreshAgentsSheet(opts) {
+  const sheet = document.getElementById('agents-sheet');
+  if (!sheet) return;
+  const resetFeedScroll = opts?.resetFeedScroll === true;
+  const oldTabs = sheet.querySelector('.agents-tabs');
+  const oldFeed = sheet.querySelector('.agents-sheet-feed');
+  const tabsScrollLeft = oldTabs?.scrollLeft ?? 0;
+  const feedScrollTop = oldFeed?.scrollTop ?? 0;
+  // Treat "within 80px of bottom" as stuck-to-bottom — same fudge factor chat apps
+  // use to absorb a few pixels of finger overshoot or browser sub-pixel rounding.
+  const wasAtBottom = oldFeed
+    ? (oldFeed.scrollHeight - oldFeed.scrollTop - oldFeed.clientHeight) < 80
+    : true;
+
+  sheet.innerHTML = agentsSheetBodyHtml();
+  wireAgentsSheetHandlers(sheet);
+
+  const newTabs = sheet.querySelector('.agents-tabs');
+  if (newTabs) newTabs.scrollLeft = tabsScrollLeft;
+  const newFeed = sheet.querySelector('.agents-sheet-feed');
+  if (newFeed) {
+    if (resetFeedScroll || wasAtBottom) {
+      newFeed.scrollTop = newFeed.scrollHeight;
+    } else {
+      newFeed.scrollTop = feedScrollTop;
+    }
+  }
+}
+
+function closeAgentsSheet() {
+  const backdrop = document.getElementById('agents-sheet-backdrop');
+  const sheet = document.getElementById('agents-sheet');
+  if (!backdrop && !sheet) return;
+  backdrop?.classList.remove('open');
+  sheet?.classList.remove('open');
+  setTimeout(() => {
+    backdrop?.remove();
+    sheet?.remove();
+  }, 380);
+}
+
+// Sheet body is rebuilt from scratch on every refresh — keeps tab state in sync with
+// state.activeAgentId without having to diff DOM children. Tab + button handlers get
+// re-wired by wireAgentsSheetHandlers below.
+function agentsSheetBodyHtml() {
+  // Stable display order: state.agentTabOrder drives the tab rail. Entries land at the
+  // end on first sighting; approval_pending arrivals bump to front via
+  // bringAgentToFront. After-decision shuffling stays disabled so the tabs don't
+  // reorder out from under the user's finger.
+  const agents = state.agentTabOrder
+    .map((id) => [id, state.subagents.get(id)])
+    .filter(([, b]) => b);
+  if (agents.length === 0) {
+    return `
+      <div class="grabber"></div>
+      <div class="header-row">
+        <span class="sheet-title">Agents</span>
+        <button class="sheet-close" id="agents-sheet-close" aria-label="Close">✕</button>
+      </div>
+      <div class="empty-state">No subagent activity yet.</div>
+    `;
+  }
+  // Snap active tab onto a still-existing agent if the previously-active one is gone
+  // (e.g., after a snapshot rebuild).
+  let active = state.activeAgentId;
+  if (!agents.find(([id]) => id === active)) {
+    active = agents[0][0];
+    state.activeAgentId = active;
+  }
+
+  const totalPending = agents.reduce(
+    (sum, [, b]) => sum + b.entries.filter((e) => e.decision === null).length,
+    0,
+  );
+  const summary = `${agents.length} agent${agents.length === 1 ? '' : 's'}${totalPending ? ` · ${totalPending} awaiting approval` : ''}`;
+
+  const tabs = agents.map(([id, b]) => {
+    const pending = b.entries.filter((e) => e.decision === null).length;
+    const isActive = id === active;
+    const badge = pending > 0
+      ? `<span class="agents-tab-badge">${escapeHtml(String(pending))}</span>`
+      : '';
+    return `
+      <button class="agents-tab${isActive ? ' active' : ''}${pending > 0 ? ' has-pending' : ''}" type="button" data-agent-id="${escapeHtml(id)}" role="tab" aria-selected="${isActive ? 'true' : 'false'}">
+        <span class="agents-tab-type">${escapeHtml(b.agentType)}</span>
+        <span class="agents-tab-meta">
+          <span class="agents-tab-id">${escapeHtml(id.slice(0, 8))}</span>
+          ${badge}
+        </span>
+      </button>
+    `;
+  }).join('');
+
+  const activeBucket = state.subagents.get(active);
+  const feed = activeBucket ? agentFeedHtml(activeBucket) : '';
+  // Italic-display description sourced from the parent's Agent invocation (bound
+  // best-effort by subagent_type when the bucket was created). Pinned above the
+  // scrollable feed area so it stays visible while the user scrolls back through
+  // history; if there's no description, the row collapses entirely.
+  const descBlock = activeBucket?.description
+    ? `<div class="agents-sheet-description">${escapeHtml(activeBucket.description)}</div>`
+    : '';
+
+  return `
+    <div class="grabber"></div>
+    <div class="header-row agents-sheet-header">
+      <div class="agents-sheet-title-block">
+        <span class="sheet-title">Agents</span>
+        <span class="agents-sheet-summary">${escapeHtml(summary)}</span>
+      </div>
+      <button class="sheet-close" id="agents-sheet-close" aria-label="Close">✕</button>
+    </div>
+    <div class="agents-tabs" role="tablist">${tabs}</div>
+    ${descBlock}
+    <div class="agents-sheet-feed">${feed}</div>
+  `;
+}
+
+// One agent's feed = a mini-transcript. Pending entries render as full approval cards
+// (the same chrome the parent feed uses for its own approvals); resolved entries
+// transform into plain tool tiles, with a "rejected" wrapper-class on deny so the user
+// can see "Claude wanted to do this and you said no."
+function agentFeedHtml(bucket) {
+  if (bucket.entries.length === 0) {
+    return `<div class="empty-state">Waiting for activity…</div>`;
+  }
+  return bucket.entries.map((entry) => agentEntryHtml(entry)).join('');
+}
+
+// Footer tile shown once the subagent emits its <task-notification>. Mirrors the
+// resolved-task style of other "this is done" affordances in the app (italic display
+// label, mono metrics line). Status flips the chrome to danger when the task was
+// killed instead of completing normally.
+function agentCompletionTileHtml(c) {
+  const isKilled = c.status === 'killed';
+  const label = isKilled ? 'Stopped' : 'Completed';
+  // Format the usage row: only include parts that are actually present in the payload.
+  const parts = [];
+  if (c.toolUses != null) parts.push(`${c.toolUses} tools`);
+  if (c.totalTokens != null) parts.push(`${c.totalTokens.toLocaleString()} tokens`);
+  if (c.durationMs != null) parts.push(formatDurationMs(c.durationMs));
+  const stats = parts.length > 0
+    ? `<div class="agent-complete-stats">${escapeHtml(parts.join(' · '))}</div>`
+    : '';
+  const summary = c.summary
+    ? `<div class="agent-complete-summary">${escapeHtml(c.summary)}</div>`
+    : '';
+  return `
+    <div class="agent-complete${isKilled ? ' agent-complete-killed' : ''}">
+      <div class="agent-complete-label">${escapeHtml(label)}</div>
+      ${stats}
+      ${summary}
+    </div>
+  `;
+}
+
+function formatDurationMs(ms) {
+  if (ms < 1000) return `${ms}ms`;
+  const s = Math.round(ms / 1000);
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  const rs = s % 60;
+  if (m < 60) return `${m}m ${String(rs).padStart(2, '0')}s`;
+  const h = Math.floor(m / 60);
+  const rm = m % 60;
+  return `${h}h ${String(rm).padStart(2, '0')}m`;
+}
+
+function agentEntryHtml(entry) {
+  if (entry.decision === null) {
+    return approvalCardHtml({
+      approvalId: entry.approvalId,
+      toolName: entry.toolName,
+      toolInput: entry.toolInput,
+      summary: '',
+    });
+  }
+  // Resolved: render as a plain tool tile. Reuse toolUseHtml by synthesizing a
+  // transcript-message-shaped object. Prefer the real tool_use_id (auto-allowed
+  // entries) and fall back to approvalId (entries that came through the approval
+  // queue); either id is unique within its namespace and works for expand-state.
+  const tileHtml = toolUseHtml({
+    role: 'tool_use',
+    text: `${entry.toolName}(${JSON.stringify(entry.toolInput).slice(0, 200)})`,
+    toolName: entry.toolName,
+    toolInput: entry.toolInput,
+    toolUseId: entry.toolUseId || entry.approvalId,
+  });
+  if (entry.decision === 'deny') {
+    return `<div class="agent-entry-rejected">${tileHtml}<span class="agent-entry-reject-tag">Rejected</span></div>`;
+  }
+  return tileHtml;
+}
+
+// Wire all interactive elements in the sheet. Re-called on every refresh because the
+// inner HTML is rebuilt from scratch; the outer <aside> keeps its .open class so the
+// slide-in transform isn't re-played.
+function wireAgentsSheetHandlers(sheet) {
+  const closeBtn = sheet.querySelector('#agents-sheet-close');
+  if (closeBtn) closeBtn.onclick = closeAgentsSheet;
+  for (const tab of sheet.querySelectorAll('.agents-tab')) {
+    tab.onclick = () => {
+      const id = tab.dataset.agentId;
+      if (!id || id === state.activeAgentId) return;
+      state.activeAgentId = id;
+      // Tab switch: feed content swaps entirely, so the previous scrollTop is
+      // meaningless. Tab rail's horizontal scroll stays where the user left it.
+      refreshAgentsSheet({ resetFeedScroll: true });
+    };
+  }
+  // Approval card buttons inside the agent feed. stopPropagation so they don't also
+  // trigger the tool_use-expandable container's tap-to-expand handler beneath them.
+  for (const btn of sheet.querySelectorAll('.approval-card .approve')) {
+    btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'allow'); };
+  }
+  for (const btn of sheet.querySelectorAll('.approval-card .reject')) {
+    btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'deny'); };
+  }
+  // Tap-to-expand for resolved tool tiles (and the approval-card containers, which
+  // also expose the JSON/diff payload preview).
+  for (const el of sheet.querySelectorAll('.msg.tool_use-expandable')) {
+    el.addEventListener('click', (ev) => {
+      const sel = window.getSelection();
+      if (sel && sel.toString().length > 0 && el.contains(sel.anchorNode)) return;
+      const id = el.dataset.toolId;
+      if (!id) return;
+      const open = el.classList.toggle('tool_use-expanded');
+      if (open) state.expandedTools.add(id); else state.expandedTools.delete(id);
+    });
+  }
 }
 
 // ─────────────────────── AskUserQuestion sheet ───────────────────────
@@ -1819,7 +2336,8 @@ function thinkingMetaText() {
     t = `${m}:${String(s).padStart(2, '0')}`;
   }
   const tok = state.thinkingOutputTokens > 0 ? `${state.thinkingOutputTokens.toLocaleString()} tok` : '';
-  return tok ? `· ${t} · ${tok} ` : `· ${t} `;
+  // Leading space so "thinking" doesn't sit against the bullet.
+  return tok ? ` · ${t} · ${tok} ` : ` · ${t} `;
 }
 
 function startThinking() {
@@ -1875,7 +2393,17 @@ function showApprovalToast(a) {
   `;
   toast.onclick = () => {
     toast.remove();
-    openSession(a.sessionId);
+    const sid = a.sessionId;
+    const isSubagent = !!a.agentId;
+    // Navigate to the session, then for subagent approvals also pop the agents sheet
+    // so the user lands directly on the pending feed — saves them another tap to find
+    // it. Tab sort + auto-advance handle which tab is shown.
+    const nav = openSession(sid);
+    if (isSubagent) {
+      Promise.resolve(nav).finally(() => {
+        if (state.currentSessionId === sid && state.subagents.size > 0) openAgentsSheet();
+      });
+    }
   };
   document.body.appendChild(toast);
   // Match the CSS animation timeline: 0.34s in, 6.6s wait, 0.34s out → ~7.3s total.
@@ -1899,6 +2427,23 @@ function decideApproval(id, decision, reason) {
   if (reason) payload.reason = reason;
   state.ws?.send(JSON.stringify(payload));
   state.pendingApprovals = state.pendingApprovals.filter((a) => a.approvalId !== id);
+  // Mirror the decision into any matching subagent bucket entry. The entry stays in
+  // the list so the agent feed continues to read as a continuous mini-transcript;
+  // only the entry's decision field flips, which switches its renderer from approval-
+  // card chrome to a plain resolved tool tile.
+  for (const [, bucket] of state.subagents) {
+    for (const e of bucket.entries) {
+      if (e.approvalId === id && e.decision === null) {
+        e.decision = decision === 'allow' ? 'allow' : 'deny';
+        break;
+      }
+    }
+  }
+  // No auto-advance on decide. The user explicitly didn't want tabs reordering
+  // when they finished the last approval in a tab — and the tab order is now
+  // stable across decisions (see bringAgentToFront + state.agentTabOrder).
+  // New-pending arrivals still bring an agent to front and auto-switch focus
+  // when the active tab is idle — see the approval_pending branch above.
   renderSession();
 }
 
@@ -2218,6 +2763,20 @@ function refreshSheetSelection() {
   for (const btn of document.querySelectorAll('.mode-toggle button')) {
     btn.classList.toggle('active', btn.dataset.mode === mode);
   }
+  const acceptBtn = document.getElementById('accept-edits-toggle');
+  if (acceptBtn) acceptBtn.setAttribute('aria-pressed', state.acceptEdits ? 'true' : 'false');
+}
+
+// Toggle accept-edits mode. Persisted to localStorage so the setting survives reload,
+// since the user typically picks this once at the start of a high-edit session and
+// doesn't want to retoggle after every refresh.
+function setAcceptEdits(v) {
+  state.acceptEdits = !!v;
+  if (state.acceptEdits) localStorage.setItem('cr:acceptEdits', 'true');
+  else localStorage.removeItem('cr:acceptEdits');
+  refreshSheetSelection();
+  // Refresh the session view so the header chip appears/disappears immediately.
+  if (state.view === 'session') renderSession();
 }
 
 function openSettings() {
@@ -2237,6 +2796,9 @@ document.getElementById('sheet-backdrop').onclick = closeSettings;
 document.getElementById('theme-grid').addEventListener('click', (e) => {
   const card = e.target.closest('.theme-card');
   if (card?.dataset.themeKey) applyTheme(card.dataset.themeKey);
+});
+document.getElementById('accept-edits-toggle')?.addEventListener('click', () => {
+  setAcceptEdits(!state.acceptEdits);
 });
 document.getElementById('mode-toggle').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-mode]');

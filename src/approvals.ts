@@ -4,6 +4,13 @@ export interface ApprovalRequest {
   sessionId: string;
   toolName: string;
   toolInput: unknown;
+  // Claude Code's PreToolUse hook sets agent_id + agent_type when the tool call comes
+  // from a subagent (Agent-tool invocations like Explore / general-purpose / etc.). The
+  // parent session's own tool calls don't carry these. Plumbing them through here lets
+  // the PWA route subagent approvals into a separate UI bucket instead of dumping them
+  // into the parent's feed.
+  agentId?: string;
+  agentType?: string;
 }
 
 export interface Decision {

@@ -1,6 +1,6 @@
-# claude-relay
+# outpost
 
-A small macOS LaunchAgent that runs Claude Code as a background service so you can drive it from your phone (or any device on your Tailnet) while you're away from your laptop. Built for incident response: get paged, open the PWA, ask Claude to investigate, approve or deny each privileged tool call as it goes.
+A full Claude Code client that runs as a background service on your Mac so you can drive Claude from your phone (or any device on your Tailnet) while you're away from your laptop. Originally a relay; grown into the actual interface — rich tool tiles, multi-agent isolation, a todos panel, themed UI, accept-edits mode, the works. Built for incident response: get paged, open the PWA, ask Claude to investigate, approve or deny each privileged tool call as it goes.
 
 ## What it does
 
@@ -8,6 +8,8 @@ A small macOS LaunchAgent that runs Claude Code as a background service so you c
 - Serves the PWA over HTTPS using your Tailscale node's cert, so it's only reachable from your own tailnet.
 - Intercepts every `PreToolUse` hook from Claude. Tools matching your allowlist run automatically; everything else is queued as a pending approval surfaced in the PWA.
 - Persists Claude's session JSONL files in the standard location, so resuming a session from your laptop later picks up the full transcript.
+- Routes subagent (Agent tool) activity into its own per-agent tabbed feed, separate from the parent transcript.
+- Renders tool calls with per-tool chrome — git-style diffs for `Edit`, shell-style blocks for `Bash`, ripgrep equivalents for `Grep`, etc.
 
 ## Prerequisites
 
@@ -59,11 +61,11 @@ Save that hostname — you'll use it in the next step, and again at the end when
 ### 2. Provision a TLS cert+key for that hostname
 
 ```bash
-mkdir -p ~/.claude-relay
+mkdir -p ~/.outpost
 HOST=davids-macbook-pro.tail1234.ts.net   # ← your hostname from step 1
 tailscale cert \
-  --cert-file ~/.claude-relay/$HOST.crt \
-  --key-file  ~/.claude-relay/$HOST.key \
+  --cert-file ~/.outpost/$HOST.crt \
+  --key-file  ~/.outpost/$HOST.key \
   $HOST
 ```
 
@@ -72,15 +74,15 @@ The daemon reads these files at startup. If they're missing or unreadable it'll 
 ### 3. Clone and install deps
 
 ```bash
-git clone https://github.com/frostbyte73/claude-relay.git
-cd claude-relay
+git clone https://github.com/frostbyte73/outpost.git
+cd outpost
 npm install
 ```
 
-By default, sessions spawned by the daemon run with `cwd=$HOME`. To inherit a specific project's `CLAUDE.md`, plugins, and MCP servers, export `CLAUDE_RELAY_CWD` now — any `CLAUDE_RELAY_*` env var in your shell when you run `install.sh` (step 5) gets baked into the LaunchAgent plist.
+By default, sessions spawned by the daemon run with `cwd=$HOME`. To inherit a specific project's `CLAUDE.md`, plugins, and MCP servers, export `OUTPOST_CWD` now — any `OUTPOST_*` env var in your shell when you run `install.sh` (step 5) gets baked into the LaunchAgent plist.
 
 ```bash
-export CLAUDE_RELAY_CWD=$HOME/path/to/your/workspace
+export OUTPOST_CWD=$HOME/path/to/your/workspace
 ```
 
 See [Configuration](#configuration) for the full list of env vars.
@@ -95,7 +97,7 @@ See [Configuration](#configuration) for the full list of env vars.
 install/install.sh
 ```
 
-This writes `~/Library/LaunchAgents/local.claude-relay.$USER.plist`, loads it, and prints the pid on success. The daemon starts at every login and auto-restarts on crash. Logs land in `~/Library/Logs/claude-relay.{log,err.log}`.
+This writes `~/Library/LaunchAgents/local.outpost.$USER.plist`, loads it, and prints the pid on success. The daemon starts at every login and auto-restarts on crash. Logs land in `~/Library/Logs/outpost.{log,err.log}`.
 
 ### 6. Open the PWA
 
@@ -113,13 +115,13 @@ If the page doesn't load, the usual culprit is Tailscale being toggled off on th
 
 ## Configuration
 
-All configuration is via environment variables read at daemon startup. To make them stick across reinstalls, export them in the shell you run `install/install.sh` from — any `CLAUDE_RELAY_*` var in your environment is baked into the plist automatically.
+All configuration is via environment variables read at daemon startup. To make them stick across reinstalls, export them in the shell you run `install/install.sh` from — any `OUTPOST_*` var in your environment is baked into the plist automatically.
 
 | Var | Default | Purpose |
 |---|---|---|
-| `CLAUDE_RELAY_CWD` | `$HOME` | Working directory Claude subprocesses are spawned in. Point this at the workspace that holds the `CLAUDE.md`, project plugins, and MCP servers you want relayed sessions to inherit. |
-| `CLAUDE_RELAY_SESSION_DIR` | derived from `CLAUDE_RELAY_CWD` | Where to read Claude's session JSONL files from. Only set this if you're doing something unusual. |
-| `CLAUDE_RELAY_PLIST_LABEL` | `local.claude-relay.$USER` | LaunchAgent label. Set this if you want an org-style prefix like `com.example.claude-relay`. |
+| `OUTPOST_CWD` | `$HOME` | Working directory Claude subprocesses are spawned in. Point this at the workspace that holds the `CLAUDE.md`, project plugins, and MCP servers you want relayed sessions to inherit. |
+| `OUTPOST_SESSION_DIR` | derived from `OUTPOST_CWD` | Where to read Claude's session JSONL files from. Only set this if you're doing something unusual. |
+| `OUTPOST_PLIST_LABEL` | `local.outpost.$USER` | LaunchAgent label. Set this if you want an org-style prefix like `com.example.outpost`. |
 
 ### Allowlist
 
@@ -134,9 +136,9 @@ The defaults are tuned for incident response (kubectl read-only, gh read-only, i
 ## Uninstall
 
 ```bash
-launchctl unload ~/Library/LaunchAgents/local.claude-relay.$USER.plist
-rm ~/Library/LaunchAgents/local.claude-relay.$USER.plist
-rm -rf ~/.claude-relay
+launchctl unload ~/Library/LaunchAgents/local.outpost.$USER.plist
+rm ~/Library/LaunchAgents/local.outpost.$USER.plist
+rm -rf ~/.outpost
 ```
 
 ## Development

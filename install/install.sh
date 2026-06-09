@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Install claude-relay as a launchd LaunchAgent so it starts at login and
+# Install outpost as a launchd LaunchAgent so it starts at login and
 # restarts if it crashes. Run from anywhere; the script resolves paths via $0.
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Label is per-user so multiple installs on a shared box don't collide. Override
-# with CLAUDE_RELAY_PLIST_LABEL if you want something specific (e.g. an org prefix).
-PLIST_LABEL="${CLAUDE_RELAY_PLIST_LABEL:-local.claude-relay.$USER}"
+# with OUTPOST_PLIST_LABEL if you want something specific (e.g. an org prefix).
+PLIST_LABEL="${OUTPOST_PLIST_LABEL:-local.outpost.$USER}"
 PLIST_PATH="$HOME/Library/LaunchAgents/$PLIST_LABEL.plist"
-TEMPLATE_PATH="$PROJECT_ROOT/install/claude-relay.plist.template"
+TEMPLATE_PATH="$PROJECT_ROOT/install/outpost.plist.template"
 
 # Resolve absolute paths to node and tsx. launchd doesn't go through your shell,
 # so anything PATH-based will fail unless we hardcode.
@@ -28,11 +28,11 @@ fi
 # user's interactive shell PATH is itself missing them when this script runs.
 PATH_FOR_LAUNCHD="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
-# Propagate any CLAUDE_RELAY_*-prefixed env vars exported by the caller (e.g.
-# CLAUDE_RELAY_CWD, CLAUDE_RELAY_SESSION_DIR) into the plist so they survive across
+# Propagate any OUTPOST_*-prefixed env vars exported by the caller (e.g.
+# OUTPOST_CWD, OUTPOST_SESSION_DIR) into the plist so they survive across
 # reinstalls without having to edit the file by hand.
 EXTRA_ENV=""
-for var in $(env | sed -n 's/^\(CLAUDE_RELAY_[A-Z_]*\)=.*/\1/p'); do
+for var in $(env | sed -n 's/^\(OUTPOST_[A-Z_]*\)=.*/\1/p'); do
   val="${!var}"
   # XML-escape the three chars launchd's plist parser actually cares about.
   val="${val//&/&amp;}"
@@ -71,11 +71,11 @@ if launchctl list | grep -q "$PLIST_LABEL"; then
   PID=$(launchctl list | awk -v label="$PLIST_LABEL" '$3 == label { print $1 }')
   if [[ "$PID" == "-" || -z "$PID" ]]; then
     echo "Loaded $PLIST_LABEL but no PID — check logs:"
-    echo "  tail -50 $HOME/Library/Logs/claude-relay.err.log"
+    echo "  tail -50 $HOME/Library/Logs/outpost.err.log"
     exit 1
   fi
   echo "✓ $PLIST_LABEL loaded (pid $PID)"
-  echo "  logs:  $HOME/Library/Logs/claude-relay.{log,err.log}"
+  echo "  logs:  $HOME/Library/Logs/outpost.{log,err.log}"
   echo "  stop:  launchctl unload $PLIST_PATH"
   echo "  start: launchctl load $PLIST_PATH"
 else

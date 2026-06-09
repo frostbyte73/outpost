@@ -30,7 +30,7 @@ __EXTRA_ENV__
   <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Interactive</string>
 
-  <key>StandardOutPath</key><string>__HOME__/Library/Logs/claude-relay.log</string>
-  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/claude-relay.err.log</string>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/outpost.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/outpost.err.log</string>
 </dict>
 </plist>

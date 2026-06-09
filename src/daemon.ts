@@ -13,7 +13,7 @@ import { writeDaemonSettings, generateSecret } from './settings-gen.js';
 import { handleHook } from './hook-handler.js';
 import allowlistConfig from '../config/allowlist.json' with { type: 'json' };
 
-const RUNTIME_DIR = join(homedir(), '.claude-relay');
+const RUNTIME_DIR = join(homedir(), '.outpost');
 mkdirSync(RUNTIME_DIR, { recursive: true });
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
@@ -34,8 +34,8 @@ async function main() {
   // and the SessionStore reads from that same dir. Point this at whichever workspace
   // holds the CLAUDE.md, project-level plugins, and MCP servers you want relayed sessions
   // to inherit. Defaults to $HOME if unset.
-  const claudeCwd = process.env.CLAUDE_RELAY_CWD ?? homedir();
-  const sessionDir = process.env.CLAUDE_RELAY_SESSION_DIR ?? sessionDirFor(claudeCwd);
+  const claudeCwd = process.env.OUTPOST_CWD ?? homedir();
+  const sessionDir = process.env.OUTPOST_SESSION_DIR ?? sessionDirFor(claudeCwd);
   const sessionStore = new SessionStore({ dir: sessionDir });
   console.log(`[daemon] claude cwd:           ${claudeCwd}`);
   console.log(`[daemon] reading sessions from: ${sessionDir}`);
@@ -61,7 +61,24 @@ async function main() {
     daemonAuthSecret: secret,
     onHookCall: async (body) => {
       const hookInput = JSON.parse(body);
-      console.log(`[hook] ${hookInput.tool_name} session=${hookInput.session_id?.slice(0,8)} input=${JSON.stringify(hookInput.tool_input).slice(0, 200)}`);
+      console.log(`[hook] ${hookInput.tool_name} session=${hookInput.session_id?.slice(0,8)}${hookInput.agent_id ? ` agent=${hookInput.agent_type ?? '?'}/${hookInput.agent_id.slice(0,8)}` : ''} input=${JSON.stringify(hookInput.tool_input).slice(0, 200)}`);
+      // Subagent calls that the allowlist auto-allows never reach the approval queue
+      // and therefore never emit an approval_pending event. Without a special path,
+      // those tool calls run invisibly — subagents whose tools are all read-only would
+      // never show up in the PWA's agent feed at all. Mirror the call out to clients
+      // so the agent bucket gets populated with a pre-resolved entry; the slower
+      // approval flow below still runs unchanged for tools that DO need approval.
+      if (hookInput.agent_id && allowlist.allows(hookInput.tool_name, hookInput.tool_input)) {
+        notifyAll({
+          type: 'agent_activity',
+          sessionId: hookInput.session_id,
+          toolName: hookInput.tool_name,
+          toolInput: hookInput.tool_input,
+          agentId: hookInput.agent_id,
+          agentType: hookInput.agent_type,
+          toolUseId: hookInput.tool_use_id,
+        });
+      }
       const result = await handleHook({
         hookInput,
         allowlist,
@@ -85,6 +102,10 @@ async function main() {
             // but the AskUserQuestion popup needs the full questions/options structure to
             // build its picker. Cheap to include and keeps the API generic.
             toolInput: approval.toolInput,
+            // Subagent provenance: when these are set, the PWA routes this approval into
+            // the dedicated agents feed instead of the parent session's inline cards.
+            agentId: approval.agentId,
+            agentType: approval.agentType,
             summary,
             sessionTitle,
           });
@@ -107,6 +128,8 @@ async function main() {
       sessionId: a.sessionId,
       toolName: a.toolName,
       toolInput: a.toolInput,
+      agentId: a.agentId,
+      agentType: a.agentType,
       summary: summarizeToolInput(a.toolName, a.toolInput),
       sessionTitle: titleById.get(a.sessionId),
       enqueuedAt: a.enqueuedAt,
@@ -165,6 +188,8 @@ async function main() {
           sessionId: a.sessionId,
           toolName: a.toolName,
           toolInput: a.toolInput,
+          agentId: a.agentId,
+          agentType: a.agentType,
           summary: summarizeToolInput(a.toolName, a.toolInput),
           sessionTitle: titleById.get(a.sessionId),
         })),
