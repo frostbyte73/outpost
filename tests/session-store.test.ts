@@ -37,7 +37,30 @@ describe('SessionStore', () => {
     const store = new SessionStore({ dir: storeDir });
     const sessions = store.list();
     const b = sessions.find((s) => s.id === 'sess-bbbbbbbb')!;
-    expect(b.title).toContain('hello');
+    // Titles get cleaned: first-letter capitalization is applied.
+    expect(b.title).toContain('Hello');
+  });
+
+  it('strips filler prefixes and surfaces slash-command args as the title', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'sstest-titles-'));
+    // Filler-prefix case: "can you look into …" should drop the prefix and capitalize.
+    writeFileSync(
+      join(dir, 'sess-filler.jsonl'),
+      JSON.stringify({ type: 'user', message: { content: 'can you look into the cluster outage in frankfurt' } }) + '\n',
+    );
+    // Slash-command case: /goal's <command-args> payload IS the user's intent, even
+    // though the surrounding envelope looks like a system injection.
+    writeFileSync(
+      join(dir, 'sess-cmd.jsonl'),
+      JSON.stringify({ type: 'user', message: { content: '<command-name>/goal</command-name><command-args>ship gamekit by tomorrow morning</command-args>' } }) + '\n',
+    );
+    const list = new SessionStore({ dir }).list();
+    const filler = list.find((s) => s.id === 'sess-filler')!;
+    const cmd = list.find((s) => s.id === 'sess-cmd')!;
+    // "can you look into" → stripped, then "the cluster outage…" capitalized.
+    expect(filler.title.startsWith('The cluster outage')).toBe(true);
+    // /goal args appear as the title source, after first-letter capitalization.
+    expect(cmd.title).toBe('Ship gamekit by tomorrow morning');
   });
 
   it('carries structured Task* tool_use fields and surfaces their tool_result', () => {

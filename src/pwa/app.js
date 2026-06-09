@@ -21,10 +21,14 @@ const state = {
   // True between sending a user message and receiving the assistant response.
   // Drives the thinking-caret pseudo-tile at the end of the transcript.
   thinking: false,
-  // Assistant message ids (`msg_*`) we've already rendered. Used to dedupe when the WS
-  // replay buffer redelivers a message we already loaded from disk or saw on a previous
-  // connection — happens reliably when iOS foregrounds the PWA and the WS reconnects.
-  seenMsgIds: new Set(),
+  // Per-block dedup signatures we've already rendered. Block-level (not message-level)
+  // because claude emits ONE `assistant` JSONL line per content_block_stop — so 12
+  // tool_use calls in a single turn arrive as 12 lines sharing the same msg_id. An
+  // envelope-level msg_id dedup processed only the first of those and dropped the rest.
+  //   tool_use blocks → keyed by tool_use_id (toolu_*), which is globally unique
+  //   text blocks     → keyed by `${msgId}|${text}` so the same text under different
+  //                     msg_ids is allowed but the WS replay buffer can't double-push
+  seenBlockSigs: new Set(),
   // Live state for the Task* tools — rendered as a pinned todo panel instead of as raw
   // tool_use entries in the transcript. Rebuilt from disk on session load, then mutated
   // in place as new tool_use / tool_result blocks arrive over the WS.
@@ -45,11 +49,16 @@ const state = {
   // result arrives we can fill in the answer field in place without a full re-render.
   pendingAsks: new Map(),
   // "Thinking" tile telemetry. thinkingStartedAt is the wall-clock at which we started
-  // waiting; thinkingOutputTokens is the latest output token count parsed from claude's
-  // streaming usage updates (message_start / message_delta events). thinkingTicker is the
-  // setInterval id that re-renders the tile's text every few hundred ms while thinking.
+  // waiting. thinkingOutputTokens is what's shown; it's the max of two sources, since
+  // Anthropic's streaming only emits one authoritative `message_delta` per message
+  // (with the final cumulative count) — for live updates we have to estimate from
+  // content_block_delta event payloads as they arrive. thinkingOutputChars accumulates
+  // raw characters from text + json deltas; the displayed token count is chars/4 (an
+  // approximation that matches BPE encoding for typical English + code reasonably well),
+  // overwritten by the exact value whenever a real usage payload arrives.
   thinkingStartedAt: 0,
   thinkingOutputTokens: 0,
+  thinkingOutputChars: 0,
   thinkingTicker: null,
 };
 
@@ -276,7 +285,7 @@ async function openSession(id) {
   state.currentSessionId = id;
   state.view = 'session';
   state.transcript = [];
-  state.seenMsgIds = new Set();
+  state.seenBlockSigs = new Set();
   // Per-session reset: todos, pendingCreates, and consumedTaskResults all belong to one
   // session's task list. Resetting here keeps the panel from leaking between sessions.
   state.todos = new Map();
@@ -304,7 +313,10 @@ async function openSession(id) {
           // else flows into the transcript in original order.
           const filtered = [];
           for (const m of messages) {
-            if (m.msgId) state.seenMsgIds.add(m.msgId);
+            // Seed the block-level dedup set with what's already on disk so the WS
+            // replay buffer (which may redeliver the most recent ~30s) doesn't double-push.
+            if (m.toolUseId) state.seenBlockSigs.add(m.toolUseId);
+            if (m.role === 'assistant' && m.msgId) state.seenBlockSigs.add(`${m.msgId}|${m.text}`);
             if (applyTaskTranscriptMessage(m)) continue;
             if (applyAskTranscriptMessage(m, filtered)) continue;
             filtered.push(m);
@@ -407,22 +419,22 @@ function handleWsMessage(msg) {
   // WS so they reach every view (list, current session, other session).
   if (msg.type === 'assistant') {
     const msgId = msg.message?.id;
-    // Skip the whole envelope if we've already rendered it — happens when the WS replay
-    // buffer redelivers a message that's already on disk or was pushed before a reconnect.
-    if (msgId && state.seenMsgIds.has(msgId)) return;
     const blocks = msg.message?.content ?? [];
-    // Claude re-emits the SAME msg_id multiple times when extended thinking is on: the
-    // first delivery carries only a `thinking` block, the second carries the real text /
-    // tool_use blocks. Marking the id seen on the first (thinking-only) delivery would
-    // silently drop the visible content. So we only flag the id once we've actually
-    // processed a renderable block — text or tool_use. Thinking blocks pass through
-    // unrendered (the italic caret tile already signals reasoning is happening).
+    // Block-level dedup. Each block has its own identity so re-deliveries (claude
+    // emits one assistant line per content_block_stop, so a 12-tool turn arrives as 12
+    // separate lines under the same msg_id) and WS replay buffer redeliveries are both
+    // handled correctly. Thinking blocks pass through unrendered.
     let processed = false;
     for (const b of blocks) {
       if (b.type === 'text') {
+        const sig = `${msgId}|${b.text}`;
+        if (state.seenBlockSigs.has(sig)) continue;
+        state.seenBlockSigs.add(sig);
         state.transcript.push({ role: 'assistant', text: b.text, msgId });
         processed = true;
       } else if (b.type === 'tool_use') {
+        if (b.id && state.seenBlockSigs.has(b.id)) continue;
+        if (b.id) state.seenBlockSigs.add(b.id);
         // Task* tools feed the todos panel instead of the transcript. Other tools render
         // as opaque tool_use entries the same way as before.
         if (b.name && TASK_TOOL_NAMES.has(b.name)) {
@@ -453,23 +465,55 @@ function handleWsMessage(msg) {
       }
     }
     if (!processed) return; // thinking-only delivery — wait for the real content
-    if (msgId) state.seenMsgIds.add(msgId);
-    stopThinking();
+    // Don't stop thinking on first content block. Claude emits one `assistant` line per
+    // content_block_stop, so a tool-using turn produces several `assistant` envelopes
+    // before the response is actually done — flipping the caret off on the first one
+    // also stopped the token counter from seeing message_delta usage updates (which is
+    // where the cumulative output_tokens lives, not on message_start). End-of-turn is
+    // signaled separately by stop_reason==='end_turn' below or by a stream_event
+    // message_stop in the dedicated handler.
+    if (msg.message?.stop_reason === 'end_turn') stopThinking();
     renderSession();
   } else if (msg.type === 'stream_event') {
     // Claude's --include-partial-messages stream emits Anthropic streaming events
-    // (message_start, content_block_delta, message_delta, message_stop). We only care
-    // about usage updates here — they drive the live "412 tok" counter on the thinking
-    // tile. Format: message_start.message.usage.output_tokens (starts at 0); message_delta
-    // .usage.output_tokens grows over the course of generation. Defensive lookup because
-    // event shapes can vary slightly across claude binary versions.
-    if (!state.thinking) return;
+    // (message_start, content_block_delta, message_delta, message_stop). We care about
+    // two things: the cumulative output_tokens for the live "412 tok" counter, and the
+    // end-of-turn signal (message_stop) to take the thinking caret down. Token usage:
+    // message_start carries the initial usage (output_tokens: 1); message_delta carries
+    // a CUMULATIVE running total as text streams. Defensive lookup because the wrapper
+    // shape varies slightly across claude binary versions.
     const ev = msg.event ?? msg;
+    if (ev?.type === 'message_stop') {
+      stopThinking();
+      renderSession();
+      return;
+    }
+    if (!state.thinking) return;
+    // Authoritative usage (message_start / message_delta) — overwrites any estimate.
     const usage = ev?.usage ?? ev?.message?.usage;
     const out = usage?.output_tokens;
-    if (typeof out === 'number' && out >= state.thinkingOutputTokens) {
-      state.thinkingOutputTokens = out;
+    if (typeof out === 'number') {
+      state.thinkingOutputTokens = Math.max(state.thinkingOutputTokens, out);
       updateThinkingMeta();
+    }
+    // Live estimation from content_block_delta. Anthropic's stream only emits one
+    // message_delta per message (with the FINAL count), so the only way to make the
+    // counter climb during generation is to estimate from the delta payloads as they
+    // come in. ~4 chars/token is a decent approximation across English + code.
+    if (ev?.type === 'content_block_delta') {
+      const d = ev?.delta;
+      let added = 0;
+      if (d?.type === 'text_delta' && typeof d.text === 'string') added = d.text.length;
+      else if (d?.type === 'input_json_delta' && typeof d.partial_json === 'string') added = d.partial_json.length;
+      else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string') added = d.thinking.length;
+      if (added > 0) {
+        state.thinkingOutputChars += added;
+        const estimated = Math.ceil(state.thinkingOutputChars / 4);
+        if (estimated > state.thinkingOutputTokens) {
+          state.thinkingOutputTokens = estimated;
+          updateThinkingMeta();
+        }
+      }
     }
   } else if (msg.type === 'user') {
     // Claude's own feedback to itself (tool_result blocks). Most are noise we drop, but
@@ -603,11 +647,15 @@ function renderSession() {
   });
   send.onclick = sendMessage;
 
+  // stopPropagation: the approval card is itself a .tool_use-expandable tile, so a tap
+  // anywhere on it (including the action buttons) would otherwise also toggle the
+  // expanded JSON/diff view. Buttons own their own click semantics — they shouldn't
+  // also be triggering the expand-collapse mechanic.
   for (const btn of document.querySelectorAll('.approval-card .approve')) {
-    btn.onclick = () => decideApproval(btn.dataset.id, 'allow');
+    btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'allow'); };
   }
   for (const btn of document.querySelectorAll('.approval-card .reject')) {
-    btn.onclick = () => decideApproval(btn.dataset.id, 'deny');
+    btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'deny'); };
   }
 
   const todosBtn = document.getElementById('todos-panel');
@@ -1213,24 +1261,7 @@ function toolUseHtml(m) {
   const chev = expandable ? `<span class="tool-chev" aria-hidden="true"></span>` : '';
   // Per-tool expanded views — replace the default pretty-JSON dump with a format matched
   // to how the tool's input is meant to be read. Falls back to JSON for everything else.
-  let expandedBody = '';
-  if (expandable) {
-    if (m.toolName === 'Edit') {
-      expandedBody = renderEditDiff(m.toolInput);
-    } else if (m.toolName === 'Bash') {
-      expandedBody = renderBashCommand(m.toolInput);
-    } else if (m.toolName === 'Grep') {
-      expandedBody = renderGrepSearch(m.toolInput);
-    } else if (m.toolName === 'Write') {
-      expandedBody = renderWriteContent(m.toolInput);
-    } else if (m.toolName === 'Agent') {
-      expandedBody = renderAgentPrompt(m.toolInput);
-    } else if (m.toolName === 'WebFetch') {
-      expandedBody = renderWebFetch(m.toolInput);
-    } else {
-      expandedBody = `<pre class="tool-json">${highlightJson(JSON.stringify(m.toolInput, null, 2))}</pre>`;
-    }
-  }
+  const expandedBody = expandable ? renderToolExpandedBody(m.toolName, m.toolInput) : '';
   // Formatters can set body to an empty string when the label alone is enough (Edit, for
   // example, surfaces the filename in its expanded diff header rather than the summary).
   // bodyKind='code' marks the body as an identifier (path, regex, URL, query) — wrap in
@@ -1250,6 +1281,20 @@ function toolUseHtml(m) {
       `</div>` +
     `</div>`
   );
+}
+
+// Dispatch helper — given a tool name + its input, return the HTML for the expanded
+// payload view. Used by both transcript tool tiles and approval cards, so they show the
+// same diff / shell / file-content preview whether you're approving the call or reading
+// it back in the transcript.
+function renderToolExpandedBody(toolName, toolInput) {
+  if (toolName === 'Edit') return renderEditDiff(toolInput);
+  if (toolName === 'Bash') return renderBashCommand(toolInput);
+  if (toolName === 'Grep') return renderGrepSearch(toolInput);
+  if (toolName === 'Write') return renderWriteContent(toolInput);
+  if (toolName === 'Agent') return renderAgentPrompt(toolInput);
+  if (toolName === 'WebFetch') return renderWebFetch(toolInput);
+  return `<pre class="tool-json">${highlightJson(JSON.stringify(toolInput, null, 2))}</pre>`;
 }
 
 // Pretty-printed JSON with light syntax coloring. Runs ON the already-escaped text so the
@@ -1357,11 +1402,13 @@ const TOOL_FORMATTERS = {
   Bash(inp) {
     const cmd = String(inp.command ?? '');
     const desc = String(inp.description ?? '');
-    return {
-      label: inp.run_in_background ? 'Bash · bg' : 'Bash',
-      body: desc || truncate(cmd, 140),
-      detail: desc ? `$ ${truncate(cmd, 220)}` : null,
-    };
+    const label = inp.run_in_background ? 'Bash · bg' : 'Bash';
+    // With a description we have prose to lead with and the command goes in the mono
+    // detail line. Without a description, the command IS the summary, so it should be
+    // chip-styled like other identifiers (paths, queries) — otherwise short Bash calls
+    // render as plain prose, breaking the visual rhythm of the surrounding tiles.
+    if (desc) return { label, body: desc, detail: `$ ${truncate(cmd, 220)}` };
+    return { label, body: truncate(cmd, 140), bodyKind: 'code' };
   },
   Read(inp) {
     const range = inp.offset != null
@@ -1711,18 +1758,42 @@ function closeTodosSheet() {
   }, 380);
 }
 
+// Approval cards now route through the same formatter the transcript uses, so the
+// label, summary chip, detail line, expandable payload (diff for Edit, content for
+// Write, shell for Bash, etc.) all match. We add the approval chrome (accent left
+// border, "Approval needed" banner, Approve/Reject buttons) around it. The expand
+// state uses a synthetic "approval-<id>" key so it doesn't collide with the tool_use_id
+// state used by the transcript tiles.
 function approvalCardHtml(a) {
-  return `
-    <div class="approval-card" data-id="${escapeHtml(a.approvalId)}">
-      <div class="label">Approval needed</div>
-      <div class="tool">${escapeHtml(a.toolName)}</div>
-      <div class="summary">${escapeHtml(a.summary ?? '')}</div>
-      <div class="actions">
-        <button class="approve" data-id="${escapeHtml(a.approvalId)}">Approve</button>
-        <button class="reject" data-id="${escapeHtml(a.approvalId)}">Reject</button>
-      </div>
-    </div>
-  `;
+  const f = formatToolUse(a.toolName, a.toolInput, a.summary);
+  const detail = f.detail ? `<div class="tool-detail">${escapeHtml(f.detail)}</div>` : '';
+  const expandable = a.toolInput !== undefined && a.toolInput !== null;
+  const expandId = `approval-${a.approvalId}`;
+  const expanded = expandable && state.expandedTools.has(expandId);
+  const cls = `msg tool_use approval-card${expandable ? ' tool_use-expandable' : ''}${expanded ? ' tool_use-expanded' : ''}`;
+  const idAttr = expandable ? ` data-tool-id="${escapeHtml(expandId)}"` : '';
+  const chev = expandable ? `<span class="tool-chev" aria-hidden="true"></span>` : '';
+  const expandedBody = expandable ? renderToolExpandedBody(a.toolName, a.toolInput) : '';
+  const summary = f.body
+    ? f.bodyKind === 'code'
+      ? `<div class="tool-summary tool-summary-code"><code>${escapeHtml(f.body)}</code></div>`
+      : `<div class="tool-summary">${escapeHtml(f.body)}</div>`
+    : '';
+  return (
+    `<div class="${cls}"${idAttr}>` +
+      `<div class="approval-banner">Approval needed</div>` +
+      `<span class="tool-label">${escapeHtml(f.label)}${chev}</span>` +
+      `<div class="tool-content">` +
+        summary +
+        detail +
+        expandedBody +
+      `</div>` +
+      `<div class="approval-actions">` +
+        `<button class="approve" data-id="${escapeHtml(a.approvalId)}" type="button">Approve</button>` +
+        `<button class="reject" data-id="${escapeHtml(a.approvalId)}" type="button">Reject</button>` +
+      `</div>` +
+    `</div>`
+  );
 }
 
 // The "Claude is working on it" tile — italic-serif body + amber blinking underscore
@@ -1755,6 +1826,7 @@ function startThinking() {
   state.thinking = true;
   state.thinkingStartedAt = Date.now();
   state.thinkingOutputTokens = 0;
+  state.thinkingOutputChars = 0;
   if (state.thinkingTicker) clearInterval(state.thinkingTicker);
   // 200ms cadence: fast enough that the seconds counter reads smoothly without spiking
   // CPU; we're mutating a single text node, not re-rendering the transcript.
@@ -1765,6 +1837,7 @@ function stopThinking() {
   state.thinking = false;
   state.thinkingStartedAt = 0;
   state.thinkingOutputTokens = 0;
+  state.thinkingOutputChars = 0;
   if (state.thinkingTicker) {
     clearInterval(state.thinkingTicker);
     state.thinkingTicker = null;

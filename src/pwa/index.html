@@ -645,10 +645,12 @@
 
     /* One row. The node lives in a fixed-width column on the left so the two rows align
        perfectly and the connector hairline can be drawn through it via ::before on the
-       second row. */
+       second row. The fixed 50px right column reserves space for the absolute-positioned
+       .todos-panel-meta (X/Y counter + ⌃ chevron) anchored to the panel's right edge —
+       without this reservation, long task subjects would slide under the counter. */
     .todos-trail-line {
       display: grid;
-      grid-template-columns: 18px 1fr auto;
+      grid-template-columns: 18px 1fr 50px;
       align-items: center;
       gap: 12px;
       line-height: 1.5;
@@ -1768,49 +1770,50 @@
     .composer .send.armed:active { background: var(--accent-soft); }
 
     /* ───── Approval card ─────────────────────────────────────────
-       Dialed-down chrome: still has an accent border to mark "needs your attention,"
-       but the old 4px accent-soft outer glow read more like a CTA banner than a
-       transcript event. Lets the label + action buttons carry the urgency on their
-       own without the card itself shouting from across the screen. */
-    .approval-card {
+       Layered over a regular .msg.tool_use tile so the body uses the same formatter
+       chrome (label, summary chip, detail, expandable payload preview). The approval
+       layer adds a full accent border (vs the tool tile's default thin left bar),
+       a "Approval needed" banner across the top, and an Approve/Reject row at the
+       bottom. Tapping the body still expands the payload — but the buttons stop
+       propagation so they don't double as toggle handles. */
+    .msg.tool_use.approval-card {
       margin: 16px 0;
-      background: var(--bg-elev);
       border: 1px solid var(--accent);
-      padding: 16px 16px 14px;
-      position: relative;
+      padding: 14px 14px 12px;
     }
-    .approval-card .label {
+    /* The base .msg.tool_use rule sets a thin text-dim left border. The approval
+       border above already wraps all four sides in accent — keep it consistent. */
+    .msg.tool_use.approval-card.tool_use-expanded {
+      border-left: 1px solid var(--accent);
+    }
+    .approval-card .approval-banner {
+      font-family: var(--font-mono);
       font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
-      color: var(--accent); margin-bottom: 6px;
+      color: var(--accent);
+      margin-bottom: 8px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line-soft);
     }
-    .approval-card .tool {
-      font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 10px;
+    .approval-card .approval-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 14px;
     }
-    .approval-card .summary {
-      font-size: 12px; color: var(--text-mute); line-height: 1.5;
-      background: var(--bg);
-      border-left: 2px solid var(--line);
-      padding: 8px 10px;
-      margin-bottom: 14px;
-      word-break: break-word;
-      max-height: 8em; overflow-y: auto;
-    }
-    .approval-card .actions {
-      display: grid; grid-template-columns: 1fr 1fr; gap: 8px;
-    }
-    .approval-card .actions button {
+    .approval-card .approval-actions button {
       padding: 12px 0;
+      font-family: var(--font-body);
       font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 600;
       cursor: pointer;
       border: 1px solid var(--line);
       background: transparent;
       color: var(--text-mute);
-      transition: all 0.12s ease;
+      transition: color 0.12s ease, border-color 0.12s ease, background 0.12s ease;
     }
-    .approval-card .actions .approve { color: var(--accent); border-color: var(--accent); }
-    .approval-card .actions .approve:active { background: var(--accent-soft); }
-    .approval-card .actions .reject { color: var(--danger); border-color: var(--danger); }
-    .approval-card .actions .reject:active { background: var(--danger-soft); }
+    .approval-card .approval-actions .approve { color: var(--accent); border-color: var(--accent); }
+    .approval-card .approval-actions .approve:active { background: var(--accent-soft); }
+    .approval-card .approval-actions .reject { color: var(--danger); border-color: var(--danger); }
+    .approval-card .approval-actions .reject:active { background: var(--danger-soft); }
 
     /* ───── Thinking indicator ──────────────────────────────────────
        Shown as a pseudo-assistant message tile while waiting for a response.

@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync, unlinkSync, openSync, readSync, closeSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, unlinkSync, openSync, readSync, closeSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { LineParser } from './stream-json.js';
 
@@ -105,7 +105,20 @@ function scanTitleSources(path: string): { summary?: string; firstUserMsg?: stri
             const tb = c.find((b): b is { type: 'text'; text: string } => (b as { type?: string })?.type === 'text');
             if (tb) t = tb.text;
           }
-          if (t && !isSystemInjection(t)) firstUserMsg = t;
+          if (t) {
+            // Slash-command messages (/goal "..."  /investigate-cscu CSCU-42, etc.) get
+            // injected as <command-name>X</command-name><command-args>actual user
+            // intent</command-args>. The args ARE the user's intent — surface them as
+            // the title source instead of skipping the whole message as a system
+            // injection.
+            const argsMatch = /<command-args>([\s\S]*?)<\/command-args>/.exec(t);
+            const argsText = argsMatch ? argsMatch[1]?.trim() : '';
+            if (argsText) {
+              firstUserMsg = argsText;
+            } else if (!isSystemInjection(t)) {
+              firstUserMsg = t;
+            }
+          }
         }
         if (summary && firstUserMsg) return { summary, firstUserMsg };
       }
@@ -115,6 +128,56 @@ function scanTitleSources(path: string): { summary?: string; firstUserMsg?: stri
   } finally {
     closeSync(fd);
   }
+}
+
+// Title cleaner. Raw first-user-messages tend to start with filler ("can you look
+// into…", "what's going on with…", "I'm trying to…") that wastes the limited row
+// width. Strip those prefixes, recapitalize, and truncate cleanly. Best-effort
+// heuristics — they're cheap, deterministic, and only apply when the prefix is
+// clearly present.
+function cleanTitle(raw: string): string {
+  let t = raw.trim().replace(/\s+/g, ' ');
+  // Order matters — longest/most-specific patterns first so "can you please look
+  // into" doesn't get partially stripped to "please look into".
+  const fillers: RegExp[] = [
+    /^(?:hi|hey|hello)[,!.]?\s+(?:there[,!]?\s+)?/i,
+    /^(?:can|could|would)\s+you\s+(?:please\s+)?(?:help\s+(?:me\s+)?(?:to\s+|with\s+)?)?(?:try\s+to\s+|maybe\s+)?/i,
+    /^please\s+(?:can\s+you\s+)?/i,
+    /^let'?s\s+/i,
+    /^i\s+(?:want|need|would\s+like|am\s+trying|'m\s+trying)\s+(?:to|you\s+to)\s+/i,
+    /^i'?d\s+like\s+(?:to|you\s+to)\s+/i,
+    /^help\s+me\s+(?:to\s+|with\s+)?/i,
+    /^help\s+(?:with\s+|me\s+)?/i,
+    /^how\s+do\s+(?:i|we|you)\s+/i,
+    /^tell\s+me\s+(?:about\s+|how\s+|why\s+)?/i,
+    /^what'?s\s+(?:going\s+on|happening|up)\s+(?:with|in|on)\s+/i,
+    /^what\s+is\s+(?:going\s+on\s+(?:with|in|on)\s+)?/i,
+    /^why\s+is\s+/i,
+    /^look\s+(?:in)?to\s+/i,
+    /^check\s+(?:on\s+|out\s+)?/i,
+    /^investigate\s+/i,
+    /^do\s+(?:a\s+|the\s+|you\s+)/i,
+    /^make\s+(?:me\s+|a\s+)?/i,
+  ];
+  // Chain: stripping "can you" should leave "look into X", which we then strip again
+  // to "X". Bounded by filler count so it can't loop on a pathological pattern.
+  for (let pass = 0; pass < fillers.length; pass++) {
+    let changed = false;
+    for (const re of fillers) {
+      const stripped = t.replace(re, '');
+      if (stripped !== t && stripped.length > 0) { t = stripped; changed = true; break; }
+    }
+    if (!changed) break;
+  }
+  // Capitalize first letter (only ASCII; non-ASCII strings just pass through).
+  if (t && /[a-z]/.test(t.charAt(0))) t = t.charAt(0).toUpperCase() + t.slice(1);
+  // Truncate at word boundary if too long. 60 chars matches the original behavior.
+  if (t.length > 60) {
+    const cut = t.slice(0, 60);
+    const lastSpace = cut.lastIndexOf(' ');
+    t = (lastSpace > 30 ? cut.slice(0, lastSpace) : cut) + '…';
+  }
+  return t || 'Untitled session';
 }
 
 // Flatten a tool_result block's content into a plain string. Claude emits these as either
@@ -219,6 +282,8 @@ export class SessionStore {
     const path = join(this.dir, `${id}.jsonl`);
     try {
       unlinkSync(path);
+      // Best-effort cleanup of the cached title sidecar. Ignored if absent.
+      try { unlinkSync(join(this.dir, `${id}.title`)); } catch { /* no sidecar */ }
       return true;
     } catch {
       return false;
@@ -243,12 +308,23 @@ export class SessionStore {
     try {
       const stat = statSync(path);
       const id = path.split('/').pop()!.replace(/\.jsonl$/, '');
-      // For the list view we only need the title; scan from the top and bail once we have
-      // both candidate sources. This keeps cold-start fast even for sessions with hundreds
-      // of turns. Read the file as a stream-ish chunk: pull in up to 64KB at a time and stop
-      // when we have what we need.
+      // Cached title sidecar — once a session's title has been computed from a real
+      // source (summary or first-user-message) we persist it, so future reads use the
+      // cached value and titles don't shift as new content streams in. Delete the
+      // sidecar to force regeneration (e.g. after improving the heuristics).
+      const titlePath = path.replace(/\.jsonl$/, '.title');
+      let cached: string | undefined;
+      try { cached = readFileSync(titlePath, 'utf8').trim(); } catch { /* no sidecar */ }
+      if (cached) return { id, title: cached, lastModified: stat.mtimeMs, path };
+
       const { summary, firstUserMsg } = scanTitleSources(path);
-      const title = summary ?? (firstUserMsg ? firstUserMsg.slice(0, 60) : 'Untitled session');
+      const rawTitle = summary ?? firstUserMsg;
+      const title = rawTitle ? cleanTitle(rawTitle) : 'Untitled session';
+      // Only persist when we found a real source — don't cache "Untitled session" for
+      // a brand-new session that hasn't been written to disk yet.
+      if (rawTitle) {
+        try { writeFileSync(titlePath, title); } catch { /* best-effort cache */ }
+      }
       return { id, title, lastModified: stat.mtimeMs, path };
     } catch {
       return null;
