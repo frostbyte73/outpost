@@ -278,13 +278,19 @@ function renderList() {
     wireSwipeToDelete(row);
   }
   for (const btn of document.querySelectorAll('.delete-action')) {
-    btn.onclick = (e) => {
+    btn.onclick = async (e) => {
       e.stopPropagation();
       const id = btn.dataset.delete;
       const wrap = btn.closest('.session-row-wrap');
       const row = wrap?.querySelector('.session-row');
       const title = row?.querySelector('.title')?.textContent ?? id;
-      if (!confirm(`Delete "${title}"?\n\nThis removes the session file permanently and cannot be undone.`)) {
+      const ok = await confirmInSheet({
+        title: 'Delete session?',
+        body: `“${title}” will be removed permanently. This cannot be undone.`,
+        confirmLabel: 'Delete',
+        danger: true,
+      });
+      if (!ok) {
         if (row) snapRowClosed(row);
         return;
       }
@@ -973,7 +979,7 @@ function renderSession() {
     ${todos}
     <div class="composer">
       <div class="field" id="composer" contenteditable="true"
-           role="textbox" aria-multiline="true"
+           role="textbox" aria-multiline="true" aria-label="Message"
            autocapitalize="sentences"
            data-placeholder="Type a message…"></div>
       <button class="send" id="send" aria-label="Send">↵</button>
@@ -988,7 +994,10 @@ function renderSession() {
   };
   composer.addEventListener('input', armSend);
   composer.addEventListener('keydown', (e) => {
-    // Enter sends, Shift+Enter inserts a newline. Mobile users can paste in newlines if needed.
+    // Desktop: Enter sends, Shift+Enter inserts a newline.
+    // Touch devices: Enter always inserts a newline — users send via the on-screen button,
+    // so an on-screen keyboard's Return key shouldn't fire off a half-typed message.
+    if (window.matchMedia('(hover: none)').matches) return;
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       sendMessage();
@@ -1049,6 +1058,23 @@ function renderSession() {
   // its contents in place. Closing + reopening would flicker the transform animation.
   refreshTodosSheet();
 
+  // Pending ask cards in the transcript are tap-to-reopen — the popup sheet may have been
+  // dismissed, but the underlying approval is still waiting. ensureAskSheet finds the
+  // pending Ask for the current session and brings the sheet back up.
+  for (const el of document.querySelectorAll('.msg.ask.ask-pending')) {
+    el.addEventListener('click', (e) => {
+      const sel = window.getSelection();
+      if (sel && sel.toString().length > 0 && el.contains(sel.anchorNode)) return;
+      ensureAskSheet();
+    });
+    el.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        ensureAskSheet();
+      }
+    });
+  }
+
   scrollTranscriptBottom();
 }
 
@@ -1104,6 +1130,7 @@ function openAgentsSheet() {
   sheet.className = 'sheet agents-sheet';
   sheet.id = 'agents-sheet';
   sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-modal', 'true');
   sheet.setAttribute('aria-label', 'Subagent activity');
   sheet.innerHTML = agentsSheetBodyHtml();
   document.body.appendChild(backdrop);
@@ -1163,7 +1190,11 @@ function refreshAgentsSheet(opts) {
   // every refresh — including ones triggered by background events — would yank the
   // scroll back to the top mid-read.
   const newTabs = sheet.querySelector('.agents-tabs');
-  if (newTabs) newTabs.scrollTop = resetTabsScroll ? 0 : tabsScrollTop;
+  if (newTabs) {
+    newTabs.scrollTop = resetTabsScroll ? 0 : tabsScrollTop;
+    // Toggle the bottom-edge fade hint based on whether the tab list actually overflows.
+    newTabs.classList.toggle('agents-tabs-overflow', newTabs.scrollHeight > newTabs.clientHeight + 1);
+  }
   const newFeed = sheet.querySelector('.agents-sheet-feed');
   if (newFeed) {
     if (resetFeedScroll || wasAtBottom) {
@@ -1233,6 +1264,71 @@ function pinSheetBelowHeader(sheet, opts) {
 // the discarded node. Dismiss fires either on a sufficient downward drag distance
 // (~25% of viewport) or on a strong downward flick (so a quick swipe works even
 // without crossing the distance threshold).
+// Themed replacement for window.confirm() — opens a small bottom sheet matching the
+// rest of the PWA chrome. Returns a Promise<boolean>: true for confirm, false for cancel
+// or dismiss (backdrop tap, swipe-down, Escape key). One confirm sheet at a time; if
+// another opens while one is up, the first resolves false.
+function confirmInSheet({ title, body, confirmLabel, danger }) {
+  return new Promise((resolve) => {
+    const existing = document.getElementById('confirm-sheet');
+    if (existing) existing.dispatchEvent(new CustomEvent('outpost-confirm-cancel'));
+
+    const backdrop = document.createElement('div');
+    backdrop.className = 'sheet-backdrop confirm-sheet-backdrop';
+    backdrop.id = 'confirm-sheet-backdrop';
+    const sheet = document.createElement('aside');
+    sheet.className = 'sheet confirm-sheet';
+    sheet.id = 'confirm-sheet';
+    sheet.setAttribute('role', 'alertdialog');
+    sheet.setAttribute('aria-modal', 'true');
+    sheet.setAttribute('aria-label', title);
+    sheet.innerHTML = `
+      <div class="grabber"></div>
+      <div class="header-row">
+        <span class="sheet-title">${escapeHtml(title)}</span>
+        <button class="sheet-close" id="confirm-sheet-close" aria-label="Cancel">✕</button>
+      </div>
+      <div class="confirm-body">${escapeHtml(body)}</div>
+      <div class="confirm-actions">
+        <button class="cancel" type="button">Cancel</button>
+        <button class="${danger ? 'confirm-danger' : 'confirm-primary'}" type="button">${escapeHtml(confirmLabel || 'Confirm')}</button>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+    document.body.appendChild(sheet);
+    requestAnimationFrame(() => {
+      backdrop.classList.add('open');
+      sheet.classList.add('open');
+    });
+    pinSheetBelowHeader(sheet);
+    noteSheetOpen();
+
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      backdrop.classList.remove('open');
+      sheet.classList.remove('open');
+      noteSheetClose();
+      document.removeEventListener('keydown', onKey);
+      setTimeout(() => {
+        backdrop.remove();
+        sheet.remove();
+      }, 380);
+      resolve(result);
+    };
+    const onKey = (e) => { if (e.key === 'Escape') finish(false); };
+    document.addEventListener('keydown', onKey);
+
+    sheet.addEventListener('outpost-confirm-cancel', () => finish(false));
+    backdrop.onclick = () => finish(false);
+    sheet.querySelector('#confirm-sheet-close').onclick = () => finish(false);
+    sheet.querySelector('.cancel').onclick = () => finish(false);
+    sheet.querySelector('.confirm-danger, .confirm-primary').onclick = () => finish(true);
+    makeSheetDismissible(sheet, () => finish(false));
+  });
+}
+
 function makeSheetDismissible(sheetEl, closeFn) {
   if (!sheetEl) return;
   // Drag-handle region = grabber + the title header-row. A bigger target for the
@@ -1377,8 +1473,11 @@ function agentsSheetBodyHtml() {
       isCompleted ? 'completed' : '',
       isKilled ? 'killed' : '',
     ].filter(Boolean).join(' ');
+    const tabId = `agents-tab-${escapeHtml(id)}`;
     return `
-      <button class="${classes}" type="button" data-agent-id="${escapeHtml(id)}" role="tab" aria-selected="${isActive ? 'true' : 'false'}">
+      <button class="${classes}" type="button" data-agent-id="${escapeHtml(id)}" role="tab"
+              id="${tabId}" aria-controls="agents-sheet-feed" aria-selected="${isActive ? 'true' : 'false'}"
+              tabindex="${isActive ? '0' : '-1'}">
         <span class="agents-tab-label">${escapeHtml(primary)}</span>
         <span class="agents-tab-meta">
           ${doneGlyph}
@@ -1412,8 +1511,9 @@ function agentsSheetBodyHtml() {
       </div>
       <button class="sheet-close" id="agents-sheet-close" aria-label="Close">✕</button>
     </div>
-    <div class="agents-tabs" role="tablist">${pendingTabs}${activeTabs}${doneDivider}${completedTabs}</div>
-    <div class="agents-sheet-feed">${feed}</div>
+    <div class="agents-tabs" role="tablist" aria-label="Agents">${pendingTabs}${activeTabs}${doneDivider}${completedTabs}</div>
+    <div class="agents-sheet-feed" id="agents-sheet-feed" role="tabpanel" tabindex="0"
+         aria-labelledby="${activeId ? `agents-tab-${escapeHtml(activeId)}` : ''}">${feed}</div>
   `;
 }
 
@@ -1574,6 +1674,7 @@ function openAskSheet(approval) {
   sheet.className = 'sheet ask-sheet';
   sheet.id = 'ask-sheet';
   sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-modal', 'true');
   sheet.setAttribute('aria-label', 'Question from Claude');
   sheet.dataset.approvalId = approval.approvalId;
   sheet.innerHTML = askSheetBodyHtml(approval);
@@ -2015,14 +2116,19 @@ function askMsgHtml(m) {
     : 'Asked';
   const statusBadge = answered ? 'Answered' : 'Pending';
 
+  const replyHint = !answered
+    ? `<div class="ask-msg-reply-hint" aria-hidden="true">Tap to reply <span class="ask-msg-reply-hint-arrow">→</span></div>`
+    : '';
+
   return (
-    `<div class="msg ask${answered ? ' ask-answered' : ' ask-pending'}">` +
+    `<div class="msg ask${answered ? ' ask-answered' : ' ask-pending'}"${answered ? '' : ' role="button" tabindex="0" aria-label="Reply to question"'}>` +
       `<div class="ask-msg-head">` +
         `<span class="ask-msg-label">${escapeHtml(countLabel)}</span>` +
         `<span class="ask-msg-status">${escapeHtml(statusBadge)}</span>` +
       `</div>` +
       `<div class="ask-msg-pairs">${rows}</div>` +
       replyBlock +
+      replyHint +
     `</div>`
   );
 }
@@ -2512,6 +2618,7 @@ function openTodosSheet() {
   sheet.className = 'sheet todos-sheet';
   sheet.id = 'todos-sheet';
   sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-modal', 'true');
   sheet.setAttribute('aria-label', 'All tasks');
   sheet.innerHTML = todosSheetBodyHtml();
   document.body.appendChild(backdrop);
@@ -2532,7 +2639,9 @@ function todosSheetBodyHtml() {
   const all = sortedTodoEntries().filter(([, t]) => t.status !== 'deleted');
   const inProgress = all.filter(([, t]) => t.status === 'in_progress');
   const pending = all.filter(([, t]) => t.status === 'pending');
-  const completed = all.filter(([, t]) => t.status === 'completed');
+  // Completed reads top-down as "most recent first" — opposite of the dispatch-order sort
+  // we use for the active sections, since the user wants to see the last thing finished.
+  const completed = all.filter(([, t]) => t.status === 'completed').reverse();
   const total = all.length;
   const doneCount = completed.length;
   const pct = total === 0 ? 0 : Math.round((doneCount / total) * 100);
@@ -2639,8 +2748,8 @@ function approvalCardHtml(a) {
         expandedBody +
       `</div>` +
       `<div class="approval-actions">` +
-        `<button class="approve" data-id="${escapeHtml(a.approvalId)}" type="button">Approve</button>` +
-        `<button class="reject" data-id="${escapeHtml(a.approvalId)}" type="button">Reject</button>` +
+        `<button class="approve" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Approve ${escapeHtml(f.label)}">Approve</button>` +
+        `<button class="reject" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Reject ${escapeHtml(f.label)}">Reject</button>` +
       `</div>` +
     `</div>`
   );
@@ -3146,5 +3255,22 @@ document.getElementById('mode-toggle').addEventListener('click', (e) => {
 });
 
 syncThemeColorMeta();
+
+// Keep --header-h in sync with the actual header height so the cross-session approval
+// toast clears the header on every theme/safe-area combination instead of relying on a
+// 56px guess.
+(function trackHeaderHeight() {
+  const header = document.getElementById('header');
+  if (!header) return;
+  const apply = () => {
+    document.documentElement.style.setProperty('--header-h', `${header.offsetHeight}px`);
+  };
+  apply();
+  if (typeof ResizeObserver !== 'undefined') {
+    new ResizeObserver(apply).observe(header);
+  } else {
+    window.addEventListener('resize', apply);
+  }
+})();
 loadSessions();
 connectNotificationWs();
