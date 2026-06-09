@@ -25,7 +25,127 @@ const state = {
   // replay buffer redelivers a message we already loaded from disk or saw on a previous
   // connection — happens reliably when iOS foregrounds the PWA and the WS reconnects.
   seenMsgIds: new Set(),
+  // Live state for the Task* tools — rendered as a pinned todo panel instead of as raw
+  // tool_use entries in the transcript. Rebuilt from disk on session load, then mutated
+  // in place as new tool_use / tool_result blocks arrive over the WS.
+  //   todos: Map<taskId, { subject, status, description?, activeForm? }>
+  //   pendingCreates: Map<tool_use_id, taskInput> — TaskCreate calls awaiting their
+  //     tool_result so we can learn the server-assigned task id ("Task #N created...").
+  //   consumedTaskResults: Set<tool_use_id> — tool_results we've already resolved, so a
+  //     WS replay buffer redelivery doesn't double-process them.
+  todos: new Map(),
+  pendingCreates: new Map(),
+  consumedTaskResults: new Set(),
+  // tool_use entries (by tool_use_id) the user has tapped open to inspect raw JSON.
+  // Persists across re-renders so an incoming WS message doesn't auto-collapse anything.
+  // Reset per session in openSession so state doesn't bleed between conversations.
+  expandedTools: new Set(),
+  // AskUserQuestion tool_use entries waiting for their tool_result (the user's answer).
+  // Keys are tool_use_ids; values are direct references into state.transcript so when the
+  // result arrives we can fill in the answer field in place without a full re-render.
+  pendingAsks: new Map(),
+  // "Thinking" tile telemetry. thinkingStartedAt is the wall-clock at which we started
+  // waiting; thinkingOutputTokens is the latest output token count parsed from claude's
+  // streaming usage updates (message_start / message_delta events). thinkingTicker is the
+  // setInterval id that re-renders the tile's text every few hundred ms while thinking.
+  thinkingStartedAt: 0,
+  thinkingOutputTokens: 0,
+  thinkingTicker: null,
 };
+
+// Tools we absorb into the todos panel rather than rendering as transcript entries. Must
+// stay in sync with the matching constant in src/session-store.ts.
+const TASK_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet']);
+
+// Apply a Task* tool_use block to state.todos. TaskCreate gets parked in pendingCreates
+// until its tool_result arrives (because the assigned task id lives in the result, not the
+// input). TaskUpdate mutates the entry in place. TaskList/TaskGet are no-ops here — we
+// only swallow them so they don't clutter the transcript.
+function applyTaskUse(name, input, useId) {
+  if (name === 'TaskCreate') {
+    if (useId) state.pendingCreates.set(useId, input ?? {});
+    return;
+  }
+  if (name === 'TaskUpdate') {
+    const id = input && input.taskId;
+    if (!id) return;
+    if (input.status === 'deleted') {
+      state.todos.delete(id);
+      return;
+    }
+    const cur = state.todos.get(id) ?? { subject: `Task #${id}`, status: 'pending' };
+    const next = { ...cur };
+    if (typeof input.subject === 'string') next.subject = input.subject;
+    if (typeof input.description === 'string') next.description = input.description;
+    if (typeof input.activeForm === 'string') next.activeForm = input.activeForm;
+    if (typeof input.status === 'string') next.status = input.status;
+    state.todos.set(id, next);
+  }
+}
+
+// Apply a tool_result text to resolve a previously-stashed TaskCreate into a real entry
+// with its server-assigned id. The result text starts with "Task #N created successfully: ..."
+// — that's the only place the id surfaces, since TaskCreate's input doesn't carry one.
+function applyTaskResult(useId, text) {
+  if (state.consumedTaskResults.has(useId)) return;
+  const pending = state.pendingCreates.get(useId);
+  if (!pending) return;
+  state.consumedTaskResults.add(useId);
+  state.pendingCreates.delete(useId);
+  const m = /^Task #(\d+)\b/.exec(String(text));
+  if (!m) return;
+  const id = m[1];
+  state.todos.set(id, {
+    subject: pending.subject ?? `Task #${id}`,
+    description: pending.description,
+    activeForm: pending.activeForm,
+    status: 'pending',
+  });
+}
+
+// Bridge from the disk-replayed transcript (TranscriptMessage[]) to the same state updates
+// the live WS path drives. Returns true if the entry was a Task* event so the caller can
+// keep it out of state.transcript.
+function applyTaskTranscriptMessage(m) {
+  if (m.role === 'tool_use' && m.toolName && TASK_TOOL_NAMES.has(m.toolName)) {
+    applyTaskUse(m.toolName, m.toolInput, m.toolUseId);
+    return true;
+  }
+  if (m.role === 'tool_result' && m.toolUseId && state.pendingCreates.has(m.toolUseId)) {
+    applyTaskResult(m.toolUseId, m.text);
+    return true;
+  }
+  return false;
+}
+
+// AskUserQuestion bridge. Different shape from Task because the result actually belongs
+// in the transcript as a Q&A record (not folded into a sidebar). Pushes a role='ask'
+// entry on tool_use; later, the matching tool_result fills in the entry's `answer`. The
+// caller passes the array we should push into so this works for both the live transcript
+// and the disk-replay "filtered" buffer.
+function applyAskTranscriptMessage(m, sink) {
+  if (m.role === 'tool_use' && m.toolName === 'AskUserQuestion') {
+    const questions = Array.isArray(m.toolInput?.questions) ? m.toolInput.questions : [];
+    const entry = {
+      role: 'ask',
+      text: '',
+      msgId: m.msgId,
+      toolUseId: m.toolUseId,
+      questions,
+      answer: null,
+    };
+    sink.push(entry);
+    if (m.toolUseId) state.pendingAsks.set(m.toolUseId, entry);
+    return true;
+  }
+  if (m.role === 'tool_result' && m.toolUseId && state.pendingAsks.has(m.toolUseId)) {
+    const entry = state.pendingAsks.get(m.toolUseId);
+    entry.answer = String(m.text ?? '');
+    state.pendingAsks.delete(m.toolUseId);
+    return true;
+  }
+  return false;
+}
 
 // Wire the HTML-rendered initial shell so the "+ New session" button works from the very
 // first paint, before /api/sessions resolves. The full list renders in once loadSessions does.
@@ -157,7 +277,14 @@ async function openSession(id) {
   state.view = 'session';
   state.transcript = [];
   state.seenMsgIds = new Set();
-  state.thinking = false;
+  // Per-session reset: todos, pendingCreates, and consumedTaskResults all belong to one
+  // session's task list. Resetting here keeps the panel from leaking between sessions.
+  state.todos = new Map();
+  state.pendingCreates = new Map();
+  state.consumedTaskResults = new Set();
+  state.expandedTools = new Set();
+  state.pendingAsks = new Map();
+  stopThinking();
   state.transcriptLoading = !isNew;
   // Dismiss any cross-session toast — it's either about this session (we're already
   // here) or about a different one the user is choosing not to follow right now.
@@ -171,8 +298,18 @@ async function openSession(id) {
         // The user might have already started typing while we were fetching; only
         // replace the transcript if we haven't moved on to another session.
         if (state.currentSessionId === id) {
-          state.transcript = messages;
-          for (const m of messages) if (m.msgId) state.seenMsgIds.add(m.msgId);
+          // Replay each disk message through the same dispatch the live WS path uses, so
+          // task events build state.todos and never reach state.transcript, and Ask events
+          // get folded into a role='ask' entry instead of a raw tool_use tile. Everything
+          // else flows into the transcript in original order.
+          const filtered = [];
+          for (const m of messages) {
+            if (m.msgId) state.seenMsgIds.add(m.msgId);
+            if (applyTaskTranscriptMessage(m)) continue;
+            if (applyAskTranscriptMessage(m, filtered)) continue;
+            filtered.push(m);
+          }
+          state.transcript = filtered;
         }
       }
     } catch (e) {
@@ -190,8 +327,10 @@ function leaveSession() {
   state.ws?.close();
   state.ws = null;
   state.currentSessionId = null;
-  state.thinking = false;
+  stopThinking();
   document.getElementById('toast')?.remove();
+  closeTodosSheet();
+  closeAskSheet();
   loadSessions();
 }
 
@@ -229,6 +368,40 @@ function connectNotificationWs() {
   ws.onerror = () => { /* close handler retries */ };
 }
 
+// Idempotent ask-tile seeder. Two independent code paths can learn about an Ask:
+//   1. The notification WS delivers approval_pending — carrying toolInput but no
+//      tool_use_id (the hook doesn't surface it).
+//   2. The session WS delivers the matching assistant message — carrying tool_use_id
+//      and the same toolInput.
+// Either one can arrive first (in practice the notification often wins because the
+// session subprocess can buffer its assistant message until the tool resolves), so
+// both call this helper. It finds an existing unanswered ask tile and fills in any
+// missing fields, or pushes a fresh one if none exists. Returns the entry.
+function ensureAskInlineTile({ toolInput, msgId, toolUseId }) {
+  let entry = state.transcript.find((m) => m.role === 'ask' && m.answer == null);
+  const qs = Array.isArray(toolInput?.questions) ? toolInput.questions : [];
+  if (entry) {
+    if (toolUseId && !entry.toolUseId) {
+      entry.toolUseId = toolUseId;
+      state.pendingAsks.set(toolUseId, entry);
+    }
+    if (msgId && !entry.msgId) entry.msgId = msgId;
+    if (qs.length > 0 && entry.questions.length === 0) entry.questions = qs;
+    return entry;
+  }
+  entry = {
+    role: 'ask',
+    text: '',
+    msgId,
+    toolUseId,
+    questions: qs,
+    answer: null,
+  };
+  state.transcript.push(entry);
+  if (toolUseId) state.pendingAsks.set(toolUseId, entry);
+  return entry;
+}
+
 function handleWsMessage(msg) {
   // Session WS only carries session-scoped events. Approvals flow through the notification
   // WS so they reach every view (list, current session, other session).
@@ -237,24 +410,103 @@ function handleWsMessage(msg) {
     // Skip the whole envelope if we've already rendered it — happens when the WS replay
     // buffer redelivers a message that's already on disk or was pushed before a reconnect.
     if (msgId && state.seenMsgIds.has(msgId)) return;
-    if (msgId) state.seenMsgIds.add(msgId);
     const blocks = msg.message?.content ?? [];
+    // Claude re-emits the SAME msg_id multiple times when extended thinking is on: the
+    // first delivery carries only a `thinking` block, the second carries the real text /
+    // tool_use blocks. Marking the id seen on the first (thinking-only) delivery would
+    // silently drop the visible content. So we only flag the id once we've actually
+    // processed a renderable block — text or tool_use. Thinking blocks pass through
+    // unrendered (the italic caret tile already signals reasoning is happening).
+    let processed = false;
     for (const b of blocks) {
       if (b.type === 'text') {
         state.transcript.push({ role: 'assistant', text: b.text, msgId });
+        processed = true;
       } else if (b.type === 'tool_use') {
-        state.transcript.push({ role: 'tool_use', text: `${b.name}(${JSON.stringify(b.input).slice(0, 200)})`, msgId });
+        // Task* tools feed the todos panel instead of the transcript. Other tools render
+        // as opaque tool_use entries the same way as before.
+        if (b.name && TASK_TOOL_NAMES.has(b.name)) {
+          applyTaskUse(b.name, b.input, b.id);
+          processed = true;
+          continue;
+        }
+        // AskUserQuestion becomes an inline Q&A card. The notification WS may have
+        // already seeded the tile (via the approval payload) — if so this just attaches
+        // the tool_use_id and msgId. Otherwise it pushes fresh.
+        if (b.name === 'AskUserQuestion') {
+          ensureAskInlineTile({ toolInput: b.input, msgId, toolUseId: b.id });
+          processed = true;
+          continue;
+        }
+        // Carry structured fields so toolUseHtml() can render a tool-specific summary on
+        // both live and disk-replayed paths. The fallback `text` stays for unknown tools
+        // and any edge case where toolInput is missing.
+        state.transcript.push({
+          role: 'tool_use',
+          text: `${b.name}(${JSON.stringify(b.input).slice(0, 200)})`,
+          toolName: b.name,
+          toolInput: b.input,
+          ...(b.id ? { toolUseId: b.id } : {}),
+          msgId,
+        });
+        processed = true;
       }
     }
-    state.thinking = false;
+    if (!processed) return; // thinking-only delivery — wait for the real content
+    if (msgId) state.seenMsgIds.add(msgId);
+    stopThinking();
     renderSession();
+  } else if (msg.type === 'stream_event') {
+    // Claude's --include-partial-messages stream emits Anthropic streaming events
+    // (message_start, content_block_delta, message_delta, message_stop). We only care
+    // about usage updates here — they drive the live "412 tok" counter on the thinking
+    // tile. Format: message_start.message.usage.output_tokens (starts at 0); message_delta
+    // .usage.output_tokens grows over the course of generation. Defensive lookup because
+    // event shapes can vary slightly across claude binary versions.
+    if (!state.thinking) return;
+    const ev = msg.event ?? msg;
+    const usage = ev?.usage ?? ev?.message?.usage;
+    const out = usage?.output_tokens;
+    if (typeof out === 'number' && out >= state.thinkingOutputTokens) {
+      state.thinkingOutputTokens = out;
+      updateThinkingMeta();
+    }
+  } else if (msg.type === 'user') {
+    // Claude's own feedback to itself (tool_result blocks). Most are noise we drop, but
+    // results tied to a pending TaskCreate carry the freshly-assigned task id we need to
+    // populate the todos panel.
+    const blocks = msg.message?.content;
+    if (!Array.isArray(blocks)) return;
+    let touched = false;
+    for (const b of blocks) {
+      if (b?.type !== 'tool_result') continue;
+      const useId = b.tool_use_id;
+      if (!useId) continue;
+      const text = typeof b.content === 'string'
+        ? b.content
+        : Array.isArray(b.content)
+          ? b.content.filter((x) => x?.type === 'text').map((x) => x.text).join('\n')
+          : '';
+      // Route to whichever pending pairer holds this id. Each id only sits in one set
+      // at a time (Task creates and Ask uses are distinct), so the first match wins.
+      if (state.pendingCreates.has(useId)) {
+        applyTaskResult(useId, text);
+        touched = true;
+      } else if (state.pendingAsks.has(useId)) {
+        const entry = state.pendingAsks.get(useId);
+        entry.answer = text;
+        state.pendingAsks.delete(useId);
+        touched = true;
+      }
+    }
+    if (touched) renderSession();
   } else if (msg.type === 'daemon_error') {
     state.transcript.push({ role: 'error', text: msg.message });
-    state.thinking = false;
+    stopThinking();
     renderSession();
   } else if (msg.type === 'daemon_proc_exit') {
     state.transcript.push({ role: 'error', text: `Session subprocess exited (code ${msg.code}). Reopen to resume.` });
-    state.thinking = false;
+    stopThinking();
     renderSession();
   }
 }
@@ -265,16 +517,33 @@ function handleNotificationMessage(msg) {
     // Sent on attach (cold start AND reconnect-after-background), so it doubles as a
     // recovery mechanism for any approvals the client missed while disconnected.
     state.pendingApprovals = Array.isArray(msg.approvals) ? msg.approvals : [];
-    // Re-render whatever's currently in view so badges / cards reflect the new state.
+    // Seed inline ask tiles for any Ask approvals on the current session. Necessary
+    // because the session WS can lag behind the notification WS, so we can't rely on
+    // the assistant message arriving in time to populate the transcript.
+    for (const a of state.pendingApprovals) {
+      if (a.toolName === 'AskUserQuestion' && a.sessionId === state.currentSessionId) {
+        ensureAskInlineTile({ toolInput: a.toolInput });
+      }
+    }
     if (state.view === 'list') renderList();
     else if (state.view === 'session') renderSession();
     return;
   }
   if (msg.type === 'approval_pending') {
     // Live new arrival. Dedupe (a reconnect could race against the snapshot) and route
-    // either to an inline card (if its session is in view) or a toast (if not).
+    // either to an inline card (if its session is in view) or a toast (if not). The Ask
+    // sheet branch is taken inside renderSession via ensureAskSheet for the in-session
+    // path; cross-session asks still show a toast so the user can navigate over and
+    // answer them.
     if (state.pendingApprovals.some((a) => a.approvalId === msg.approvalId)) return;
     state.pendingApprovals.push(msg);
+    // Ask approvals for the current session: seed the inline tile NOW so it's visible
+    // immediately, regardless of whether the matching assistant message has arrived on
+    // the session WS yet. The session-WS path will later attach toolUseId/msgId to
+    // the same entry (ensureAskInlineTile dedupes by "pending ask in transcript").
+    if (msg.toolName === 'AskUserQuestion' && msg.sessionId === state.currentSessionId) {
+      ensureAskInlineTile({ toolInput: msg.toolInput });
+    }
     if (state.view === 'session' && msg.sessionId === state.currentSessionId) {
       renderSession();
     } else {
@@ -292,9 +561,14 @@ function renderSession() {
     ? `<div class="empty-state">No messages yet — say something.</div>`
     : '';
   // Approval cards are scoped to the current session only; cross-session approvals live
-  // in state.pendingApprovals too but surface as toasts, not inline cards.
-  const cards = state.pendingApprovals.filter((a) => a.sessionId === state.currentSessionId);
+  // in state.pendingApprovals too but surface as toasts, not inline cards. AskUserQuestion
+  // approvals are also excluded — they get a dedicated popup (see ensureAskSheet) where
+  // the user picks an option or types a reply, instead of an Approve/Reject pair.
+  const cards = state.pendingApprovals.filter((a) =>
+    a.sessionId === state.currentSessionId && a.toolName !== 'AskUserQuestion'
+  );
   const thinkingTile = state.thinking ? thinkingTileHtml() : '';
+  const todos = todosPanelHtml();
   root.innerHTML = `
     <div class="transcript" id="transcript">
       ${loading}
@@ -303,6 +577,7 @@ function renderSession() {
       ${thinkingTile}
       ${cards.map((a) => approvalCardHtml(a)).join('')}
     </div>
+    ${todos}
     <div class="composer">
       <div class="field" id="composer" contenteditable="true"
            role="textbox" aria-multiline="true"
@@ -335,16 +610,1105 @@ function renderSession() {
     btn.onclick = () => decideApproval(btn.dataset.id, 'deny');
   }
 
+  const todosBtn = document.getElementById('todos-panel');
+  if (todosBtn) todosBtn.onclick = openTodosSheet;
+
+  // AskUserQuestion popups stay in sync with state.pendingApprovals — opens the sheet when
+  // a new ask arrives, closes it if the approval got resolved elsewhere (e.g. timed out).
+  ensureAskSheet();
+
+  // Tap-to-expand for tool_use entries. Toggle is done in-place (class flip + state Set
+  // update) instead of via a full re-render, so the transcript doesn't jump and any text
+  // the user is selecting inside the JSON block survives the interaction.
+  for (const el of document.querySelectorAll('.msg.tool_use-expandable')) {
+    el.addEventListener('click', (e) => {
+      // Don't toggle if the user is selecting text — most likely they're trying to copy
+      // a path, URL, or chunk of JSON. Selection.toString() is empty for a plain click.
+      const sel = window.getSelection();
+      if (sel && sel.toString().length > 0 && el.contains(sel.anchorNode)) return;
+      const id = el.dataset.toolId;
+      if (!id) return;
+      const open = el.classList.toggle('tool_use-expanded');
+      if (open) state.expandedTools.add(id); else state.expandedTools.delete(id);
+      // If we just expanded near the bottom, the new JSON might land below the viewport.
+      // Nudge it into view so the user sees the result of their tap.
+      if (open) {
+        requestAnimationFrame(() => {
+          const rect = el.getBoundingClientRect();
+          const transcript = document.getElementById('transcript');
+          if (transcript && rect.bottom > transcript.getBoundingClientRect().bottom) {
+            el.scrollIntoView({ block: 'end', behavior: 'smooth' });
+          }
+        });
+      }
+    });
+  }
+  // If the expanded sheet is open while a re-render fires (TaskUpdate streamed in), refresh
+  // its contents in place. Closing + reopening would flicker the transform animation.
+  refreshTodosSheet();
+
   scrollTranscriptBottom();
 }
 
+// ─────────────────────── AskUserQuestion sheet ───────────────────────
+// When Claude calls AskUserQuestion, the hook intercepts it like any other approval. But
+// instead of an Approve/Reject pair, we surface a dedicated sheet listing the question's
+// options + a free-text reply field. Picking an option (or sending text) resolves the
+// approval as `deny` with the user's answer as the reason — the daemon already plumbs
+// `reason` through to `permissionDecisionReason`, which Claude sees as the tool's effective
+// output. The hook returning deny + an answer-reason is what makes Claude treat this as
+// "the user said X" rather than "the tool failed."
+
+// Idempotent: opens the sheet for the current session's pending Ask if one exists, closes
+// any stale sheet whose approval has been resolved, and leaves an already-correct sheet
+// alone. Called from renderSession so the UI stays consistent with state.pendingApprovals.
+function ensureAskSheet() {
+  const ask = state.pendingApprovals.find((a) =>
+    a.toolName === 'AskUserQuestion' && a.sessionId === state.currentSessionId
+  );
+  const existing = document.getElementById('ask-sheet');
+  if (!ask) {
+    if (existing) closeAskSheet();
+    return;
+  }
+  if (existing && existing.dataset.approvalId === ask.approvalId) return;
+  openAskSheet(ask);
+}
+
+function openAskSheet(approval) {
+  closeAskSheet();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'sheet-backdrop ask-sheet-backdrop';
+  backdrop.id = 'ask-sheet-backdrop';
+  const sheet = document.createElement('aside');
+  sheet.className = 'sheet ask-sheet';
+  sheet.id = 'ask-sheet';
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-label', 'Question from Claude');
+  sheet.dataset.approvalId = approval.approvalId;
+  sheet.innerHTML = askSheetBodyHtml(approval);
+  document.body.appendChild(backdrop);
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => {
+    backdrop.classList.add('open');
+    sheet.classList.add('open');
+  });
+
+  const questions = Array.isArray(approval.toolInput?.questions) ? approval.toolInput.questions : [];
+  // Auto-submit on a single tap is only safe when there's exactly ONE single-select
+  // question — with multiple questions the user still needs to answer the rest, and
+  // the previous behavior (auto-submit on first tap) ate the unanswered ones.
+  const autoSubmit = questions.length === 1 && !questions[0]?.multiSelect;
+
+  const reply = sheet.querySelector('#ask-reply');
+  const send = sheet.querySelector('#ask-send');
+  const arm = () => {
+    const hasReply = (reply?.value ?? '').trim().length > 0;
+    const hasPick = sheet.querySelector('.ask-option.selected') != null;
+    send?.classList.toggle('armed', hasReply || hasPick);
+  };
+
+  // Single-select: radio-button behavior within a question (selecting one option
+  // deselects siblings in the same question). Auto-submits only when autoSubmit is on.
+  for (const btn of sheet.querySelectorAll('.ask-option[data-single]')) {
+    btn.onclick = () => {
+      const qi = btn.dataset.qi;
+      for (const sib of sheet.querySelectorAll(`.ask-option[data-qi="${qi}"][data-single]`)) {
+        sib.classList.remove('selected');
+      }
+      btn.classList.add('selected');
+      if (autoSubmit) {
+        const oi = Number(btn.dataset.oi);
+        submitAskAnswer(approval, [{ qi: Number(qi), choices: [oi] }], null);
+      } else {
+        arm();
+      }
+    };
+  }
+  // Multi-select: toggle accumulator. Always requires Send.
+  for (const btn of sheet.querySelectorAll('.ask-option[data-multi]')) {
+    btn.onclick = () => {
+      btn.classList.toggle('selected');
+      arm();
+    };
+  }
+
+  // The "or reply" textarea — typing arms the Send button. Cmd/Ctrl+Enter sends.
+  reply?.addEventListener('input', arm);
+  reply?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+      e.preventDefault();
+      send?.click();
+    }
+  });
+
+  if (send) {
+    send.onclick = () => {
+      const text = (reply?.value ?? '').trim();
+      // Collect selected options across ALL questions, single + multi alike. With
+      // multiple questions, a single-tap leaves the option in .selected (no auto-submit)
+      // so it shows up here too.
+      const grouped = {};
+      for (const el of sheet.querySelectorAll('.ask-option.selected')) {
+        const qi = Number(el.dataset.qi);
+        const oi = Number(el.dataset.oi);
+        (grouped[qi] = grouped[qi] || []).push(oi);
+      }
+      const picks = Object.keys(grouped).map((qi) => ({ qi: Number(qi), choices: grouped[qi] }));
+      if (picks.length === 0 && !text) return; // nothing to send
+      submitAskAnswer(approval, picks, text || null);
+    };
+  }
+  // Backdrop tap = dismiss without answering (rare; Claude will see the deny with no
+  // reason and most likely re-ask or proceed). We don't auto-resolve here.
+  backdrop.onclick = () => {
+    decideApproval(approval.approvalId, 'deny', 'User dismissed the question without answering.');
+    closeAskSheet();
+  };
+  const close = sheet.querySelector('#ask-sheet-close');
+  if (close) close.onclick = () => backdrop.click();
+}
+
+function closeAskSheet() {
+  const backdrop = document.getElementById('ask-sheet-backdrop');
+  const sheet = document.getElementById('ask-sheet');
+  if (!backdrop && !sheet) return;
+  backdrop?.classList.remove('open');
+  sheet?.classList.remove('open');
+  setTimeout(() => {
+    backdrop?.remove();
+    sheet?.remove();
+  }, 380);
+}
+
+// Compose the deny-reason text that Claude will see and send the decision back. Claude
+// is told explicitly that this is a user answer (not a tool failure), with both the
+// chosen options and any free-text reply concatenated into a single readable string.
+function submitAskAnswer(approval, picks, replyText) {
+  const questions = Array.isArray(approval.toolInput?.questions) ? approval.toolInput.questions : [];
+  // Build (question, joined-answer) pairs once; the wire format and the inline-card
+  // friendly format are both derived from these.
+  const pairs = [];
+  for (const { qi, choices } of picks) {
+    const q = questions[qi];
+    if (!q) continue;
+    const opts = Array.isArray(q.options) ? q.options : [];
+    const labels = choices.map((oi) => opts[oi]?.label).filter(Boolean);
+    if (!labels.length) continue;
+    pairs.push({ question: String(q.question ?? ''), answer: labels.join(', ') });
+  }
+
+  // Wire format = exactly what the native AskUserQuestion tool_result emits, so Claude
+  // reads our hook-denial reason the same way it reads a successful tool call. Free-text
+  // reply gets appended as a separate clause since the native format has no slot for it.
+  // This same string is what we stash on the transcript entry — askMsgHtml feeds it back
+  // through parseAskAnswer for display, so both the live-submit path and the disk-replay
+  // tool_result path land on the exact same rendering logic.
+  let wire = '';
+  if (pairs.length > 0) {
+    const quoted = pairs.map(({ question, answer }) => `"${question}"="${answer}"`).join(', ');
+    wire = `Your questions have been answered: ${quoted}`;
+  }
+  if (replyText) {
+    wire = wire ? `${wire}. User also added: ${replyText}` : `User replied: ${replyText}`;
+  }
+  if (!wire) wire = 'User dismissed the question without answering.';
+
+  // Update the inline card immediately so the user sees their answer in the transcript
+  // before the tool_result round-trips back through the WS stream. We scan transcript
+  // (not just state.pendingAsks) because the notification-seeded tile may not have a
+  // tool_use_id yet, so it's not in the pendingAsks map. Claude serializes Ask calls,
+  // so we only flip the (single) unanswered one.
+  for (const entry of state.transcript) {
+    if (entry.role === 'ask' && entry.answer == null) {
+      entry.answer = wire;
+    }
+  }
+  state.pendingAsks.clear();
+  decideApproval(approval.approvalId, 'deny', wire);
+  closeAskSheet();
+}
+
+function askSheetBodyHtml(approval) {
+  const questions = Array.isArray(approval.toolInput?.questions) ? approval.toolInput.questions : [];
+  const blocks = questions.map((q, qi) => askQuestionBlockHtml(q, qi)).join('');
+  // Send button is only meaningful when there's a multi-select question or the user is
+  // typing a free-text reply. Single-select questions auto-submit on tap, so the user
+  // doesn't need to hit Send unless they're using the textarea or composing a multi-pick.
+  return `
+    <div class="grabber"></div>
+    <div class="header-row ask-sheet-header">
+      <span class="sheet-title">Question</span>
+      <button class="sheet-close" id="ask-sheet-close" aria-label="Dismiss question">✕</button>
+    </div>
+    <div class="ask-sheet-body">
+      ${blocks}
+      <div class="ask-reply-block">
+        <div class="ask-section-label">or write a reply</div>
+        <textarea id="ask-reply" class="ask-reply-field"
+                  rows="3" autocapitalize="sentences"
+                  placeholder="Type a custom answer…"></textarea>
+      </div>
+      <div class="ask-actions">
+        <button class="ask-send" id="ask-send" type="button">Send →</button>
+      </div>
+    </div>
+  `;
+}
+
+function askQuestionBlockHtml(q, qi) {
+  if (!q || typeof q !== 'object') return '';
+  const multi = !!q.multiSelect;
+  const header = q.header ? `<div class="ask-q-header">${escapeHtml(String(q.header))}</div>` : '';
+  const opts = Array.isArray(q.options) ? q.options : [];
+  const optionsHtml = opts.map((opt, oi) => askOptionHtml(opt, qi, oi, multi)).join('');
+  return `
+    <section class="ask-question">
+      ${header}
+      <div class="ask-q-text">${escapeHtml(String(q.question ?? ''))}</div>
+      <div class="ask-section-label">${escapeHtml(multi ? 'select any that apply' : 'choose one')}</div>
+      <div class="ask-options">${optionsHtml}</div>
+    </section>
+  `;
+}
+
+function askOptionHtml(opt, qi, oi, multi) {
+  const label = String(opt?.label ?? '');
+  const desc = String(opt?.description ?? '');
+  const mode = multi ? 'data-multi="1"' : 'data-single="1"';
+  return `
+    <button type="button" class="ask-option" data-qi="${escapeHtml(String(qi))}" data-oi="${escapeHtml(String(oi))}" ${mode}>
+      <span class="ask-option-marker" aria-hidden="true"></span>
+      <span class="ask-option-body">
+        <span class="ask-option-label">${escapeHtml(label)}</span>
+        ${desc ? `<span class="ask-option-desc">${escapeHtml(desc)}</span>` : ''}
+      </span>
+    </button>
+  `;
+}
+
+// ─────────────────────── Edit / Bash special expansions ───────────────────────
+// When the tool_use tile expands, the default expanded view is the raw pretty JSON. Edit
+// and Bash override this with formats matched to how a human reads those tools: a unified
+// diff for Edit, a $-prefixed shell-style command block for Bash.
+
+// LCS-based line diff. O(m*n) memory, capped at 800x800 lines — beyond that we render the
+// naive "all old removed / all new added" view, which is still readable for big chunks
+// and avoids pinning the main thread on a large file replacement.
+function diffLines(oldText, newText) {
+  const a = String(oldText ?? '').split('\n');
+  const b = String(newText ?? '').split('\n');
+  const m = a.length, n = b.length;
+  const CAP = 800;
+  if (m === 0 && n === 0) return [];
+  if (m > CAP || n > CAP) {
+    return [
+      ...a.map((t) => ({ op: '-', text: t })),
+      ...b.map((t) => ({ op: '+', text: t })),
+    ];
+  }
+  const dp = Array.from({ length: m + 1 }, () => new Int32Array(n + 1));
+  for (let i = m - 1; i >= 0; i--) {
+    for (let j = n - 1; j >= 0; j--) {
+      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    }
+  }
+  const out = [];
+  let i = 0, j = 0;
+  while (i < m && j < n) {
+    if (a[i] === b[j]) { out.push({ op: ' ', text: a[i] }); i++; j++; }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { out.push({ op: '-', text: a[i] }); i++; }
+    else { out.push({ op: '+', text: b[j] }); j++; }
+  }
+  while (i < m) out.push({ op: '-', text: a[i++] });
+  while (j < n) out.push({ op: '+', text: b[j++] });
+  return out;
+}
+
+function renderEditDiff(input) {
+  const oldStr = input?.old_string ?? '';
+  const newStr = input?.new_string ?? '';
+  const diff = diffLines(oldStr, newStr);
+  // The filename + replace-all flag already live in the collapsed tile's label + summary
+  // above; the diff doesn't need to repeat them in its own header bar.
+  const rows = diff.map(({ op, text }) => {
+    const cls = op === '+' ? 'diff-add' : op === '-' ? 'diff-del' : 'diff-eq';
+    const prefix = op;
+    // Render empty lines as a single non-breaking space so the row still has visible height
+    // and the user can tell that a blank line is part of the diff.
+    const body = text === '' ? ' ' : text;
+    return `<div class="diff-line ${cls}"><span class="diff-mark">${escapeHtml(prefix)}</span><span class="diff-text">${escapeHtml(body)}</span></div>`;
+  }).join('');
+  return `<div class="tool-diff"><div class="diff-body">${rows}</div></div>`;
+}
+
+// Grep's input is structured (pattern, path, glob, type, flags, output_mode, context)
+// and the most natural way to show it is the ripgrep command-line equivalent — same
+// shell-style block we use for Bash. Anyone who's used grep/rg can read it at a glance.
+function renderGrepSearch(input) {
+  const args = ['rg'];
+  // Boolean flags first — short forms, in the order a human would type them.
+  if (input?.['-i']) args.push('-i');
+  if (input?.['-n']) args.push('-n');
+  if (input?.multiline) args.push('-U');
+  // Output-mode flags. Default ("content") needs no flag; -l/-c override.
+  if (input?.output_mode === 'files_with_matches') args.push('-l');
+  else if (input?.output_mode === 'count') args.push('-c');
+  // Context flags. Each can stand alone or be combined; we mirror exactly what was set.
+  if (input?.['-A'] != null) args.push(`-A ${input['-A']}`);
+  if (input?.['-B'] != null) args.push(`-B ${input['-B']}`);
+  if (input?.['-C'] != null) args.push(`-C ${input['-C']}`);
+  // Filters
+  if (input?.type) args.push(`--type ${shellQuote(String(input.type))}`);
+  if (input?.glob) args.push(`-g ${shellQuote(String(input.glob))}`);
+  // Pattern (always present in well-formed Grep calls) and optional path.
+  args.push(shellQuote(String(input?.pattern ?? '')));
+  if (input?.path) args.push(shellQuote(shortenPath(String(input.path))));
+  let cmd = args.join(' ');
+  if (input?.head_limit) cmd += ` | head -${input.head_limit}`;
+  return `
+    <div class="tool-bash">
+      <div class="bash-cmd"><span class="bash-prompt">$</span><span class="bash-cmd-text">${escapeHtml(cmd)}</span></div>
+    </div>
+  `;
+}
+
+// Minimal shell-style quoting. Safe-glob characters pass unquoted; anything else gets
+// single-quoted (and falls back to double-quoting with escapes if the value contains a
+// single quote). Tuned for readability over canonical correctness — the user is reading,
+// not piping the output into bash.
+function shellQuote(s) {
+  if (s === '') return "''";
+  if (/^[A-Za-z0-9_./@%+=:,~-]+$/.test(s)) return s;
+  if (!s.includes("'")) return `'${s}'`;
+  return `"${s.replace(/(["\\$`])/g, '\\$1')}"`;
+}
+
+function renderBashCommand(input) {
+  const cmd = String(input?.command ?? '');
+  const bg = input?.run_in_background ? '<span class="bash-flag">background</span>' : '';
+  const timeout = input?.timeout
+    ? `<span class="bash-flag">timeout ${escapeHtml(String(input.timeout))}ms</span>`
+    : '';
+  const flags = (bg || timeout) ? `<div class="bash-flags">${bg}${timeout}</div>` : '';
+  // The description is already shown as the collapsed tile's summary above — no need
+  // to repeat it as a comment line here. white-space: pre-wrap on .bash-cmd preserves
+  // newlines and indentation in heredocs and multi-line scripts.
+  return `
+    <div class="tool-bash">
+      <div class="bash-cmd"><span class="bash-prompt">$</span><span class="bash-cmd-text">${escapeHtml(cmd)}</span></div>
+      ${flags}
+    </div>
+  `;
+}
+
+// Write's expanded view shows the actual file content with line numbers — the JSON dump
+// is unreadable for any file of size (the entire content lands as a single escaped
+// string). 500-line cap keeps a 10k-line generated file from locking the main thread; the
+// rest reads as a footer note. Content is just escaped text rather than syntax-
+// highlighted — matching the diff renderer, which is honest about being a payload preview.
+function renderWriteContent(input) {
+  const content = String(input?.content ?? '');
+  const lines = content.split('\n');
+  const MAX = 500;
+  const visible = lines.slice(0, MAX);
+  const overflow = lines.length - visible.length;
+  const rows = visible.map((line, i) => {
+    // Empty rows still need visible height so blank lines read correctly. A trailing
+    // space is enough to give the row its line-height without disturbing wrapping.
+    const text = line === '' ? ' ' : line;
+    return `<div class="write-line"><span class="write-ln">${i + 1}</span><span class="write-text">${escapeHtml(text)}</span></div>`;
+  }).join('');
+  const overflowRow = overflow > 0
+    ? `<div class="write-overflow">+ ${overflow.toLocaleString()} more lines</div>`
+    : '';
+  return `<div class="tool-write"><div class="write-body">${rows}${overflowRow}</div></div>`;
+}
+
+// Agent's `prompt` is the most interesting payload in the entire transcript — it's the
+// brief Claude is handing to the subagent. Render it as markdown (using the existing
+// renderMarkdown that already handles XSS-safety internally) so headings, lists, code
+// blocks, etc. all read correctly. description/subagent_type stay in the collapsed
+// label + summary above, so this view focuses purely on the prompt itself.
+function renderAgentPrompt(input) {
+  const prompt = String(input?.prompt ?? '');
+  if (!prompt) return '';
+  return `<div class="tool-agent"><div class="agent-prompt">${renderMarkdown(prompt)}</div></div>`;
+}
+
+// WebFetch's URL gets first-class treatment in the expanded view: a method tag + the URL
+// as an actual <a> so the user can tap straight through to the resource. The prompt is
+// usually a markdown brief telling Claude what to extract; render it as markdown below.
+function renderWebFetch(input) {
+  const url = String(input?.url ?? '');
+  const prompt = String(input?.prompt ?? '');
+  // Only allow http(s):// + relative URLs through to the anchor; anything else falls
+  // back to plain text. Same conservative posture as the markdown link renderer.
+  const safeUrl = /^https?:\/\//i.test(url) ? url : '';
+  const urlBlock = url
+    ? safeUrl
+      ? `<div class="webfetch-url"><span class="webfetch-method">GET</span><a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a></div>`
+      : `<div class="webfetch-url"><span class="webfetch-method">GET</span><span class="webfetch-url-text">${escapeHtml(url)}</span></div>`
+    : '';
+  const promptBlock = prompt
+    ? `<div class="webfetch-prompt">${renderMarkdown(prompt)}</div>`
+    : '';
+  return `<div class="tool-webfetch">${urlBlock}${promptBlock}</div>`;
+}
+
+function refreshTodosSheet() {
+  const sheet = document.getElementById('todos-sheet');
+  if (!sheet) return;
+  // Full body re-render. The sheet is structured enough (sections, progress bar, header)
+  // that a piecewise patch would be noisier than just rebuilding the inner HTML — and the
+  // outer <aside> keeps its .open class so no transform animation fires.
+  sheet.innerHTML = todosSheetBodyHtml();
+  const close = sheet.querySelector('#todos-sheet-close');
+  if (close) close.onclick = closeTodosSheet;
+}
+
 function msgHtml(m) {
-  const labels = { user: 'You', assistant: 'Assistant', tool_use: 'Tool', error: 'Error' };
+  if (m.role === 'tool_use') return toolUseHtml(m);
+  if (m.role === 'ask') return askMsgHtml(m);
+  const labels = { user: 'You', assistant: 'Assistant', error: 'Error' };
   // Assistant messages get full markdown rendering. Everything else is plain text — user
-  // messages shouldn't be parsed (they're as the user typed them), tool_use shows the raw
-  // call signature in a fixed format, and error messages are unstructured logs.
+  // messages shouldn't be parsed (they're as the user typed them), and error messages are
+  // unstructured logs.
   const body = m.role === 'assistant' ? renderMarkdown(m.text) : escapeHtml(m.text);
   return `<div class="msg ${escapeHtml(m.role)}"><span class="role">${escapeHtml(labels[m.role] ?? m.role)}</span><span class="body-text">${body}</span></div>`;
+}
+
+// Inline Q&A card. Each question is rendered with its paired answer right below it, so
+// the reader's eye doesn't have to cross-reference a separate "you answered" block. A
+// small header line shows the question count and whether the user has answered yet.
+function askMsgHtml(m) {
+  const questions = Array.isArray(m.questions) ? m.questions : [];
+  const multi = questions.length > 1;
+  const parsed = parseAskAnswer(m.answer, questions);
+  const answered = parsed.answers.some((a) => a) || !!parsed.reply;
+
+  const rows = questions.map((q, i) => {
+    const qText = String(q?.question ?? '');
+    const a = parsed.answers[i] || '';
+    const num = multi
+      ? `<span class="ask-msg-num">${String(i + 1).padStart(2, '0')}</span>`
+      : '<span class="ask-msg-num ask-msg-num-spacer" aria-hidden="true"></span>';
+    let answerEl;
+    if (answered && a) {
+      answerEl = `<div class="ask-msg-a"><span class="ask-msg-arrow" aria-hidden="true">↳</span><span class="ask-msg-a-text">${escapeHtml(a)}</span></div>`;
+    } else if (answered) {
+      answerEl = `<div class="ask-msg-a ask-msg-a-skipped"><span class="ask-msg-arrow" aria-hidden="true">↳</span><span class="ask-msg-a-text">no answer</span></div>`;
+    } else {
+      answerEl = `<div class="ask-msg-a ask-msg-a-pending"><span class="ask-msg-arrow" aria-hidden="true">↳</span><span class="ask-msg-a-text">waiting…</span></div>`;
+    }
+    return (
+      `<div class="ask-msg-pair">` +
+        num +
+        `<div class="ask-msg-pair-body">` +
+          `<div class="ask-msg-q-text">${escapeHtml(qText)}</div>` +
+          answerEl +
+        `</div>` +
+      `</div>`
+    );
+  }).join('');
+
+  const replyBlock = parsed.reply
+    ? `<div class="ask-msg-reply"><div class="ask-msg-reply-label">Also added</div><div class="ask-msg-reply-text">${escapeHtml(parsed.reply)}</div></div>`
+    : '';
+
+  const countLabel = multi
+    ? `Asked · ${questions.length} questions`
+    : 'Asked';
+  const statusBadge = answered ? 'Answered' : 'Pending';
+
+  return (
+    `<div class="msg ask${answered ? ' ask-answered' : ' ask-pending'}">` +
+      `<div class="ask-msg-head">` +
+        `<span class="ask-msg-label">${escapeHtml(countLabel)}</span>` +
+        `<span class="ask-msg-status">${escapeHtml(statusBadge)}</span>` +
+      `</div>` +
+      `<div class="ask-msg-pairs">${rows}</div>` +
+      replyBlock +
+    `</div>`
+  );
+}
+
+// Parse the various shapes that end up in entry.answer back into structured pairs +
+// optional free-text reply. The pairs are matched onto the original questions array by
+// text, so what shows up in the card lines up with the question it actually answers.
+//
+// Recognized inputs:
+//   1. Canonical wire format ("Your questions have been answered: \"Q\"=\"A\", …
+//      [. User also added: …]"). Native AskUserQuestion + new submitAskAnswer.
+//   2. Legacy prefix ("[AskUserQuestion answer]\n…"). Pre-canonical submitAskAnswer.
+//      Inside it we still parse "Q: …\nA: …" pairs and "User reply: …" / "User chose: …".
+//   3. Reply-only ("User replied: …"). Dismissed-via-text path.
+//   4. Anything else — treat as a free-form reply.
+function parseAskAnswer(answer, questions) {
+  if (!answer) return { answers: new Array(questions.length).fill(''), reply: '' };
+  const raw = String(answer).trim();
+
+  const placeAnswers = (pairs) => {
+    const out = new Array(questions.length).fill('');
+    for (const { q, a } of pairs) {
+      const idx = questions.findIndex((qq) => String(qq?.question ?? '') === q);
+      if (idx >= 0) out[idx] = a;
+      else if (questions.length === 1 && out[0] === '') out[0] = a;
+    }
+    return out;
+  };
+
+  const canonical = /^Your questions have been answered:\s*(.+?)(?:\.\s*User also added:\s*([\s\S]+))?$/.exec(raw);
+  if (canonical) {
+    const pairs = [];
+    const re = /"([^"]*)"="([^"]*)"/g;
+    let p;
+    while ((p = re.exec(canonical[1])) !== null) pairs.push({ q: p[1], a: p[2] });
+    return { answers: placeAnswers(pairs), reply: (canonical[2] ?? '').trim() };
+  }
+
+  const legacy = /^\[AskUserQuestion answer\]\s*\n?([\s\S]*)$/.exec(raw);
+  if (legacy) {
+    const body = legacy[1].trim();
+    const blocks = body.split(/\n\s*\n/);
+    const pairs = [];
+    let reply = '';
+    for (const block of blocks) {
+      const trimmed = block.trim();
+      const qa = /^Q:\s*([\s\S]+?)\nA:\s*([\s\S]+)$/.exec(trimmed);
+      if (qa) { pairs.push({ q: qa[1].trim(), a: qa[2].trim() }); continue; }
+      const chose = /^User chose:\s*([\s\S]+)$/.exec(trimmed);
+      if (chose && questions.length === 1) {
+        pairs.push({ q: String(questions[0]?.question ?? ''), a: chose[1].trim() });
+        continue;
+      }
+      const rep = /^User repl(?:y|ied):\s*([\s\S]+)$/.exec(trimmed);
+      if (rep) { reply = rep[1].trim(); continue; }
+    }
+    return { answers: placeAnswers(pairs), reply };
+  }
+
+  const replyOnly = /^User repl(?:y|ied):\s*([\s\S]+)$/.exec(raw);
+  if (replyOnly) {
+    return { answers: new Array(questions.length).fill(''), reply: replyOnly[1].trim() };
+  }
+
+  return { answers: new Array(questions.length).fill(''), reply: raw };
+}
+
+// Tool-use entries get their own layout: a tool-name label across the top, a one-line
+// human summary (file path / command description / query / URL), an optional mono detail
+// line, and a hidden-by-default pretty-printed JSON block. Tapping anywhere on the box
+// flips the .tool_use-expanded class (wired in renderSession), which reveals the JSON —
+// no re-render, so scroll position and selection survive. Every interpolated value is
+// run through escapeHtml; the JSON highlighter operates on already-escaped text.
+function toolUseHtml(m) {
+  const f = formatToolUse(m.toolName, m.toolInput, m.text);
+  const detail = f.detail ? `<div class="tool-detail">${escapeHtml(f.detail)}</div>` : '';
+  const id = typeof m.toolUseId === 'string' ? m.toolUseId : '';
+  const expandable = id && m.toolInput !== undefined;
+  const expanded = expandable && state.expandedTools.has(id);
+  const cls = `msg tool_use${expandable ? ' tool_use-expandable' : ''}${expanded ? ' tool_use-expanded' : ''}`;
+  const idAttr = expandable ? ` data-tool-id="${escapeHtml(id)}"` : '';
+  const chev = expandable ? `<span class="tool-chev" aria-hidden="true"></span>` : '';
+  // Per-tool expanded views — replace the default pretty-JSON dump with a format matched
+  // to how the tool's input is meant to be read. Falls back to JSON for everything else.
+  let expandedBody = '';
+  if (expandable) {
+    if (m.toolName === 'Edit') {
+      expandedBody = renderEditDiff(m.toolInput);
+    } else if (m.toolName === 'Bash') {
+      expandedBody = renderBashCommand(m.toolInput);
+    } else if (m.toolName === 'Grep') {
+      expandedBody = renderGrepSearch(m.toolInput);
+    } else if (m.toolName === 'Write') {
+      expandedBody = renderWriteContent(m.toolInput);
+    } else if (m.toolName === 'Agent') {
+      expandedBody = renderAgentPrompt(m.toolInput);
+    } else if (m.toolName === 'WebFetch') {
+      expandedBody = renderWebFetch(m.toolInput);
+    } else {
+      expandedBody = `<pre class="tool-json">${highlightJson(JSON.stringify(m.toolInput, null, 2))}</pre>`;
+    }
+  }
+  // Formatters can set body to an empty string when the label alone is enough (Edit, for
+  // example, surfaces the filename in its expanded diff header rather than the summary).
+  // bodyKind='code' marks the body as an identifier (path, regex, URL, query) — wrap in
+  // <code> so it renders mono and announces correctly to assistive tech. Default is prose.
+  const summary = f.body
+    ? f.bodyKind === 'code'
+      ? `<div class="tool-summary tool-summary-code"><code>${escapeHtml(f.body)}</code></div>`
+      : `<div class="tool-summary">${escapeHtml(f.body)}</div>`
+    : '';
+  return (
+    `<div class="${cls}"${idAttr}>` +
+      `<span class="tool-label">${escapeHtml(f.label)}${chev}</span>` +
+      `<div class="tool-content">` +
+        summary +
+        detail +
+        expandedBody +
+      `</div>` +
+    `</div>`
+  );
+}
+
+// Pretty-printed JSON with light syntax coloring. Runs ON the already-escaped text so the
+// regex anchors match HTML entities (&quot; for quotes), which keeps the output XSS-safe.
+// The token regexes are tuned for JSON.stringify(_, null, 2) output specifically — they
+// don't need to handle every valid JSON edge case, just well-formed pretty output.
+function highlightJson(jsonStr) {
+  const esc = escapeHtml(jsonStr);
+  return esc
+    // Keys: a quoted string followed by colon — match before plain strings so we don't
+    // claim a key as a string.
+    .replace(/(&quot;(?:[^&]|&(?!quot;))*?&quot;)(\s*:)/g, '<span class="json-key">$1</span>$2')
+    // Strings: any remaining quoted string (values).
+    .replace(/(&quot;(?:[^&]|&(?!quot;))*?&quot;)/g, '<span class="json-string">$1</span>')
+    // Numbers, booleans, nulls — anchored by the preceding ": " or "[ " / ", " so we don't
+    // touch literal sequences that happen to appear inside string values.
+    .replace(/([:[,]\s*)(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)/g, '$1<span class="json-num">$2</span>')
+    .replace(/([:[,]\s*)(true|false)\b/g, '$1<span class="json-bool">$2</span>')
+    .replace(/([:[,]\s*)(null)\b/g, '$1<span class="json-null">$2</span>');
+}
+
+// ───────────────────── Tool-use formatters ─────────────────────
+// Each formatter returns { label, body, detail? }:
+//   label  — the small accent-tinted tag at the top ("Bash", "Edit", "Grafana · ...").
+//   body   — the human-readable primary identifier (file path, command desc, URL, query).
+//   detail — an optional mono line with the raw payload preview, dimmed.
+// Unknown tools fall through to a generic JSON-truncate so we never lose information.
+
+function truncate(s, n) {
+  s = String(s ?? '');
+  return s.length <= n ? s : s.slice(0, n - 1) + '…';
+}
+function compactWs(s) {
+  return String(s ?? '').replace(/\s+/g, ' ').trim();
+}
+function shortenPath(path) {
+  if (!path) return '';
+  // Collapse home directory to ~ so transcripts read consistently across machines.
+  const norm = String(path).replace(/^\/Users\/[^/]+\//, '~/').replace(/^\/home\/[^/]+\//, '~/');
+  return norm.length > 90 ? '…' + norm.slice(-89) : norm;
+}
+function shortenUrl(url) {
+  const s = String(url ?? '');
+  if (s.length <= 120) return s;
+  // Keep the protocol+host and the last bit of the path/query so the URL is still
+  // recognizable. URL parsing tolerates partial inputs via the base-URL trick.
+  try {
+    const u = new URL(s, 'http://_');
+    const host = u.host || '';
+    const proto = u.protocol === 'http:' ? '' : `${u.protocol}//`;
+    const pathQ = u.pathname + u.search;
+    const tail = pathQ.length > 70 ? '…' + pathQ.slice(-69) : pathQ;
+    return `${proto}${host}${tail}`;
+  } catch {
+    return s.slice(0, 60) + '…' + s.slice(-60);
+  }
+}
+
+const MCP_SERVER_NAMES = {
+  'claude_ai_DataDog_MCP': 'Datadog',
+  'claude_ai_Slack': 'Slack',
+  'claude_ai_PostHog': 'PostHog',
+  'claude_ai_Gmail': 'Gmail',
+  'claude_ai_Google_Calendar': 'Calendar',
+  'claude_ai_Google_Drive': 'Drive',
+  'claude_ai_Figma': 'Figma',
+  'claude_ai_Salesforce': 'Salesforce',
+  'claude_ai_Linear': 'Linear',
+  'claude_ai_Vercel': 'Vercel',
+  'claude_ai_Pylon': 'Pylon',
+  'claude_ai_Clay': 'Clay',
+  'claude_ai_Common_Room': 'Common Room',
+  'claude_ai_Kitt_Analyst': 'Kitt',
+  'claude_ai_Sumble': 'Sumble',
+  'claude_ai_Ramp': 'Ramp',
+  'claude_ai_Ramp_Data': 'Ramp',
+  'claude_ai_Intuit_QuickBooks': 'QuickBooks',
+  'plugin_linear_linear': 'Linear',
+  'incident-io': 'incident.io',
+  'notion': 'Notion',
+  'github': 'GitHub',
+  'grafana': 'Grafana',
+  'livekit-docs': 'LiveKit Docs',
+  'posthog': 'PostHog',
+};
+function prettyMcpServer(server) {
+  return MCP_SERVER_NAMES[server] ?? String(server).replace(/_/g, ' ');
+}
+
+// Heuristic: pull the most likely "primary identifier" string out of an arbitrary MCP
+// input. The key order is tuned to surface the human-meaningful field across the most
+// common server schemas — URL / query / id / name beat content / message / description
+// because the former are usually the noun the tool is acting on.
+function pickPrimary(input) {
+  if (!input || typeof input !== 'object') return '';
+  const keys = ['query', 'endpoint', 'url', 'path', 'file_path', 'pattern', 'channel', 'channel_id', 'incident_id', 'ticket_id', 'id', 'name', 'subject', 'title', 'description', 'prompt', 'message', 'text', 'content'];
+  for (const k of keys) {
+    const v = input[k];
+    if (typeof v === 'string' && v.length > 0) return v;
+  }
+  return '';
+}
+
+const TOOL_FORMATTERS = {
+  Bash(inp) {
+    const cmd = String(inp.command ?? '');
+    const desc = String(inp.description ?? '');
+    return {
+      label: inp.run_in_background ? 'Bash · bg' : 'Bash',
+      body: desc || truncate(cmd, 140),
+      detail: desc ? `$ ${truncate(cmd, 220)}` : null,
+    };
+  },
+  Read(inp) {
+    const range = inp.offset != null
+      ? `lines ${inp.offset}–${inp.offset + (inp.limit ?? 0) || inp.offset}`
+      : inp.pages ? `pages ${inp.pages}` : null;
+    return { label: 'Read', body: shortenPath(inp.file_path), bodyKind: 'code', detail: range };
+  },
+  Edit(inp) {
+    // Collapsed: label + filename only. The expanded view (renderEditDiff) is what
+    // shows the actual change — until then the filename is the only useful thing to
+    // surface, and the before→after preview was always a lie.
+    return {
+      label: inp.replace_all ? 'Edit · all' : 'Edit',
+      body: shortenPath(inp.file_path),
+      bodyKind: 'code',
+    };
+  },
+  Write(inp) {
+    const content = String(inp.content ?? '');
+    const lines = content ? content.split('\n').length : 0;
+    return {
+      label: 'Write',
+      body: shortenPath(inp.file_path),
+      bodyKind: 'code',
+      detail: `${lines.toLocaleString()} lines · ${content.length.toLocaleString()} chars`,
+    };
+  },
+  Grep(inp) {
+    const where = [inp.path && shortenPath(inp.path), inp.glob].filter(Boolean).join(' · ');
+    return {
+      label: 'Grep',
+      body: truncate(String(inp.pattern ?? ''), 140),
+      bodyKind: 'code',
+      detail: where || null,
+    };
+  },
+  Glob(inp) {
+    return {
+      label: 'Glob',
+      body: String(inp.pattern ?? ''),
+      bodyKind: 'code',
+      detail: inp.path ? `in ${shortenPath(inp.path)}` : null,
+    };
+  },
+  ToolSearch(inp) {
+    const q = String(inp.query ?? '');
+    const sel = q.match(/^select:(.+)$/);
+    if (sel) {
+      const tools = sel[1].split(',').map((s) => s.trim()).filter(Boolean);
+      const label = 'ToolSearch · load';
+      if (tools.length === 1) return { label, body: tools[0], bodyKind: 'code' };
+      return { label, body: `${tools.length} tools`, detail: tools.join(', ') };
+    }
+    return { label: 'ToolSearch', body: truncate(q, 140), bodyKind: 'code' };
+  },
+  WebFetch(inp) {
+    return {
+      label: 'WebFetch',
+      body: shortenUrl(inp.url),
+      bodyKind: 'code',
+      detail: inp.prompt ? truncate(compactWs(inp.prompt), 120) : null,
+    };
+  },
+  WebSearch(inp) {
+    return { label: 'WebSearch', body: truncate(String(inp.query ?? ''), 140) };
+  },
+  Agent(inp) {
+    const type = inp.subagent_type ? ` · ${inp.subagent_type}` : '';
+    return { label: `Agent${type}`, body: compactWs(inp.description) };
+  },
+  AskUserQuestion(inp) {
+    const qs = Array.isArray(inp.questions) ? inp.questions : [];
+    const first = qs[0]?.question ?? '';
+    const more = qs.length > 1 ? ` (+${qs.length - 1})` : '';
+    return { label: 'Ask', body: truncate(String(first), 160) + more };
+  },
+  Skill(inp) {
+    return {
+      label: 'Skill',
+      body: String(inp.skill ?? ''),
+      detail: inp.args ? truncate(String(inp.args), 120) : null,
+    };
+  },
+  ScheduleWakeup(inp) {
+    const s = Number(inp.delaySeconds ?? 0);
+    const dur = s >= 3600 ? `${(s / 3600).toFixed(1)}h` : s >= 60 ? `${Math.round(s / 60)}m` : `${s}s`;
+    return {
+      label: 'Wakeup',
+      body: compactWs(inp.reason) || `in ${dur}`,
+      detail: `wake in ${dur}`,
+    };
+  },
+  Monitor(inp) {
+    const id = inp.taskId ?? inp.shellId ?? inp.shell_id ?? '?';
+    return { label: 'Monitor', body: `task ${id}` };
+  },
+  NotebookEdit(inp) {
+    return { label: 'NotebookEdit', body: shortenPath(inp.notebook_path), bodyKind: 'code' };
+  },
+  ExitPlanMode(inp) {
+    return { label: 'ExitPlanMode', body: truncate(compactWs(inp.plan), 160) };
+  },
+};
+
+function formatToolUse(name, input, fallback) {
+  if (!name) return { label: 'Tool', body: fallback || '' };
+  const inp = (input && typeof input === 'object') ? input : {};
+
+  if (name.startsWith('mcp__')) {
+    const parts = name.split('__');
+    const server = parts[1] ?? '?';
+    const tool = parts.slice(2).join('__');
+    // telemetry.intent is a DataDog MCP convention: a natural-language sentence Claude
+    // attaches to each call explaining WHY it's making it. When present it's strictly
+    // better than any heuristic-picked input field — render it as prose, not code.
+    const intent = (inp.telemetry && typeof inp.telemetry === 'object')
+      ? inp.telemetry.intent
+      : null;
+    if (typeof intent === 'string' && intent.length > 0) {
+      return {
+        label: `${prettyMcpServer(server)} · ${tool}`,
+        body: truncate(compactWs(intent), 240),
+      };
+    }
+    // High-traffic MCP tools get bespoke handling so the body line reads naturally rather
+    // than dumping a random field. Everything else falls back to the primary-field heuristic.
+    if (name === 'mcp__grafana__grafana_api_request') {
+      return {
+        label: `Grafana · ${tool}`,
+        body: `${inp.method ?? 'GET'} ${shortenUrl(inp.endpoint)}`,
+        bodyKind: 'code',
+      };
+    }
+    if (name === 'mcp__grafana__query_loki_logs' || name === 'mcp__grafana__query_loki_stats' || name === 'mcp__grafana__query_loki_patterns') {
+      return { label: `Grafana · ${tool}`, body: truncate(String(inp.logql ?? inp.query ?? ''), 180), bodyKind: 'code' };
+    }
+    if (name === 'mcp__grafana__query_prometheus' || name === 'mcp__grafana__query_prometheus_histogram') {
+      return { label: `Grafana · ${tool}`, body: truncate(String(inp.expr ?? inp.query ?? ''), 180), bodyKind: 'code' };
+    }
+    const primary = pickPrimary(inp);
+    // MCP primary fields are almost always identifiers (query, endpoint, url, id, name).
+    // Default to code; the rare prose-y field will look fine in mono too.
+    return {
+      label: `${prettyMcpServer(server)} · ${tool}`,
+      body: primary ? truncate(compactWs(primary), 200) : truncate(JSON.stringify(inp), 120),
+      bodyKind: 'code',
+    };
+  }
+
+  const handler = TOOL_FORMATTERS[name];
+  if (handler) {
+    const out = handler(inp);
+    return {
+      label: out.label || name,
+      body: out.body || '',
+      detail: out.detail || null,
+      // bodyKind needs to ride through this normalizer too — otherwise formatters can set
+      // it but the renderer never sees it. (Was silently dropped, which is why Read/Edit/
+      // Write/Grep/etc. weren't getting the inline-code chip even though they declared it.)
+      bodyKind: out.bodyKind,
+    };
+  }
+  // Unknown tool: keep working, just dump compact JSON. Better than nothing.
+  return { label: name, body: truncate(JSON.stringify(inp), 140) };
+}
+
+// Sort task entries by their numeric id (Claude assigns these sequentially). String ids
+// fall back to lexicographic order, which would only matter if Claude ever stopped assigning
+// digits — defensive, not load-bearing.
+function sortedTodoEntries() {
+  return [...state.todos.entries()].sort((a, b) => {
+    const ai = parseInt(a[0], 10), bi = parseInt(b[0], 10);
+    if (Number.isFinite(ai) && Number.isFinite(bi)) return ai - bi;
+    return String(a[0]).localeCompare(String(b[0]));
+  });
+}
+
+// Compact panel: a two-row "trail" sitting right above the composer. Top row is the most
+// recently completed task (history, dim + strikethrough); bottom row is what's happening
+// now (in_progress preferred, else next pending). They're visually connected by a vertical
+// hairline so the panel reads as a tiny timeline: "just finished → up now". The whole
+// thing is a tap target that opens the full sheet.
+function todosPanelHtml() {
+  if (state.todos.size === 0) return '';
+  const all = sortedTodoEntries();
+  const active = all.filter(([, t]) => t.status !== 'completed' && t.status !== 'deleted');
+  const done = all.filter(([, t]) => t.status === 'completed');
+  // Most recently completed = highest-id completed (Claude assigns sequentially).
+  const lastDone = done.length ? done[done.length - 1] : null;
+  // Up-now = the first in_progress task, falling back to the first pending one.
+  const upNow = active.find(([, t]) => t.status === 'in_progress') ?? active[0] ?? null;
+
+  const counter = `${done.length}/${all.length}`;
+
+  if (!upNow && !lastDone) return '';
+
+  // All-done state: a single italic "complete" line. Still a button so the sheet is
+  // reachable for review. No connector, no second row.
+  if (!upNow) {
+    return `
+      <button class="todos-panel todos-panel-done" type="button" id="todos-panel" aria-label="Open task list">
+        <span class="todos-trail-line">
+          <span class="todos-node todos-node-done" aria-hidden="true"></span>
+          <span class="todos-text todos-text-done">All ${escapeHtml(String(all.length))} complete</span>
+          <span class="todos-meta">${escapeHtml(counter)} <span class="todos-expand">⌃</span></span>
+        </span>
+      </button>
+    `;
+  }
+
+  const topRow = lastDone
+    ? renderTrailRow(lastDone[0], lastDone[1], 'done')
+    : '';
+  const bottomRow = renderTrailRow(upNow[0], upNow[1], 'now');
+
+  return `
+    <button class="todos-panel" type="button" id="todos-panel" aria-label="Open task list (${escapeHtml(counter)} complete)">
+      ${topRow}
+      ${bottomRow}
+      <span class="todos-panel-meta" aria-hidden="true">
+        <span class="todos-meta-count">${escapeHtml(counter)}</span>
+        <span class="todos-expand">⌃</span>
+      </span>
+    </button>
+  `;
+}
+
+// One row of the trail. `slot` controls position-specific styling (done = top history,
+// now = bottom active). Both slots share the node + text + connector hairline structure.
+function renderTrailRow(id, t, slot) {
+  const status = (t && typeof t.status === 'string') ? t.status : 'pending';
+  const subject = (t && typeof t.subject === 'string') ? t.subject : `Task #${id}`;
+  const active = (t && typeof t.activeForm === 'string') ? t.activeForm : '';
+  // For the "now" slot, prefer the activeForm — that's literally what's happening this
+  // second. For the "done" slot, always use the subject (past tense doesn't matter; the
+  // subject reads cleanest as a completed line item).
+  const display = slot === 'now' && status === 'in_progress' && active ? active : subject;
+  return `
+    <span class="todos-trail-line todos-trail-${slot} todos-status-${escapeHtml(status)}">
+      <span class="todos-node" aria-hidden="true"></span>
+      <span class="todos-text">${escapeHtml(display)}</span>
+    </span>
+  `;
+}
+
+// Expanded sheet: sectioned editorial view. Top: title + progress bar. Then In Progress,
+// Up Next, Completed — each section gets its own header treatment so the page reads as a
+// document, not a flat list. Opens dynamically; rebuilt by refreshTodosSheet on live updates.
+function openTodosSheet() {
+  closeTodosSheet();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'sheet-backdrop todos-sheet-backdrop';
+  backdrop.id = 'todos-sheet-backdrop';
+  const sheet = document.createElement('aside');
+  sheet.className = 'sheet todos-sheet';
+  sheet.id = 'todos-sheet';
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-label', 'All tasks');
+  sheet.innerHTML = todosSheetBodyHtml();
+  document.body.appendChild(backdrop);
+  document.body.appendChild(sheet);
+  // Force a layout flush before adding .open so the transform animates instead of jumping.
+  requestAnimationFrame(() => {
+    backdrop.classList.add('open');
+    sheet.classList.add('open');
+  });
+  backdrop.onclick = closeTodosSheet;
+  sheet.querySelector('#todos-sheet-close').onclick = closeTodosSheet;
+}
+
+function todosSheetBodyHtml() {
+  const all = sortedTodoEntries().filter(([, t]) => t.status !== 'deleted');
+  const inProgress = all.filter(([, t]) => t.status === 'in_progress');
+  const pending = all.filter(([, t]) => t.status === 'pending');
+  const completed = all.filter(([, t]) => t.status === 'completed');
+  const total = all.length;
+  const doneCount = completed.length;
+  const pct = total === 0 ? 0 : Math.round((doneCount / total) * 100);
+
+  const section = (label, items, kind) => {
+    if (items.length === 0) return '';
+    const rows = items.map(([id, t]) => sheetRowHtml(id, t)).join('');
+    return `
+      <section class="todos-section todos-section-${kind}">
+        <div class="todos-section-head">
+          <span class="todos-section-label">${escapeHtml(label)}</span>
+          <span class="todos-section-count">${escapeHtml(String(items.length).padStart(2, '0'))}</span>
+        </div>
+        <ul class="todos-section-list">${rows}</ul>
+      </section>
+    `;
+  };
+
+  return `
+    <div class="grabber"></div>
+    <div class="header-row todos-sheet-header">
+      <div class="todos-sheet-title-block">
+        <span class="sheet-title">Tasks</span>
+        <span class="todos-sheet-progress-line">
+          <span class="todos-sheet-fraction">${escapeHtml(`${doneCount}`)}<span class="todos-sheet-frac-divider">/</span>${escapeHtml(`${total}`)}</span>
+          <span class="todos-sheet-pct">${escapeHtml(String(pct))}<span class="todos-sheet-pct-symbol">%</span></span>
+        </span>
+      </div>
+      <button class="sheet-close" id="todos-sheet-close" aria-label="Close task list">✕</button>
+    </div>
+    <div class="todos-progress-bar" aria-hidden="true">
+      <span class="todos-progress-fill" style="width:${pct}%"></span>
+    </div>
+    <div class="todos-sheet-body">
+      ${section('In progress', inProgress, 'now')}
+      ${section('Up next', pending, 'next')}
+      ${section('Completed', completed, 'done')}
+      ${total === 0 ? '<div class="empty-state todos-sheet-empty">No tasks yet.</div>' : ''}
+    </div>
+  `;
+}
+
+function sheetRowHtml(id, t) {
+  const status = (t && typeof t.status === 'string') ? t.status : 'pending';
+  const subject = (t && typeof t.subject === 'string') ? t.subject : `Task #${id}`;
+  const active = (t && typeof t.activeForm === 'string') ? t.activeForm : '';
+  // In-progress rows in the sheet display BOTH the subject and the activeForm —
+  // the subject as the title, the activeForm beneath as a quieter "doing now" line.
+  const showActive = status === 'in_progress' && active && active !== subject;
+  return `
+    <li class="todos-sheet-row todos-status-${escapeHtml(status)}">
+      <span class="todos-sheet-node" aria-hidden="true"></span>
+      <span class="todos-sheet-id">${escapeHtml(String(id).padStart(2, '0'))}</span>
+      <span class="todos-sheet-body-cell">
+        <span class="todos-sheet-subject">${escapeHtml(subject)}</span>
+        ${showActive ? `<span class="todos-sheet-active">${escapeHtml(active)}</span>` : ''}
+      </span>
+    </li>
+  `;
+}
+
+function closeTodosSheet() {
+  const backdrop = document.getElementById('todos-sheet-backdrop');
+  const sheet = document.getElementById('todos-sheet');
+  if (!backdrop && !sheet) return;
+  backdrop?.classList.remove('open');
+  sheet?.classList.remove('open');
+  // Wait out the transition duration before removing — matches .sheet's 0.36s transform.
+  setTimeout(() => {
+    backdrop?.remove();
+    sheet?.remove();
+  }, 380);
 }
 
 function approvalCardHtml(a) {
@@ -362,10 +1726,56 @@ function approvalCardHtml(a) {
 }
 
 // The "Claude is working on it" tile — italic-serif body + amber blinking underscore
-// caret. Sits at the bottom of the transcript between send-time and assistant arrival.
-// Static markup, no interpolation, so no escaping is needed.
+// caret, with a small mono pill showing elapsed time and output tokens streamed so far.
+// The metrics are updated in place by a setInterval (see startThinking) so the seconds
+// counter ticks without a full re-render. Static role + caret markup, no interpolation
+// needed; the meta string goes through escapeHtml just in case.
 function thinkingTileHtml() {
-  return `<div class="msg thinking"><span class="role">Assistant</span><span class="body-text">thinking<span class="caret">_</span></span></div>`;
+  return `<div class="msg thinking"><span class="role">Assistant</span><span class="body-text">thinking<span class="thinking-meta">${escapeHtml(thinkingMetaText())}</span><span class="caret">_</span></span></div>`;
+}
+
+function thinkingMetaText() {
+  if (!state.thinkingStartedAt) return '';
+  const elapsedMs = Date.now() - state.thinkingStartedAt;
+  const secs = elapsedMs / 1000;
+  // 0.0–9.9s → one decimal; 10s+ → integer; 60s+ → mm:ss.
+  let t;
+  if (secs < 10) t = `${secs.toFixed(1)}s`;
+  else if (secs < 60) t = `${Math.floor(secs)}s`;
+  else {
+    const m = Math.floor(secs / 60);
+    const s = Math.floor(secs % 60);
+    t = `${m}:${String(s).padStart(2, '0')}`;
+  }
+  const tok = state.thinkingOutputTokens > 0 ? `${state.thinkingOutputTokens.toLocaleString()} tok` : '';
+  return tok ? `· ${t} · ${tok} ` : `· ${t} `;
+}
+
+function startThinking() {
+  state.thinking = true;
+  state.thinkingStartedAt = Date.now();
+  state.thinkingOutputTokens = 0;
+  if (state.thinkingTicker) clearInterval(state.thinkingTicker);
+  // 200ms cadence: fast enough that the seconds counter reads smoothly without spiking
+  // CPU; we're mutating a single text node, not re-rendering the transcript.
+  state.thinkingTicker = setInterval(updateThinkingMeta, 200);
+}
+
+function stopThinking() {
+  state.thinking = false;
+  state.thinkingStartedAt = 0;
+  state.thinkingOutputTokens = 0;
+  if (state.thinkingTicker) {
+    clearInterval(state.thinkingTicker);
+    state.thinkingTicker = null;
+  }
+}
+
+// Just patch the meta span — avoids a full renderSession() rebuild every 200ms.
+function updateThinkingMeta() {
+  if (!state.thinking) return;
+  const el = document.querySelector('.msg.thinking .thinking-meta');
+  if (el) el.textContent = thinkingMetaText();
 }
 
 // Cross-session toast: shown when an approval arrives on a session that isn't the
@@ -404,15 +1814,17 @@ function sendMessage() {
   const text = composer.textContent.trim();
   if (!text) return;
   state.transcript.push({ role: 'user', text });
-  state.thinking = true;
+  startThinking();
   state.ws?.send(JSON.stringify({ type: 'user_message', content: text }));
   composer.textContent = '';
   document.getElementById('send')?.classList.remove('armed');
   renderSession();
 }
 
-function decideApproval(id, decision) {
-  state.ws?.send(JSON.stringify({ type: 'approval_decide', approvalId: id, decision }));
+function decideApproval(id, decision, reason) {
+  const payload = { type: 'approval_decide', approvalId: id, decision };
+  if (reason) payload.reason = reason;
+  state.ws?.send(JSON.stringify(payload));
   state.pendingApprovals = state.pendingApprovals.filter((a) => a.approvalId !== id);
   renderSession();
 }
@@ -537,8 +1949,40 @@ function renderMarkdown(src) {
     return `\x00FENCE${codeBlocks.length - 1}\x00`;
   });
 
-  // Phase 2: chunk into blocks separated by blank lines. Each chunk renders independently.
-  const blocks = withFences.split(/\n{2,}/);
+  // Phase 2: chunk into blocks separated by blank lines, then re-split each chunk so
+  // headings and tables always end up as their own block — even when Claude writes them
+  // back-to-back without an intervening blank line (e.g. "### In Progress\n| ID | ... |").
+  // Without this second pass, a heading-then-table block doesn't match the heading regex
+  // (multi-line input) AND doesn't match the table-start check (first line is the heading,
+  // not a pipe-row), so it fell through to plain-paragraph rendering with literal `###`
+  // and `|---|` artifacts.
+  const blocks = withFences.split(/\n{2,}/).flatMap((block) => {
+    const lines = block.split('\n');
+    const out = [];
+    let buf = [];
+    const flush = () => { if (buf.length) { out.push(buf.join('\n')); buf = []; } };
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const isHeading = /^#{1,6}\s/.test(line);
+      // A table starts when the current line is a pipe-row AND the next line is the
+      // standard markdown divider — same shape the table renderer below checks for.
+      const isTableStart =
+        i + 1 < lines.length
+        && /^\s*\|.*\|\s*$/.test(line)
+        && /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)+\|?\s*$/.test(lines[i + 1]);
+      if (isHeading) {
+        flush();
+        out.push(line);
+      } else if (isTableStart && buf.length) {
+        flush();
+        buf.push(line);
+      } else {
+        buf.push(line);
+      }
+    }
+    flush();
+    return out;
+  });
   let html = blocks.map(renderBlock).join('\n');
 
   // Phase 3: swap fence placeholders back in as styled <pre><code> elements.
@@ -657,7 +2101,7 @@ function timeAgo(t) {
    saved values to <html data-theme data-mode>; this code just keeps the sheet
    UI in sync and writes back to localStorage on selection. */
 
-const VALID_THEMES = ['livekit', 'almanac', 'terminal'];
+const VALID_THEMES = ['livekit', 'almanac', 'terminal', 'nordic', 'ink', 'botanical', 'plasma', 'atlas', 'library'];
 const VALID_MODES = ['light', 'dark'];
 
 function currentTheme() {

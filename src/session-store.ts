@@ -10,13 +10,31 @@ export interface SessionInfo {
 }
 
 export interface TranscriptMessage {
-  role: 'user' | 'assistant' | 'tool_use';
+  role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
   text: string;
   // The owning assistant message's API id (`msg_*`). Present on assistant/tool_use entries
   // and used by the PWA to dedupe when the WS replay buffer re-delivers a message already
   // loaded from disk. Absent on user entries (claude doesn't assign API ids to user records).
   msgId?: string;
+  // Structured fields for tool_use entries — carry the raw input alongside the rendered
+  // string so the PWA can rebuild higher-level UI (e.g. the todos panel) from disk replay
+  // without re-parsing the stringified `text`. Only set for Task* tools today, but the
+  // shape is generic so we can opt other tools in later.
+  toolName?: string;
+  toolInput?: unknown;
+  // Tool-use API id (`toolu_*`) that links a tool_use entry to its corresponding tool_result.
+  // Set on both ends of the pair. Used by the PWA to resolve TaskCreate → assigned task id.
+  toolUseId?: string;
 }
+
+// Tools whose tool_use+tool_result pair the PWA renders specially (todos panel, inline
+// Ask Q&A card, etc) instead of as raw transcript entries. Listed here so session-store
+// also surfaces the matching tool_result blocks, which it otherwise drops to keep
+// transcript payloads small.
+const PAIRED_TOOL_NAMES = new Set([
+  'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet',
+  'AskUserQuestion',
+]);
 
 // Claude Code injects synthetic "user" messages for local-command output, system reminders,
 // command echoes, caveats, etc. They typically start with `<some-tag>`. Skip them so the
@@ -35,7 +53,9 @@ interface RawContentBlock {
   type?: string;
   text?: string;
   name?: string;
+  id?: string;
   input?: unknown;
+  tool_use_id?: string;
   content?: unknown;
 }
 
@@ -97,7 +117,23 @@ function scanTitleSources(path: string): { summary?: string; firstUserMsg?: stri
   }
 }
 
-function extractTranscriptMessages(obj: unknown): TranscriptMessage[] {
+// Flatten a tool_result block's content into a plain string. Claude emits these as either
+// a single string or an array of {type:'text',text} parts; we only need the text for the
+// PWA's todo-id resolution ("Task #N created successfully: ...").
+function flattenToolResultContent(content: unknown): string {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return '';
+  const out: string[] = [];
+  for (const b of content) {
+    if (b && typeof b === 'object' && (b as RawContentBlock).type === 'text') {
+      const t = (b as RawContentBlock).text;
+      if (typeof t === 'string') out.push(t);
+    }
+  }
+  return out.join('\n');
+}
+
+function extractTranscriptMessages(obj: unknown, taskToolUseIds: Set<string>): TranscriptMessage[] {
   const o = obj as RawSessionRecord;
   if (o.type !== 'user' && o.type !== 'assistant') return [];
   const content = o.message?.content;
@@ -116,12 +152,30 @@ function extractTranscriptMessages(obj: unknown): TranscriptMessage[] {
       parts.push({ role: o.type, text: b.text, ...(msgId ? { msgId } : {}) });
     } else if (b.type === 'tool_use' && o.type === 'assistant') {
       const name = typeof b.name === 'string' ? b.name : 'tool';
-      const input = JSON.stringify(b.input ?? {}).slice(0, 240);
-      parts.push({ role: 'tool_use', text: `${name}(${input})`, ...(msgId ? { msgId } : {}) });
+      const input = b.input ?? {};
+      const inputStr = JSON.stringify(input).slice(0, 240);
+      const useId = typeof b.id === 'string' ? b.id : undefined;
+      // Track Task* tool calls so we can also surface their tool_result counterpart below —
+      // those are needed to resolve TaskCreate's server-assigned task id.
+      if (useId && PAIRED_TOOL_NAMES.has(name)) taskToolUseIds.add(useId);
+      parts.push({
+        role: 'tool_use',
+        text: `${name}(${inputStr})`,
+        toolName: name,
+        toolInput: input,
+        ...(useId ? { toolUseId: useId } : {}),
+        ...(msgId ? { msgId } : {}),
+      });
+    } else if (b.type === 'tool_result' && o.type === 'user') {
+      // Most tool_results are claude's internal feedback (file contents, bash output, etc.)
+      // and would bloat the transcript — keep skipping those. The exception is Task* tool
+      // results: the PWA needs them to learn the assigned task id from TaskCreate's response.
+      const useId = typeof b.tool_use_id === 'string' ? b.tool_use_id : undefined;
+      if (!useId || !taskToolUseIds.has(useId)) continue;
+      const text = flattenToolResultContent(b.content);
+      if (!text) continue;
+      parts.push({ role: 'tool_result', text, toolUseId: useId });
     }
-    // tool_result blocks in user-type records are claude's feedback to itself, not human
-    // content — skip them. The matching tool_use block in the prior assistant record already
-    // gives the reader context for what happened.
   }
   return parts;
 }
@@ -146,9 +200,12 @@ export class SessionStore {
       return [];
     }
     const out: TranscriptMessage[] = [];
+    // Per-session tracker so the linear pass knows which tool_result blocks to keep
+    // (only those tied to a Task* tool_use we already saw earlier in the same file).
+    const taskToolUseIds = new Set<string>();
     const parser = new LineParser();
     parser.onLine = (obj) => {
-      for (const m of extractTranscriptMessages(obj)) out.push(m);
+      for (const m of extractTranscriptMessages(obj, taskToolUseIds)) out.push(m);
     };
     parser.write(content);
     return out;

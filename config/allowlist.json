@@ -7,6 +7,9 @@
     "WebSearch",
     "TaskList",
     "TaskGet",
+    "TaskCreate",
+    "TaskUpdate",
+    "ToolSearch",
     "ListMcpResourcesTool",
     "ReadMcpResourceTool"
   ],

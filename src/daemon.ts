@@ -81,6 +81,10 @@ async function main() {
             approvalId: approval.id,
             sessionId: approval.sessionId,
             toolName: approval.toolName,
+            // Forward the raw tool_input too — most clients ignore it (they render `summary`)
+            // but the AskUserQuestion popup needs the full questions/options structure to
+            // build its picker. Cheap to include and keeps the API generic.
+            toolInput: approval.toolInput,
             summary,
             sessionTitle,
           });
@@ -102,6 +106,7 @@ async function main() {
       approvalId: a.id,
       sessionId: a.sessionId,
       toolName: a.toolName,
+      toolInput: a.toolInput,
       summary: summarizeToolInput(a.toolName, a.toolInput),
       sessionTitle: titleById.get(a.sessionId),
       enqueuedAt: a.enqueuedAt,
@@ -159,6 +164,7 @@ async function main() {
           approvalId: a.id,
           sessionId: a.sessionId,
           toolName: a.toolName,
+          toolInput: a.toolInput,
           summary: summarizeToolInput(a.toolName, a.toolInput),
           sessionTitle: titleById.get(a.sessionId),
         })),
@@ -207,6 +213,11 @@ async function main() {
     server.route('GET', path, (_req, res) => {
       res.statusCode = 200;
       res.setHeader('content-type', meta.contentType);
+      // The PWA's HTML/JS/CSS are tightly coupled and change together when we redeploy.
+      // No versioned filenames means browsers (especially iOS Safari standalone PWAs)
+      // happily serve a stale app.js even after a daemon restart. Telling the cache to
+      // always revalidate keeps reloads honest without ditching ETag/304 entirely.
+      res.setHeader('cache-control', 'no-cache, must-revalidate');
       createReadStream(join(PWA_DIR, meta.file)).pipe(res);
     });
   }
