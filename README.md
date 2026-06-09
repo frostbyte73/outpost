@@ -1,6 +1,8 @@
-# outpost
+# Outpost
 
-A full Claude Code client that runs as a background service on your Mac so you can drive Claude from your phone (or any device on your Tailnet) while you're away from your laptop. Originally a relay; grown into the actual interface — rich tool tiles, multi-agent isolation, a todos panel, themed UI, accept-edits mode, the works. Built for incident response: get paged, open the PWA, ask Claude to investigate, approve or deny each privileged tool call as it goes.
+A full Claude Code client that runs as a background service on your Mac so you can drive Claude from your phone (or any device on your Tailnet) while you're away from your laptop. 
+
+Rich tool tiles, multi-agent isolation, a task list panel, themed UI, accept-edits mode, the works. Built for incident response: get paged, open the PWA, ask Claude to investigate, approve or deny each privileged tool call as it goes.
 
 ## What it does
 
@@ -10,6 +12,15 @@ A full Claude Code client that runs as a background service on your Mac so you c
 - Persists Claude's session JSONL files in the standard location, so resuming a session from your laptop later picks up the full transcript.
 - Routes subagent (Agent tool) activity into its own per-agent tabbed feed, separate from the parent transcript.
 - Renders tool calls with per-tool chrome — git-style diffs for `Edit`, shell-style blocks for `Bash`, ripgrep equivalents for `Grep`, etc.
+
+## Screenshots
+
+|                                                                                                                      | | |
+|----------------------------------------------------------------------------------------------------------------------|---|---|
+| <img src="docs/screenshots/tools.png" width="240" alt="Per-tool chrome — Read, Edit (with diff), and Bash blocks" /> | <img src="docs/screenshots/approvals.png" width="240" alt="Pending approval card with Approve / Reject buttons" /> | <img src="docs/screenshots/agents.png" width="240" alt="Per-agent tabbed feed, separate from the parent transcript" /> |
+| Expandable tool cards                                                                                                | Approve / reject privileged calls | Per-agent tabbed feeds |
+| <img src="docs/screenshots/tasks.png" width="240" alt="Tasks panel showing in-progress and completed todos" />       | <img src="docs/screenshots/ask.png" width="240" alt="AskUserQuestion card rendered inline in the transcript" /> | <img src="docs/screenshots/themes.png" width="240" alt="Appearance settings — theme picker and accept-edits toggle" /> |
+| Task list                                                                                                            | Inline `AskUserQuestion` | Themes & accept-edits |
 
 ## Prerequisites
 
