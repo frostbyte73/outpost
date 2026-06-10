@@ -152,6 +152,19 @@ rm ~/Library/LaunchAgents/local.outpost.$USER.plist
 rm -rf ~/.outpost
 ```
 
+## Upgrading from single-cwd outpost
+
+If you previously installed outpost with the `OUTPOST_CWD` env var pinning the daemon to one project, no migration is needed beyond removing that line: outpost now discovers every project under `~/.claude/projects/` and asks where to launch each new session via a picker sheet.
+
+Edit `~/Library/LaunchAgents/local.outpost.$USER.plist` and delete the `<key>OUTPOST_CWD</key>` element plus its following `<string>...</string>`. Then reload the daemon:
+
+```bash
+launchctl unload ~/Library/LaunchAgents/local.outpost.$USER.plist
+launchctl load ~/Library/LaunchAgents/local.outpost.$USER.plist
+```
+
+Existing sessions are not migrated — they're already in their per-project dirs and will appear in the new grouped list on first load.
+
 ## Development
 
 ```bash

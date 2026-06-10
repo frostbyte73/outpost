@@ -1,3 +1,4 @@
+import { statSync } from 'node:fs';
 import { ClaudeProc } from './claude-proc.js';
 import type { WebSocket } from 'ws';
 
@@ -17,12 +18,9 @@ export interface SessionManagerOpts {
   settingsPath: string;
   daemonAuthSecret: string;
   daemonHost: string;
-  // Cwd to spawn claude in. Determines where sessions are persisted on disk under
-  // ~/.claude/projects/<sanitized-cwd>/. Must match the SessionStore's read directory.
-  claudeCwd: string;
-  // Returns true if a session with this ID already has a stored conversation on disk.
-  // Used to decide between `claude --resume <id>` (existing) and `claude --session-id <id>` (new).
-  sessionExists: (id: string) => boolean;
+  // Used to resolve cwd for known sessions (resume) and to confirm session existence.
+  // For brand-new sessions the cwd arrives via attach()'s opts.cwd parameter.
+  sessionStore: import('./session-store.js').SessionStore;
   onProcMessage?: (sessionId: string, msg: unknown) => void;
 }
 
@@ -31,9 +29,25 @@ export class SessionManager {
 
   constructor(private opts: SessionManagerOpts) {}
 
-  attach(sessionId: string, ws: WebSocket): void {
+  // `cwd` is honored only when the session does not exist yet (first attach for a new id).
+  // On resume, the cwd is read from the session's own JSONL via SessionStore.findSession,
+  // so the query-param cwd from the URL is ignored.
+  attach(sessionId: string, ws: WebSocket, opts: { cwd?: string } = {}): void {
     let s = this.active.get(sessionId);
-    if (!s) s = this.spawn(sessionId);
+    if (!s) {
+      const cwd = this.resolveCwdForAttach(sessionId, opts.cwd);
+      if (!cwd) {
+        ws.send(JSON.stringify({
+          type: 'daemon_error',
+          message: opts.cwd
+            ? `cwd does not exist or is not a directory: ${opts.cwd}`
+            : 'cwd required for new session',
+        }));
+        ws.close();
+        return;
+      }
+      s = this.spawn(sessionId, cwd);
+    }
     s.clients.add(ws);
     this.cancelIdleTimer(s);
     const cutoff = Date.now() - BUFFER_REPLAY_MS;
@@ -79,7 +93,24 @@ export class SessionManager {
     this.active.delete(sessionId);
   }
 
-  private spawn(sessionId: string): ActiveSession {
+  // Determine which cwd to spawn a session under. For an existing session, return the
+  // SessionStore's recorded cwd (ignoring whatever the client passed). For a brand-new
+  // session, require an absolute path to a real directory. Returns null on validation
+  // failure; caller surfaces a daemon_error.
+  private resolveCwdForAttach(sessionId: string, requestedCwd: string | undefined): string | null {
+    const known = this.opts.sessionStore.findSession(sessionId);
+    if (known) return known.cwd;
+    if (!requestedCwd) return null;
+    if (!requestedCwd.startsWith('/')) return null;
+    try {
+      if (!statSync(requestedCwd).isDirectory()) return null;
+    } catch {
+      return null;
+    }
+    return requestedCwd;
+  }
+
+  private spawn(sessionId: string, cwd: string): ActiveSession {
     const s: ActiveSession = {
       id: sessionId,
       clients: new Set(),
@@ -87,12 +118,14 @@ export class SessionManager {
       lastActivity: Date.now(),
       proc: null!,
     };
-    const mode = this.opts.sessionExists(sessionId) ? 'resume' : 'new';
+    // Existence is determined by SessionStore.findSession — the same source of truth used
+    // for cwd resolution above. Avoids a separate "does this jsonl exist?" callback.
+    const mode = this.opts.sessionStore.findSession(sessionId) ? 'resume' : 'new';
     s.proc = new ClaudeProc({
       sessionId,
       mode,
       settingsPath: this.opts.settingsPath,
-      cwd: this.opts.claudeCwd,
+      cwd,
       env: { DAEMON_AUTH: this.opts.daemonAuthSecret, DAEMON_HOST: this.opts.daemonHost },
       onMessage: (msg) => {
         s.lastActivity = Date.now();

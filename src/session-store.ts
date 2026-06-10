@@ -9,6 +9,13 @@ export interface SessionInfo {
   path: string;
 }
 
+export interface ProjectInfo {
+  projectDir: string;
+  cwd: string;
+  lastModified: number;
+  sessions: SessionInfo[];
+}
+
 export interface SubagentCompletion {
   status: string;
   summary?: string;
@@ -382,11 +389,117 @@ function firstTextOfToolResult(content: unknown): string | undefined {
   return undefined;
 }
 
-export class SessionStore {
-  private readonly dir: string;
+function firstCwdInJsonl(path: string): string | null {
+  const fd = openSync(path, 'r');
+  try {
+    const CHUNK = 16 * 1024;
+    const MAX = 256 * 1024;
+    const buf = Buffer.alloc(CHUNK);
+    let leftover = '';
+    let offset = 0;
 
-  constructor(opts: { dir: string }) {
-    this.dir = opts.dir;
+    while (offset < MAX) {
+      const bytes = readSync(fd, buf, 0, CHUNK, offset);
+      if (bytes === 0) break;
+      offset += bytes;
+      const text = leftover + buf.subarray(0, bytes).toString('utf8');
+      const lastNl = text.lastIndexOf('\n');
+      const consumable = lastNl === -1 ? text : text.slice(0, lastNl);
+      leftover = lastNl === -1 ? text : text.slice(lastNl + 1);
+
+      for (const line of consumable.split('\n')) {
+        if (!line) continue;
+        try {
+          const o = JSON.parse(line) as { cwd?: unknown };
+          if (typeof o.cwd === 'string' && o.cwd.length > 0) return o.cwd;
+        } catch {
+          // Try next line; one bad record shouldn't poison the read.
+        }
+      }
+      if (bytes < CHUNK) break;
+    }
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
+export class SessionStore {
+  private readonly root: string;
+  private cwdCache = new Map<string, { cwd: string; mtime: number }>();
+
+  constructor(opts: { root: string }) {
+    this.root = opts.root;
+  }
+
+  listProjects(): ProjectInfo[] {
+    let dirs: string[];
+    try {
+      dirs = readdirSync(this.root, { withFileTypes: true })
+        .filter((e) => e.isDirectory())
+        .map((e) => join(this.root, e.name));
+    } catch {
+      return [];
+    }
+    const out: ProjectInfo[] = [];
+    for (const projectDir of dirs) {
+      const cwd = this.readCwdFromProject(projectDir);
+      if (!cwd) continue;
+      let cwdExists = false;
+      try { cwdExists = statSync(cwd).isDirectory(); } catch { /* nope */ }
+      if (!cwdExists) continue;
+      const sessions = this.listSessionsInDir(projectDir);
+      const lastModified = sessions.reduce((m, s) => Math.max(m, s.lastModified), 0);
+      out.push({ projectDir, cwd, lastModified, sessions });
+    }
+    out.sort((a, b) => b.lastModified - a.lastModified);
+    return out;
+  }
+
+  private listSessionsInDir(dir: string): SessionInfo[] {
+    let files: string[];
+    try { files = readdirSync(dir); } catch { return []; }
+    return files
+      .filter((f) => f.endsWith('.jsonl'))
+      .map((f) => this.readSessionInfoFromPath(join(dir, f)))
+      .filter((s): s is SessionInfo => s !== null)
+      .sort((a, b) => b.lastModified - a.lastModified);
+  }
+
+  readCwdFromProject(projectDir: string): string | null {
+    let entries: { name: string; mtime: number }[];
+    try {
+      entries = readdirSync(projectDir)
+        .filter((f) => f.endsWith('.jsonl'))
+        .map((f) => {
+          const p = join(projectDir, f);
+          const st = statSync(p);
+          return { name: p, mtime: st.mtimeMs };
+        })
+        .sort((a, b) => b.mtime - a.mtime);
+    } catch {
+      return null;
+    }
+    if (entries.length === 0) return null;
+    const newest = entries[0]!;
+    const cached = this.cwdCache.get(projectDir);
+    if (cached && cached.mtime === newest.mtime) return cached.cwd;
+    for (const e of entries) {
+      const cwd = firstCwdInJsonl(e.name);
+      if (cwd) {
+        this.cwdCache.set(projectDir, { cwd, mtime: newest.mtime });
+        return cwd;
+      }
+    }
+    return null;
+  }
+
+  findSession(id: string): { projectDir: string; cwd: string; session: SessionInfo } | null {
+    for (const p of this.listProjects()) {
+      const match = p.sessions.find((s) => s.id === id);
+      if (match) return { projectDir: p.projectDir, cwd: p.cwd, session: match };
+    }
+    return null;
   }
 
   // Parse the session's .jsonl into a flat transcript suitable for display. Filters out
@@ -394,7 +507,9 @@ export class SessionStore {
   // PWA only renders what the human actually said and what the assistant actually replied.
   readMessages(id: string): TranscriptMessage[] {
     if (!/^[\w-]+$/.test(id)) return [];
-    const path = join(this.dir, `${id}.jsonl`);
+    const found = this.findSession(id);
+    if (!found) return [];
+    const path = join(found.projectDir, `${id}.jsonl`);
     let content: string;
     try {
       content = readFileSync(path, 'utf8');
@@ -423,7 +538,9 @@ export class SessionStore {
   // agent_id). We extract status/summary/result/timestamp and bind by task-id.
   readSubagents(id: string): SubagentInfo[] {
     if (!/^[\w-]+$/.test(id)) return [];
-    const subagentDir = join(this.dir, id, 'subagents');
+    const found = this.findSession(id);
+    if (!found) return [];
+    const subagentDir = join(found.projectDir, id, 'subagents');
     let metaFiles: string[];
     try {
       metaFiles = readdirSync(subagentDir).filter((f) => f.endsWith('.meta.json'));
@@ -433,7 +550,7 @@ export class SessionStore {
     // Pre-scan parent JSONL for task-notifications so we can stamp completion onto each
     // subagent bucket in one pass. Cheap relative to the subagent reads below — task-
     // notifications are rare lines and we only parse the user-role ones.
-    const completions = readTaskNotifications(join(this.dir, `${id}.jsonl`));
+    const completions = readTaskNotifications(join(found.projectDir, `${id}.jsonl`));
     const out: SubagentInfo[] = [];
     for (const metaFile of metaFiles) {
       const agentId = metaFile.replace(/^agent-/, '').replace(/\.meta\.json$/, '');
@@ -493,32 +610,20 @@ export class SessionStore {
   delete(id: string): boolean {
     // Strict UUID-ish guard so a malformed id can't traverse into other directories.
     if (!/^[\w-]+$/.test(id)) return false;
-    const path = join(this.dir, `${id}.jsonl`);
+    const found = this.findSession(id);
+    if (!found) return false;
+    const path = join(found.projectDir, `${id}.jsonl`);
     try {
       unlinkSync(path);
       // Best-effort cleanup of the cached title sidecar. Ignored if absent.
-      try { unlinkSync(join(this.dir, `${id}.title`)); } catch { /* no sidecar */ }
+      try { unlinkSync(join(found.projectDir, `${id}.title`)); } catch { /* no sidecar */ }
       return true;
     } catch {
       return false;
     }
   }
 
-  list(): SessionInfo[] {
-    let files: string[];
-    try {
-      files = readdirSync(this.dir);
-    } catch {
-      return [];
-    }
-    return files
-      .filter((f) => f.endsWith('.jsonl'))
-      .map((f) => this.read(join(this.dir, f)))
-      .filter((s): s is SessionInfo => s !== null)
-      .sort((a, b) => b.lastModified - a.lastModified);
-  }
-
-  private read(path: string): SessionInfo | null {
+  private readSessionInfoFromPath(path: string): SessionInfo | null {
     try {
       const stat = statSync(path);
       const id = path.split('/').pop()!.replace(/\.jsonl$/, '');

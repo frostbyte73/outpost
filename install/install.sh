@@ -28,19 +28,9 @@ fi
 # user's interactive shell PATH is itself missing them when this script runs.
 PATH_FOR_LAUNCHD="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:${PATH}"
 
-# Propagate any OUTPOST_*-prefixed env vars exported by the caller (e.g.
-# OUTPOST_CWD, OUTPOST_SESSION_DIR) into the plist so they survive across
-# reinstalls without having to edit the file by hand.
+# No additional environment variables needed; multi-project discovery
+# now happens automatically via ~/.claude/projects/ traversal.
 EXTRA_ENV=""
-for var in $(env | sed -n 's/^\(OUTPOST_[A-Z_]*\)=.*/\1/p'); do
-  val="${!var}"
-  # XML-escape the three chars launchd's plist parser actually cares about.
-  val="${val//&/&amp;}"
-  val="${val//</&lt;}"
-  val="${val//>/&gt;}"
-  EXTRA_ENV+="    <key>$var</key><string>$val</string>"$'\n'
-done
-EXTRA_ENV="${EXTRA_ENV%$'\n'}"
 
 mkdir -p "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 

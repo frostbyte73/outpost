@@ -39,22 +39,25 @@ async function main() {
   const allowlist = new Allowlist(allowlistConfig);
   const queue = new ApprovalQueue({ timeoutMs: APPROVAL_TIMEOUT_MS });
 
-  // Pin claude's cwd so all daemon-spawned sessions land in the same project dir on disk,
-  // and the SessionStore reads from that same dir. Point this at whichever workspace
-  // holds the CLAUDE.md, project-level plugins, and MCP servers you want relayed sessions
-  // to inherit. Defaults to $HOME if unset.
-  const claudeCwd = process.env.OUTPOST_CWD ?? homedir();
-  const sessionDir = process.env.OUTPOST_SESSION_DIR ?? sessionDirFor(claudeCwd);
-  const sessionStore = new SessionStore({ dir: sessionDir });
-  console.log(`[daemon] claude cwd:           ${claudeCwd}`);
-  console.log(`[daemon] reading sessions from: ${sessionDir}`);
+  // Outpost discovers projects under the standard claude code projects root. No per-daemon
+  // cwd anymore — each session carries its own (recorded by claude in the JSONL).
+  const projectsRoot = process.env.OUTPOST_PROJECTS_ROOT ?? join(homedir(), '.claude', 'projects');
+  const sessionStore = new SessionStore({ root: projectsRoot });
+  console.log(`[daemon] projects root: ${projectsRoot}`);
+
+  function findSessionTitle(id: string): string | undefined {
+    for (const p of sessionStore.listProjects()) {
+      const s = p.sessions.find((x) => x.id === id);
+      if (s) return s.title;
+    }
+    return undefined;
+  }
 
   const manager = new SessionManager({
     settingsPath,
     daemonAuthSecret: secret,
     daemonHost: tsEnv.hostname,
-    claudeCwd,
-    sessionExists: (id) => sessionStore.list().some((s) => s.id === id),
+    sessionStore,
   });
 
   const server = new Server({
@@ -112,7 +115,7 @@ async function main() {
           // Look up the session title so cross-session toasts can show "Approval on <title>"
           // rather than a meaningless id stub. Title may be undefined for very new sessions
           // whose JSONL hasn't been written yet — the client falls back to the id prefix.
-          const sessionTitle = sessionStore.list().find((s) => s.id === approval.sessionId)?.title;
+          const sessionTitle = findSessionTitle(approval.sessionId);
           // Goes to every attached notification WS, regardless of which session view is
           // active (if any). The client decides whether to render an inline card (own
           // session in view) or a toast (any other view).
@@ -140,29 +143,25 @@ async function main() {
     },
   });
 
-  // Daemon configuration the PWA needs at runtime: the working directory sessions inherit
-  // (surfaced in the empty-state so first-time users know what's wired up), how many
-  // tools auto-approve, the approval timeout used for the countdown UI, and the build
-  // version for diagnostics. Read-only; no auth distinction since the whole HTTPS surface
-  // is already gated by Tailscale.
   server.route('GET', '/api/info', (_req, res) => {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({
-      cwd: claudeCwd,
       version: pkg.version,
       allowlistRuleCount: allowlist.ruleCount(),
       approvalTimeoutMs: APPROVAL_TIMEOUT_MS,
+      // Used by the PWA to expand `~/foo` into an absolute path in the cwd picker
+      // without baking a username into the client.
+      home: homedir(),
     }));
   });
 
-  // List sessions
   server.route('GET', '/api/sessions', (_req, res) => {
-    const list = sessionStore.list();
-    const titleById = new Map(list.map((s) => [s.id, s.title]));
-    // Normalize pending approvals to the same shape the WS push uses, so the PWA can
-    // treat both delivery paths uniformly. The internal queue tracks `id` but the PWA
-    // refers to it as `approvalId`, and the summary is rendered server-side.
+    const projects = sessionStore.listProjects();
+    // Title index across every project's sessions so the pending payload can show
+    // "Approval on <title>" toasts cross-project the same as it does today.
+    const titleById = new Map<string, string>();
+    for (const p of projects) for (const s of p.sessions) titleById.set(s.id, s.title);
     const pending = queue.listPending().map((a) => ({
       approvalId: a.id,
       sessionId: a.sessionId,
@@ -177,7 +176,7 @@ async function main() {
     }));
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ sessions: list, pending }));
+    res.end(JSON.stringify({ projects, pending }));
   });
 
   // Return the parsed transcript for a session — used by the PWA to repopulate the view
@@ -289,7 +288,8 @@ async function main() {
       // a reconnect after iOS backgrounded the PWA) sees what was already enqueued. This
       // is a single event with the full set — distinct from approval_pending so the client
       // can populate state without firing toasts for stale items.
-      const titleById = new Map(sessionStore.list().map((s) => [s.id, s.title]));
+      const titleById = new Map<string, string>();
+      for (const p of sessionStore.listProjects()) for (const s of p.sessions) titleById.set(s.id, s.title);
       ws.send(JSON.stringify({
         type: 'notifications_snapshot',
         approvals: queue.listPending().map((a) => ({
@@ -321,13 +321,23 @@ async function main() {
       return;
     }
 
-    const m = url.match(/^\/ws\/sessions\/([\w-]+)$/);
+    const m = url.match(/^\/ws\/sessions\/([\w-]+)(?:\?.*)?$/);
     if (!m) {
       ws.close();
       return;
     }
     const sessionId = m[1]!;
-    manager.attach(sessionId, ws);
+    // Optional ?cwd=<absolute-path> on the WS URL. Honored only on the first attach for a
+    // brand-new session id; SessionManager.attach validates it and emits a daemon_error + closes
+    // the WS on failure.
+    let cwd: string | undefined;
+    const queryIdx = url.indexOf('?');
+    if (queryIdx >= 0) {
+      const params = new URLSearchParams(url.slice(queryIdx + 1));
+      const raw = params.get('cwd');
+      if (raw) cwd = raw; // URLSearchParams already decodes
+    }
+    manager.attach(sessionId, ws, { cwd });
     ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
       let msg: { type?: string };
       try {
@@ -397,12 +407,6 @@ function readBody(req: NodeJS.ReadableStream): Promise<string> {
     req.on('end', () => resolve(data));
     req.on('error', reject);
   });
-}
-
-function sessionDirFor(cwd: string): string {
-  // Claude Code sanitizes the cwd by replacing '/' with '-' (so `/Users/alice` becomes `-Users-alice`).
-  const sanitized = cwd.replace(/\//g, '-');
-  return join(homedir(), '.claude', 'projects', sanitized);
 }
 
 main().catch((e) => {

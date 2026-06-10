@@ -577,6 +577,138 @@
       word-break: break-all;
     }
 
+    /* ───── Multi-project sections ──────────────────────────────────
+       When the user has worked in more than one cwd, the session list groups by
+       project. Each project header reads as a chapter: italic display project
+       name as the headline, tracked-uppercase mono cwd as the subtitle, session
+       count + last-active on the right. A 2px left-accent bar runs the height
+       of the header and — when the section is open — extends down through the
+       entire body, brightening from --line to --accent-2 so the open state
+       reads as an opened editorial chapter. Same "memory trail" motif as the
+       todos panel's now-row connector. */
+    .project-section {
+      position: relative;
+    }
+    .project-section + .project-section {
+      border-top: 1px solid var(--line-soft);
+      margin-top: 6px;
+      padding-top: 10px;
+    }
+
+    .project-section-header {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-rows: auto auto;
+      grid-template-areas:
+        "name meta"
+        "cwd  meta";
+      align-items: baseline;
+      column-gap: 18px;
+      row-gap: 4px;
+      padding: 14px 4px 14px 24px;
+      background: transparent;
+      border: 0;
+      width: 100%;
+      text-align: left;
+      cursor: pointer;
+      color: var(--text);
+      font: inherit;
+      position: relative;
+      transition: background 0.15s ease;
+    }
+    .project-section-header::before {
+      /* Left accent bar. Stays at --line when collapsed; on open extends down
+         through the body and brightens to --accent-2. */
+      content: '';
+      position: absolute;
+      left: 4px; top: 16px; bottom: 12px;
+      width: 2px;
+      background: var(--line);
+      transition: background 0.22s ease;
+    }
+    .project-section-open > .project-section-header::before {
+      background: var(--accent);
+    }
+    .project-section-header:active { background: var(--bg-elev); }
+
+    .project-section-name {
+      grid-area: name;
+      font-family: var(--font-display); font-style: italic;
+      font-size: 22px;
+      line-height: 1.05;
+      letter-spacing: -0.012em;
+      color: var(--text);
+    }
+    .project-section-cwd {
+      grid-area: cwd;
+      font-family: var(--font-mono);
+      font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--text-dim);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      direction: rtl;            /* truncate from the LEFT so the project tail stays visible */
+      text-align: left;
+    }
+    .project-section-cwd > span { unicode-bidi: plaintext; }
+
+    .project-section-meta {
+      grid-area: meta;
+      font-family: var(--font-mono);
+      font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--text-mute);
+      text-align: right;
+      line-height: 1.5;
+      align-self: center;
+    }
+    .project-section-meta-count {
+      display: block;
+      margin-bottom: 2px;
+      color: var(--accent-2);
+      font-size: 11px; letter-spacing: 0.06em;
+      font-feature-settings: 'tnum' on;
+    }
+
+    /* Pending-attention chip — sits above the meta block when any session in
+       this project has approvals waiting. Same pulsing accent dot motif used on
+       the brand mark and the pending-badge in the session list. */
+    .project-section-pending {
+      display: inline-flex; align-items: center; gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 9px; letter-spacing: 0.16em; text-transform: uppercase;
+      color: var(--accent);
+      grid-area: name;
+      justify-self: end;
+      align-self: start;
+    }
+    .project-section-pending .dot {
+      width: 5px; height: 5px;
+      background: var(--accent);
+      border-radius: 50%;
+      animation: pulse 2.4s ease-in-out infinite;
+    }
+
+    /* Body: collapsed by default. Open state extends the accent bar downward as
+       a fading gradient — the bar dies out near the bottom of the last session
+       so it reads as a trail running through the chapter, not a hard rail. */
+    .project-section-body {
+      position: relative;
+      display: none;
+      padding: 2px 0 14px 24px;
+    }
+    .project-section-open > .project-section-body { display: block; }
+    .project-section-open > .project-section-body::before {
+      content: '';
+      position: absolute;
+      left: 4px; top: 0; bottom: 14px;
+      width: 2px;
+      background: linear-gradient(to bottom, var(--accent-2), var(--line) 70%, transparent);
+    }
+    /* Reset the swipe-row's bottom border so it doesn't extend past the body's
+       left padding into the trail-line zone — keeps the grid clean. */
+    .project-section-body .session-row-wrap:first-of-type { border-top: 0; }
+
     /* Swipe-to-delete row container. The visible row sits above an absolutely-positioned
        red delete action; horizontal drag uncovers the action. */
     .session-row-wrap {
@@ -1140,6 +1272,182 @@
       font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase;
       color: var(--danger);
       pointer-events: none;
+    }
+
+    /* ───── Cwd picker sheet ──────────────────────────────────────────
+       Choose where a new session lands. Two zones: a list of recent project
+       cwds (chapter-style rows mirroring the project sections in the main
+       list), and a terminal-prompt custom path entry below ($ sigil, mono
+       input, ↵ commit). No bordered box around the recents — they're just
+       rows separated by hairlines, the same editorial-list vocabulary used
+       throughout the app. */
+    .cwd-picker-sheet {
+      padding-bottom: calc(20px + env(safe-area-inset-bottom));
+    }
+
+    .cwd-picker-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 9px; letter-spacing: 0.24em; text-transform: uppercase;
+      color: var(--text-mute);
+      padding: 6px 0 10px;
+      border-bottom: 1px solid var(--line);
+      margin-bottom: 4px;
+    }
+
+    .cwd-picker-recents {
+      display: flex; flex-direction: column;
+      margin-bottom: 22px;
+    }
+    .cwd-picker-row {
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: auto auto;
+      row-gap: 4px;
+      padding: 14px 8px 14px 22px;
+      background: transparent;
+      border: 0;
+      border-top: 1px solid var(--line-soft);
+      color: var(--text);
+      font: inherit;
+      text-align: left;
+      cursor: pointer;
+      width: 100%;
+      position: relative;
+      transition: background 0.15s ease;
+    }
+    .cwd-picker-row:first-child { border-top: 0; }
+    .cwd-picker-row:active { background: var(--bg-elev); }
+    .cwd-picker-row::before {
+      /* Faint vertical bar mirrors the main-list project section. Lights up on
+         press so the tap feels real even on iOS where :hover doesn't fire. */
+      content: '';
+      position: absolute;
+      left: 4px; top: 16px; bottom: 16px;
+      width: 2px;
+      background: var(--line);
+      transition: background 0.15s ease;
+    }
+    .cwd-picker-row:active::before { background: var(--accent); }
+    .cwd-picker-row-name {
+      font-family: var(--font-display); font-style: italic;
+      font-size: 19px;
+      line-height: 1.1;
+      letter-spacing: -0.012em;
+      color: var(--text);
+    }
+    .cwd-picker-row-cwd {
+      font-family: var(--font-mono);
+      font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--text-dim);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      min-width: 0;
+      direction: rtl;
+      text-align: left;
+    }
+    .cwd-picker-row-cwd > span { unicode-bidi: plaintext; }
+
+    .cwd-picker-empty {
+      padding: 18px 4px 22px;
+      text-align: center;
+      font-family: 'Instrument Serif', 'Times New Roman', serif;
+      font-style: italic;
+      font-size: 15px;
+      color: var(--text-mute);
+      letter-spacing: 0.01em;
+    }
+
+    /* Custom path entry: terminal-prompt aesthetic. Eyebrow label above ("Or
+       open a fresh path"), then a single-line prompt strip with a $ sigil
+       flush left, the path input on the same baseline, and an ↵ commit
+       button. Submitting is keyboard-Enter or tap. */
+    .cwd-picker-custom {
+      border-top: 1px solid var(--line);
+      padding-top: 16px;
+    }
+    .cwd-picker-custom-label {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 9px; letter-spacing: 0.24em; text-transform: uppercase;
+      color: var(--text-mute);
+      margin-bottom: 10px;
+    }
+    .cwd-picker-prompt {
+      display: flex; align-items: center;
+      gap: 12px;
+      padding: 11px 14px;
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      transition: border-color 0.15s ease;
+    }
+    .cwd-picker-prompt:focus-within {
+      border-color: var(--accent);
+    }
+    .cwd-picker-prompt::before {
+      content: '$';
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--accent);
+      flex: none;
+      line-height: 1;
+    }
+    #cwd-picker-custom-input {
+      flex: 1; min-width: 0;
+      font-family: var(--font-mono);
+      font-size: 13px;
+      letter-spacing: 0.02em;
+      padding: 3px 0;
+      background: transparent;
+      border: 0;
+      outline: none;
+      color: var(--text);
+      caret-color: var(--accent);
+    }
+    #cwd-picker-custom-input::placeholder {
+      color: var(--text-dim);
+      font-family: var(--font-mono);
+      font-size: 13px;
+      letter-spacing: 0.02em;
+    }
+    #cwd-picker-custom-go {
+      flex: none;
+      background: transparent;
+      border: 0;
+      padding: 4px 6px;
+      font-family: var(--font-mono);
+      font-size: 16px;
+      line-height: 1;
+      color: var(--accent);
+      cursor: pointer;
+      transition: color 0.15s ease, transform 0.18s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+    #cwd-picker-custom-go:active {
+      color: var(--text);
+      transform: translateX(2px);
+    }
+
+    /* Error block: same vocabulary as the rejected-tool tile (left-accent
+       danger bar + soft tint), not a bordered box with radius. */
+    .cwd-picker-error {
+      position: relative;
+      padding: 9px 14px 11px 16px;
+      margin-bottom: 16px;
+      background: var(--danger-soft);
+      border-left: 2px solid var(--danger);
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--danger);
+    }
+    .cwd-picker-error-label {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--danger);
+      opacity: 0.78;
+      margin-bottom: 4px;
     }
 
     /* ───── Tasks sheet (expanded view) ─────────────────────────────

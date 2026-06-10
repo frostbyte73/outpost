@@ -7,8 +7,21 @@ const header = document.getElementById('header');
 
 const state = {
   view: 'list', // 'list' | 'session'
-  sessions: [],
+  // Multi-project session list. Populated by loadSessions from /api/sessions.
+  // Shape: [{ projectDir, cwd, lastModified, sessions: SessionInfo[] }, ...]
+  projects: [],
+  // Per-project expand state, keyed by projectDir, persisted in localStorage. Missing
+  // keys default to collapsed for older projects and expanded for the most-recent
+  // (see isProjectExpanded).
+  expandedProjects: (() => {
+    try { return JSON.parse(localStorage.getItem('op:expandedProjects') ?? '{}'); }
+    catch { return {}; }
+  })(),
   currentSessionId: null,
+  // The cwd of the session currently open in the session view. Set when openSession() runs
+  // (either from the picker for new sessions or by looking up the project for existing
+  // ones). Drives projectRelativePath() so file paths in the transcript anchor correctly.
+  currentSessionCwd: null,
   ws: null,
   // Long-lived WS to /ws/notifications, open for the entire app lifetime. Delivers every
   // approval event regardless of which view is active, so the list updates live and toasts
@@ -35,8 +48,10 @@ const state = {
   //   todos: Map<taskId, { subject, status, description?, activeForm? }>
   //   pendingCreates: Map<tool_use_id, taskInput> — TaskCreate calls awaiting their
   //     tool_result so we can learn the server-assigned task id ("Task #N created...").
-  //   consumedTaskResults: Set<tool_use_id> — tool_results we've already resolved, so a
-  //     WS replay buffer redelivery doesn't double-process them.
+  //   consumedTaskResults: Set<tool_use_id> — tool_results we've already absorbed into a
+  //     non-transcript surface (Task → todos panel; AskUserQuestion → inline Q&A card), so
+  //     a WS replay buffer redelivery or catchUpFromDisk pass doesn't re-render them as
+  //     raw transcript tiles.
   todos: new Map(),
   pendingCreates: new Map(),
   consumedTaskResults: new Set(),
@@ -137,6 +152,11 @@ const state = {
   // next notification-WS open. Without this, a backgrounded PWA could miss an auto-allow
   // entirely and the hook would time out 10 minutes later with a denied edit.
   pendingDecides: [],
+  // Set by commitNewSessionCwd; cleared on the first non-error message we receive for that
+  // session id (proof the spawn succeeded), OR by daemon_error handling that bounces the
+  // user back to the picker. Without this, a daemon_error for an invalid cwd would render
+  // as an empty session view with a "cwd does not exist" tile and no clear next step.
+  pendingNewSession: null, // { id, cwd } | null
 };
 
 // Threshold of consecutive failed retries before we flip to the user-facing 'failed' state
@@ -350,6 +370,10 @@ function applyAskTranscriptMessage(m, sink) {
     const entry = state.pendingAsks.get(m.toolUseId);
     entry.answer = String(m.text ?? '');
     state.pendingAsks.delete(m.toolUseId);
+    // Record this tool_use_id as already-absorbed so catchUpFromDisk's tool_result skip
+    // check fires on subsequent reconnects. Without this, every visibilitychange replays
+    // every previously-answered Ask as a raw "Your questions have been answered: …" tile.
+    state.consumedTaskResults.add(m.toolUseId);
     return true;
   }
   return false;
@@ -358,7 +382,7 @@ function applyAskTranscriptMessage(m, sink) {
 // Wire the HTML-rendered initial shell so the "+ New session" button works from the very
 // first paint, before /api/sessions resolves. The full list renders in once loadSessions does.
 const initialButton = document.getElementById('new-session-initial');
-if (initialButton) initialButton.onclick = () => openSession(null);
+if (initialButton) initialButton.onclick = () => openCwdPickerSheet();
 
 // One-shot fetch of /api/info on startup. Surface daemon config so the empty state can
 // confirm the wiring (cwd, allowlist size) and the approval countdown has a real timeout
@@ -377,7 +401,7 @@ async function loadSessions() {
     const r = await fetch('/api/sessions');
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    state.sessions = data.sessions;
+    state.projects = data.projects;
     state.pendingApprovals = data.pending ?? [];
     for (const a of state.pendingApprovals) {
       if (isHighDetailTool(a.toolName)) state.expandedTools.add(`approval-${a.approvalId}`);
@@ -441,8 +465,6 @@ function setHeader(mode) {
 }
 
 function renderList() {
-  const sessions = state.sessions;
-  // Count pending approvals per session so each row can flag whether it needs attention.
   const pendingBySession = state.pendingApprovals.reduce((acc, a) => {
     acc[a.sessionId] = (acc[a.sessionId] || 0) + 1;
     return acc;
@@ -453,27 +475,58 @@ function renderList() {
         <button type="button" id="conn-banner-retry">Retry</button>
       </div>`
     : '';
-  // Footer line under the list: daemon's actual cwd + how many allowlist rules are loaded.
-  // Reassures the user the wiring is real (esp. on first run) and shows what was loaded.
   const info = state.daemonInfo
-    ? `<div class="list-footer">Working in <code>${escapeHtml(state.daemonInfo.cwd)}</code> · ${escapeHtml(String(state.daemonInfo.allowlistRuleCount))} tools auto-approve</div>`
+    ? `<div class="list-footer">${escapeHtml(String(state.daemonInfo.allowlistRuleCount))} tools auto-approve</div>`
     : '';
-  root.innerHTML = `
-    <div class="session-list">
-      <button class="new-session" id="new-session">
-        <span>New session</span>
-        <span class="plus">+</span>
-      </button>
-      <div class="list-label">Recent</div>
-      ${sessions.length === 0
-        ? `<div class="empty-state">No sessions yet. Open a new one.</div>`
-        : sessions.map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0)).join('')}
-      ${info}
-    </div>
-    ${banner}
-  `;
-  document.getElementById('new-session').onclick = () => openSession(null);
+
+  if (state.projects.length === 0) {
+    root.innerHTML = `
+      <div class="session-list">
+        <button class="new-session" id="new-session">
+          <span>New session</span>
+          <span class="plus">+</span>
+        </button>
+        <div class="empty-state">No sessions yet. Open a new one in any directory.</div>
+        ${info}
+      </div>
+      ${banner}
+    `;
+  } else if (state.projects.length === 1) {
+    const sessions = state.projects[0].sessions;
+    root.innerHTML = `
+      <div class="session-list">
+        <button class="new-session" id="new-session">
+          <span>New session</span>
+          <span class="plus">+</span>
+        </button>
+        <div class="list-label">Recent</div>
+        ${sessions.map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0)).join('')}
+        ${info}
+      </div>
+      ${banner}
+    `;
+  } else {
+    const sections = state.projects.map((p, i) => projectSectionHtml(p, i === 0, pendingBySession)).join('');
+    root.innerHTML = `
+      <div class="session-list">
+        <button class="new-session" id="new-session">
+          <span>New session</span>
+          <span class="plus">+</span>
+        </button>
+        ${sections}
+        ${info}
+      </div>
+      ${banner}
+    `;
+    bindProjectSectionToggles(pendingBySession);
+  }
+
+  document.getElementById('new-session').onclick = () => openCwdPickerSheet();
   document.getElementById('conn-banner-retry')?.addEventListener('click', forceReconnect);
+  bindSessionRowHandlers();
+}
+
+function bindSessionRowHandlers() {
   for (const row of document.querySelectorAll('.session-row')) {
     wireSwipeToDelete(row);
   }
@@ -490,11 +543,68 @@ function renderList() {
         confirmLabel: 'Delete',
         danger: true,
       });
-      if (!ok) {
-        if (row) snapRowClosed(row);
-        return;
-      }
+      if (!ok) { if (row) snapRowClosed(row); return; }
       deleteSession(id);
+    };
+  }
+}
+
+function projectSectionHtml(p, isMostRecent, pendingBySession) {
+  const expanded = isProjectExpanded(p.projectDir, isMostRecent);
+  const basename = p.cwd.split('/').filter(Boolean).pop() || p.cwd;
+  const rows = p.sessions
+    .map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0))
+    .join('');
+  // Aggregate pending counts across this project's sessions so the header can
+  // show "N pending" without forcing the user to expand the section first.
+  const projectPending = p.sessions.reduce(
+    (acc, s) => acc + (pendingBySession[s.id] ?? 0), 0,
+  );
+  const sessCount = p.sessions.length;
+  // Meta block: stacked count + last-active. When there's a pending approval
+  // somewhere inside, an accent dot chip replaces the meta in the same grid
+  // slot — keeps the header tight while still surfacing attention state.
+  const metaBlock = projectPending > 0
+    ? `<span class="project-section-pending"><span class="dot"></span>${projectPending} pending</span>
+       <span class="project-section-meta" aria-hidden="true">
+         <span class="project-section-meta-count">${sessCount}</span>${escapeHtml(timeAgo(p.lastModified))}
+       </span>`
+    : `<span class="project-section-meta">
+         <span class="project-section-meta-count">${sessCount}</span>${escapeHtml(timeAgo(p.lastModified))}
+       </span>`;
+  // RTL trick on the cwd line: a long path like /Users/dc/frostbyte73/outpost
+  // ellipses on the LEFT (…outpost) instead of cutting off the tail, which is
+  // the more identifying part of the path on small screens.
+  return `
+    <section class="project-section${expanded ? ' project-section-open' : ''}" data-project-dir="${escapeHtml(p.projectDir)}">
+      <button class="project-section-header" type="button" aria-expanded="${expanded ? 'true' : 'false'}">
+        <span class="project-section-name">${escapeHtml(basename)}</span>
+        <span class="project-section-cwd"><span>${escapeHtml(p.cwd)}</span></span>
+        ${metaBlock}
+      </button>
+      <div class="project-section-body">${expanded ? rows : ''}</div>
+    </section>
+  `;
+}
+
+function bindProjectSectionToggles(pendingBySession) {
+  for (const btn of document.querySelectorAll('.project-section-header')) {
+    btn.onclick = () => {
+      const section = btn.closest('.project-section');
+      const projectDir = section.dataset.projectDir;
+      const willExpand = !section.classList.contains('project-section-open');
+      section.classList.toggle('project-section-open', willExpand);
+      setProjectExpanded(projectDir, willExpand);
+      const body = section.querySelector('.project-section-body');
+      if (willExpand) {
+        const p = state.projects.find((pp) => pp.projectDir === projectDir);
+        body.innerHTML = p
+          ? p.sessions.map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0)).join('')
+          : '';
+        bindSessionRowHandlers();
+      } else {
+        body.innerHTML = '';
+      }
     };
   }
 }
@@ -526,10 +636,21 @@ function sessionRowHtml(s, i, pendingCount) {
   `;
 }
 
-async function openSession(id) {
-  const isNew = id === null;
-  if (isNew) id = crypto.randomUUID();
+async function openSession(id, opts) {
+  const isNew = id === null || !!opts?.cwd;
+  if (id === null) id = crypto.randomUUID();
   state.currentSessionId = id;
+  // Resolve the cwd for this session so projectRelativePath() can anchor file paths to
+  // the project root. For a new session, opts.cwd is the picker's choice. For an existing
+  // session, walk the project list. Falls back to null and shortenPath() handles undefined.
+  if (opts?.cwd) {
+    state.currentSessionCwd = opts.cwd;
+  } else {
+    state.currentSessionCwd = null;
+    for (const p of state.projects) {
+      if (p.sessions.some((s) => s.id === id)) { state.currentSessionCwd = p.cwd; break; }
+    }
+  }
   state.view = 'session';
   state.transcript = [];
   state.seenBlockSigs = new Set();
@@ -628,7 +749,7 @@ async function openSession(id) {
       if (state.currentSessionId === id) renderSession();
     }
   }
-  connectWs(id);
+  connectWs(id, opts);
 }
 
 // Called from connectWs's onopen handler on reconnect (not the initial open of a session).
@@ -778,12 +899,13 @@ function leaveSession() {
   loadSessions();
 }
 
-function connectWs(id) {
+function connectWs(id, opts) {
   if (state.sessionWsTimer) { clearTimeout(state.sessionWsTimer); state.sessionWsTimer = null; }
   if (state.ws) state.ws.close();
   state.sessionWsReady = false;
   updateConnIndicator();
-  const ws = new WebSocket(`wss://${location.host}/ws/sessions/${id}`);
+  const cwdQuery = opts?.cwd ? `?cwd=${encodeURIComponent(opts.cwd)}` : '';
+  const ws = new WebSocket(`wss://${location.host}/ws/sessions/${id}${cwdQuery}`);
   state.ws = ws;
   ws.onmessage = (e) => {
     let msg;
@@ -933,6 +1055,12 @@ function handleWsMessage(msg) {
   // letting these also flow into state.transcript was duplicating every subagent tool
   // call in the parent view.
   if (msg.isSidechain === true || msg.parent_tool_use_id || msg.parentToolUseId || msg.agent_id || msg.agentId) return;
+  // First non-error message proves the spawn succeeded — drop the pending-new-session
+  // marker so a daemon_error landing LATER (e.g. claude proc exits) doesn't bounce the
+  // user back to the picker.
+  if (msg.type !== 'daemon_error' && state.pendingNewSession && state.pendingNewSession.id === state.currentSessionId) {
+    state.pendingNewSession = null;
+  }
   // Session WS only carries session-scoped events. Approvals flow through the notification
   // WS so they reach every view (list, current session, other session).
   if (msg.type === 'assistant') {
@@ -1160,11 +1288,24 @@ function handleWsMessage(msg) {
         const entry = state.pendingAsks.get(useId);
         entry.answer = text;
         state.pendingAsks.delete(useId);
+        // Mirror the disk-replay path: record absorption so catchUpFromDisk skips this
+        // tool_result on subsequent reconnects.
+        state.consumedTaskResults.add(useId);
         touched = true;
       }
     }
     if (touched) renderSession();
   } else if (msg.type === 'daemon_error') {
+    // If this error landed on a brand-new session before any successful messages, bounce
+    // the user back to the picker so they can correct the path. Otherwise the user lands
+    // in an empty session view with a "cwd does not exist" tile and no clear next step.
+    if (state.pendingNewSession && state.pendingNewSession.id === state.currentSessionId) {
+      const failedCwd = state.pendingNewSession.cwd;
+      state.pendingNewSession = null;
+      leaveSession();
+      openCwdPickerSheet({ message: msg.message, failedCwd });
+      return;
+    }
     state.transcript.push({ role: 'error', text: msg.message });
     stopThinking();
     renderSession();
@@ -3111,15 +3252,14 @@ function shortenPath(path) {
   return norm.length > 90 ? '…' + norm.slice(-89) : norm;
 }
 
-// Project-anchored path: when the file is under daemonInfo.cwd, strip everything up
-// to (but not including) the project directory's basename. With cwd = /Users/dc/
-// frostbyte73/outpost, /Users/dc/frostbyte73/outpost/src/pwa/app.js becomes
-// "outpost/src/pwa/app.js". Falls back to shortenPath (just collapsing $HOME to ~)
-// for files outside cwd — no fancier heuristic; the project root has to be set on
-// the daemon for the project-anchor to kick in.
+// Project-anchored path: when the file is under the current session's cwd, strip
+// everything up to (but not including) the project directory's basename. With cwd =
+// /Users/dc/frostbyte73/outpost, /Users/dc/frostbyte73/outpost/src/pwa/app.js becomes
+// "outpost/src/pwa/app.js". Falls back to shortenPath (just collapsing $HOME to ~) for
+// files outside cwd — outpost is multi-project now, so each session carries its own cwd.
 function projectRelativePath(path) {
   if (!path) return '';
-  const cwd = state.daemonInfo?.cwd;
+  const cwd = state.currentSessionCwd;
   if (cwd && typeof cwd === 'string') {
     const projectRoot = cwd.replace(/\/+$/, '');
     const projectName = projectRoot.slice(projectRoot.lastIndexOf('/') + 1);
@@ -3563,6 +3703,121 @@ function closeTodosSheet() {
   }, 380);
 }
 
+// Bottom sheet that asks the user where to launch a new claude session. Recents come from
+// state.projects (already populated by loadSessions). Tap a recent project = immediate
+// create. Custom path footer expands into a text input for first-time-in-a-project. On
+// daemon_error from the spawn attempt (Task 9), this sheet re-opens with the failed path
+// + inline error so the user can correct.
+function openCwdPickerSheet(initialError) {
+  dismissSoftKeyboard();
+  closeCwdPickerSheet();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'sheet-backdrop cwd-picker-sheet-backdrop';
+  backdrop.id = 'cwd-picker-sheet-backdrop';
+  const sheet = document.createElement('aside');
+  sheet.className = 'sheet cwd-picker-sheet';
+  sheet.id = 'cwd-picker-sheet';
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-modal', 'true');
+  sheet.setAttribute('aria-label', 'Pick a directory');
+  sheet.innerHTML = cwdPickerBodyHtml(initialError);
+  document.body.appendChild(backdrop);
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => {
+    backdrop.classList.add('open');
+    sheet.classList.add('open');
+  });
+  pinSheetBelowHeader(sheet);
+  noteSheetOpen();
+  makeSheetDismissible(sheet, closeCwdPickerSheet);
+  bindCwdPickerHandlers(sheet, backdrop);
+}
+
+function closeCwdPickerSheet() {
+  const backdrop = document.getElementById('cwd-picker-sheet-backdrop');
+  const sheet = document.getElementById('cwd-picker-sheet');
+  if (!backdrop && !sheet) return;
+  backdrop?.classList.remove('open');
+  sheet?.classList.remove('open');
+  noteSheetClose();
+  setTimeout(() => { backdrop?.remove(); sheet?.remove(); }, 360);
+}
+
+function cwdPickerBodyHtml(initialError) {
+  const recents = state.projects.map((p) => {
+    const basename = p.cwd.split('/').filter(Boolean).pop() || p.cwd;
+    // RTL on cwd line so the basename tail stays visible when the path overflows.
+    return `
+      <button class="cwd-picker-row" type="button" data-cwd="${escapeHtml(p.cwd)}">
+        <span class="cwd-picker-row-name">${escapeHtml(basename)}</span>
+        <span class="cwd-picker-row-cwd"><span>${escapeHtml(p.cwd)}</span></span>
+      </button>
+    `;
+  }).join('');
+  const errorBlock = initialError
+    ? `<div class="cwd-picker-error">
+         <span class="cwd-picker-error-label">Path rejected</span>
+         ${escapeHtml(initialError.message)}
+       </div>`
+    : '';
+  const customValue = initialError?.failedCwd ? `value="${escapeHtml(initialError.failedCwd)}"` : '';
+  const hasRecents = state.projects.length > 0;
+  return `
+    <div class="grabber"></div>
+    <div class="header-row">
+      <span class="sheet-title">New session</span>
+      <button class="sheet-close" id="cwd-picker-sheet-close" aria-label="Close">✕</button>
+    </div>
+    ${errorBlock}
+    ${hasRecents
+      ? `<div class="cwd-picker-eyebrow">Recent projects</div>
+         <div class="cwd-picker-recents">${recents}</div>`
+      : `<div class="cwd-picker-empty">No projects yet — start one below.</div>`
+    }
+    <div class="cwd-picker-custom">
+      <span class="cwd-picker-custom-label">${hasRecents ? 'Or open a fresh path' : 'Where should claude run?'}</span>
+      <form class="cwd-picker-prompt" id="cwd-picker-custom-form" autocomplete="off">
+        <input type="text" id="cwd-picker-custom-input" inputmode="url" autocapitalize="off"
+               autocorrect="off" spellcheck="false"
+               placeholder="~/projects/foo" ${customValue} />
+        <button type="submit" id="cwd-picker-custom-go" aria-label="Open">↵</button>
+      </form>
+    </div>
+  `;
+}
+
+function bindCwdPickerHandlers(sheet, backdrop) {
+  for (const row of sheet.querySelectorAll('.cwd-picker-row')) {
+    row.onclick = () => commitNewSessionCwd(row.dataset.cwd);
+  }
+  const close = sheet.querySelector('#cwd-picker-sheet-close');
+  if (close) close.onclick = () => closeCwdPickerSheet();
+  backdrop.onclick = () => closeCwdPickerSheet();
+  const input = sheet.querySelector('#cwd-picker-custom-input');
+  const form = sheet.querySelector('#cwd-picker-custom-form');
+  const submitCustom = (e) => {
+    if (e) e.preventDefault();
+    const raw = (input?.value || '').trim();
+    if (!raw) { input?.focus(); return; }
+    // Client-side ~ expansion using the daemon's $HOME (surfaced via /api/info). The
+    // daemon enforces absolute paths anyway, so a missing home just means the user has
+    // to type the absolute path themselves.
+    const home = state.daemonInfo?.home;
+    const expanded = (home && raw.startsWith('~')) ? raw.replace(/^~/, home) : raw;
+    commitNewSessionCwd(expanded);
+  };
+  if (form) form.addEventListener('submit', submitCustom);
+}
+
+// Commit handler: closes the picker, then opens a new session under the chosen cwd. The
+// cwd flows to the daemon as a query param on the WS URL (Task 8 plumbs this through).
+function commitNewSessionCwd(cwd) {
+  closeCwdPickerSheet();
+  const id = crypto.randomUUID();
+  state.pendingNewSession = { id, cwd };
+  openSession(id, { cwd });
+}
+
 // Approval cards now route through the same formatter the transcript uses, so the
 // label, summary chip, detail line, expandable payload (diff for Edit, content for
 // Write, shell for Bash, etc.) all match. We add the approval chrome (accent left
@@ -3964,8 +4219,9 @@ async function deleteSession(id) {
   try {
     const r = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
-    state.sessions = state.sessions.filter((s) => s.id !== id);
-    render();
+    // Refresh from the server so projects whose last session was just deleted naturally
+    // disappear from the list.
+    await loadSessions();
   } catch (e) {
     alert(`Failed to delete: ${e.message}`);
   }
@@ -4248,6 +4504,21 @@ function renderInline(text) {
 }
 
 /* ───── Utils ───────────────────────────────────────────────────── */
+
+function persistExpandedProjects() {
+  try { localStorage.setItem('op:expandedProjects', JSON.stringify(state.expandedProjects)); }
+  catch { /* localStorage full or unavailable — non-fatal */ }
+}
+function isProjectExpanded(projectDir, isMostRecent) {
+  if (Object.prototype.hasOwnProperty.call(state.expandedProjects, projectDir)) {
+    return state.expandedProjects[projectDir] === true;
+  }
+  return !!isMostRecent;
+}
+function setProjectExpanded(projectDir, expanded) {
+  state.expandedProjects[projectDir] = expanded;
+  persistExpandedProjects();
+}
 
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c]));
