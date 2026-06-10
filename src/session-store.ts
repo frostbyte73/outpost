@@ -68,7 +68,27 @@ function isSystemInjection(text: string): boolean {
     // PWA picks up the same blob on the live WS path and folds the result into the
     // matching agent's feed in the agents sheet — that's where it should be read.
     t.startsWith('<task-notification>') ||
+    // Skill loadout text that some slash commands inject as a second user message —
+    // the markdown body of the skill, ending in "ARGUMENTS: …". Filtering out keeps
+    // the transcript clean on reopen; the live PWA path never displays it because
+    // sendMessage pushes the human-typed text locally before the expansion happens.
+    t.startsWith('Base directory for this skill:') ||
     t.startsWith('Caveat: ');
+}
+
+// Slash-command invocations (skills, custom commands) get expanded by claude code into
+// a long user message: `<command-message>…</command-message><command-name>/foo</command-name>
+// <command-args>actual user query</command-args>` followed by the loaded skill body.
+// isSystemInjection above filters the whole thing on disk-replay because it starts with
+// `<command-`, but that loses the user's original argument too. Rewrite the message to
+// just the args text so the transcript still shows what the human typed. Returns null
+// if the text isn't a slash-command invocation.
+function rewriteSlashCommandInvocation(text: string): string | null {
+  if (!text.trimStart().startsWith('<command-message>')) return null;
+  const m = /<command-args>([\s\S]*?)<\/command-args>/.exec(text);
+  if (!m) return null;
+  const args = m[1]!.trim();
+  return args.length > 0 ? args : null;
 }
 
 interface RawContentBlock {
@@ -225,7 +245,11 @@ function extractTranscriptMessages(obj: unknown, taskToolUseIds: Set<string>): T
   const msgId = o.type === 'assistant' ? o.message?.id : undefined;
 
   if (typeof content === 'string') {
-    if (o.type === 'user' && isSystemInjection(content)) return [];
+    if (o.type === 'user') {
+      const rewritten = rewriteSlashCommandInvocation(content);
+      if (rewritten !== null) return [{ role: 'user', text: rewritten, ...(msgId ? { msgId } : {}) }];
+      if (isSystemInjection(content)) return [];
+    }
     return [{ role: o.type, text: content, ...(msgId ? { msgId } : {}) }];
   }
   if (!Array.isArray(content)) return [];
@@ -233,7 +257,14 @@ function extractTranscriptMessages(obj: unknown, taskToolUseIds: Set<string>): T
   const parts: TranscriptMessage[] = [];
   for (const b of content) {
     if (b.type === 'text' && typeof b.text === 'string') {
-      if (o.type === 'user' && isSystemInjection(b.text)) continue;
+      if (o.type === 'user') {
+        const rewritten = rewriteSlashCommandInvocation(b.text);
+        if (rewritten !== null) {
+          parts.push({ role: 'user', text: rewritten, ...(msgId ? { msgId } : {}) });
+          continue;
+        }
+        if (isSystemInjection(b.text)) continue;
+      }
       parts.push({ role: o.type, text: b.text, ...(msgId ? { msgId } : {}) });
     } else if (b.type === 'tool_use' && o.type === 'assistant') {
       const name = typeof b.name === 'string' ? b.name : 'tool';

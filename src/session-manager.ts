@@ -61,6 +61,15 @@ export class SessionManager {
     for (const ws of s.clients) ws.send(JSON.stringify(message));
   }
 
+  // Interrupt the in-flight generation. Sends SIGINT to the claude subprocess; the
+  // existing exit-handler path then notifies attached WS clients via daemon_proc_exit,
+  // and the PWA's "Reopen" tile lets the user resume from where it cut off.
+  interrupt(sessionId: string): void {
+    const s = this.active.get(sessionId);
+    if (!s) return;
+    s.proc.interrupt();
+  }
+
   async close(sessionId: string): Promise<void> {
     const s = this.active.get(sessionId);
     if (!s) return;

@@ -40,6 +40,10 @@ const state = {
   todos: new Map(),
   pendingCreates: new Map(),
   consumedTaskResults: new Set(),
+  // tool_use_ids of every Task* call we've absorbed into the todos panel. Used on disk
+  // replay to drop the matching tool_result rows so they don't leak into the transcript
+  // as "TOOL_RESULT Updated task #N status" entries.
+  taskToolUseIds: new Set(),
   // tool_use entries (by tool_use_id) the user has tapped open to inspect raw JSON.
   // Persists across re-renders so an incoming WS message doesn't auto-collapse anything.
   // Reset per session in openSession so state doesn't bleed between conversations.
@@ -87,7 +91,61 @@ const state = {
   thinkingOutputTokens: 0,
   thinkingOutputChars: 0,
   thinkingTicker: null,
+  // Stack of in-flight tool calls (push on tool_use block arrival, pop on matching
+  // tool_result). The top of the stack drives the thinking-strip verb — when the
+  // assistant is mid-tool we say "reading…" / "grepping…" / etc.; when the stack is
+  // empty we fall back to "thinking…". Reset per session in openSession.
+  activeTools: [],
+  // Tool calls flagged for auto-expansion (accept-edits or allowlist auto-allow) whose
+  // matching tool_use block hasn't streamed into state.transcript yet. The PreToolUse
+  // hook and the assistant content_block_stop fire in parallel, so the approval_pending
+  // / tool_auto_allowed notification can race ahead of the tool_use. Entries are
+  // { toolName, toolInputSig, addedAt } — when a tool_use later lands, we walk this
+  // list, find the matching signature, and expand the entry on arrival.
+  pendingExpand: [],
+  // After the stack empties, we linger on the most-recent verb for VERB_LINGER_MS so
+  // fast tools (Read, Grep) don't flash by too quickly to read. A new push clears these.
+  lingeringVerb: null,
+  lingeringTimer: null,
+  // Count of file edits auto-allowed during the current session via accept-edits mode.
+  // Surfaced as a counter on the header chip so the user can audit what Claude did
+  // unsupervised. Reset per session in openSession.
+  autoAllowedEdits: 0,
+  // Daemon config loaded once at startup via /api/info. Surfaced in the empty state
+  // (cwd / rule count) and used to size the approval-card countdown.
+  daemonInfo: null,
+  // Connection state — separate counters per WS so a flapping session WS doesn't lie
+  // about the notification WS (and vice versa). connState is the user-facing rollup:
+  //   'connected'    — at least one open, none failed
+  //   'reconnecting' — actively retrying (at least one not open) but under failure threshold
+  //   'failed'       — at least one has crossed the failure threshold (≥3 consecutive retries)
+  // Initial state is 'connecting' until the first onopen lands.
+  sessionWsReady: false,
+  notifyWsReady: false,
+  sessionWsRetries: 0,
+  notifyWsRetries: 0,
+  sessionWsTimer: null,
+  notifyWsTimer: null,
+  connState: 'connecting',
+  // Tracks whether we've ever had a successful session-WS open for the current session.
+  // First open is paired with openSession's /api/sessions/:id/messages fetch — no need
+  // to redo it. Subsequent opens (reconnects after iOS background, network blip, etc.)
+  // refetch from disk so messages that fell out of the daemon's 30s replay buffer get
+  // reconciled into the transcript via seenBlockSigs dedup.
+  sessionWsHasConnected: false,
+  // Auto-decides (accept-edits) that landed while both WSs were closed. Flushed on the
+  // next notification-WS open. Without this, a backgrounded PWA could miss an auto-allow
+  // entirely and the hook would time out 10 minutes later with a denied edit.
+  pendingDecides: [],
 };
+
+// Threshold of consecutive failed retries before we flip to the user-facing 'failed' state
+// (banner + danger dot). 3 retries with backoff ≈ ~5s before the user sees the banner —
+// enough to absorb a brief tunnel hiccup, fast enough that a real outage gets surfaced.
+const CONN_FAIL_THRESHOLD = 3;
+// Base backoff for WS reconnects. Multiplied by min(retries, 4) on each retry so the gap
+// grows from 1.5s → 6s rather than hammering the daemon when it's actually down.
+const CONN_BACKOFF_MS = 1500;
 
 // Tools we absorb into the todos panel rather than rendering as transcript entries. Must
 // stay in sync with the matching constant in src/session-store.ts.
@@ -98,11 +156,114 @@ const TASK_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGe
 // they're not strictly edits and have a wider blast radius.
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 
+// Tools where the payload is non-obvious from the label alone and the user wants to see
+// the full content before approving (Bash command, Edit diff, Write contents, etc.). Used
+// to pick a default expansion state for approval cards + resolved tool_use entries.
+function isHighDetailTool(toolName) {
+  return toolName === 'Bash' || EDIT_TOOLS.has(toolName);
+}
+
+// Stable, sort-keys JSON for content-matching. Claude code may re-serialize tool_input
+// between the assistant stream and the hook payload, producing the same object content
+// with a different key order — vanilla JSON.stringify is order-sensitive and would miss
+// the match. Recursive sort keeps the signature canonical regardless of where the value
+// came from.
+function stableStringify(v) {
+  if (v === null || typeof v !== 'object') return JSON.stringify(v);
+  if (Array.isArray(v)) return '[' + v.map(stableStringify).join(',') + ']';
+  const keys = Object.keys(v).sort();
+  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(v[k])).join(',') + '}';
+}
+
+// Find the most-recent transcript tool_use entry that matches a given approval/auto-allow
+// notification by content. Both sides may be re-serialized by claude code before reaching
+// us, so we compare via stableStringify rather than JSON.stringify. Returns the matching
+// toolUseId, or null if no entry has arrived yet (notification raced ahead of the
+// assistant stream).
+function findMatchingToolUseId(toolName, toolInput, sessionId) {
+  if (sessionId && sessionId !== state.currentSessionId) return null;
+  let targetSig;
+  try { targetSig = stableStringify(toolInput); } catch { return null; }
+  for (let i = state.transcript.length - 1; i >= 0; i--) {
+    const m = state.transcript[i];
+    if (m.role !== 'tool_use' || m.toolName !== toolName || !m.toolUseId) continue;
+    if (state.expandedTools.has(m.toolUseId)) continue;
+    try {
+      if (stableStringify(m.toolInput) === targetSig) return m.toolUseId;
+    } catch { /* keep walking */ }
+  }
+  return null;
+}
+
+// Auto-expand a tool_use by content (name + serialized input). If the matching entry
+// is already in state.transcript, expand it immediately. If not (the PreToolUse hook
+// fired before the assistant content_block_stop made it to us), queue the signature
+// in state.pendingExpand — applyPendingExpand will catch the match when the tool_use
+// eventually lands.
+function expandToolByContent(toolName, toolInput, sessionId) {
+  const id = findMatchingToolUseId(toolName, toolInput, sessionId);
+  if (id) {
+    state.expandedTools.add(id);
+    return true;
+  }
+  let sig;
+  try { sig = stableStringify(toolInput); } catch { return false; }
+  state.pendingExpand.push({ toolName, toolInputSig: sig, addedAt: Date.now() });
+  // GC stale entries — anything older than 30s couldn't possibly be matched by a future
+  // tool_use (claude would have either emitted the block or moved on). Keeps the queue
+  // bounded across long sessions where some notifications never find their pair.
+  state.pendingExpand = state.pendingExpand.filter((e) => Date.now() - e.addedAt < 30_000);
+  return false;
+}
+
+// Called when a tool_use lands in state.transcript. Walks pendingExpand looking for a
+// signature that matches this tool_use; if found, adds the tool_use_id to expandedTools
+// and removes the entry from the queue. Returns whether anything was applied (so the
+// caller can decide whether to re-render).
+function applyPendingExpand(toolName, toolInput, toolUseId) {
+  if (!toolUseId || state.pendingExpand.length === 0) return false;
+  let sig;
+  try { sig = stableStringify(toolInput); } catch { return false; }
+  for (let i = 0; i < state.pendingExpand.length; i++) {
+    const e = state.pendingExpand[i];
+    if (e.toolName === toolName && e.toolInputSig === sig) {
+      state.expandedTools.add(toolUseId);
+      state.pendingExpand.splice(i, 1);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Find a matching tool_use_id inside a subagent bucket (for accept-edits and
+// agent_activity paths). Walks the bucket's entries from newest to oldest looking for an
+// auto-allowed (decision='allow') entry with matching name + serialized input. Returns
+// the entry's toolUseId or null.
+function findMatchingSubagentToolUseId(agentId, toolName, toolInput) {
+  const bucket = state.subagents.get(agentId);
+  if (!bucket) return null;
+  let targetSig;
+  try { targetSig = JSON.stringify(toolInput); } catch { return null; }
+  for (let i = bucket.entries.length - 1; i >= 0; i--) {
+    const e = bucket.entries[i];
+    if (e.toolName !== toolName || !e.toolUseId) continue;
+    if (state.expandedTools.has(e.toolUseId)) continue;
+    try {
+      if (JSON.stringify(e.toolInput) === targetSig) return e.toolUseId;
+    } catch { /* keep walking */ }
+  }
+  return null;
+}
+
 // Apply a Task* tool_use block to state.todos. TaskCreate gets parked in pendingCreates
 // until its tool_result arrives (because the assigned task id lives in the result, not the
 // input). TaskUpdate mutates the entry in place. TaskList/TaskGet are no-ops here — we
 // only swallow them so they don't clutter the transcript.
 function applyTaskUse(name, input, useId) {
+  // Remember every Task* tool_use_id so the disk replay can drop the matching
+  // tool_result rows (TaskUpdate / TaskList / TaskGet results would otherwise leak
+  // into the transcript as raw "TOOL_RESULT …" entries).
+  if (useId) state.taskToolUseIds.add(useId);
   if (name === 'TaskCreate') {
     if (useId) state.pendingCreates.set(useId, input ?? {});
     return;
@@ -152,9 +313,15 @@ function applyTaskTranscriptMessage(m) {
     applyTaskUse(m.toolName, m.toolInput, m.toolUseId);
     return true;
   }
-  if (m.role === 'tool_result' && m.toolUseId && state.pendingCreates.has(m.toolUseId)) {
-    applyTaskResult(m.toolUseId, m.text);
-    return true;
+  if (m.role === 'tool_result' && m.toolUseId) {
+    // TaskCreate results still feed pendingCreates to resolve the assigned task id.
+    if (state.pendingCreates.has(m.toolUseId)) {
+      applyTaskResult(m.toolUseId, m.text);
+      return true;
+    }
+    // Anything else that paired with a Task* tool_use is informational chatter
+    // (TaskUpdate / TaskList / TaskGet acknowledgement text) — drop it.
+    if (state.taskToolUseIds.has(m.toolUseId)) return true;
   }
   return false;
 }
@@ -193,6 +360,18 @@ function applyAskTranscriptMessage(m, sink) {
 const initialButton = document.getElementById('new-session-initial');
 if (initialButton) initialButton.onclick = () => openSession(null);
 
+// One-shot fetch of /api/info on startup. Surface daemon config so the empty state can
+// confirm the wiring (cwd, allowlist size) and the approval countdown has a real timeout
+// to count against. Failures are silent — info is informational, not load-bearing.
+async function loadDaemonInfo() {
+  try {
+    const r = await fetch('/api/info');
+    if (!r.ok) return;
+    state.daemonInfo = await r.json();
+    if (state.view === 'list') renderList();
+  } catch { /* offline-ok */ }
+}
+
 async function loadSessions() {
   try {
     const r = await fetch('/api/sessions');
@@ -200,6 +379,9 @@ async function loadSessions() {
     const data = await r.json();
     state.sessions = data.sessions;
     state.pendingApprovals = data.pending ?? [];
+    for (const a of state.pendingApprovals) {
+      if (isHighDetailTool(a.toolName)) state.expandedTools.add(`approval-${a.approvalId}`);
+    }
     render();
   } catch (e) {
     root.innerHTML = `<div class="empty-state">Failed to load: ${escapeHtml(String(e.message))}</div>`;
@@ -247,7 +429,11 @@ function setHeader(mode) {
     if (state.acceptEdits) {
       const chip = document.createElement('span');
       chip.className = 'header-mode-chip';
-      chip.textContent = 'accept edits';
+      // Counter ticks each time accept-edits silently approves an edit; lets the user
+      // audit unsupervised activity at a glance without opening the agents sheet.
+      chip.textContent = state.autoAllowedEdits > 0
+        ? `auto-edits · ${state.autoAllowedEdits}`
+        : 'auto-edits on';
       header.appendChild(chip);
     }
     header.appendChild(m);
@@ -261,6 +447,17 @@ function renderList() {
     acc[a.sessionId] = (acc[a.sessionId] || 0) + 1;
     return acc;
   }, {});
+  const banner = state.connState === 'failed'
+    ? `<div class="conn-banner" role="alert">
+        <span class="conn-banner-msg">Daemon unreachable — check Tailscale</span>
+        <button type="button" id="conn-banner-retry">Retry</button>
+      </div>`
+    : '';
+  // Footer line under the list: daemon's actual cwd + how many allowlist rules are loaded.
+  // Reassures the user the wiring is real (esp. on first run) and shows what was loaded.
+  const info = state.daemonInfo
+    ? `<div class="list-footer">Working in <code>${escapeHtml(state.daemonInfo.cwd)}</code> · ${escapeHtml(String(state.daemonInfo.allowlistRuleCount))} tools auto-approve</div>`
+    : '';
   root.innerHTML = `
     <div class="session-list">
       <button class="new-session" id="new-session">
@@ -271,9 +468,12 @@ function renderList() {
       ${sessions.length === 0
         ? `<div class="empty-state">No sessions yet. Open a new one.</div>`
         : sessions.map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0)).join('')}
+      ${info}
     </div>
+    ${banner}
   `;
   document.getElementById('new-session').onclick = () => openSession(null);
+  document.getElementById('conn-banner-retry')?.addEventListener('click', forceReconnect);
   for (const row of document.querySelectorAll('.session-row')) {
     wireSwipeToDelete(row);
   }
@@ -333,17 +533,25 @@ async function openSession(id) {
   state.view = 'session';
   state.transcript = [];
   state.seenBlockSigs = new Set();
+  state.sessionWsHasConnected = false;
   // Per-session reset: todos, pendingCreates, and consumedTaskResults all belong to one
   // session's task list. Resetting here keeps the panel from leaking between sessions.
   state.todos = new Map();
   state.pendingCreates = new Map();
   state.consumedTaskResults = new Set();
+  state.taskToolUseIds = new Set();
   state.expandedTools = new Set();
   state.pendingAsks = new Map();
   state.subagents = new Map();
   state.activeAgentId = null;
   state.agentTabOrder = [];
   state.unboundAgentInvocations = [];
+  state.autoAllowedEdits = 0;
+  state.activeTools = [];
+  state.pendingExpand = [];
+  if (state.lingeringTimer) clearTimeout(state.lingeringTimer);
+  state.lingeringVerb = null;
+  state.lingeringTimer = null;
   // Rehydrate per-session subagent buckets from the global approval queue. The
   // notification WS holds approvals across sessions, so when the user navigates from
   // session A to B (e.g. tapping a cross-session subagent approval toast), B's pending
@@ -358,6 +566,13 @@ async function openSession(id) {
   // Dismiss any cross-session toast — it's either about this session (we're already
   // here) or about a different one the user is choosing not to follow right now.
   document.getElementById('toast')?.remove();
+  // The composer persists across WS-driven re-renders, but it should not carry a
+  // previous session's draft text when navigating A → B without leaving the session view.
+  const existingComposer = document.getElementById('composer');
+  if (existingComposer) {
+    existingComposer.textContent = '';
+    document.getElementById('send')?.classList.remove('armed');
+  }
   render();
   if (!isNew) {
     // Kick off the subagents fetch in parallel with /messages — they're independent and
@@ -416,11 +631,145 @@ async function openSession(id) {
   connectWs(id);
 }
 
+// Called from connectWs's onopen handler on reconnect (not the initial open of a session).
+// Refetches /api/sessions/:id/messages and appends any block we don't already have in
+// state.seenBlockSigs. Dedup is what makes this safe — running it after every reconnect
+// is a no-op when nothing was missed, and recovers the gap when iOS backgrounded the PWA
+// past the daemon's 30s recentMessages buffer. The /subagents snapshot is also refetched
+// the same way so subagent activity that landed during the gap reappears.
+async function catchUpFromDisk(id) {
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages`);
+    if (!r.ok || state.currentSessionId !== id) return;
+    const { messages } = await r.json();
+    if (state.currentSessionId !== id) return;
+
+    // Stale-state detection: count assistant text messages on disk vs in memory. After
+    // iOS keeps a PWA suspended for hours, the JS heap can be partially evicted —
+    // state.transcript may end up sparse while state.seenBlockSigs retains the
+    // signatures of messages that no longer exist in the transcript array. The
+    // dedup-append path below would then skip every disk message ("already seen") and
+    // never repopulate the transcript. Detect this drift and do a full rebuild instead.
+    const diskAssistantCount = messages.filter((m) => m.role === 'assistant').length;
+    const memAssistantCount = state.transcript.filter((m) => m.role === 'assistant').length;
+    if (diskAssistantCount > memAssistantCount + 1) {
+      rebuildTranscriptFromDisk(messages);
+      try {
+        const r2 = await fetch(`/api/sessions/${encodeURIComponent(id)}/subagents`);
+        if (r2.ok && state.currentSessionId === id) {
+          const body = await r2.json();
+          applyDiskSubagents(body.subagents || []);
+        }
+      } catch { /* ignore */ }
+      if (state.view === 'session') renderSession();
+      return;
+    }
+
+    // User messages on disk have no msgId (claude doesn't assign API ids to them), so the
+    // block-level dedup below can't catch them. Both disk and state.transcript preserve
+    // send-order for user messages, so the count of user messages we already have is also
+    // the count of disk user messages to skip — including claude's own synthetic
+    // "[Request interrupted by user]" entry it writes on SIGINT. Without this, every WS
+    // open (initial, post-Reopen, post-iOS-background) re-pushed every user message.
+    let userMsgsToSkip = state.transcript.filter((m) => m.role === 'user').length;
+    let added = false;
+    for (const m of messages) {
+      // Block-level dedup: tool_use keyed by tool_use_id, assistant text by msgId|text.
+      // Both keys are already populated by the live WS path, so anything in state already
+      // gets short-circuited here.
+      if (m.role === 'tool_use' && m.toolUseId) {
+        if (state.seenBlockSigs.has(m.toolUseId)) continue;
+        state.seenBlockSigs.add(m.toolUseId);
+      } else if (m.role === 'assistant' && m.msgId) {
+        const sig = `${m.msgId}|${m.text}`;
+        if (state.seenBlockSigs.has(sig)) continue;
+        state.seenBlockSigs.add(sig);
+      } else if (m.role === 'tool_result' && m.toolUseId && state.consumedTaskResults.has(m.toolUseId)) {
+        continue;
+      } else if (m.role === 'user') {
+        if (userMsgsToSkip > 0) { userMsgsToSkip--; continue; }
+      }
+      // Route through the same Task/Ask absorbers the live path uses so missed Task*
+      // mutations rebuild the todos panel and Ask answers fill their inline cards.
+      if (applyTaskTranscriptMessage(m)) { added = true; continue; }
+      if (applyAskTranscriptMessage(m, state.transcript)) { added = true; continue; }
+      if (m.role === 'tool_use' && m.toolName === 'Agent' && m.toolInput && typeof m.toolInput === 'object') {
+        recordParentAgentInvocation({
+          toolUseId: m.toolUseId,
+          subagentType: m.toolInput.subagent_type,
+          description: m.toolInput.description,
+        });
+      }
+      state.transcript.push(m);
+      added = true;
+    }
+    // Also refresh subagent buckets — the same gap could have lost agent_activity events
+    // and subagent tool_use blocks. applyDiskSubagents prepends disk entries to existing
+    // buckets without wiping in-memory state.
+    try {
+      const r2 = await fetch(`/api/sessions/${encodeURIComponent(id)}/subagents`);
+      if (r2.ok && state.currentSessionId === id) {
+        const body = await r2.json();
+        applyDiskSubagents(body.subagents || []);
+        added = true;
+      }
+    } catch { /* ignore subagent fetch failure — main message fetch already succeeded */ }
+    if (added && state.view === 'session') renderSession();
+  } catch (e) {
+    console.warn('failed to catch up from disk:', e);
+  }
+}
+
+// Full rebuild of state.transcript from a disk message snapshot — mirrors openSession's
+// replay logic. Used by catchUpFromDisk when stale-state drift is detected (disk has
+// substantially more assistant content than memory). Any locally-pushed user message
+// that hasn't been written to disk yet (the user sent + immediately backgrounded race)
+// is preserved by appending such entries back at the end.
+function rebuildTranscriptFromDisk(messages) {
+  // Capture pending local pushes: user messages with no msgId that aren't on disk yet.
+  // Claude code writes user messages to disk shortly after receiving them via the WS,
+  // so this is only relevant for the very narrow window between sendMessage and the
+  // disk flush. Comparing by text alone is a coarse match but adequate for this race.
+  const diskUserTexts = new Set(
+    messages.filter((m) => m.role === 'user' && typeof m.text === 'string').map((m) => m.text),
+  );
+  const pendingLocalUsers = state.transcript.filter(
+    (m) => m.role === 'user' && !m.msgId && !diskUserTexts.has(m.text),
+  );
+
+  state.seenBlockSigs = new Set();
+  state.consumedTaskResults = new Set();
+  state.taskToolUseIds = new Set();
+  state.todos = new Map();
+  state.pendingCreates = new Map();
+
+  const filtered = [];
+  for (const m of messages) {
+    if (m.toolUseId) state.seenBlockSigs.add(m.toolUseId);
+    if (m.role === 'assistant' && m.msgId) state.seenBlockSigs.add(`${m.msgId}|${m.text}`);
+    if (applyTaskTranscriptMessage(m)) continue;
+    if (applyAskTranscriptMessage(m, filtered)) continue;
+    if (m.role === 'tool_use' && m.toolName === 'Agent' && m.toolInput && typeof m.toolInput === 'object') {
+      recordParentAgentInvocation({
+        toolUseId: m.toolUseId,
+        subagentType: m.toolInput.subagent_type,
+        description: m.toolInput.description,
+      });
+    }
+    filtered.push(m);
+  }
+  state.transcript = [...filtered, ...pendingLocalUsers];
+}
+
 function leaveSession() {
   state.view = 'list';
+  if (state.sessionWsTimer) { clearTimeout(state.sessionWsTimer); state.sessionWsTimer = null; }
   state.ws?.close();
   state.ws = null;
   state.currentSessionId = null;
+  state.sessionWsReady = false;
+  state.sessionWsRetries = 0;
+  state.sessionWsHasConnected = false;
   stopThinking();
   document.getElementById('toast')?.remove();
   closeTodosSheet();
@@ -430,7 +779,10 @@ function leaveSession() {
 }
 
 function connectWs(id) {
+  if (state.sessionWsTimer) { clearTimeout(state.sessionWsTimer); state.sessionWsTimer = null; }
   if (state.ws) state.ws.close();
+  state.sessionWsReady = false;
+  updateConnIndicator();
   const ws = new WebSocket(`wss://${location.host}/ws/sessions/${id}`);
   state.ws = ws;
   ws.onmessage = (e) => {
@@ -438,8 +790,34 @@ function connectWs(id) {
     try { msg = JSON.parse(e.data); } catch { return; }
     handleWsMessage(msg);
   };
+  ws.onopen = () => {
+    state.sessionWsReady = true;
+    state.sessionWsRetries = 0;
+    updateConnIndicator();
+    state.sessionWsHasConnected = true;
+    // Always run catchUpFromDisk on every WS open — first connect, reopen-after-
+    // interrupt, reconnect-after-background, all of them. The dedup against
+    // seenBlockSigs makes it a no-op when nothing was missed, and the stale-state
+    // detection rebuilds the transcript when openSession's own /messages fetch
+    // failed silently (e.g. transient daemon restart during a tap-Reopen race).
+    catchUpFromDisk(id);
+  };
   ws.onclose = () => {
-    if (state.currentSessionId === id) setTimeout(() => connectWs(id), 1500);
+    // If a newer connectWs has already replaced this socket (e.g., a Reopen double-tap or
+    // a forceReconnect landed while we were still in CONNECTING state), the newer socket
+    // owns the readiness/retry state — leave it alone. Without this guard, the stale
+    // onclose would schedule a setTimeout that later kills the working newer socket and
+    // spawns a redundant reconnect cycle.
+    if (state.ws !== ws) return;
+    state.sessionWsReady = false;
+    if (state.currentSessionId !== id) {
+      updateConnIndicator();
+      return;
+    }
+    state.sessionWsRetries += 1;
+    updateConnIndicator();
+    const delay = CONN_BACKOFF_MS * Math.min(state.sessionWsRetries, 4);
+    state.sessionWsTimer = setTimeout(() => connectWs(id), delay);
   };
   ws.onerror = () => { /* close handler retries */ };
 }
@@ -449,6 +827,9 @@ function connectWs(id) {
 // already-pending approvals on attach, then live approval_pending events as they fire.
 function connectNotificationWs() {
   if (state.notifyWs && state.notifyWs.readyState === WebSocket.OPEN) return;
+  if (state.notifyWsTimer) { clearTimeout(state.notifyWsTimer); state.notifyWsTimer = null; }
+  state.notifyWsReady = false;
+  updateConnIndicator();
   const ws = new WebSocket(`wss://${location.host}/ws/notifications`);
   state.notifyWs = ws;
   ws.onmessage = (e) => {
@@ -456,11 +837,57 @@ function connectNotificationWs() {
     try { msg = JSON.parse(e.data); } catch { return; }
     handleNotificationMessage(msg);
   };
+  ws.onopen = () => {
+    state.notifyWsReady = true;
+    state.notifyWsRetries = 0;
+    updateConnIndicator();
+    flushPendingDecides();
+  };
   ws.onclose = () => {
     state.notifyWs = null;
-    setTimeout(connectNotificationWs, 1500);
+    state.notifyWsReady = false;
+    state.notifyWsRetries += 1;
+    updateConnIndicator();
+    const delay = CONN_BACKOFF_MS * Math.min(state.notifyWsRetries, 4);
+    state.notifyWsTimer = setTimeout(connectNotificationWs, delay);
   };
   ws.onerror = () => { /* close handler retries */ };
+}
+
+// Compute the user-facing connection state from the two WS counters and apply it to the
+// DOM. In the list view only the notification WS is relevant; in a session both matter.
+// Re-renders the session view when the failed state changes so the reconnect banner
+// appears/disappears.
+function updateConnIndicator() {
+  const inSession = state.view === 'session';
+  const sessionFailed = inSession && state.sessionWsRetries >= CONN_FAIL_THRESHOLD;
+  const notifyFailed = state.notifyWsRetries >= CONN_FAIL_THRESHOLD;
+  const anyFailed = sessionFailed || notifyFailed;
+  const allReady = state.notifyWsReady && (!inSession || state.sessionWsReady);
+
+  const next = anyFailed ? 'failed' : (allReady ? 'connected' : 'reconnecting');
+  const prev = state.connState;
+  state.connState = next;
+  document.documentElement.setAttribute('data-conn', next);
+
+  // The banner lives inside renderSession's / renderList's output; switching to/from
+  // 'failed' needs a re-render to add/remove the element. Other transitions only flip
+  // the dot color, which CSS handles via the data-conn attribute alone.
+  if ((prev === 'failed') !== (next === 'failed')) {
+    if (inSession) renderSession();
+    else renderList();
+  }
+}
+
+// Manual retry from the banner. Resets the retry counters and kicks off immediate
+// reconnects of both WSs, bypassing whatever backoff timer is pending.
+function forceReconnect() {
+  state.sessionWsRetries = 0;
+  state.notifyWsRetries = 0;
+  if (state.sessionWsTimer) { clearTimeout(state.sessionWsTimer); state.sessionWsTimer = null; }
+  if (state.notifyWsTimer) { clearTimeout(state.notifyWsTimer); state.notifyWsTimer = null; }
+  if (state.currentSessionId) connectWs(state.currentSessionId);
+  connectNotificationWs();
 }
 
 // Idempotent ask-tile seeder. Two independent code paths can learn about an Ask:
@@ -498,6 +925,14 @@ function ensureAskInlineTile({ toolInput, msgId, toolUseId }) {
 }
 
 function handleWsMessage(msg) {
+  // Subagent stream interleaves with the parent. Claude --print stream-json emits every
+  // assistant/tool_use/tool_result the parent process sees — including ones generated by
+  // a Task subagent running in-process — distinguished by isSidechain=true (and an
+  // agentId/parent_tool_use_id envelope marker). Subagent activity already feeds the
+  // agents sheet via the hook server's agent_activity events on the notifications WS;
+  // letting these also flow into state.transcript was duplicating every subagent tool
+  // call in the parent view.
+  if (msg.isSidechain === true || msg.parent_tool_use_id || msg.parentToolUseId || msg.agent_id || msg.agentId) return;
   // Session WS only carries session-scoped events. Approvals flow through the notification
   // WS so they reach every view (list, current session, other session).
   if (msg.type === 'assistant') {
@@ -556,6 +991,25 @@ function handleWsMessage(msg) {
           ...(b.id ? { toolUseId: b.id } : {}),
           msgId,
         });
+        // If the auto-expand notification raced ahead of this tool_use block, the
+        // signature is sitting in pendingExpand — drain it so the entry renders expanded
+        // on first paint instead of waiting for some later trigger.
+        applyPendingExpand(b.name, b.input, b.id);
+        // Track the call as in-flight so the thinking strip's verb reflects what claude
+        // is currently doing ("reading…" / "grepping…" / etc.). The matching tool_result
+        // below pops it. Tools absorbed earlier (Task/Ask) `continue` before this point,
+        // so they don't pollute the activity stack.
+        if (b.id) {
+          state.activeTools.push({ toolUseId: b.id, toolName: b.name });
+          // New active tool — clear any verb that was lingering from the previous one.
+          if (state.lingeringTimer) clearTimeout(state.lingeringTimer);
+          state.lingeringVerb = null;
+          state.lingeringTimer = null;
+        }
+        // Auto-expansion is driven by the explicit `tool_auto_allowed` notification (or
+        // by accept-edits' client-side mirror) — not by tool_use arrival. The session WS
+        // and notification WS race, so deciding here would expand user-approved calls
+        // whenever the tool_use block beat the approval click.
         processed = true;
       }
     }
@@ -563,25 +1017,33 @@ function handleWsMessage(msg) {
     // Don't stop thinking on first content block. Claude emits one `assistant` line per
     // content_block_stop, so a tool-using turn produces several `assistant` envelopes
     // before the response is actually done — flipping the caret off on the first one
-    // also stopped the token counter from seeing message_delta usage updates (which is
-    // where the cumulative output_tokens lives, not on message_start). End-of-turn is
-    // signaled separately by stop_reason==='end_turn' below or by a stream_event
-    // message_stop in the dedicated handler.
-    if (msg.message?.stop_reason === 'end_turn') stopThinking();
+    // also stopped the token counter from seeing message_delta usage updates (where the
+    // cumulative output_tokens lives, not on message_start).
+    //
+    // The persistent thinking strip stays visible across tool calls, so we only stop
+    // when the assistant is genuinely done: any terminal stop_reason except 'tool_use'.
+    // tool_use means more turns are coming after the tool_results land; end_turn /
+    // max_tokens / stop_sequence / refusal all mean "done." Unknown future reasons fall
+    // through to stopping (safer than thinking-forever).
+    const reason = msg.message?.stop_reason;
+    if (reason && reason !== 'tool_use') stopThinking();
     renderSession();
   } else if (msg.type === 'stream_event') {
     // Claude's --include-partial-messages stream emits Anthropic streaming events
-    // (message_start, content_block_delta, message_delta, message_stop). We care about
-    // two things: the cumulative output_tokens for the live "412 tok" counter, and the
-    // end-of-turn signal (message_stop) to take the thinking caret down. Token usage:
-    // message_start carries the initial usage (output_tokens: 1); message_delta carries
-    // a CUMULATIVE running total as text streams. Defensive lookup because the wrapper
-    // shape varies slightly across claude binary versions.
+    // (message_start, content_block_delta, message_delta, message_stop). We use two
+    // signals here:
+    //   1. message_delta carries the authoritative stop_reason for the just-finished
+    //      assistant turn (per Anthropic streaming API). Stop thinking when it's
+    //      anything-but-tool_use — that's the canonical end-of-response signal.
+    //   2. usage.output_tokens for the live "412 tok" counter.
+    // message_stop is intentionally NOT used to stop thinking — it fires at the end of
+    // EVERY assistant turn, including tool-using ones, which would hide the persistent
+    // thinking strip the moment a tool was called.
     const ev = msg.event ?? msg;
-    if (ev?.type === 'message_stop') {
+    const deltaReason = ev?.delta?.stop_reason;
+    if (deltaReason && deltaReason !== 'tool_use') {
       stopThinking();
       renderSession();
-      return;
     }
     if (!state.thinking) return;
     // Authoritative usage (message_start / message_delta) — overwrites any estimate.
@@ -632,6 +1094,28 @@ function handleWsMessage(msg) {
       if (b?.type !== 'tool_result') continue;
       const useId = b.tool_use_id;
       if (!useId) continue;
+      // Pop the matching in-flight entry off the activity stack — the thinking strip's
+      // verb will fall back to the next-most-recent active tool, or to a lingering
+      // verb (then "thinking…") if nothing else is in flight. Setting touched ensures
+      // we re-render so the verb updates even for tool_results that aren't otherwise
+      // consumed (Read, Grep, etc.).
+      const idx = state.activeTools.findIndex((t) => t.toolUseId === useId);
+      if (idx >= 0) {
+        const popped = state.activeTools[idx];
+        state.activeTools.splice(idx, 1);
+        // If the stack just went empty, hold the verb on screen long enough to read.
+        // A subsequent push clears the lingering state immediately (see tool_use path).
+        if (state.activeTools.length === 0 && TOOL_VERBS[popped.toolName]) {
+          state.lingeringVerb = TOOL_VERBS[popped.toolName];
+          if (state.lingeringTimer) clearTimeout(state.lingeringTimer);
+          state.lingeringTimer = setTimeout(() => {
+            state.lingeringVerb = null;
+            state.lingeringTimer = null;
+            if (state.view === 'session') updateThinkingRegion();
+          }, VERB_LINGER_MS);
+        }
+        touched = true;
+      }
       const innerBlocks = Array.isArray(b.content) ? b.content : null;
       const text = typeof b.content === 'string'
         ? b.content
@@ -685,7 +1169,11 @@ function handleWsMessage(msg) {
     stopThinking();
     renderSession();
   } else if (msg.type === 'daemon_proc_exit') {
-    state.transcript.push({ role: 'error', text: `Session subprocess exited (code ${msg.code}). Reopen to resume.` });
+    state.transcript.push({
+      role: 'error',
+      text: `Session subprocess exited (code ${msg.code}).`,
+      action: 'reopen',
+    });
     stopThinking();
     renderSession();
   }
@@ -694,6 +1182,11 @@ function handleWsMessage(msg) {
 function handleNotificationMessage(msg) {
   if (msg.type === 'notifications_snapshot') {
     state.pendingApprovals = Array.isArray(msg.approvals) ? msg.approvals : [];
+    // Snapshot fires on cold start + reconnect. Re-apply the auto-expand for high-detail
+    // tools so a refreshed PWA shows the payload upfront just like a freshly-arrived card.
+    for (const a of state.pendingApprovals) {
+      if (isHighDetailTool(a.toolName)) state.expandedTools.add(`approval-${a.approvalId}`);
+    }
     // Re-apply pending approvals to subagent buckets without wiping existing state.
     // Completed agents and resolved-entry history live in state.subagents permanently
     // for the session (we hydrate disk history via /api/sessions/:id/subagents on
@@ -730,13 +1223,49 @@ function handleNotificationMessage(msg) {
     else if (state.view === 'list') renderList();
     return;
   }
+  if (msg.type === 'tool_auto_allowed') {
+    // Parent-side tool the daemon's allowlist auto-allowed — surface it as expanded in
+    // the transcript so the user sees what ran without their input. The hook can fire
+    // before or after the assistant content_block_stop emits the tool_use; either order
+    // works because expandToolByContent matches now if possible and queues if not.
+    if (isHighDetailTool(msg.toolName) && msg.sessionId === state.currentSessionId) {
+      expandToolByContent(msg.toolName, msg.toolInput, msg.sessionId);
+      if (state.view === 'session') renderSession();
+    }
+    return;
+  }
   if (msg.type === 'approval_pending') {
     if (state.pendingApprovals.some((a) => a.approvalId === msg.approvalId)) return;
-    // Accept-edits mode: file edits never even surface as a card. We send the decision
-    // straight to the WS without pushing onto pendingApprovals, so the card never
-    // renders in either the parent feed or the agents sheet.
+    // High-detail tools (Bash + edit family) open expanded so the user can see what's
+    // about to run before tapping Approve. Pre-seed expandedTools with the synthetic
+    // `approval-<id>` key approvalCardHtml uses; toolUseHtml's existing tap-to-toggle
+    // logic then lets the user collapse it if they want.
+    if (isHighDetailTool(msg.toolName)) state.expandedTools.add(`approval-${msg.approvalId}`);
+    // Accept-edits mode: file edits never surface as a card. We send the decision
+    // straight to the WS without pushing onto pendingApprovals — but for subagents we
+    // DO mirror the entry into the agents sheet (already resolved as 'allow') so the
+    // user can audit what was auto-written without scrolling the parent transcript.
+    // The header chip's auto-edits counter also increments here.
     if (state.acceptEdits && EDIT_TOOLS.has(msg.toolName)) {
-      state.ws?.send(JSON.stringify({ type: 'approval_decide', approvalId: msg.approvalId, decision: 'allow' }));
+      // Send the auto-decide on the notifications WS, which is the channel that survives
+      // iOS backgrounding (and is the one that just delivered the approval_pending). Falling
+      // back to the session WS would re-introduce the silent-drop bug where a backgrounded
+      // session-WS close caused the hook to time out after 10 minutes with a denied edit.
+      sendApprovalDecide({ approvalId: msg.approvalId, decision: 'allow' });
+      if (msg.sessionId === state.currentSessionId) {
+        state.autoAllowedEdits += 1;
+        if (msg.agentId) {
+          // Subagent edit: addSubagentEntry handles expand-by-default for high-detail.
+          addSubagentEntry({ ...msg, decision: 'allow' });
+        } else {
+          // Parent edit: expand by content match. PreToolUse and the assistant's
+          // content_block_stop race — if the tool_use is already in state.transcript,
+          // this expands it now; if not, the signature is queued for applyPendingExpand
+          // to consume when the tool_use lands.
+          expandToolByContent(msg.toolName, msg.toolInput, msg.sessionId);
+        }
+        if (state.view === 'session') renderSession();
+      }
       return;
     }
     state.pendingApprovals.push(msg);
@@ -772,6 +1301,36 @@ function handleNotificationMessage(msg) {
       if (state.view === 'list') renderList();
       showApprovalToast(msg);
     }
+  }
+  // Server-driven resolution event — fires for both user decisions (from another device
+  // viewing the same session) and the server-side timeout. Mirrors the decision onto local
+  // state so cards disappear cleanly, and renders a "Timed out" tile when the server
+  // expired an approval we hadn't acted on.
+  if (msg.type === 'approval_resolved') {
+    const wasPending = state.pendingApprovals.some((a) => a.approvalId === msg.approvalId);
+    state.pendingApprovals = state.pendingApprovals.filter((a) => a.approvalId !== msg.approvalId);
+    // Mirror onto the subagent bucket entry if this approval lived there — flips its
+    // renderer from approval-card chrome to a resolved tool tile (rejected styling for
+    // deny/timeout). Without this, the agents sheet would still show the card as pending.
+    for (const [, bucket] of state.subagents) {
+      for (const e of bucket.entries) {
+        if (e.approvalId === msg.approvalId && e.decision === null) {
+          e.decision = msg.decision;
+          if (msg.timedOut) e.timedOut = true;
+        }
+      }
+    }
+    // Push a "Timed out" tile into the transcript only when the user was actually waiting
+    // on the card (it was in pendingApprovals on this device). User decisions and subagent
+    // resolutions are silent — the card flip is signal enough.
+    if (msg.timedOut && wasPending && msg.sessionId === state.currentSessionId && !msg.agentId) {
+      state.transcript.push({
+        role: 'error',
+        text: `${msg.toolName} approval timed out after 10 minutes — re-prompt to retry.`,
+      });
+    }
+    if (state.view === 'session' && msg.sessionId === state.currentSessionId) renderSession();
+    else if (state.view === 'list') renderList();
   }
 }
 
@@ -882,6 +1441,19 @@ function addSubagentEntry(a) {
     decision: a.decision ?? null,
     enqueuedAt: a.enqueuedAt || Date.now(),
   });
+  // Default-expand rules in the agent feed mirror the parent transcript:
+  //   - Pending high-detail approvals open expanded so the user can see the payload.
+  //   - Pre-resolved (allowlist auto-allowed via agent_activity or accept-edits mirror)
+  //     high-detail entries open expanded so unsupervised activity is visible at a glance.
+  // User-approved entries flip their decision in place via approval_resolved and never
+  // re-enter addSubagentEntry, so they stay collapsed.
+  if (isHighDetailTool(a.toolName)) {
+    if (a.decision === null && a.approvalId) {
+      state.expandedTools.add(`approval-${a.approvalId}`);
+    } else if (a.decision === 'allow' && a.toolUseId) {
+      state.expandedTools.add(a.toolUseId);
+    }
+  }
 }
 
 // Merge disk-replayed subagents into state.subagents. Disk entries are historical
@@ -946,7 +1518,90 @@ function bringAgentToFront(agentId) {
   state.agentTabOrder = [agentId, ...state.agentTabOrder.filter((id) => id !== agentId)];
 }
 
+// Session view is a stable skeleton (transcript + region wrappers + composer) built once
+// per entry into the session view, plus per-region innerHTML swaps on subsequent updates.
+// WHY: WS messages fire many renderSession() calls per response. The old code did
+// root.innerHTML = … which rebuilt the composer node every time — on mobile that drops
+// keyboard focus and wipes whatever the user was mid-typing. Keeping the composer mounted
+// across updates is the fix.
 function renderSession() {
+  if (!document.getElementById('composer')) buildSessionSkeleton();
+  // Sample stuck-to-bottom BEFORE rebuilding the transcript. Same 80px tolerance the
+  // agents sheet uses (refreshAgentsSheet) for finger overshoot / sub-pixel rounding.
+  // Without this, every WS message yanks the viewport down even if the user was scrolled
+  // up reading history.
+  const t = document.getElementById('transcript');
+  const wasAtBottom = !t || (t.scrollHeight - t.scrollTop - t.clientHeight) < 80;
+  updateTranscriptRegion();
+  updateThinkingRegion();
+  updateAgentsRegion();
+  updateTodosRegion();
+  updateBannerRegion();
+  refreshAgentsSheet();
+  refreshTodosSheet();
+  ensureAskSheet();
+  if (wasAtBottom) scrollTranscriptBottom();
+}
+
+function buildSessionSkeleton() {
+  root.innerHTML = `
+    <div class="transcript" id="transcript"></div>
+    <div id="thinking-region"></div>
+    <div id="agents-region"></div>
+    <div id="todos-region"></div>
+    <div id="banner-region"></div>
+    <div class="composer">
+      <div class="field" id="composer" contenteditable="true"
+           role="textbox" aria-multiline="true" aria-label="Message"
+           autocapitalize="sentences"
+           data-placeholder="Type a message…"></div>
+      <button class="send" id="send" aria-label="Send">↵</button>
+    </div>
+  `;
+  const composer = document.getElementById('composer');
+  const send = document.getElementById('send');
+  const armSend = () => {
+    send.classList.toggle('armed', composer.textContent.trim().length > 0);
+  };
+  composer.addEventListener('input', armSend);
+  composer.addEventListener('keydown', (e) => {
+    // Desktop: Enter sends, Shift+Enter inserts a newline.
+    // Touch devices: Enter always inserts a newline — users send via the on-screen button,
+    // so an on-screen keyboard's Return key shouldn't fire off a half-typed message.
+    if (window.matchMedia('(hover: none)').matches) return;
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  });
+  send.onclick = () => {
+    // While the assistant is generating, the same button is a stop button. Branch on
+    // state.thinking so a single touch target carries both meanings — saves a slot in
+    // the composer row and matches how every other modern chat client works.
+    if (state.thinking) {
+      interruptSession();
+    } else {
+      sendMessage();
+    }
+  };
+}
+
+// Tell the daemon to SIGINT the claude subprocess. The daemon's existing
+// daemon_proc_exit path then surfaces a Reopen tile in the transcript; tapping it
+// resumes the session from disk via claude --resume, so the user can continue from
+// wherever the interrupt cut things off.
+function interruptSession() {
+  if (state.ws?.readyState !== WebSocket.OPEN) {
+    showStatusToast('Disconnected — try again');
+    return;
+  }
+  state.ws.send(JSON.stringify({ type: 'interrupt' }));
+  // Optimistic UI: the strip will keep showing 'thinking' until daemon_proc_exit lands,
+  // but that's brief — claude exits within a couple hundred ms of SIGINT. No need to
+  // pre-emptively flip state.thinking; let the real signal drive it.
+}
+
+function updateTranscriptRegion() {
   const loading = state.transcriptLoading
     ? `<div class="empty-state">Loading history…</div>`
     : '';
@@ -964,47 +1619,46 @@ function renderSession() {
     && a.toolName !== 'AskUserQuestion'
     && !a.agentId
   );
-  const thinkingTile = state.thinking ? thinkingTileHtml() : '';
-  const todos = todosPanelHtml();
-  const agents = agentsStripHtml();
-  root.innerHTML = `
-    <div class="transcript" id="transcript">
-      ${loading}
-      ${empty}
-      ${state.transcript.map((m) => msgHtml(m)).join('')}
-      ${thinkingTile}
-      ${cards.map((a) => approvalCardHtml(a)).join('')}
-    </div>
-    ${agents}
-    ${todos}
-    <div class="composer">
-      <div class="field" id="composer" contenteditable="true"
-           role="textbox" aria-multiline="true" aria-label="Message"
-           autocapitalize="sentences"
-           data-placeholder="Type a message…"></div>
-      <button class="send" id="send" aria-label="Send">↵</button>
-    </div>
+  const transcript = document.getElementById('transcript');
+  transcript.innerHTML = `
+    ${loading}
+    ${empty}
+    ${state.transcript.map((m, i, arr) => msgHtml(m, i === arr.length - 1)).join('')}
+    ${cards.map((a) => approvalCardHtml(a)).join('')}
   `;
-  const composer = document.getElementById('composer');
+  bindTranscriptHandlers();
+}
+
+function updateThinkingRegion() {
+  const region = document.getElementById('thinking-region');
+  if (!region) return;
+  region.innerHTML = thinkingStripHtml();
+  // The send button doubles as a stop button while the assistant is generating —
+  // synced here because thinking-state transitions all flow through this region's
+  // updates (every startThinking/stopThinking eventually triggers a renderSession).
   const send = document.getElementById('send');
-
-  const armSend = () => {
-    const text = composer.textContent.trim();
-    send.classList.toggle('armed', text.length > 0);
-  };
-  composer.addEventListener('input', armSend);
-  composer.addEventListener('keydown', (e) => {
-    // Desktop: Enter sends, Shift+Enter inserts a newline.
-    // Touch devices: Enter always inserts a newline — users send via the on-screen button,
-    // so an on-screen keyboard's Return key shouldn't fire off a half-typed message.
-    if (window.matchMedia('(hover: none)').matches) return;
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      sendMessage();
+  if (send) {
+    if (state.thinking) {
+      send.classList.add('is-stop');
+      send.setAttribute('aria-label', 'Stop');
+      send.textContent = '■';
+    } else {
+      send.classList.remove('is-stop');
+      send.setAttribute('aria-label', 'Send');
+      send.textContent = '↵';
     }
-  });
-  send.onclick = sendMessage;
+  }
+}
 
+function bindTranscriptHandlers() {
+  // Inline action buttons inside error tiles — currently just 'reopen' (subprocess exit).
+  // Spawn a fresh subprocess on the same session id so the user keeps the transcript.
+  for (const btn of document.querySelectorAll('.msg-action[data-msg-action="reopen"]')) {
+    btn.addEventListener('click', () => {
+      const id = state.currentSessionId;
+      if (id) openSession(id);
+    });
+  }
   // stopPropagation: the approval card is itself a .tool_use-expandable tile, so a tap
   // anywhere on it (including the action buttons) would otherwise also toggle the
   // expanded JSON/diff view. Buttons own their own click semantics — they shouldn't
@@ -1015,19 +1669,14 @@ function renderSession() {
   for (const btn of document.querySelectorAll('.approval-card .reject')) {
     btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'deny'); };
   }
-
-  const todosBtn = document.getElementById('todos-panel');
-  if (todosBtn) todosBtn.onclick = openTodosSheet;
-  const agentsBtn = document.getElementById('agents-strip');
-  if (agentsBtn) agentsBtn.onclick = openAgentsSheet;
-  // Live-refresh the agents sheet contents if it's open, so new hooks / decisions
-  // surface without the user needing to close and reopen.
-  refreshAgentsSheet();
-
-  // AskUserQuestion popups stay in sync with state.pendingApprovals — opens the sheet when
-  // a new ask arrives, closes it if the approval got resolved elsewhere (e.g. timed out).
-  ensureAskSheet();
-
+  for (const btn of document.querySelectorAll('.approval-card .approval-always')) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.alwaysId;
+      const approval = state.pendingApprovals.find((a) => a.approvalId === id);
+      if (approval) alwaysAllowAndApprove(id, approval.toolName, approval.toolInput);
+    };
+  }
   // Tap-to-expand for tool_use entries. Toggle is done in-place (class flip + state Set
   // update) instead of via a full re-render, so the transcript doesn't jump and any text
   // the user is selecting inside the JSON block survives the interaction.
@@ -1054,10 +1703,6 @@ function renderSession() {
       }
     });
   }
-  // If the expanded sheet is open while a re-render fires (TaskUpdate streamed in), refresh
-  // its contents in place. Closing + reopening would flicker the transform animation.
-  refreshTodosSheet();
-
   // Pending ask cards in the transcript are tap-to-reopen — the popup sheet may have been
   // dismissed, but the underlying approval is still waiting. ensureAskSheet finds the
   // pending Ask for the current session and brings the sheet back up.
@@ -1074,8 +1719,31 @@ function renderSession() {
       }
     });
   }
+}
 
-  scrollTranscriptBottom();
+function updateAgentsRegion() {
+  const region = document.getElementById('agents-region');
+  region.innerHTML = agentsStripHtml();
+  const btn = document.getElementById('agents-strip');
+  if (btn) btn.onclick = openAgentsSheet;
+}
+
+function updateTodosRegion() {
+  const region = document.getElementById('todos-region');
+  region.innerHTML = todosPanelHtml();
+  const btn = document.getElementById('todos-panel');
+  if (btn) btn.onclick = openTodosSheet;
+}
+
+function updateBannerRegion() {
+  const region = document.getElementById('banner-region');
+  region.innerHTML = state.connState === 'failed'
+    ? `<div class="conn-banner" role="alert">
+        <span class="conn-banner-msg">Daemon unreachable — check Tailscale</span>
+        <button type="button" id="conn-banner-retry">Retry</button>
+      </div>`
+    : '';
+  document.getElementById('conn-banner-retry')?.addEventListener('click', forceReconnect);
 }
 
 // ─────────────────────── Agents strip + sheet ───────────────────────
@@ -1114,15 +1782,31 @@ function agentsStripHtml() {
 }
 
 function openAgentsSheet() {
+  dismissSoftKeyboard();
   closeAgentsSheet();
-  // Snap to the topmost agent with pending approvals whenever the user opens the
-  // sheet — otherwise we'd land on whatever tab was last viewed, which is rarely the
-  // one needing action. Falls through to the existing active tab if nothing's pending.
+  // Selection priority on open:
+  //   1. Topmost agent with pending approvals (needs user action).
+  //   2. If the last-viewed agent has since completed AND any agent is still active,
+  //      switch to the topmost active one — landing on a stale completed agent when
+  //      live work is happening is disorienting.
+  //   3. Otherwise keep the last-viewed agent.
   const topPending = state.agentTabOrder.find((id) => {
     const b = state.subagents.get(id);
     return b && b.entries.some((e) => e.decision === null);
   });
-  if (topPending) state.activeAgentId = topPending;
+  if (topPending) {
+    state.activeAgentId = topPending;
+  } else {
+    const cur = state.activeAgentId ? state.subagents.get(state.activeAgentId) : null;
+    const curCompleted = cur && cur.completion;
+    if (curCompleted) {
+      const topActive = state.agentTabOrder.find((id) => {
+        const b = state.subagents.get(id);
+        return b && !b.completion;
+      });
+      if (topActive) state.activeAgentId = topActive;
+    }
+  }
   const backdrop = document.createElement('div');
   backdrop.className = 'sheet-backdrop agents-sheet-backdrop';
   backdrop.id = 'agents-sheet-backdrop';
@@ -1244,17 +1928,55 @@ function noteSheetClose() {
 //     size — only the inner feed scrolls.
 // Re-measure the header on every call: safe-area insets shift between portrait /
 // landscape and the keyboard can move the header on iOS.
+// Blur the focused element if it's something that triggers the soft keyboard. Called
+// before opening a sheet so iOS Safari closes the keyboard first — otherwise the visual
+// viewport stays shrunk and pinSheetBelowHeader sees a header that's been pushed off
+// the top of the visible area.
+function dismissSoftKeyboard() {
+  const el = document.activeElement;
+  if (!el || el === document.body) return;
+  const tag = el.tagName;
+  const editable = el.getAttribute && el.getAttribute('contenteditable') === 'true';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || editable) el.blur();
+}
+
 function pinSheetBelowHeader(sheet, opts) {
   if (!sheet) return;
   const header = document.getElementById('header');
   if (!header) return;
-  const top = Math.round(header.getBoundingClientRect().bottom);
+  // When the soft keyboard is closing (callers blur via dismissSoftKeyboard) the visual
+  // viewport hasn't yet returned to full height, and getBoundingClientRect().bottom can
+  // be near zero or negative — pinning to that would cover the header. Fall back to the
+  // header's stable layout height in that case; once the keyboard finishes its close
+  // animation, re-pin against the live rect for an exact fit.
+  const rectBottom = Math.round(header.getBoundingClientRect().bottom);
+  const top = rectBottom > 0 ? rectBottom : header.offsetHeight;
   if (opts && opts.fillVertical) {
     sheet.style.top = `${top}px`;
     sheet.style.maxHeight = '';
   } else {
     sheet.style.maxHeight = `calc(100dvh - ${top}px)`;
     sheet.style.top = '';
+  }
+  // If the visual viewport is currently shorter than the layout viewport, the soft
+  // keyboard is still up or animating closed. Re-pin once it settles so the sheet's top
+  // matches the real post-keyboard header position rather than the offsetHeight
+  // approximation above.
+  const vv = window.visualViewport;
+  if (vv && vv.height < window.innerHeight - 50 && !sheet._outpostRepinPending) {
+    sheet._outpostRepinPending = true;
+    const onResize = () => {
+      if (vv.height >= window.innerHeight - 50) {
+        vv.removeEventListener('resize', onResize);
+        sheet._outpostRepinPending = false;
+        if (document.body.contains(sheet)) pinSheetBelowHeader(sheet, opts);
+      }
+    };
+    vv.addEventListener('resize', onResize);
+    setTimeout(() => {
+      vv.removeEventListener('resize', onResize);
+      sheet._outpostRepinPending = false;
+    }, 1000);
   }
 }
 
@@ -1524,12 +2246,25 @@ function agentsSheetBodyHtml() {
 // completion tile (parsed from <task-notification>) gets appended after the entries
 // as the visual "fin." marker — the user can scroll to it to see status + summary.
 function agentFeedHtml(bucket) {
-  const tiles = bucket.entries.map((entry) => agentEntryHtml(entry));
+  // If the parent's Agent invocation handed this subagent a description, surface it as a
+  // quoted header at the top of the feed so the user remembers what the agent was asked
+  // to do without scrolling the parent transcript. Best-effort — for parallel same-type
+  // spawns the binding can be approximate (see recordParentAgentInvocation).
+  const prompt = bucket.description
+    ? `<div class="agent-feed-prompt"><span class="agent-feed-prompt-label">Spawned by</span><div class="agent-feed-prompt-text">${escapeHtml(bucket.description)}</div></div>`
+    : '';
+  // The last entry is "active" only when the agent itself is still running — once a
+  // completion tile drops in, the trailing Read line stops animating its ellipsis.
+  const liveTail = !bucket.completion;
+  const tiles = bucket.entries.map((entry, i, arr) => agentEntryHtml(entry, liveTail && i === arr.length - 1));
   if (bucket.completion) tiles.push(agentCompletionTileHtml(bucket.completion));
-  if (tiles.length === 0) {
+  if (tiles.length === 0 && !prompt) {
     return `<div class="empty-state">Waiting for activity…</div>`;
   }
-  return tiles.join('');
+  if (tiles.length === 0) {
+    return `${prompt}<div class="empty-state">Waiting for activity…</div>`;
+  }
+  return `${prompt}${tiles.join('')}`;
 }
 
 // Footer tile shown once the subagent emits its <task-notification>. Mirrors the
@@ -1571,14 +2306,20 @@ function formatDurationMs(ms) {
   return `${h}h ${String(rm).padStart(2, '0')}m`;
 }
 
-function agentEntryHtml(entry) {
+function agentEntryHtml(entry, isLast) {
   if (entry.decision === null) {
     return approvalCardHtml({
       approvalId: entry.approvalId,
       toolName: entry.toolName,
       toolInput: entry.toolInput,
       summary: '',
+      enqueuedAt: entry.enqueuedAt,
     });
+  }
+  // Resolved Read entries render as the slim status line, never as a full tile —
+  // matches how Reads render in the parent transcript.
+  if (entry.toolName === 'Read') {
+    return readLineHtml(entry.toolInput);
   }
   // Resolved: render as a plain tool tile. Reuse toolUseHtml by synthesizing a
   // transcript-message-shaped object. Prefer the real tool_use_id (auto-allowed
@@ -1592,7 +2333,8 @@ function agentEntryHtml(entry) {
     toolUseId: entry.toolUseId || entry.approvalId,
   });
   if (entry.decision === 'deny') {
-    return `<div class="agent-entry-rejected">${tileHtml}<span class="agent-entry-reject-tag">Rejected</span></div>`;
+    const tag = entry.timedOut ? 'Timed out' : 'Rejected';
+    return `<div class="agent-entry-rejected">${tileHtml}<span class="agent-entry-reject-tag">${tag}</span></div>`;
   }
   return tileHtml;
 }
@@ -1622,6 +2364,22 @@ function wireAgentsSheetHandlers(sheet) {
   // trigger the tool_use-expandable container's tap-to-expand handler beneath them.
   for (const btn of sheet.querySelectorAll('.approval-card .approve')) {
     btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'allow'); };
+  }
+  for (const btn of sheet.querySelectorAll('.approval-card .approval-always')) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.alwaysId;
+      // Subagent entries live in state.subagents buckets, not pendingApprovals — look
+      // them up there so the suggested rule reflects the actual tool call.
+      let approval = state.pendingApprovals.find((a) => a.approvalId === id);
+      if (!approval) {
+        for (const [, bucket] of state.subagents) {
+          const entry = bucket.entries.find((e) => e.approvalId === id);
+          if (entry) { approval = { toolName: entry.toolName, toolInput: entry.toolInput }; break; }
+        }
+      }
+      if (approval) alwaysAllowAndApprove(id, approval.toolName, approval.toolInput);
+    };
   }
   for (const btn of sheet.querySelectorAll('.approval-card .reject')) {
     btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'deny'); };
@@ -1753,14 +2511,14 @@ function openAskSheet(approval) {
       submitAskAnswer(approval, picks, text || null);
     };
   }
-  // Backdrop tap = dismiss without answering (rare; Claude will see the deny with no
-  // reason and most likely re-ask or proceed). We don't auto-resolve here.
-  backdrop.onclick = () => {
-    decideApproval(approval.approvalId, 'deny', 'User dismissed the question without answering.');
-    closeAskSheet();
-  };
+  // Backdrop / close-button tap = put the sheet away without resolving the approval.
+  // The inline transcript tile stays tap-to-reopen ('Tap to reply'), so the user can come
+  // back. Previously this auto-denied with a "User dismissed" reason, which made the
+  // inline tile a lie (the approval was already dead) and surprised users who expected
+  // "dismiss the sheet" to mean "deal with it later".
+  backdrop.onclick = () => { closeAskSheet(); };
   const close = sheet.querySelector('#ask-sheet-close');
-  if (close) close.onclick = () => backdrop.click();
+  if (close) close.onclick = () => closeAskSheet();
 }
 
 function closeAskSheet() {
@@ -1920,6 +2678,40 @@ function diffLines(oldText, newText) {
   return out;
 }
 
+// Slim one-liner for Read tool calls. Replaces the standard tool tile because the input
+// is shallow (file path + optional line range) and the user mostly wants a live signal
+// that something's happening. Active when this is the most recent message in its feed —
+// animates an ellipsis to indicate the read is in flight; once anything else lands after
+// it the dots freeze and the verb switches to past tense.
+function readLineHtml(input) {
+  const path = projectRelativePath(String(input?.file_path ?? ''));
+  const range = readRangeSuffix(input);
+  // Single label "Read" in accent — the thinking strip already shows "Reading…" in
+  // flight, so the transcript tile doesn't need to mirror that state.
+  const rangeLine = range
+    ? `<span class="read-range">${escapeHtml(range)}</span>`
+    : '';
+  return (
+    `<div class="msg msg-read">` +
+      `<span class="read-verb">Read</span>` +
+      `<span class="read-target">${escapeHtml(path)}</span>` +
+      rangeLine +
+    `</div>`
+  );
+}
+
+// Human-readable range subtitle for the read line ("lines 60-75" / "line 60+" /
+// "pages 1-5"). Returns '' when no range info is present so the line just shows the
+// bare path with no second-line subtitle.
+function readRangeSuffix(input) {
+  if (input?.pages) return `pages ${input.pages}`;
+  const off = Number(input?.offset);
+  if (!Number.isFinite(off) || off <= 0) return '';
+  const lim = Number(input?.limit);
+  if (Number.isFinite(lim) && lim > 0) return `lines ${off}-${off + lim - 1}`;
+  return `line ${off}+`;
+}
+
 function renderEditDiff(input) {
   const oldStr = input?.old_string ?? '';
   const newStr = input?.new_string ?? '';
@@ -1941,29 +2733,32 @@ function renderEditDiff(input) {
 // and the most natural way to show it is the ripgrep command-line equivalent — same
 // shell-style block we use for Bash. Anyone who's used grep/rg can read it at a glance.
 function renderGrepSearch(input) {
-  const args = ['rg'];
-  // Boolean flags first — short forms, in the order a human would type them.
-  if (input?.['-i']) args.push('-i');
-  if (input?.['-n']) args.push('-n');
-  if (input?.multiline) args.push('-U');
-  // Output-mode flags. Default ("content") needs no flag; -l/-c override.
-  if (input?.output_mode === 'files_with_matches') args.push('-l');
-  else if (input?.output_mode === 'count') args.push('-c');
-  // Context flags. Each can stand alone or be combined; we mirror exactly what was set.
-  if (input?.['-A'] != null) args.push(`-A ${input['-A']}`);
-  if (input?.['-B'] != null) args.push(`-B ${input['-B']}`);
-  if (input?.['-C'] != null) args.push(`-C ${input['-C']}`);
-  // Filters
-  if (input?.type) args.push(`--type ${shellQuote(String(input.type))}`);
-  if (input?.glob) args.push(`-g ${shellQuote(String(input.glob))}`);
-  // Pattern (always present in well-formed Grep calls) and optional path.
-  args.push(shellQuote(String(input?.pattern ?? '')));
-  if (input?.path) args.push(shellQuote(shortenPath(String(input.path))));
-  let cmd = args.join(' ');
-  if (input?.head_limit) cmd += ` | head -${input.head_limit}`;
+  // Build the command in two halves so we can highlight the search pattern in
+  // accent-2 — it's the one token that matters most and is otherwise hard to spot
+  // amid the flags + paths.
+  const prefix = ['rg'];
+  if (input?.['-i']) prefix.push('-i');
+  if (input?.['-n']) prefix.push('-n');
+  if (input?.multiline) prefix.push('-U');
+  if (input?.output_mode === 'files_with_matches') prefix.push('-l');
+  else if (input?.output_mode === 'count') prefix.push('-c');
+  if (input?.['-A'] != null) prefix.push(`-A ${input['-A']}`);
+  if (input?.['-B'] != null) prefix.push(`-B ${input['-B']}`);
+  if (input?.['-C'] != null) prefix.push(`-C ${input['-C']}`);
+  if (input?.type) prefix.push(`--type ${shellQuote(String(input.type))}`);
+  if (input?.glob) prefix.push(`-g ${shellQuote(String(input.glob))}`);
+  const pattern = shellQuote(String(input?.pattern ?? ''));
+  const suffix = [];
+  if (input?.path) suffix.push(shellQuote(shortenPath(String(input.path))));
+  let tail = suffix.length ? ` ${suffix.join(' ')}` : '';
+  if (input?.head_limit) tail += ` | head -${input.head_limit}`;
+  const cmdHtml =
+    `${escapeHtml(prefix.join(' '))} ` +
+    `<span class="bash-grep-pattern">${escapeHtml(pattern)}</span>` +
+    `${escapeHtml(tail)}`;
   return `
     <div class="tool-bash">
-      <div class="bash-cmd"><span class="bash-prompt">$</span><span class="bash-cmd-text">${escapeHtml(cmd)}</span></div>
+      <div class="bash-cmd"><span class="bash-prompt">$</span><span class="bash-cmd-text">${cmdHtml}</span></div>
     </div>
   `;
 }
@@ -2054,15 +2849,29 @@ function renderWebFetch(input) {
 function refreshTodosSheet() {
   const sheet = document.getElementById('todos-sheet');
   if (!sheet) return;
-  // Full body re-render. The sheet is structured enough (sections, progress bar, header)
-  // that a piecewise patch would be noisier than just rebuilding the inner HTML — and the
-  // outer <aside> keeps its .open class so no transform animation fires.
+  // Capture scroll + sticky-bottom intent BEFORE the innerHTML rebuild discards the old
+  // body node. The .todos-sheet-body div is what scrolls; preserve its scrollTop so a
+  // TaskUpdate landing while the user is reading the Completed section doesn't yank them
+  // back to the top. Same sticky-bottom fudge factor (80px) the agents sheet uses.
+  const oldBody = sheet.querySelector('.todos-sheet-body');
+  const bodyScrollTop = oldBody?.scrollTop ?? 0;
+  const wasAtBottom = oldBody
+    ? (oldBody.scrollHeight - oldBody.scrollTop - oldBody.clientHeight) < 80
+    : false;
   sheet.innerHTML = todosSheetBodyHtml();
   const close = sheet.querySelector('#todos-sheet-close');
   if (close) close.onclick = closeTodosSheet;
+  // The innerHTML replace discarded the old grabber node — re-bind drag-to-dismiss on the
+  // fresh one or the sheet becomes un-swipeable after the first TaskUpdate.
+  makeSheetDismissible(sheet, closeTodosSheet);
+  const newBody = sheet.querySelector('.todos-sheet-body');
+  if (newBody) newBody.scrollTop = wasAtBottom ? newBody.scrollHeight : bodyScrollTop;
 }
 
-function msgHtml(m) {
+function msgHtml(m, isLast) {
+  if (m.role === 'tool_use' && m.toolName === 'Read') {
+    return readLineHtml(m.toolInput);
+  }
   if (m.role === 'tool_use') return toolUseHtml(m);
   if (m.role === 'ask') return askMsgHtml(m);
   const labels = { user: 'You', assistant: 'Assistant', error: 'Error' };
@@ -2070,7 +2879,12 @@ function msgHtml(m) {
   // messages shouldn't be parsed (they're as the user typed them), and error messages are
   // unstructured logs.
   const body = m.role === 'assistant' ? renderMarkdown(m.text) : escapeHtml(m.text);
-  return `<div class="msg ${escapeHtml(m.role)}"><span class="role">${escapeHtml(labels[m.role] ?? m.role)}</span><span class="body-text">${body}</span></div>`;
+  // Error messages can carry an inline action (currently only 'reopen' for the daemon
+  // subprocess exit). The handler is wired by renderSession after the HTML is in the DOM.
+  const action = m.action === 'reopen'
+    ? `<button class="msg-action" type="button" data-msg-action="reopen">Reopen</button>`
+    : '';
+  return `<div class="msg ${escapeHtml(m.role)}"><span class="role">${escapeHtml(labels[m.role] ?? m.role)}</span><span class="body-text">${body}</span>${action}</div>`;
 }
 
 // Inline Q&A card. Each question is rendered with its paired answer right below it, so
@@ -2204,21 +3018,29 @@ function parseAskAnswer(answer, questions) {
 // run through escapeHtml; the JSON highlighter operates on already-escaped text.
 function toolUseHtml(m) {
   const f = formatToolUse(m.toolName, m.toolInput, m.text);
-  const detail = f.detail ? `<div class="tool-detail">${escapeHtml(f.detail)}</div>` : '';
   const id = typeof m.toolUseId === 'string' ? m.toolUseId : '';
-  const expandable = id && m.toolInput !== undefined;
-  const expanded = expandable && state.expandedTools.has(id);
+  // alwaysExpanded tools render their payload statically — no chevron, no tap-to-toggle.
+  // Used for Grep where the structured rg-style block is the *primary* representation;
+  // a summary + collapsed/expanded toggle would just hide the most useful view.
+  const alwaysExpanded = !!f.alwaysExpanded;
+  const hasPayload = m.toolInput !== undefined;
+  const expandable = !alwaysExpanded && id && hasPayload;
+  const expanded = alwaysExpanded || (expandable && state.expandedTools.has(id));
   const cls = `msg tool_use${expandable ? ' tool_use-expandable' : ''}${expanded ? ' tool_use-expanded' : ''}`;
   const idAttr = expandable ? ` data-tool-id="${escapeHtml(id)}"` : '';
   const chev = expandable ? `<span class="tool-chev" aria-hidden="true"></span>` : '';
   // Per-tool expanded views — replace the default pretty-JSON dump with a format matched
   // to how the tool's input is meant to be read. Falls back to JSON for everything else.
-  const expandedBody = expandable ? renderToolExpandedBody(m.toolName, m.toolInput) : '';
+  const expandedBody = hasPayload ? renderToolExpandedBody(m.toolName, m.toolInput) : '';
+  // alwaysExpanded tools skip the summary/detail rows: their formatter intentionally
+  // returns no body/detail, and the structured payload below carries the same information
+  // in a richer form.
+  const detail = (!alwaysExpanded && f.detail) ? `<div class="tool-detail">${escapeHtml(f.detail)}</div>` : '';
   // Formatters can set body to an empty string when the label alone is enough (Edit, for
   // example, surfaces the filename in its expanded diff header rather than the summary).
   // bodyKind='code' marks the body as an identifier (path, regex, URL, query) — wrap in
   // <code> so it renders mono and announces correctly to assistive tech. Default is prose.
-  const summary = f.body
+  const summary = (!alwaysExpanded && f.body)
     ? f.bodyKind === 'code'
       ? `<div class="tool-summary tool-summary-code"><code>${escapeHtml(f.body)}</code></div>`
       : `<div class="tool-summary">${escapeHtml(f.body)}</div>`
@@ -2287,6 +3109,26 @@ function shortenPath(path) {
   // Collapse home directory to ~ so transcripts read consistently across machines.
   const norm = String(path).replace(/^\/Users\/[^/]+\//, '~/').replace(/^\/home\/[^/]+\//, '~/');
   return norm.length > 90 ? '…' + norm.slice(-89) : norm;
+}
+
+// Project-anchored path: when the file is under daemonInfo.cwd, strip everything up
+// to (but not including) the project directory's basename. With cwd = /Users/dc/
+// frostbyte73/outpost, /Users/dc/frostbyte73/outpost/src/pwa/app.js becomes
+// "outpost/src/pwa/app.js". Falls back to shortenPath (just collapsing $HOME to ~)
+// for files outside cwd — no fancier heuristic; the project root has to be set on
+// the daemon for the project-anchor to kick in.
+function projectRelativePath(path) {
+  if (!path) return '';
+  const cwd = state.daemonInfo?.cwd;
+  if (cwd && typeof cwd === 'string') {
+    const projectRoot = cwd.replace(/\/+$/, '');
+    const projectName = projectRoot.slice(projectRoot.lastIndexOf('/') + 1);
+    if (path === projectRoot) return projectName;
+    if (path.startsWith(projectRoot + '/')) {
+      return `${projectName}/${path.slice(projectRoot.length + 1)}`;
+    }
+  }
+  return shortenPath(path);
 }
 function shortenUrl(url) {
   const s = String(url ?? '');
@@ -2388,13 +3230,13 @@ const TOOL_FORMATTERS = {
       detail: `${lines.toLocaleString()} lines · ${content.length.toLocaleString()} chars`,
     };
   },
-  Grep(inp) {
-    const where = [inp.path && shortenPath(inp.path), inp.glob].filter(Boolean).join(' · ');
+  Grep(_inp) {
+    // Grep's primary representation is the rg-style command block — see renderGrepSearch.
+    // Setting alwaysExpanded skips the summary/detail rows and the expand/collapse chrome
+    // so the block reads as the tile's main content.
     return {
       label: 'Grep',
-      body: truncate(String(inp.pattern ?? ''), 140),
-      bodyKind: 'code',
-      detail: where || null,
+      alwaysExpanded: true,
     };
   },
   Glob(inp) {
@@ -2521,6 +3363,9 @@ function formatToolUse(name, input, fallback) {
       // it but the renderer never sees it. (Was silently dropped, which is why Read/Edit/
       // Write/Grep/etc. weren't getting the inline-code chip even though they declared it.)
       bodyKind: out.bodyKind,
+      // alwaysExpanded — formatters can opt out of the expand/collapse chrome and force
+      // the structured payload to render as the tile's primary content (Grep does this).
+      alwaysExpanded: out.alwaysExpanded,
     };
   }
   // Unknown tool: keep working, just dump compact JSON. Better than nothing.
@@ -2610,6 +3455,7 @@ function renderTrailRow(id, t, slot) {
 // Up Next, Completed — each section gets its own header treatment so the page reads as a
 // document, not a flat list. Opens dynamically; rebuilt by refreshTodosSheet on live updates.
 function openTodosSheet() {
+  dismissSoftKeyboard();
   closeTodosSheet();
   const backdrop = document.createElement('div');
   backdrop.className = 'sheet-backdrop todos-sheet-backdrop';
@@ -2738,9 +3584,13 @@ function approvalCardHtml(a) {
       ? `<div class="tool-summary tool-summary-code"><code>${escapeHtml(f.body)}</code></div>`
       : `<div class="tool-summary">${escapeHtml(f.body)}</div>`
     : '';
+  const enqueuedAt = a.enqueuedAt || Date.now();
   return (
-    `<div class="${cls}"${idAttr}>` +
-      `<div class="approval-banner">Approval needed</div>` +
+    `<div class="${cls}"${idAttr} data-enqueued-at="${enqueuedAt}">` +
+      `<div class="approval-banner">` +
+        `<span class="approval-banner-label">Approval needed</span>` +
+        `<span class="approval-banner-meta" data-countdown>${escapeHtml(formatApprovalCountdown(enqueuedAt))}</span>` +
+      `</div>` +
       `<span class="tool-label">${escapeHtml(f.label)}${chev}</span>` +
       `<div class="tool-content">` +
         summary +
@@ -2751,17 +3601,178 @@ function approvalCardHtml(a) {
         `<button class="approve" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Approve ${escapeHtml(f.label)}">Approve</button>` +
         `<button class="reject" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Reject ${escapeHtml(f.label)}">Reject</button>` +
       `</div>` +
+      `<button class="approval-always" data-always-id="${escapeHtml(a.approvalId)}" type="button">Always allow ${escapeHtml(suggestAllowRule(a.toolName, a.toolInput)?.label ?? a.toolName)}</button>` +
     `</div>`
   );
 }
 
-// The "Claude is working on it" tile — italic-serif body + amber blinking underscore
-// caret, with a small mono pill showing elapsed time and output tokens streamed so far.
-// The metrics are updated in place by a setInterval (see startThinking) so the seconds
-// counter ticks without a full re-render. Static role + caret markup, no interpolation
-// needed; the meta string goes through escapeHtml just in case.
-function thinkingTileHtml() {
-  return `<div class="msg thinking"><span class="role">Assistant</span><span class="body-text">thinking<span class="thinking-meta">${escapeHtml(thinkingMetaText())}</span><span class="caret">_</span></span></div>`;
+// Suggest an allowlist rule that would cover a given tool call. Returns { kind, value,
+// label } where `label` is the human-readable form shown in the confirm sheet, and
+// { kind, value } is the POST body for /api/allowlist/rules.
+//
+// Strategy by tool:
+//   - generic tools: just the tool name → kind='tool'.
+//   - Bash: take leading whitespace-separated tokens that look like commands/subcommands
+//     (alphanum or hyphen, no flags), stop at the first flag/arg → kind='bash' with an
+//     anchored pattern. Mirrors how the existing config patterns are written.
+//   - mcp__ tools: exact match anchored at both ends → kind='mcp'.
+// Returns null if we can't derive a sensible rule (e.g. empty Bash command).
+function suggestAllowRule(toolName, toolInput) {
+  if (toolName === 'Bash') {
+    const cmd = (toolInput && typeof toolInput.command === 'string') ? toolInput.command.trim() : '';
+    if (!cmd) return null;
+    const rawTokens = cmd.split(/\s+/);
+    const tokens = [];
+    let truncated = false;
+    for (const tok of rawTokens) {
+      if (!/^[a-zA-Z0-9_][\w.-]*$/.test(tok)) { truncated = true; break; }
+      tokens.push(tok);
+      if (tokens.length === 3) { truncated = rawTokens.length > 3; break; }
+    }
+    if (tokens.length === 0) return null;
+    // Refuse to derive a rule when the command starts with a destructive verb and we had
+    // to truncate the tokens (because a path / flag value broke the strict token regex).
+    // Without this guard, 'rm -rf /tmp/x' yields '^rm \\-rf(\\s|$)' which forever allows
+    // 'rm -rf <anything>'. Make the user write the rule by hand if they really mean it.
+    const DESTRUCTIVE = new Set(['rm', 'mv', 'dd', 'chmod', 'chown', 'kill', 'pkill', 'killall', 'shutdown', 'reboot', 'mkfs', 'fdisk', 'sudo', 'doas', 'curl', 'wget']);
+    if (truncated && DESTRUCTIVE.has(tokens[0])) return null;
+    const escaped = tokens.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join(' ');
+    const pattern = `^${escaped}(\\s|$)`;
+    return { kind: 'bash', value: pattern, label: `Bash · ${tokens.join(' ')}${truncated ? ' …' : ''}` };
+  }
+  if (toolName.startsWith('mcp__')) {
+    const escaped = toolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return { kind: 'mcp', value: `^${escaped}$`, label: toolName };
+  }
+  return { kind: 'tool', value: toolName, label: toolName };
+}
+
+// Confirm-sheet + POST to /api/allowlist/rules. On success: refresh /api/info so the
+// list-footer rule count updates, then approve the original call. On a duplicate rule
+// the server returns added:false; we still approve the call but skip the "rule added"
+// toast since nothing actually changed.
+async function alwaysAllowAndApprove(approvalId, toolName, toolInput) {
+  const suggested = suggestAllowRule(toolName, toolInput);
+  if (!suggested) {
+    showStatusToast('Cannot derive a rule from this call');
+    return;
+  }
+  const ok = await confirmInSheet({
+    title: 'Always allow this?',
+    body: `Future tool calls matching “${suggested.label}” will be auto-approved without prompting. Saved to the allowlist on disk.`,
+    confirmLabel: 'Always allow',
+    danger: false,
+  });
+  if (!ok) return;
+  try {
+    const r = await fetch('/api/allowlist/rules', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: suggested.kind, value: suggested.value }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    if (state.daemonInfo) state.daemonInfo.allowlistRuleCount = data.ruleCount;
+    showStatusToast(data.added ? 'Rule added — call approved' : 'Rule already present', 'success');
+  } catch (e) {
+    showStatusToast(`Save failed: ${(e && e.message) || 'unknown'}`);
+    return;
+  }
+  decideApproval(approvalId, 'allow');
+}
+
+// Approval countdown — "8m left" / "45s left" / "expired". Reads the timeout from
+// /api/info (with a 10-min fallback for the brief window before info loads). Returns the
+// remaining time as a short human string; under 60s remaining the renderer wraps the
+// span in a `.approval-banner-meta-urgent` class to danger-tint it.
+function formatApprovalCountdown(enqueuedAt) {
+  const timeoutMs = state.daemonInfo?.approvalTimeoutMs ?? 10 * 60 * 1000;
+  const remaining = enqueuedAt + timeoutMs - Date.now();
+  if (remaining <= 0) return 'expired';
+  if (remaining < 60_000) return `${Math.ceil(remaining / 1000)}s left`;
+  return `${Math.ceil(remaining / 60_000)}m left`;
+}
+
+// Walk every visible approval card's countdown span and update its text + urgent class.
+// Returns true if any card has under 60s remaining — used by the adaptive scheduler to
+// upgrade to a 1s tick so the user doesn't see "expired" stuck for up to a full tick
+// past actual expiry.
+function tickApprovalCountdowns() {
+  let anyUrgent = false;
+  for (const card of document.querySelectorAll('.approval-card[data-enqueued-at]')) {
+    const enqueuedAt = Number(card.dataset.enqueuedAt) || 0;
+    if (!enqueuedAt) continue;
+    const meta = card.querySelector('[data-countdown]');
+    if (!meta) continue;
+    meta.textContent = formatApprovalCountdown(enqueuedAt);
+    const timeoutMs = state.daemonInfo?.approvalTimeoutMs ?? 10 * 60 * 1000;
+    const remaining = enqueuedAt + timeoutMs - Date.now();
+    if (remaining > 0 && remaining < 60_000) anyUrgent = true;
+    meta.classList.toggle('approval-banner-meta-urgent', remaining > 0 && remaining < 60_000);
+    meta.classList.toggle('approval-banner-meta-expired', remaining <= 0);
+  }
+  return anyUrgent;
+}
+// Adaptive cadence: when any visible card is under 60s, tick every second so "45s left"
+// stays accurate; otherwise tick every 15s (a minute-precision countdown doesn't need
+// faster). Re-schedules itself after each tick so cadence reacts as cards age in.
+(function scheduleApprovalCountdown() {
+  const urgent = tickApprovalCountdowns();
+  setTimeout(scheduleApprovalCountdown, urgent ? 1_000 : 15_000);
+})();
+
+// Per-tool verb shown on the thinking strip when that tool is in flight. Tools not in
+// this map (mcp__*, Skill, Task*, ToolSearch, ScheduleWakeup, etc.) fall back to
+// "thinking" so the strip still has something to say but doesn't claim a specific action.
+const TOOL_VERBS = {
+  Read: 'reading',
+  Grep: 'grepping',
+  Glob: 'globbing',
+  Bash: 'bashing',
+  Edit: 'editing',
+  MultiEdit: 'editing',
+  Write: 'writing',
+  NotebookEdit: 'editing',
+  WebSearch: 'surfing',
+  WebFetch: 'surfing',
+  Agent: 'delegating',
+};
+
+// How long the strip keeps showing a tool's verb after its result lands. Fast tools
+// (Read, Grep, Glob) often finish in well under a second — without the linger, the
+// verb flashes too briefly to read. A new tool firing during the linger cuts it short
+// and switches immediately, so the verb stays responsive to actual activity.
+const VERB_LINGER_MS = 10_000;
+
+// Persistent status strip sitting above the agents bar — visible whenever the assistant
+// is doing something. Hidden when the session is blocked on user input (the approval
+// card itself is signal enough) and when no work is in flight. The verb tracks the top
+// of state.activeTools so it reflects the currently-in-flight tool; falls back to
+// "thinking" between calls (and for tools without a dedicated verb).
+function thinkingStripHtml() {
+  if (!state.thinking) return '';
+  // Hide only when a REGULAR approval card is rendered inline — that card carries the
+  // call-to-action so the strip would just be noise. AskUserQuestion (popup sheet) and
+  // subagent approvals (routed to the agents sheet) both leave the parent transcript
+  // without a visible call-to-action, so keep the alive signal up: a user who dismissed
+  // the Ask sheet otherwise has no clue claude is still working.
+  const blockedOnInlineCard = state.pendingApprovals.some((a) =>
+    a.sessionId === state.currentSessionId
+    && a.toolName !== 'AskUserQuestion'
+    && !a.agentId
+  );
+  if (blockedOnInlineCard) return '';
+  const top = state.activeTools.length > 0 ? state.activeTools[state.activeTools.length - 1] : null;
+  const verb = top
+    ? (TOOL_VERBS[top.toolName] || 'thinking')
+    : (state.lingeringVerb || 'thinking');
+  return (
+    `<div class="thinking-strip" role="status" aria-live="polite">` +
+      `<span class="thinking-strip-label">${escapeHtml(verb)}</span>` +
+      `<span class="thinking-strip-meta">${escapeHtml(thinkingMetaText())}</span>` +
+      `<span class="thinking-strip-dots" aria-hidden="true"><span></span><span></span><span></span></span>` +
+    `</div>`
+  );
 }
 
 function thinkingMetaText() {
@@ -2778,8 +3789,7 @@ function thinkingMetaText() {
     t = `${m}:${String(s).padStart(2, '0')}`;
   }
   const tok = state.thinkingOutputTokens > 0 ? `${state.thinkingOutputTokens.toLocaleString()} tok` : '';
-  // Leading space so "thinking" doesn't sit against the bullet.
-  return tok ? ` · ${t} · ${tok} ` : ` · ${t} `;
+  return tok ? `${t} · ${tok}` : t;
 }
 
 function startThinking() {
@@ -2798,17 +3808,36 @@ function stopThinking() {
   state.thinkingStartedAt = 0;
   state.thinkingOutputTokens = 0;
   state.thinkingOutputChars = 0;
+  state.activeTools = [];
   if (state.thinkingTicker) {
     clearInterval(state.thinkingTicker);
     state.thinkingTicker = null;
   }
+  if (state.lingeringTimer) {
+    clearTimeout(state.lingeringTimer);
+    state.lingeringTimer = null;
+  }
+  state.lingeringVerb = null;
 }
 
 // Just patch the meta span — avoids a full renderSession() rebuild every 200ms.
 function updateThinkingMeta() {
   if (!state.thinking) return;
-  const el = document.querySelector('.msg.thinking .thinking-meta');
+  const el = document.querySelector('.thinking-strip .thinking-strip-meta');
   if (el) el.textContent = thinkingMetaText();
+}
+
+// Transient status toast for ephemeral feedback. tone='danger' (default) for failures,
+// 'success' for positive confirmations like clipboard copy. Replaces any prior toast.
+function showStatusToast(text, tone) {
+  document.getElementById('status-toast')?.remove();
+  const t = document.createElement('div');
+  t.id = 'status-toast';
+  t.className = `status-toast${tone === 'success' ? ' status-toast-success' : ''}`;
+  t.setAttribute('role', 'status');
+  t.textContent = text;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3600);
 }
 
 // Cross-session toast: shown when an approval arrives on a session that isn't the
@@ -2856,18 +3885,53 @@ function sendMessage() {
   const composer = document.getElementById('composer');
   const text = composer.textContent.trim();
   if (!text) return;
+  if (state.ws?.readyState !== WebSocket.OPEN) {
+    // Keep the text in the composer so the user can retry once reconnected — silently
+    // dropping the message would be the worst possible failure mode here.
+    showStatusToast('Disconnected — not sent');
+    return;
+  }
   state.transcript.push({ role: 'user', text });
   startThinking();
-  state.ws?.send(JSON.stringify({ type: 'user_message', content: text }));
+  state.ws.send(JSON.stringify({ type: 'user_message', content: text }));
   composer.textContent = '';
   document.getElementById('send')?.classList.remove('armed');
   renderSession();
+  // Force the scroll even if the user was reading history — they just sent a message
+  // and almost certainly want to see it land. renderSession's stuck-to-bottom heuristic
+  // would otherwise leave them up in history wondering if the send went through.
+  scrollTranscriptBottom();
+}
+
+// Send an approval decision over the most reliable channel available. Notifications WS is
+// the preferred channel — it's engineered to survive iOS backgrounding and is the one that
+// delivered the approval_pending. If both WSs are down (rare but possible), queue the
+// decide for flush when the notifications WS next opens. Returns true if the decision was
+// sent immediately, false if queued.
+function sendApprovalDecide(payload) {
+  const msg = { type: 'approval_decide', ...payload };
+  const wire = JSON.stringify(msg);
+  if (state.notifyWs?.readyState === WebSocket.OPEN) { state.notifyWs.send(wire); return true; }
+  if (state.ws?.readyState === WebSocket.OPEN) { state.ws.send(wire); return true; }
+  state.pendingDecides.push(payload);
+  return false;
+}
+
+function flushPendingDecides() {
+  if (state.pendingDecides.length === 0) return;
+  if (state.notifyWs?.readyState !== WebSocket.OPEN) return;
+  const drain = state.pendingDecides;
+  state.pendingDecides = [];
+  for (const p of drain) state.notifyWs.send(JSON.stringify({ type: 'approval_decide', ...p }));
 }
 
 function decideApproval(id, decision, reason) {
-  const payload = { type: 'approval_decide', approvalId: id, decision };
-  if (reason) payload.reason = reason;
-  state.ws?.send(JSON.stringify(payload));
+  // Route through sendApprovalDecide so the notifications WS is the preferred channel —
+  // iOS backgrounding can close the session WS while leaving notifications WS alive, and
+  // approvals only died because we were sending strictly over the session WS. Falls back
+  // to the session WS, then to a pendingDecides queue flushed on next notifications open.
+  const sent = sendApprovalDecide({ approvalId: id, decision, ...(reason ? { reason } : {}) });
+  if (!sent) showStatusToast('Queued — will send when connected');
   state.pendingApprovals = state.pendingApprovals.filter((a) => a.approvalId !== id);
   // Mirror the decision into any matching subagent bucket entry. The entry stays in
   // the list so the agent feed continues to read as a continuous mini-transcript;
@@ -2915,15 +3979,29 @@ let openRow = null;
 
 function wireSwipeToDelete(row) {
   let startX = 0, startY = 0, currentX = 0, isSwiping = false, swipeStarted = false, gestureCancelled = false;
+  let longPressTimer = null;
+  let longPressFired = false;
   // The delete button is a sibling of the row inside the same .session-row-wrap.
   // Driving its transform in lockstep with the row keeps it off-screen at rest
   // (no flicker during scroll) and lets it slide in cleanly during a swipe.
   const deleteAction = row.parentElement?.querySelector('.delete-action');
 
+  const cancelLongPress = () => {
+    if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+  };
+
   row.addEventListener('touchstart', (e) => {
     const t = e.touches[0];
     startX = t.clientX; startY = t.clientY;
     currentX = 0; isSwiping = false; swipeStarted = false; gestureCancelled = false;
+    longPressFired = false;
+    // Long-press = 550ms held without horizontal swipe; copies `claude --resume <id>` so
+    // the user can pick the session back up on their laptop without typing the id by hand.
+    longPressTimer = setTimeout(() => {
+      longPressFired = true;
+      longPressTimer = null;
+      copyResumeCommand(row.dataset.id);
+    }, 550);
   }, { passive: true });
 
   row.addEventListener('touchmove', (e) => {
@@ -2933,6 +4011,9 @@ function wireSwipeToDelete(row) {
     const dy = t.clientY - startY;
     if (!swipeStarted) {
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+      // Any meaningful movement aborts the long-press — treat the gesture as a
+      // swipe/scroll instead.
+      cancelLongPress();
       if (Math.abs(dx) <= Math.abs(dy)) { gestureCancelled = true; return; }
       swipeStarted = true;
       row.classList.add('swiping');
@@ -2956,14 +4037,24 @@ function wireSwipeToDelete(row) {
   }, { passive: true });
 
   row.addEventListener('touchend', () => {
+    cancelLongPress();
     row.classList.remove('swiping');
     deleteAction?.classList.remove('swiping');
     if (!isSwiping) return;
     if (currentX < -SWIPE_OPEN_THRESHOLD) snapRowOpen(row);
     else snapRowClosed(row);
   });
+  row.addEventListener('touchcancel', cancelLongPress);
 
   row.addEventListener('click', (e) => {
+    // If the long-press already fired (clipboard write + toast), swallow the click so we
+    // don't also open the session out from under the user.
+    if (longPressFired) {
+      e.preventDefault();
+      e.stopPropagation();
+      longPressFired = false;
+      return;
+    }
     if (row.dataset.openOffset) {
       e.preventDefault();
       e.stopPropagation();
@@ -2972,6 +4063,20 @@ function wireSwipeToDelete(row) {
     }
     openSession(row.dataset.id);
   });
+}
+
+// Copy `claude --resume <id>` to the clipboard so the user can pick the session back up
+// from their laptop. Falls back to a status toast on failure (some browsers gate
+// clipboard.writeText behind a permission prompt that fails silently).
+async function copyResumeCommand(id) {
+  if (!id) return;
+  const cmd = `claude --resume ${id}`;
+  try {
+    await navigator.clipboard.writeText(cmd);
+    showStatusToast('Resume command copied', 'success');
+  } catch {
+    showStatusToast('Copy blocked — check clipboard permissions');
+  }
 }
 
 function snapRowOpen(row) {
@@ -3256,6 +4361,28 @@ document.getElementById('mode-toggle').addEventListener('click', (e) => {
 
 syncThemeColorMeta();
 
+// When the PWA comes back to the foreground (user unlocks phone, switches back from
+// another app), iOS may have severed the WS without firing onclose yet — the next
+// retry tick is up to 1.5s away. Fire a reconnect immediately so the user doesn't see
+// a stale snapshot while waiting.
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState !== 'visible') return;
+  // Check the live readyState rather than our state mirror — iOS can put the socket
+  // into CLOSED without notifying, in which case state.notifyWsReady is stale.
+  const notifyDead = !state.notifyWs || state.notifyWs.readyState !== WebSocket.OPEN;
+  const sessionDead = state.currentSessionId
+    && (!state.ws || state.ws.readyState !== WebSocket.OPEN);
+  if (notifyDead || sessionDead) forceReconnect();
+  // Even if both WSs survived the background, in-memory state may have drifted from
+  // disk truth — e.g. a backgrounded subagent's task-notification can land on disk but
+  // not on the WS our PWA was listening to. Force a disk reconcile on every foreground
+  // transition while in a session. Dedup via seenBlockSigs / readSubagents merging
+  // makes this a no-op when nothing changed, and a recovery when something did.
+  if (state.currentSessionId && state.view === 'session') {
+    catchUpFromDisk(state.currentSessionId);
+  }
+});
+
 // Keep --header-h in sync with the actual header height so the cross-session approval
 // toast clears the header on every theme/safe-area combination instead of relying on a
 // 56px guess.
@@ -3272,5 +4399,6 @@ syncThemeColorMeta();
     window.addEventListener('resize', apply);
   }
 })();
+loadDaemonInfo();
 loadSessions();
 connectNotificationWs();

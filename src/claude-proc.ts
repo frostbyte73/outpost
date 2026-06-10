@@ -77,4 +77,12 @@ export class ClaudeProc {
       });
     });
   }
+
+  interrupt(): void {
+    if (this.exited) return;
+    this.proc.kill('SIGINT');
+    setTimeout(() => {
+      if (!this.exited) this.proc.kill('SIGKILL');
+    }, 1000);
+  }
 }

@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, createReadStream } from 'node:fs';
+import { mkdirSync, createReadStream, writeFileSync, renameSync } from 'node:fs';
 import { Allowlist } from './allowlist.js';
 import { ApprovalQueue } from './approvals.js';
 import { SessionStore } from './session-store.js';
@@ -12,12 +12,21 @@ import { discoverTailscaleEnv } from './tailscale.js';
 import { writeDaemonSettings, generateSecret } from './settings-gen.js';
 import { handleHook } from './hook-handler.js';
 import allowlistConfig from '../config/allowlist.json' with { type: 'json' };
+import pkg from '../package.json' with { type: 'json' };
 
 const RUNTIME_DIR = join(homedir(), '.outpost');
 mkdirSync(RUNTIME_DIR, { recursive: true });
 
+// Single source of truth for the approval timeout. The PWA reads this via /api/info so
+// the countdown UI matches the server's actual expiry deadline; updating one place keeps
+// the client and server agreed.
+const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 const PWA_DIR = join(SRC_DIR, 'pwa');
+// Path to the on-disk allowlist config. After a hot-add via /api/allowlist/rules we
+// atomic-write the updated JSON here so the rule survives a daemon restart.
+const ALLOWLIST_PATH = join(SRC_DIR, '..', 'config', 'allowlist.json');
 
 async function main() {
   const tsEnv = discoverTailscaleEnv({ certDir: RUNTIME_DIR });
@@ -28,7 +37,7 @@ async function main() {
   writeDaemonSettings({ outPath: settingsPath, hookPort: HOOK_PORT });
 
   const allowlist = new Allowlist(allowlistConfig);
-  const queue = new ApprovalQueue({ timeoutMs: 10 * 60 * 1000 });
+  const queue = new ApprovalQueue({ timeoutMs: APPROVAL_TIMEOUT_MS });
 
   // Pin claude's cwd so all daemon-spawned sessions land in the same project dir on disk,
   // and the SessionStore reads from that same dir. Point this at whichever workspace
@@ -62,22 +71,36 @@ async function main() {
     onHookCall: async (body) => {
       const hookInput = JSON.parse(body);
       console.log(`[hook] ${hookInput.tool_name} session=${hookInput.session_id?.slice(0,8)}${hookInput.agent_id ? ` agent=${hookInput.agent_type ?? '?'}/${hookInput.agent_id.slice(0,8)}` : ''} input=${JSON.stringify(hookInput.tool_input).slice(0, 200)}`);
-      // Subagent calls that the allowlist auto-allows never reach the approval queue
-      // and therefore never emit an approval_pending event. Without a special path,
-      // those tool calls run invisibly — subagents whose tools are all read-only would
-      // never show up in the PWA's agent feed at all. Mirror the call out to clients
-      // so the agent bucket gets populated with a pre-resolved entry; the slower
-      // approval flow below still runs unchanged for tools that DO need approval.
-      if (hookInput.agent_id && allowlist.allows(hookInput.tool_name, hookInput.tool_input)) {
-        notifyAll({
-          type: 'agent_activity',
-          sessionId: hookInput.session_id,
-          toolName: hookInput.tool_name,
-          toolInput: hookInput.tool_input,
-          agentId: hookInput.agent_id,
-          agentType: hookInput.agent_type,
-          toolUseId: hookInput.tool_use_id,
-        });
+      // Tool calls the allowlist auto-allows never reach the approval queue and
+      // therefore never emit an approval_pending event. Without a special path:
+      //   - subagent calls would run invisibly (the agent bucket wouldn't get any
+      //     entry, so a read-only subagent's whole feed would be empty);
+      //   - parent calls would appear in the transcript with no signal to the PWA
+      //     that they were auto-allowed (which the expand-by-default logic depends on).
+      // Mirror the call out via dedicated message types — `agent_activity` for subagent
+      // buckets, `tool_auto_allowed` as a hint to the parent transcript.
+      if (allowlist.allows(hookInput.tool_name, hookInput.tool_input)) {
+        if (hookInput.agent_id) {
+          notifyAll({
+            type: 'agent_activity',
+            sessionId: hookInput.session_id,
+            toolName: hookInput.tool_name,
+            toolInput: hookInput.tool_input,
+            agentId: hookInput.agent_id,
+            agentType: hookInput.agent_type,
+            toolUseId: hookInput.tool_use_id,
+          });
+        } else {
+          notifyAll({
+            type: 'tool_auto_allowed',
+            sessionId: hookInput.session_id,
+            toolName: hookInput.tool_name,
+            // Forward toolInput so the client can content-match against the streamed
+            // tool_use block. Claude Code's PreToolUse hook doesn't include tool_use_id,
+            // so JSON-equality of the input is the only stable correlation we have.
+            toolInput: hookInput.tool_input,
+          });
+        }
       }
       const result = await handleHook({
         hookInput,
@@ -102,6 +125,7 @@ async function main() {
             // but the AskUserQuestion popup needs the full questions/options structure to
             // build its picker. Cheap to include and keeps the API generic.
             toolInput: approval.toolInput,
+            toolUseId: approval.toolUseId,
             // Subagent provenance: when these are set, the PWA routes this approval into
             // the dedicated agents feed instead of the parent session's inline cards.
             agentId: approval.agentId,
@@ -116,6 +140,22 @@ async function main() {
     },
   });
 
+  // Daemon configuration the PWA needs at runtime: the working directory sessions inherit
+  // (surfaced in the empty-state so first-time users know what's wired up), how many
+  // tools auto-approve, the approval timeout used for the countdown UI, and the build
+  // version for diagnostics. Read-only; no auth distinction since the whole HTTPS surface
+  // is already gated by Tailscale.
+  server.route('GET', '/api/info', (_req, res) => {
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({
+      cwd: claudeCwd,
+      version: pkg.version,
+      allowlistRuleCount: allowlist.ruleCount(),
+      approvalTimeoutMs: APPROVAL_TIMEOUT_MS,
+    }));
+  });
+
   // List sessions
   server.route('GET', '/api/sessions', (_req, res) => {
     const list = sessionStore.list();
@@ -128,6 +168,7 @@ async function main() {
       sessionId: a.sessionId,
       toolName: a.toolName,
       toolInput: a.toolInput,
+      toolUseId: a.toolUseId,
       agentId: a.agentId,
       agentType: a.agentType,
       summary: summarizeToolInput(a.toolName, a.toolInput),
@@ -165,6 +206,43 @@ async function main() {
     res.end(JSON.stringify({ subagents }));
   });
 
+  // Hot-add an allowlist rule. Body shape: { kind: 'tool' | 'bash' | 'mcp', value: string }.
+  // Server validates the value (regex compilation for pattern kinds), dedupes against
+  // existing rules, and on success atomic-writes the updated allowlist.json so the rule
+  // survives a daemon restart. Returns the new rule count for the PWA to refresh.
+  server.route('POST', '/api/allowlist/rules', async (req, res) => {
+    const body = await readBody(req);
+    let payload: { kind?: string; value?: string };
+    try { payload = JSON.parse(body); } catch {
+      res.statusCode = 400; res.end('invalid json'); return;
+    }
+    const { kind, value } = payload;
+    if (kind !== 'tool' && kind !== 'bash' && kind !== 'mcp') {
+      res.statusCode = 400; res.end('kind must be tool|bash|mcp'); return;
+    }
+    if (typeof value !== 'string' || value.length === 0 || value.length > 500) {
+      res.statusCode = 400; res.end('value must be a 1..500 char string'); return;
+    }
+    let added: boolean;
+    try {
+      added = allowlist.addRule(kind, value);
+    } catch (e) {
+      // Invalid regex from a bash/mcp pattern — addRule rethrows the RegExp ctor error.
+      res.statusCode = 400; res.end(`invalid pattern: ${(e as Error).message}`); return;
+    }
+    if (added) {
+      // Atomic write: stage to .tmp, then rename — avoids leaving a partially-written
+      // allowlist.json if the process dies mid-write.
+      const tmp = `${ALLOWLIST_PATH}.tmp`;
+      writeFileSync(tmp, JSON.stringify(allowlist.toConfig(), null, 2) + '\n');
+      renameSync(tmp, ALLOWLIST_PATH);
+      console.log(`[api] allowlist: added ${kind} rule ${JSON.stringify(value)} (total ${allowlist.ruleCount()})`);
+    }
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ added, ruleCount: allowlist.ruleCount() }));
+  });
+
   // Delete a session — kills the subprocess AND removes the .jsonl from disk. Unrecoverable.
   server.route('DELETE', '/api/sessions/:id', async (req, res) => {
     const id = (req.url ?? '').split('/').pop()!;
@@ -185,6 +263,23 @@ async function main() {
     for (const ws of notificationClients) ws.send(payload);
   }
 
+  // Push every approval resolution out to clients so the PWA can render a "Timed out"
+  // tile rather than the card silently disappearing — and so a second device viewing
+  // the same session sees the same decision the first device made.
+  queue.onResolve = (approval, decision) => {
+    notifyAll({
+      type: 'approval_resolved',
+      approvalId: approval.id,
+      sessionId: approval.sessionId,
+      toolName: approval.toolName,
+      agentId: approval.agentId,
+      agentType: approval.agentType,
+      decision: decision.allow ? 'allow' : 'deny',
+      reason: decision.reason,
+      timedOut: !decision.allow && (decision.reason ?? '').startsWith('Approval timed out'),
+    });
+  };
+
   server.onWebSocket((ws, req) => {
     const url = req.url ?? '';
 
@@ -202,12 +297,26 @@ async function main() {
           sessionId: a.sessionId,
           toolName: a.toolName,
           toolInput: a.toolInput,
+          toolUseId: a.toolUseId,
           agentId: a.agentId,
           agentType: a.agentType,
           summary: summarizeToolInput(a.toolName, a.toolInput),
           sessionTitle: titleById.get(a.sessionId),
         })),
       }));
+      // Accept approval_decide on the notifications WS too. The notifications channel is
+      // the one engineered to survive iOS backgrounding (the session WS often drops), and
+      // it's the channel that delivered the approval_pending in the first place. Without
+      // this, accept-edits auto-allows sent while the session WS happens to be closed are
+      // silently dropped and the hook eventually times out (10-minute stall + denied edit).
+      ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
+        let msg: { type?: string };
+        try { msg = JSON.parse(String(raw)); } catch { return; }
+        if (msg.type === 'approval_decide') {
+          const m2 = msg as { approvalId: string; decision: 'allow' | 'deny'; reason?: string };
+          queue.decide(m2.approvalId, { allow: m2.decision === 'allow', reason: m2.reason });
+        }
+      });
       ws.on('close', () => notificationClients.delete(ws));
       return;
     }
@@ -235,6 +344,11 @@ async function main() {
       } else if (msg.type === 'approval_decide') {
         const m2 = msg as { approvalId: string; decision: 'allow' | 'deny'; reason?: string };
         queue.decide(m2.approvalId, { allow: m2.decision === 'allow', reason: m2.reason });
+      } else if (msg.type === 'interrupt') {
+        // User tapped Stop in the PWA. Kill the claude subprocess; the existing
+        // daemon_proc_exit path handles the UI follow-up.
+        console.log(`[api] interrupt requested for session ${sessionId.slice(0, 8)}`);
+        manager.interrupt(sessionId);
       }
     });
   });

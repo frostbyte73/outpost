@@ -484,6 +484,16 @@
       background: var(--accent);
       margin-right: 10px; transform: translateY(-3px);
       animation: pulse 2.4s ease-in-out infinite;
+      transition: background 0.18s ease;
+    }
+    /* Brand dot doubles as a connection-state indicator:
+         connected   → accent, pulsing (default)
+         reconnecting → text-mute, pulsing (calmer, signals "in flight")
+         failed      → danger, no pulse (alarm — paired with the reconnect banner) */
+    [data-conn="reconnecting"] header .brand::before { background: var(--text-mute); }
+    [data-conn="failed"] header .brand::before {
+      background: var(--danger);
+      animation: none;
     }
     @keyframes pulse {
       0%, 100% { opacity: 1; }
@@ -545,6 +555,26 @@
          JetBrains Mono, and its italic looks broken for editorial copy like this. */
       font-family: 'Instrument Serif', 'Times New Roman', serif;
       letter-spacing: 0.01em;
+    }
+
+    /* Daemon-info footer under the session list. Reassures the user that the daemon is
+       reachable and configured — cwd + allowlist count answer "is this thing wired up?"
+       at a glance, especially on first run. */
+    .list-footer {
+      margin-top: 28px;
+      padding: 14px 4px 4px;
+      border-top: 1px solid var(--line-soft);
+      font-family: var(--font-mono);
+      font-size: 10px; letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--text-dim);
+      line-height: 1.65;
+    }
+    .list-footer code {
+      font-family: var(--font-mono);
+      color: var(--text-mute);
+      text-transform: none;
+      letter-spacing: 0;
+      word-break: break-all;
     }
 
     /* Swipe-to-delete row container. The visible row sits above an absolutely-positioned
@@ -1030,6 +1060,28 @@
       margin: 12px 0;
     }
     .agents-sheet-feed .msg:first-child { margin-top: 0; }
+
+    /* "Spawned by" header at the top of an agent's feed — surfaces the parent's Agent
+       prompt so the user has context for what this subagent is doing. Quoted-block
+       chrome (left border + italic display body) signals "this is what was asked." */
+    .agent-feed-prompt {
+      margin: 0 0 14px;
+      padding: 9px 12px 11px;
+      background: var(--bg-elev);
+      border-left: 2px solid var(--accent-2);
+    }
+    .agent-feed-prompt-label {
+      display: block;
+      font-family: var(--font-mono);
+      font-size: 9px; letter-spacing: 0.22em; text-transform: uppercase;
+      color: var(--text-mute);
+      margin-bottom: 4px;
+    }
+    .agent-feed-prompt-text {
+      font-family: var(--font-display); font-style: italic;
+      font-size: 14px; line-height: 1.45;
+      color: var(--text);
+    }
 
     /* Subagent completion footer. Shown at the bottom of an agent's feed once the
        <task-notification> arrives. Italic display "Completed" label + mono metrics
@@ -1648,6 +1700,9 @@
       user-select: none;
       font-weight: 600;
     }
+    /* Search pattern inside a Grep command — pulled out so the most important token
+       in the line reads clearly against the surrounding flags + paths. */
+    .tool-bash .bash-grep-pattern { color: var(--accent-2); font-weight: 500; }
     .tool-bash .bash-cmd-text {
       white-space: pre-wrap;
       word-break: break-word;
@@ -1962,12 +2017,80 @@
     .ask-send.armed:active {
       background: var(--accent-soft);
     }
+
+    /* Slim Read status line — replaces the full tool tile for Read calls. CSS grid
+       keeps the verb in column 1 and path+range stacked in column 2; that way the range
+       stays aligned under the path regardless of whether the verb is "Reading" or
+       "Read" (different widths). Splitting the range to its own line keeps deep paths
+       from overflowing the viewport. */
+    .msg.msg-read {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      column-gap: 8px;
+      row-gap: 1px;
+      padding: 4px 0;
+      margin: 8px 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--text-mute);
+      white-space: normal;
+      align-items: baseline;
+    }
+    .msg.msg-read .read-verb {
+      grid-column: 1;
+      grid-row: 1;
+      font-family: var(--font-display); font-style: italic;
+      font-size: 14px;
+      color: var(--accent);
+      letter-spacing: 0.005em;
+    }
+    .msg.msg-read .read-target {
+      grid-column: 2;
+      grid-row: 1;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text);
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+    .msg.msg-read .read-range {
+      grid-column: 2;
+      grid-row: 2;
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-dim);
+      letter-spacing: 0.02em;
+    }
+    /* Dot-cycle keyframe used by the thinking-strip activity indicator. (The Read line
+       used to have its own three-dot ellipsis on the right but it duplicated the strip's
+       signal — dropped, keyframe kept for the strip.) */
+    @keyframes read-dot {
+      0%, 65%, 100% { opacity: 0.25; transform: translateY(0); }
+      30% { opacity: 1; transform: translateY(-1px); }
+    }
+
     .msg.error {
       color: var(--danger);
       background: var(--danger-soft); padding: 10px 12px;
       border-left: 2px solid var(--danger);
     }
     .msg.error .role { color: var(--danger); border-color: var(--danger); }
+    /* Inline action button inside an error tile — e.g. "Reopen" on a daemon_proc_exit.
+       Sits on its own line under the body text so it reads as a follow-up affordance. */
+    .msg .msg-action {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 6px 14px;
+      background: transparent;
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      font-family: var(--font-body);
+      font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 600;
+      cursor: pointer;
+      transition: background 0.12s ease, color 0.12s ease;
+    }
+    .msg .msg-action:active { background: var(--danger); color: var(--bg); }
+    .msg .msg-action:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
     /* ── Rendered markdown inside assistant messages ───────────── */
     .msg .body-text > :first-child { margin-top: 0; }
@@ -2073,6 +2196,44 @@
     .body-text em { color: var(--text); }
     .body-text del { color: var(--text-mute); }
 
+    /* ───── Reconnect banner ────────────────────────────────────────
+       Shown above the composer when both WS retries cross the failure threshold. Sits
+       in the flex chain so it pushes the composer down without overlay positioning.
+       Danger-tinted band with a flat Retry button on the right. */
+    .conn-banner {
+      flex: none;
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px;
+      padding: 10px 18px 11px;
+      background: var(--danger-soft);
+      border-top: 1px solid var(--danger);
+      color: var(--danger);
+      font-family: var(--font-mono);
+      font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 600;
+    }
+    .conn-banner-msg { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .conn-banner button {
+      flex: none;
+      min-height: 32px;
+      padding: 6px 12px;
+      background: transparent;
+      border: 1px solid var(--danger);
+      color: var(--danger);
+      font: inherit;
+      letter-spacing: 0.14em;
+      cursor: pointer;
+      transition: background 0.12s ease, color 0.12s ease;
+    }
+    .conn-banner button:active { background: var(--danger); color: var(--bg); }
+    .conn-banner button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    /* Region wrappers in the session-view skeleton. The wrappers exist so renderSession
+       can swap each region's innerHTML independently (keeping the composer mounted across
+       WS updates so the mobile keyboard doesn't dismiss); display: contents makes them
+       layout-transparent so the original flex chain still works as if the contents were
+       direct children of #root. */
+    #agents-region, #todos-region, #banner-region { display: contents; }
+
     /* ───── Composer ────────────────────────────────────────────── */
     .composer {
       flex: none;
@@ -2124,7 +2285,27 @@
       border-color: var(--accent);
     }
     .composer .send.armed:active { filter: brightness(0.92); }
+    /* Disconnect state: mute the armed accent fill so the user sees the send button is
+       inert before they tap. is-stop wins (the interrupt path uses notifications WS and
+       still works regardless of the session WS state). data-conn lives on <html>. */
+    html[data-conn="reconnecting"] .composer .send.armed:not(.is-stop),
+    html[data-conn="failed"] .composer .send.armed:not(.is-stop) {
+      background: transparent;
+      color: var(--text-mute);
+      border-color: var(--line);
+    }
     .composer .send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    /* Stop variant — same button slot, danger fill, square glyph. Replaces the armed
+       state's accent fill while the assistant is generating; tap to SIGINT the proc. */
+    .composer .send.is-stop {
+      background: var(--danger);
+      color: var(--bg);
+      border-color: var(--danger);
+      font-family: var(--font-mono);
+      font-style: normal;
+      font-size: 14px;
+    }
+    .composer .send.is-stop:active { filter: brightness(0.9); }
     .approval-card .approval-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .sheet .sheet-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
@@ -2146,12 +2327,30 @@
       border-left: 1px solid var(--accent);
     }
     .approval-card .approval-banner {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 12px;
       font-family: var(--font-mono);
       font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
       color: var(--accent);
       margin-bottom: 8px;
       padding-bottom: 8px;
       border-bottom: 1px solid var(--line-soft);
+    }
+    .approval-banner-meta {
+      color: var(--text-mute);
+      font-size: 9px;
+      letter-spacing: 0.16em;
+      transition: color 0.18s ease;
+    }
+    /* Under 60s until auto-reject — danger-tinted so the user sees they're about to lose
+       the chance to decide. Under 0 (server already expired but client hasn't seen the
+       resolution yet) reads even louder. */
+    .approval-banner-meta.approval-banner-meta-urgent { color: var(--danger); }
+    .approval-banner-meta.approval-banner-meta-expired {
+      color: var(--danger);
+      font-weight: 600;
     }
     .approval-card .approval-actions {
       display: grid;
@@ -2182,36 +2381,82 @@
     .approval-card .approval-actions .reject { color: var(--danger); border-color: var(--danger); }
     .approval-card .approval-actions .reject:active { background: var(--danger); color: var(--bg); }
 
-    /* ───── Thinking indicator ──────────────────────────────────────
-       Shown as a pseudo-assistant message tile while waiting for a response.
-       Uses the same italic-serif idiom as other quiet-state text (empty list,
-       composer placeholder), with a mono amber underscore caret that blinks
-       like a terminal cursor — both motifs of the app in one tile. */
-    .msg.thinking .body-text {
-      font-family: var(--font-display); font-style: italic; font-size: 16px;
+    /* "Always allow" — small tertiary link below the action buttons. Adds a rule to the
+       allowlist and approves the current call in one shot. Mono caps to match the
+       approval banner; underline + hover-darken to read as a text link rather than a
+       button (which would compete for attention with the primary Approve action). */
+    .approval-card .approval-always {
+      display: block;
+      width: 100%;
+      margin-top: 10px;
+      padding: 8px 0 4px;
+      background: transparent;
+      border: none;
       color: var(--text-mute);
+      font-family: var(--font-mono);
+      font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 500;
+      text-align: center;
+      cursor: pointer;
+      transition: color 0.12s ease;
+    }
+    .approval-card .approval-always:active { color: var(--accent); }
+    .approval-card .approval-always:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+    /* ───── Thinking strip ─────────────────────────────────────────
+       Persistent status bar above the agents strip. Visible whenever the assistant is
+       working — hidden when blocked on user input (the approval card itself is signal
+       enough). Mirrors the agents-strip / todos-panel chrome (8px/9px padding, top
+       border, mono caps label) so the three strips read as one stack of system status.
+       The "thinking" word keeps the italic display flourish of the old inline tile so
+       the editorial voice survives the move into chrome. */
+    .thinking-strip {
+      flex: none;
+      width: 100%;
+      background: var(--bg);
+      border-top: 1px solid var(--line-soft);
+      padding: 8px 20px 9px;
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+    .thinking-strip-label {
+      font-family: var(--font-display); font-style: italic;
+      font-size: 14px;
+      color: var(--accent);
       letter-spacing: 0.005em;
     }
-    /* Inline meta — elapsed seconds + output token count once the stream starts. Small
-       mono pill in a dim color so it sits behind the italic "thinking" word but stays
-       legible. Pads its own spacing so the text content can be replaced verbatim by the
-       ticker without juggling extra whitespace nodes. */
-    .msg.thinking .thinking-meta {
-      display: inline;
+    .thinking-strip-meta {
       font-family: var(--font-mono);
-      font-style: normal;
-      font-size: 11px;
-      letter-spacing: 0.04em;
-      color: var(--text-dim);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      color: var(--text-mute);
       white-space: nowrap;
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-    .msg.thinking .body-text .caret {
-      display: inline-block;
-      margin-left: 3px;
-      color: var(--accent);
-      font-family: var(--font-mono); font-style: normal; font-weight: 500;
-      animation: caret-blink 1.05s steps(1, end) infinite;
+    /* Three flowy dots — same animation as the Read line. Replaces the blinking
+       underscore caret so the strip's activity indicator matches the slim Read line's
+       rhythm. Each dot cycles through opacity + a 1px lift on a staggered delay so the
+       whole ellipsis reads as a wave. */
+    .thinking-strip-dots {
+      flex: none;
+      display: inline-flex;
+      gap: 3px;
+      margin-left: auto;
+      align-self: baseline;
+      transform: translateY(-1px);
     }
+    .thinking-strip-dots > span {
+      width: 4px; height: 4px;
+      border-radius: 50%;
+      background: var(--accent);
+      opacity: 0.25;
+      animation: read-dot 1.2s ease-in-out infinite;
+    }
+    .thinking-strip-dots > span:nth-child(2) { animation-delay: 0.16s; }
+    .thinking-strip-dots > span:nth-child(3) { animation-delay: 0.32s; }
     @keyframes caret-blink {
       0%, 50% { opacity: 1; }
       50.01%, 100% { opacity: 0; }
@@ -2272,6 +2517,35 @@
     @keyframes toast-out {
       from { transform: translateX(-50%) translateY(0); opacity: 1; }
       to   { transform: translateX(-50%) translateY(-160%); opacity: 0; }
+    }
+
+    /* Status toast — slim pill for transient feedback. Danger tone is the default (used by
+       send-while-disconnected etc.); success tone for confirmation messages (clipboard
+       copy etc.). Same slide-in chrome as the approval toast but a single line of mono
+       caps copy, no body section. Auto-dismisses in 3.5s. */
+    .status-toast {
+      position: fixed;
+      top: calc(env(safe-area-inset-top) + var(--header-h, 56px) + 4px);
+      left: 50%;
+      width: min(360px, calc(100vw - 32px));
+      transform: translateX(-50%) translateY(-160%);
+      background: var(--bg-elev);
+      border: 1px solid var(--danger);
+      box-shadow: 0 0 0 4px var(--danger-soft), 0 14px 36px rgba(0, 0, 0, 0.5);
+      padding: 11px 14px;
+      z-index: 100;
+      font-family: var(--font-mono);
+      font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; font-weight: 600;
+      color: var(--danger);
+      text-align: center;
+      animation:
+        toast-in 0.28s cubic-bezier(0.32, 0.72, 0, 1) forwards,
+        toast-out 0.28s cubic-bezier(0.55, 0, 0.45, 0.95) 3.2s forwards;
+    }
+    .status-toast.status-toast-success {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 4px var(--accent-soft), 0 14px 36px rgba(0, 0, 0, 0.5);
+      color: var(--accent);
     }
 
     /* ───── Settings button (header, list view only) ─────────────────
@@ -2756,13 +3030,14 @@
     .confirm-actions .confirm-danger:active { background: var(--danger); color: var(--bg); }
     .confirm-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-    /* Header indicator that the session is auto-accepting edits. Small accent-bordered
-       pill, mono caps. Mirrors the chip styling used for inline code so the visual
-       language stays consistent. */
+    /* Header indicator that the session is auto-accepting edits. Filled accent so the
+       state reads as "active mode" rather than a quiet decoration — the user should
+       always know they're in a higher-blast-radius mode. */
     .header-mode-chip {
       font-family: var(--font-mono);
       font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
-      color: var(--accent);
+      color: var(--bg);
+      background: var(--accent);
       border: 1px solid var(--accent);
       padding: 2px 7px;
       align-self: center;
@@ -2890,8 +3165,8 @@
     <button class="permission-toggle" id="accept-edits-toggle" type="button" aria-pressed="false">
       <span class="permission-glyph" aria-hidden="true"></span>
       <span class="permission-body">
-        <span class="permission-label">Accept edits</span>
-        <span class="permission-desc">Auto-allow Edit · Write · NotebookEdit · MultiEdit without prompting. Bash and other side-effect tools still require approval.</span>
+        <span class="permission-label">Auto-approve file edits</span>
+        <span class="permission-desc">Claude can <strong>overwrite or create any file</strong> in this session's working directory without asking. Edit · Write · NotebookEdit · MultiEdit only — Bash and other side-effect tools still require approval.</span>
       </span>
     </button>
   </aside>
