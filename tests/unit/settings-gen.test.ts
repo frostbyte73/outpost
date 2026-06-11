@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeDaemonSettings } from '../src/settings-gen.js';
+import { writeDaemonSettings } from '../../src/settings-gen.js';
 
 describe('writeDaemonSettings', () => {
   it('writes a valid JSON file with the loopback hook URL', () => {

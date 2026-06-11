@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","tools":["Edit"]}
+{"_marker":"wait-for-input"}
+{"type":"assistant","message":{"id":"msg_e1","role":"assistant","content":[{"type":"tool_use","id":"toolu_e1","name":"Edit","input":{"file_path":"/tmp/outpost-e2e-accept-edits/a.txt","old_string":"foo","new_string":"bar"}}],"model":"claude-opus-4-7","usage":{"input_tokens":3,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_e1","content":"OK"}]}}
+{"type":"assistant","message":{"id":"msg_e2","role":"assistant","content":[{"type":"text","text":"edit applied"}],"model":"claude-opus-4-7","usage":{"input_tokens":5,"output_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}

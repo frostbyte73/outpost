@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { LineParser } from '../src/stream-json.js';
+import { LineParser } from '../../src/stream-json.js';
 
 describe('LineParser', () => {
   it('emits complete lines as JSON objects', () => {

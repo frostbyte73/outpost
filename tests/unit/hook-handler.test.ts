@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
-import { handleHook } from '../src/hook-handler.js';
-import { Allowlist } from '../src/allowlist.js';
-import { ApprovalQueue } from '../src/approvals.js';
-import allowlistCfg from '../config/allowlist.json' with { type: 'json' };
+import { handleHook } from '../../src/hook-handler.js';
+import { Allowlist } from '../../src/allowlist.js';
+import { ApprovalQueue } from '../../src/approvals.js';
+import allowlistCfg from '../../config/allowlist.json' with { type: 'json' };
 
 describe('handleHook', () => {
   const allowlist = new Allowlist(allowlistCfg);

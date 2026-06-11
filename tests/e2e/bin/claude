@@ -1,0 +1,154 @@
+#!/usr/bin/env node
+// Drop-in replacement for `claude` during e2e tests. Reads OUTPOST_TEST_FIXTURE (a JSONL
+// file path), emits each line to stdout in stream-json shape, optionally pacing.
+//
+// Mirrors real claude's PreToolUse hook flow: when about to emit an assistant message
+// containing a tool_use block, this binary first POSTs the hook payload to the URL
+// configured in the --settings <path> JSON (under hooks.PreToolUse[0].hooks[0].url).
+// If the hook returns permissionDecision: deny, the assistant message is suppressed
+// and a synthetic user message with a deny tool_result is emitted in its place.
+//
+// Special marker lines (not emitted, control-only):
+//   {"_marker":"wait-for-input"} — pause until the next newline-terminated chunk arrives on stdin
+//   {"_marker":"exit"}            — exit immediately (skip any remaining fixture lines)
+
+import { readFileSync } from 'node:fs';
+import { setTimeout as sleep } from 'node:timers/promises';
+
+const argv = process.argv.slice(2);
+function flagValue(name) {
+  const i = argv.indexOf(name);
+  return i >= 0 ? argv[i + 1] : undefined;
+}
+const sessionId = flagValue('--session-id') ?? flagValue('--resume') ?? 'unknown';
+const settingsPath = flagValue('--settings');
+
+let hookUrl = null;
+let hookAuthHeader = null;
+let hookAuthValue = null;
+if (settingsPath) {
+  try {
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    const entry = settings?.hooks?.PreToolUse?.[0]?.hooks?.[0];
+    if (entry?.type === 'http' && typeof entry.url === 'string') {
+      hookUrl = entry.url;
+      // Headers can contain $VAR placeholders for env vars listed under allowedEnvVars.
+      const headers = entry.headers ?? {};
+      const headerName = Object.keys(headers)[0];
+      if (headerName) {
+        hookAuthHeader = headerName;
+        const raw = headers[headerName];
+        hookAuthValue = typeof raw === 'string' && raw.startsWith('$')
+          ? process.env[raw.slice(1)] ?? ''
+          : raw;
+      }
+    }
+  } catch {
+    // settings missing or malformed — proceed without hook firing
+  }
+}
+
+const fixturePath = process.env.OUTPOST_TEST_FIXTURE;
+if (!fixturePath) {
+  process.stderr.write('[mock claude] OUTPOST_TEST_FIXTURE not set\n');
+  process.exit(1);
+}
+
+const lines = readFileSync(fixturePath, 'utf8').split('\n').filter(Boolean);
+const delayMs = Number(process.env.OUTPOST_TEST_DELAY_MS ?? 5);
+
+process.stdin.setEncoding('utf8');
+const stdinQueue = [];
+let stdinResolver = null;
+process.stdin.on('data', (chunk) => {
+  for (const line of chunk.split('\n')) if (line) stdinQueue.push(line);
+  if (stdinResolver) { const r = stdinResolver; stdinResolver = null; r(); }
+});
+
+async function readStdinLine() {
+  while (stdinQueue.length === 0) {
+    await new Promise((resolve) => { stdinResolver = resolve; });
+  }
+  return stdinQueue.shift();
+}
+
+// Fire the PreToolUse hook for a single tool_use block. Returns the parsed
+// permissionDecision response, or { permissionDecision: 'allow' } if no hook is configured
+// (so tests that don't care about approvals still work).
+async function firePreToolUseHook(toolUse) {
+  if (!hookUrl) return { permissionDecision: 'allow' };
+  const headers = { 'content-type': 'application/json' };
+  if (hookAuthHeader && hookAuthValue) headers[hookAuthHeader] = hookAuthValue;
+  const body = JSON.stringify({
+    tool_name: toolUse.name,
+    tool_input: toolUse.input,
+    session_id: sessionId,
+    tool_use_id: toolUse.id,
+  });
+  try {
+    const res = await fetch(hookUrl, { method: 'POST', headers, body });
+    const json = await res.json();
+    return json?.hookSpecificOutput ?? { permissionDecision: 'allow' };
+  } catch (e) {
+    process.stderr.write(`[mock claude] hook fetch failed: ${e?.message ?? e}\n`);
+    return { permissionDecision: 'allow' };
+  }
+}
+
+// Synthesize a user-role message containing a deny tool_result. Mirrors what real claude
+// inserts into the conversation after a denied PreToolUse hook.
+function denyToolResult(toolUse, reason) {
+  return {
+    type: 'user',
+    session_id: sessionId,
+    message: {
+      role: 'user',
+      content: [{
+        type: 'tool_result',
+        tool_use_id: toolUse.id,
+        content: reason ?? 'Tool use rejected by user',
+        is_error: true,
+      }],
+    },
+  };
+}
+
+async function main() {
+  for (const raw of lines) {
+    let parsed;
+    try { parsed = JSON.parse(raw); } catch { continue; }
+    if (parsed._marker === 'wait-for-input') { await readStdinLine(); continue; }
+    if (parsed._marker === 'exit') { process.exit(0); }
+    if (parsed.session_id === undefined && (parsed.type === 'system' || parsed.type === 'assistant' || parsed.type === 'user')) {
+      parsed.session_id = sessionId;
+    }
+
+    // If this assistant message contains tool_use blocks, fire the hook for each one
+    // BEFORE emitting. If any are denied, emit a synthetic deny tool_result instead.
+    if (parsed.type === 'assistant' && Array.isArray(parsed.message?.content)) {
+      const toolUses = parsed.message.content.filter((b) => b?.type === 'tool_use');
+      let denied = null;
+      for (const tu of toolUses) {
+        const decision = await firePreToolUseHook(tu);
+        if (decision.permissionDecision === 'deny') {
+          denied = { toolUse: tu, reason: decision.permissionDecisionReason };
+          break;
+        }
+      }
+      if (denied) {
+        // Real claude would still emit the assistant tool_use line (so the transcript
+        // shows what was attempted) and then a deny tool_result. Match that shape.
+        process.stdout.write(JSON.stringify(parsed) + '\n');
+        await sleep(delayMs);
+        process.stdout.write(JSON.stringify(denyToolResult(denied.toolUse, denied.reason)) + '\n');
+        await sleep(delayMs);
+        continue;
+      }
+    }
+
+    process.stdout.write(JSON.stringify(parsed) + '\n');
+    await sleep(delayMs);
+  }
+}
+
+main().catch((e) => { process.stderr.write(String(e?.stack ?? e) + '\n'); process.exit(1); });

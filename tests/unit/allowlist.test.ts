@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { Allowlist } from '../src/allowlist.js';
-import config from '../config/allowlist.json' with { type: 'json' };
+import { Allowlist } from '../../src/allowlist.js';
+import config from '../../config/allowlist.json' with { type: 'json' };
 
 const a = new Allowlist(config);
 

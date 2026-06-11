@@ -11,28 +11,37 @@ import { HookServer } from './hook-server.js';
 import { discoverTailscaleEnv } from './tailscale.js';
 import { writeDaemonSettings, generateSecret } from './settings-gen.js';
 import { handleHook } from './hook-handler.js';
+import { loadConfig } from './config.js';
 import allowlistConfig from '../config/allowlist.json' with { type: 'json' };
 import pkg from '../package.json' with { type: 'json' };
 
-const RUNTIME_DIR = join(homedir(), '.outpost');
+const config = loadConfig();
+const RUNTIME_DIR = config.runtimeDir;
 mkdirSync(RUNTIME_DIR, { recursive: true });
 
 // Single source of truth for the approval timeout. The PWA reads this via /api/info so
 // the countdown UI matches the server's actual expiry deadline; updating one place keeps
 // the client and server agreed.
-const APPROVAL_TIMEOUT_MS = 10 * 60 * 1000;
+const APPROVAL_TIMEOUT_MS = config.approvalTimeoutMs;
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 const PWA_DIR = join(SRC_DIR, 'pwa');
 // Path to the on-disk allowlist config. After a hot-add via /api/allowlist/rules we
 // atomic-write the updated JSON here so the rule survives a daemon restart.
-const ALLOWLIST_PATH = join(SRC_DIR, '..', 'config', 'allowlist.json');
+const ALLOWLIST_PATH = config.allowlistPath ?? join(SRC_DIR, '..', 'config', 'allowlist.json');
 
 async function main() {
-  const tsEnv = discoverTailscaleEnv({ certDir: RUNTIME_DIR });
+  const tsEnv = (config.certPath && config.keyPath && config.host)
+    ? {
+        certPath: config.certPath,
+        keyPath: config.keyPath,
+        hostname: config.host,
+        ipv4: config.bindAddress ?? '127.0.0.1',
+      }
+    : discoverTailscaleEnv({ certDir: RUNTIME_DIR });
 
   const secret = generateSecret();
-  const HOOK_PORT = 8444;
+  const HOOK_PORT = config.hookPort;
   const settingsPath = join(RUNTIME_DIR, 'daemon-settings.json');
   writeDaemonSettings({ outPath: settingsPath, hookPort: HOOK_PORT });
 
@@ -41,7 +50,7 @@ async function main() {
 
   // Outpost discovers projects under the standard claude code projects root. No per-daemon
   // cwd anymore — each session carries its own (recorded by claude in the JSONL).
-  const projectsRoot = process.env.OUTPOST_PROJECTS_ROOT ?? join(homedir(), '.claude', 'projects');
+  const projectsRoot = config.projectsRoot;
   const sessionStore = new SessionStore({ root: projectsRoot });
   console.log(`[daemon] projects root: ${projectsRoot}`);
 
@@ -56,15 +65,15 @@ async function main() {
   const manager = new SessionManager({
     settingsPath,
     daemonAuthSecret: secret,
-    daemonHost: tsEnv.hostname,
+    daemonHost: config.host ?? tsEnv.hostname,
     sessionStore,
   });
 
   const server = new Server({
     certPath: tsEnv.certPath,
     keyPath: tsEnv.keyPath,
-    bindAddress: tsEnv.ipv4,
-    port: 8443,
+    bindAddress: config.bindAddress ?? tsEnv.ipv4,
+    port: config.httpsPort,
   });
 
   // PreToolUse hook endpoint (loopback-only — see hook-server.ts for why)
@@ -387,7 +396,7 @@ async function main() {
 
   await server.listen();
   await hookServer.listen();
-  console.log(`[daemon] listening on https://${tsEnv.hostname}:8443 (${tsEnv.ipv4})`);
+  console.log(`[daemon] listening on https://${config.host ?? tsEnv.hostname}:${config.httpsPort} (${config.bindAddress ?? tsEnv.ipv4})`);
   console.log(`[daemon] hook server on http://127.0.0.1:${HOOK_PORT} (loopback only)`);
 }
 

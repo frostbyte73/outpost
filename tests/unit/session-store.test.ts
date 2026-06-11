@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { SessionStore } from '../src/session-store.js';
+import { SessionStore } from '../../src/session-store.js';
 
 describe('SessionStore', () => {
   let rootDir: string;

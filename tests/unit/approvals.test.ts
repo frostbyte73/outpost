@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { ApprovalQueue } from '../src/approvals.js';
+import { ApprovalQueue } from '../../src/approvals.js';
 
 describe('ApprovalQueue', () => {
   beforeEach(() => vi.useFakeTimers());
