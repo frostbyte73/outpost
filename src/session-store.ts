@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync, unlinkSync, openSync, readSync, closeSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { LineParser } from './stream-json.js';
+import type { ProjectRegistry } from './project-registry.js';
 
 export interface SessionInfo {
   id: string;
@@ -14,6 +15,8 @@ export interface ProjectInfo {
   cwd: string;
   lastModified: number;
   sessions: SessionInfo[];
+  isGitRepo: boolean;
+  source: 'claude' | 'registry' | 'both';
 }
 
 export interface SubagentCompletion {
@@ -426,22 +429,40 @@ function firstCwdInJsonl(path: string): string | null {
 
 export class SessionStore {
   private readonly root: string;
+  private readonly registry: ProjectRegistry | undefined;
   private cwdCache = new Map<string, { cwd: string; mtime: number }>();
+  // Per-cwd cache of isGitRepo. Computed on first listProjects() that sees the cwd;
+  // never invalidated within a daemon lifetime — restart picks up new git inits.
+  private gitRepoCache = new Map<string, boolean>();
 
-  constructor(opts: { root: string }) {
+  constructor(opts: { root: string; registry?: ProjectRegistry }) {
     this.root = opts.root;
+    this.registry = opts.registry;
+  }
+
+  private isGitRepo(cwd: string): boolean {
+    const cached = this.gitRepoCache.get(cwd);
+    if (cached !== undefined) return cached;
+    let result = false;
+    try {
+      const st = statSync(join(cwd, '.git'));
+      result = st.isDirectory() || st.isFile();
+    } catch { /* not a git repo */ }
+    this.gitRepoCache.set(cwd, result);
+    return result;
   }
 
   listProjects(): ProjectInfo[] {
+    // 1. Claude-discovered projects (existing scan).
     let dirs: string[];
     try {
       dirs = readdirSync(this.root, { withFileTypes: true })
         .filter((e) => e.isDirectory())
         .map((e) => join(this.root, e.name));
     } catch {
-      return [];
+      dirs = [];
     }
-    const out: ProjectInfo[] = [];
+    const byCwd = new Map<string, ProjectInfo>();
     for (const projectDir of dirs) {
       const cwd = this.readCwdFromProject(projectDir);
       if (!cwd) continue;
@@ -450,8 +471,40 @@ export class SessionStore {
       if (!cwdExists) continue;
       const sessions = this.listSessionsInDir(projectDir);
       const lastModified = sessions.reduce((m, s) => Math.max(m, s.lastModified), 0);
-      out.push({ projectDir, cwd, lastModified, sessions });
+      byCwd.set(cwd, {
+        projectDir,
+        cwd,
+        lastModified,
+        sessions,
+        isGitRepo: this.isGitRepo(cwd),
+        source: 'claude',
+      });
     }
+
+    // 2. Registry projects — merge or add as a synthetic empty project.
+    if (this.registry) {
+      for (const reg of this.registry.list()) {
+        let cwdExists = false;
+        try { cwdExists = statSync(reg.cwd).isDirectory(); } catch { /* nope */ }
+        if (!cwdExists) continue;
+        const existing = byCwd.get(reg.cwd);
+        if (existing) {
+          byCwd.set(reg.cwd, { ...existing, source: 'both' });
+        } else {
+          const sanitized = reg.cwd.replace(/\//g, '-');
+          byCwd.set(reg.cwd, {
+            projectDir: join(this.root, sanitized),
+            cwd: reg.cwd,
+            lastModified: reg.addedAt,
+            sessions: [],
+            isGitRepo: this.isGitRepo(reg.cwd),
+            source: 'registry',
+          });
+        }
+      }
+    }
+
+    const out = [...byCwd.values()];
     out.sort((a, b) => b.lastModified - a.lastModified);
     return out;
   }

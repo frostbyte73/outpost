@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect } from './harness/browser.js';
+import { test, expect, openSessionAtCwd } from './harness/browser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolvePath(__dirname, 'fixtures', 'long-running.jsonl');
@@ -13,10 +13,8 @@ test.beforeAll(() => {
   mkdirSync(TEST_CWD, { recursive: true });
 });
 
-test('clicking Stop interrupts the claude subprocess and surfaces proc_exit', async ({ outpostPage }) => {
-  await outpostPage.locator('#new-session').click();
-  await outpostPage.locator('#cwd-picker-custom-input').fill(TEST_CWD);
-  await outpostPage.locator('#cwd-picker-custom-form button[type=submit]').click();
+test('clicking Stop interrupts the claude subprocess and surfaces proc_exit', async ({ daemon, outpostPage }) => {
+  await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   const composer = outpostPage.locator('#composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });

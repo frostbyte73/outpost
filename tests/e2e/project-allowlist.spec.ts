@@ -1,7 +1,7 @@
 import { mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join, resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect } from './harness/browser.js';
+import { test, expect, openSessionAtCwd } from './harness/browser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolvePath(__dirname, 'fixtures', 'tool-use-mcp-write-only.jsonl');
@@ -40,9 +40,7 @@ test('a project rule auto-allows a subsequent tool call (no approval card appear
   });
 
   // Open a session in TEST_CWD; the fixture's MCP tool_use should auto-allow because of the project rule.
-  await outpostPage.locator('#new-session').click();
-  await outpostPage.locator('#cwd-picker-custom-input').fill(TEST_CWD);
-  await outpostPage.locator('#cwd-picker-custom-form button[type=submit]').click();
+  await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   const composer = outpostPage.locator('#composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });

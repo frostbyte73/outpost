@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect } from './harness/browser.js';
+import { test, expect, openSessionAtCwd } from './harness/browser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolvePath(__dirname, 'fixtures', 'tool-use-edit.jsonl');
@@ -22,12 +22,25 @@ test('accept-edits ON: Edit tool flows through without manual approval', async (
   await outpostPage.locator('#sheet-close').click();
 
   // Open a new session.
-  await outpostPage.locator('#new-session').click();
-  await outpostPage.locator('#cwd-picker-custom-input').fill(TEST_CWD);
-  await outpostPage.locator('#cwd-picker-custom-form button[type=submit]').click();
+  await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   const composer = outpostPage.locator('#composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
+
+  // Wait for the WS to come up + server to confirm accept-edits mode. The optimistic
+  // local mode was set in list view; the push-back-on-attach syncs it server-side.
+  await outpostPage.waitForFunction(
+    () => document.documentElement.getAttribute('data-conn') === 'connected',
+    undefined,
+    { timeout: 10_000 },
+  );
+  await outpostPage.waitForFunction(
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
+    () => globalThis.__outpostGetState?.()?.approvalMode === 'accept-edits',
+    undefined,
+    { timeout: 10_000 },
+  );
+
   await composer.click();
   await outpostPage.keyboard.type('rename foo to bar in a.txt');
   await outpostPage.keyboard.press('Enter');

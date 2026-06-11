@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect } from './harness/browser.js';
+import { test, expect, openSessionAtCwd } from './harness/browser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolvePath(__dirname, 'fixtures', 'tool-use-mcp-write-allow.jsonl');
@@ -15,9 +15,7 @@ test.beforeAll(() => {
 
 test('approval card appears, Approve triggers the tool result and final text', async ({ daemon, outpostPage }) => {
   // Open new session in our test cwd.
-  await outpostPage.locator('#new-session').click();
-  await outpostPage.locator('#cwd-picker-custom-input').fill(TEST_CWD);
-  await outpostPage.locator('#cwd-picker-custom-form button[type=submit]').click();
+  await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   // Send a prompt to trigger Claude to emit the tool_use.
   const composer = outpostPage.locator('#composer');

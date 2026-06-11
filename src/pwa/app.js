@@ -386,10 +386,10 @@ function applyAskTranscriptMessage(m, sink) {
   return false;
 }
 
-// Wire the HTML-rendered initial shell so the "+ New session" button works from the very
+// Wire the HTML-rendered initial shell so the "+ Add project" button works from the very
 // first paint, before /api/sessions resolves. The full list renders in once loadSessions does.
-const initialButton = document.getElementById('new-session-initial');
-if (initialButton) initialButton.onclick = () => openCwdPickerSheet();
+const initialButton = document.getElementById('add-project-initial');
+if (initialButton) initialButton.onclick = () => openAddProjectSheet();
 
 // One-shot fetch of /api/info on startup. Surface daemon config so the empty state can
 // confirm the wiring (cwd, allowlist size) and the approval countdown has a real timeout
@@ -489,35 +489,23 @@ function renderList() {
   if (state.projects.length === 0) {
     root.innerHTML = `
       <div class="session-list">
-        <button class="new-session" id="new-session">
-          <span>New session</span>
+        <button class="add-project" id="add-project">
+          <span>Add project</span>
           <span class="plus">+</span>
         </button>
-        <div class="empty-state">No sessions yet. Open a new one in any directory.</div>
-        ${info}
-      </div>
-      ${banner}
-    `;
-  } else if (state.projects.length === 1) {
-    const sessions = state.projects[0].sessions;
-    root.innerHTML = `
-      <div class="session-list">
-        <button class="new-session" id="new-session">
-          <span>New session</span>
-          <span class="plus">+</span>
-        </button>
-        <div class="list-label">Recent</div>
-        ${sessions.map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0)).join('')}
+        <div class="empty-state">No projects yet. Tap “Add project” above to register one.</div>
         ${info}
       </div>
       ${banner}
     `;
   } else {
+    // Phase 2a: even a single project gets the expandable section UI. The most-recent
+    // project auto-expands so the common one-project case stays one tap away from spawn.
     const sections = state.projects.map((p, i) => projectSectionHtml(p, i === 0, pendingBySession)).join('');
     root.innerHTML = `
       <div class="session-list">
-        <button class="new-session" id="new-session">
-          <span>New session</span>
+        <button class="add-project" id="add-project">
+          <span>Add project</span>
           <span class="plus">+</span>
         </button>
         ${sections}
@@ -528,9 +516,10 @@ function renderList() {
     bindProjectSectionToggles(pendingBySession);
   }
 
-  document.getElementById('new-session').onclick = () => openCwdPickerSheet();
+  document.getElementById('add-project').onclick = () => openAddProjectSheet();
   document.getElementById('conn-banner-retry')?.addEventListener('click', forceReconnect);
   bindSessionRowHandlers();
+  bindProjectOverflowHandlers();
 }
 
 function bindSessionRowHandlers() {
@@ -559,18 +548,12 @@ function bindSessionRowHandlers() {
 function projectSectionHtml(p, isMostRecent, pendingBySession) {
   const expanded = isProjectExpanded(p.projectDir, isMostRecent);
   const basename = p.cwd.split('/').filter(Boolean).pop() || p.cwd;
-  const rows = p.sessions
-    .map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0))
-    .join('');
   // Aggregate pending counts across this project's sessions so the header can
   // show "N pending" without forcing the user to expand the section first.
   const projectPending = p.sessions.reduce(
     (acc, s) => acc + (pendingBySession[s.id] ?? 0), 0,
   );
   const sessCount = p.sessions.length;
-  // Meta block: stacked count + last-active. When there's a pending approval
-  // somewhere inside, an accent dot chip replaces the meta in the same grid
-  // slot — keeps the header tight while still surfacing attention state.
   const metaBlock = projectPending > 0
     ? `<span class="project-section-pending"><span class="dot"></span>${projectPending} pending</span>
        <span class="project-section-meta" aria-hidden="true">
@@ -579,24 +562,43 @@ function projectSectionHtml(p, isMostRecent, pendingBySession) {
     : `<span class="project-section-meta">
          <span class="project-section-meta-count">${sessCount}</span>${escapeHtml(timeAgo(p.lastModified))}
        </span>`;
-  // RTL trick on the cwd line: a long path like /Users/dc/frostbyte73/outpost
-  // ellipses on the LEFT (…outpost) instead of cutting off the tail, which is
-  // the more identifying part of the path on small screens.
+  // Overflow ⋯ only appears on registry-only rows (source==='registry'). For
+  // claude-discovered or both-source projects, removing from the registry doesn't
+  // change the visible list (session JSONLs keep it discovered), so we hide it.
+  const overflow = (p.source === 'registry')
+    ? `<button class="project-overflow" type="button" data-cwd="${escapeHtml(p.cwd)}" aria-label="Project options">⋯</button>`
+    : '';
   return `
-    <section class="project-section${expanded ? ' project-section-open' : ''}" data-project-dir="${escapeHtml(p.projectDir)}">
+    <section class="project-section${expanded ? ' project-section-open' : ''}" data-project-dir="${escapeHtml(p.projectDir)}" data-cwd="${escapeHtml(p.cwd)}">
       <button class="project-section-header" type="button" aria-expanded="${expanded ? 'true' : 'false'}">
         <span class="project-section-name">${escapeHtml(basename)}</span>
         <span class="project-section-cwd"><span>${escapeHtml(p.cwd)}</span></span>
         ${metaBlock}
+        ${overflow}
       </button>
-      <div class="project-section-body">${expanded ? rows : ''}</div>
+      <div class="project-section-body">${expanded ? projectSectionBodyHtml(p, pendingBySession) : ''}</div>
     </section>
   `;
 }
 
+// Body shown when a project is expanded. "+ New session" sits at the TOP so projects
+// with many sessions don't require scrolling to start a fresh one. Empty-state line
+// shows below the button when the project has no sessions yet.
+function projectSectionBodyHtml(p, pendingBySession) {
+  const newBtn = `<button class="project-new-session" type="button" data-cwd="${escapeHtml(p.cwd)}">
+    <span class="plus">+</span><span>New session</span>
+  </button>`;
+  const rows = p.sessions.length === 0
+    ? `<div class="project-section-empty">No sessions yet.</div>`
+    : p.sessions.map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0)).join('');
+  return newBtn + rows;
+}
+
 function bindProjectSectionToggles(pendingBySession) {
   for (const btn of document.querySelectorAll('.project-section-header')) {
-    btn.onclick = () => {
+    btn.onclick = (ev) => {
+      // Clicking the overflow ⋯ inside the header shouldn't toggle expand.
+      if (ev.target.closest('.project-overflow')) return;
       const section = btn.closest('.project-section');
       const projectDir = section.dataset.projectDir;
       const willExpand = !section.classList.contains('project-section-open');
@@ -605,15 +607,70 @@ function bindProjectSectionToggles(pendingBySession) {
       const body = section.querySelector('.project-section-body');
       if (willExpand) {
         const p = state.projects.find((pp) => pp.projectDir === projectDir);
-        body.innerHTML = p
-          ? p.sessions.map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0)).join('')
-          : '';
+        body.innerHTML = p ? projectSectionBodyHtml(p, pendingBySession) : '';
         bindSessionRowHandlers();
+        bindProjectNewSessionHandlers();
       } else {
         body.innerHTML = '';
       }
     };
   }
+  // Bind in-row "+ New session" buttons for already-expanded sections.
+  bindProjectNewSessionHandlers();
+}
+
+function bindProjectNewSessionHandlers() {
+  for (const btn of document.querySelectorAll('.project-new-session')) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const cwd = btn.dataset.cwd;
+      if (!cwd) return;
+      commitNewSessionCwd(cwd);
+    };
+  }
+}
+
+// Overflow ⋯ menu for registry-only projects. One item: "Remove from list" → DELETE /api/projects.
+function bindProjectOverflowHandlers() {
+  for (const btn of document.querySelectorAll('.project-overflow')) {
+    btn.onclick = (ev) => {
+      ev.stopPropagation();
+      const cwd = btn.dataset.cwd;
+      if (!cwd) return;
+      showProjectOverflowMenu(btn, cwd);
+    };
+  }
+}
+
+function showProjectOverflowMenu(anchor, cwd) {
+  // Close any existing menu first.
+  document.querySelector('.project-overflow-menu')?.remove();
+  const menu = document.createElement('div');
+  menu.className = 'project-overflow-menu';
+  menu.innerHTML = `<button class="project-overflow-item" type="button">Remove from list</button>`;
+  document.body.appendChild(menu);
+  const rect = anchor.getBoundingClientRect();
+  menu.style.top = `${rect.bottom + 4}px`;
+  menu.style.left = `${Math.max(8, rect.right - 200)}px`;
+  // Close on any outside click. Scheduled in next tick so the current click that
+  // opened the menu doesn't immediately close it.
+  const close = () => menu.remove();
+  setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
+
+  menu.querySelector('.project-overflow-item').onclick = async (e) => {
+    e.stopPropagation();
+    close();
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cwd }),
+      });
+      if (res.ok) {
+        await loadSessions();
+      }
+    } catch { /* network error — show toast if we had one */ }
+  };
 }
 
 function sessionRowHtml(s, i, pendingCount) {
@@ -3802,6 +3859,99 @@ function closeCwdPickerSheet() {
   setTimeout(() => { backdrop?.remove(); sheet?.remove(); }, 360);
 }
 
+// Phase 2a's "+ Add project" sheet. Registers a cwd in the ProjectRegistry so it
+// appears in the session list even before claude has touched it. Sessions are then
+// spawned via the in-row "+ New session" button (added in expandable project rows).
+function openAddProjectSheet() {
+  dismissSoftKeyboard();
+  closeAddProjectSheet();
+  const backdrop = document.createElement('div');
+  backdrop.className = 'sheet-backdrop add-project-sheet-backdrop';
+  backdrop.id = 'add-project-sheet-backdrop';
+  const sheet = document.createElement('aside');
+  sheet.className = 'sheet add-project-sheet';
+  sheet.id = 'add-project-sheet';
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-modal', 'true');
+  sheet.setAttribute('aria-label', 'Add project');
+  sheet.innerHTML = `
+    <div class="grabber"></div>
+    <div class="header-row">
+      <span class="sheet-title">Add project</span>
+      <button class="sheet-close" id="add-project-close" aria-label="Close">✕</button>
+    </div>
+    <form class="add-project-form" id="add-project-form" autocomplete="off">
+      <span class="add-project-label">Path</span>
+      <input type="text" id="add-project-input" inputmode="url" autocapitalize="off"
+             autocorrect="off" spellcheck="false"
+             placeholder="~/projects/foo" />
+      <button type="submit" class="add-project-submit">Add</button>
+      <div class="add-project-error" id="add-project-error" hidden></div>
+    </form>
+  `;
+  document.body.appendChild(backdrop);
+  document.body.appendChild(sheet);
+  requestAnimationFrame(() => {
+    backdrop.classList.add('open');
+    sheet.classList.add('open');
+  });
+  pinSheetBelowHeader(sheet);
+  noteSheetOpen();
+  makeSheetDismissible(sheet, closeAddProjectSheet);
+
+  const input = sheet.querySelector('#add-project-input');
+  const form = sheet.querySelector('#add-project-form');
+  const errorEl = sheet.querySelector('#add-project-error');
+  sheet.querySelector('#add-project-close').onclick = closeAddProjectSheet;
+  backdrop.onclick = closeAddProjectSheet;
+  input.focus();
+
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    errorEl.hidden = true;
+    const raw = input.value.trim();
+    if (!raw) return;
+    const home = state.daemonInfo?.home;
+    const cwd = (home && raw.startsWith('~')) ? raw.replace(/^~/, home) : raw;
+    try {
+      const res = await fetch('/api/projects', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ cwd }),
+      });
+      if (!res.ok) {
+        const text = await res.text();
+        errorEl.textContent = text || `Error: ${res.status}`;
+        errorEl.hidden = false;
+        return;
+      }
+      // Auto-expand the new row so the user sees "+ New session" without an extra tap.
+      // Two-phase: fetch /api/sessions, learn the projectDir for the new cwd, set the
+      // expand flag, then re-render so it shows open.
+      closeAddProjectSheet();
+      await loadSessions();
+      const justAdded = state.projects.find((p) => p.cwd === cwd);
+      if (justAdded) {
+        setProjectExpanded(justAdded.projectDir, true);
+        render();
+      }
+    } catch (err) {
+      errorEl.textContent = `Network error: ${err?.message ?? err}`;
+      errorEl.hidden = false;
+    }
+  });
+}
+
+function closeAddProjectSheet() {
+  const backdrop = document.getElementById('add-project-sheet-backdrop');
+  const sheet = document.getElementById('add-project-sheet');
+  if (!backdrop && !sheet) return;
+  backdrop?.classList.remove('open');
+  sheet?.classList.remove('open');
+  noteSheetClose();
+  setTimeout(() => { backdrop?.remove(); sheet?.remove(); }, 360);
+}
+
 function cwdPickerBodyHtml(initialError) {
   const recents = state.projects.map((p) => {
     const basename = p.cwd.split('/').filter(Boolean).pop() || p.cwd;
@@ -4855,3 +5005,18 @@ globalThis.__outpostWaitWsMsg = (predicate) => new Promise((resolve) => {
   };
   ws.addEventListener('message', handler);
 });
+// __outpostGetState(): returns selected state fields. Lets Playwright poll JS state
+// directly without needing the segmented-control buttons to be in the DOM (they only
+// exist while the settings sheet is open, which it isn't in session view).
+// @ts-expect-error — intentional globalThis assignment for test infrastructure only
+globalThis.__outpostGetState = () => ({
+  approvalMode: state.approvalMode,
+  acceptEdits: state.acceptEdits,
+  connState: state.connState,
+  currentSessionId: state.currentSessionId,
+});
+// __outpostRefreshSessions(): re-fetches /api/sessions and re-renders the list. Lets
+// tests pull in a newly-registered project without doing a full page reload (which
+// would wipe state.approvalMode set optimistically in list view before opening a session).
+// @ts-expect-error — intentional globalThis assignment for test infrastructure only
+globalThis.__outpostRefreshSessions = () => loadSessions();

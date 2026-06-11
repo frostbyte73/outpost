@@ -28,3 +28,23 @@ export const test = base.extend<{
 });
 
 export { expect } from '@playwright/test';
+
+// Phase 2a flow helper: register a project via POST /api/projects, refresh the session
+// list IN-PLACE (no reload, which would wipe optimistic state like permission mode set
+// in settings before opening a session), then click the in-row "+ New session" button.
+// Replaces the Phase 0/1 cwd-picker flow.
+export async function openSessionAtCwd(
+  outpostPage: Page,
+  daemon: DaemonHandle,
+  cwd: string,
+): Promise<void> {
+  const res = await outpostPage.request.post(`${daemon.baseUrl}/api/projects`, { data: { cwd } });
+  // 200 added=true OR 200 added=false (idempotent). Either way the project is registered.
+  if (!res.ok()) throw new Error(`POST /api/projects failed: ${res.status()}`);
+  // Refresh in-place so newly-registered projects appear without losing state.
+  await outpostPage.evaluate(async () => {
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
+    await globalThis.__outpostRefreshSessions?.();
+  });
+  await outpostPage.locator(`.project-new-session[data-cwd="${cwd}"]`).click();
+}

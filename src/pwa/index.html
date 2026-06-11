@@ -529,7 +529,7 @@
       content: ''; flex: 1; height: 1px; background: var(--line);
     }
 
-    .new-session {
+    .add-project {
       width: 100%;
       background: transparent;
       color: var(--text);
@@ -541,11 +541,105 @@
       transition: border-color 0.15s ease, background 0.15s ease;
       margin-bottom: 24px;
     }
-    .new-session:active { background: var(--accent-soft); border-color: var(--accent); }
-    .new-session .plus {
+    .add-project:active { background: var(--accent-soft); border-color: var(--accent); }
+    .add-project .plus {
       font-family: var(--font-display); font-size: 22px; line-height: 1;
       color: var(--accent); font-style: italic;
     }
+
+    /* + Add project sheet */
+    .add-project-sheet { padding-bottom: calc(20px + env(safe-area-inset-bottom)); }
+    .add-project-form {
+      display: flex; flex-direction: column; gap: 10px;
+      padding-top: 4px;
+    }
+    .add-project-label {
+      font-family: var(--font-mono);
+      font-size: 9px; letter-spacing: 0.24em; text-transform: uppercase;
+      color: var(--text-mute);
+    }
+    #add-project-input {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+    }
+    .add-project-submit {
+      align-self: flex-start;
+      background: var(--accent-soft); color: var(--accent);
+      border: 1px solid var(--accent);
+      font-family: var(--font-mono);
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      padding: 8px 16px;
+      cursor: pointer;
+    }
+    .add-project-error {
+      font-family: var(--font-body); font-size: 12px;
+      color: var(--danger);
+      padding: 4px 0;
+    }
+
+    /* In-row + New session button — pinned at the top of an expanded project body so
+       projects with many sessions don't need a scroll to reach it. */
+    .project-new-session {
+      display: flex; align-items: center; gap: 10px;
+      width: 100%;
+      background: transparent;
+      color: var(--text);
+      border: 1px dashed var(--line);
+      padding: 12px 16px;
+      margin-bottom: 12px;
+      font-family: var(--font-mono);
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .project-new-session:active { background: var(--accent-soft); border-color: var(--accent); }
+    .project-new-session .plus {
+      font-family: var(--font-display); font-size: 18px; line-height: 1;
+      color: var(--accent); font-style: italic;
+    }
+
+    /* Empty-but-expanded project body */
+    .project-section-empty {
+      padding: 14px 4px;
+      color: var(--text-mute);
+      font-style: italic;
+      font-family: var(--font-display);
+      font-size: 13px;
+    }
+
+    /* Project overflow (Task 8) */
+    .project-overflow {
+      background: transparent;
+      color: var(--text-mute);
+      border: 0;
+      padding: 4px 8px;
+      cursor: pointer;
+      font-size: 18px; line-height: 1;
+    }
+    .project-overflow:hover, .project-overflow:active { color: var(--text); }
+
+    .project-overflow-menu {
+      position: fixed;
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      padding: 4px 0;
+      z-index: 1000;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .project-overflow-item {
+      display: block; width: 100%;
+      background: transparent; color: var(--danger);
+      border: 0;
+      padding: 8px 16px;
+      text-align: left;
+      font-family: var(--font-body);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .project-overflow-item:hover { background: var(--bg-elev-2); }
 
     .empty-state {
       padding: 40px 20px; text-align: center;
@@ -3398,8 +3492,8 @@
          the list contents once /api/sessions resolves. -->
     <div id="root">
       <div class="session-list">
-        <button class="new-session" id="new-session-initial">
-          <span>New session</span>
+        <button class="add-project" id="add-project-initial">
+          <span>Add project</span>
           <span class="plus">+</span>
         </button>
         <div class="list-label">Recent</div>

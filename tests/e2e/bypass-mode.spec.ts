@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect } from './harness/browser.js';
+import { test, expect, openSessionAtCwd } from './harness/browser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolvePath(__dirname, 'fixtures', 'tool-use-mcp-write-allow.jsonl');
@@ -25,9 +25,7 @@ test('bypass mode allows mcp__incident-io__incident_update without any approval 
   await outpostPage.locator('#sheet-close').click();
 
   // Open a session.
-  await outpostPage.locator('#new-session').click();
-  await outpostPage.locator('#cwd-picker-custom-input').fill(TEST_CWD);
-  await outpostPage.locator('#cwd-picker-custom-form button[type=submit]').click();
+  await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   const composer = outpostPage.locator('#composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
@@ -38,14 +36,11 @@ test('bypass mode allows mcp__incident-io__incident_update without any approval 
     { timeout: 10_000 }
   );
 
-  // Wait for bypass mode to be server-confirmed. Poll the aria-pressed DOM attribute
-  // (updated by renderApprovalModes() on the server's echo) to avoid a race between
-  // the echo landing and the evaluate() call registering a WS listener.
+  // Wait for bypass to be server-confirmed. Segmented-control buttons are only in DOM
+  // while settings is open — in session view they're absent. Poll JS state directly.
   await outpostPage.waitForFunction(
-    () => {
-      const btn = document.querySelector('#permission-modes button[data-mode="bypass"]');
-      return btn instanceof HTMLElement && btn.getAttribute('aria-pressed') === 'true';
-    },
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
+    () => globalThis.__outpostGetState?.()?.approvalMode === 'bypass',
     undefined,
     { timeout: 10_000 },
   );

@@ -13,6 +13,8 @@ describe('SessionStore', () => {
     projectDir = join(rootDir, '-test-project');
     mkdirSync(projectDir);
     const tmp = tmpdir();
+    // Both sessions live in the same project (same cwd) — they're "sibling sessions",
+    // not "different projects." Keeping cwd identical here is intentional.
     writeFileSync(
       join(projectDir, 'sess-aaaaaaaa.jsonl'),
       JSON.stringify({ type: 'summary', summary: 'Investigating INC-540' }) + '\n' +
@@ -190,21 +192,22 @@ describe('SessionStore', () => {
     const projB = join(root, '-Users-dc-projectB');
     mkdirSync(projA);
     mkdirSync(projB);
-    const tmp = tmpdir();
+    const cwdA = mkdtempSync(join(tmpdir(), 'cwd-a-'));
+    const cwdB = mkdtempSync(join(tmpdir(), 'cwd-b-'));
     writeFileSync(
       join(projA, 'sess-a1.jsonl'),
-      JSON.stringify({ type: 'user', cwd: tmp, message: { content: 'a1' } }) + '\n',
+      JSON.stringify({ type: 'user', cwd: cwdA, message: { content: 'a1' } }) + '\n',
     );
     writeFileSync(
       join(projB, 'sess-b1.jsonl'),
-      JSON.stringify({ type: 'user', cwd: tmp, message: { content: 'b1' } }) + '\n',
+      JSON.stringify({ type: 'user', cwd: cwdB, message: { content: 'b1' } }) + '\n',
     );
     const projects = new SessionStore({ root }).listProjects();
     expect(projects.length).toBe(2);
     expect(projects.map((p) => p.projectDir).sort()).toEqual([projA, projB].sort());
     const a = projects.find((p) => p.projectDir === projA)!;
     expect(a.sessions.map((s) => s.id)).toEqual(['sess-a1']);
-    expect(a.cwd).toBe(tmp);
+    expect(a.cwd).toBe(cwdA);
   });
 
   it('hides projects whose cwd no longer exists on disk', () => {
@@ -224,14 +227,15 @@ describe('SessionStore', () => {
     const projNew = join(root, '-Users-dc-new');
     mkdirSync(projOld);
     mkdirSync(projNew);
-    const tmp = tmpdir();
+    const cwdOld = mkdtempSync(join(tmpdir(), 'cwd-old-'));
+    const cwdNew = mkdtempSync(join(tmpdir(), 'cwd-new-'));
     writeFileSync(
       join(projOld, 'sess-old.jsonl'),
-      JSON.stringify({ type: 'user', cwd: tmp, message: { content: 'old' } }) + '\n',
+      JSON.stringify({ type: 'user', cwd: cwdOld, message: { content: 'old' } }) + '\n',
     );
     writeFileSync(
       join(projNew, 'sess-new.jsonl'),
-      JSON.stringify({ type: 'user', cwd: tmp, message: { content: 'new' } }) + '\n',
+      JSON.stringify({ type: 'user', cwd: cwdNew, message: { content: 'new' } }) + '\n',
     );
     const future = new Date(Date.now() + 5000);
     utimesSync(join(projNew, 'sess-new.jsonl'), future, future);
@@ -258,5 +262,122 @@ describe('SessionStore', () => {
     const root = mkdtempSync(join(tmpdir(), 'sstest-find-miss-'));
     mkdirSync(join(root, '-Users-dc-empty'));
     expect(new SessionStore({ root }).findSession('nope')).toBeNull();
+  });
+});
+
+describe('SessionStore — registry merge + isGitRepo', () => {
+  function makeRoot(): { root: string; registryPath: string } {
+    const root = mkdtempSync(join(tmpdir(), 'ss-merge-root-'));
+    const registryPath = join(root, 'projects.json');
+    return { root, registryPath };
+  }
+  function makeCwd(parent: string, name: string): string {
+    const cwd = join(parent, name);
+    mkdirSync(cwd, { recursive: true });
+    return cwd;
+  }
+
+  it('registry-only project appears with source="registry" and empty sessions', async () => {
+    const { ProjectRegistry } = await import('../../src/project-registry.js');
+    const { root, registryPath } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-cwd-'));
+    const cwd = makeCwd(cwdHost, 'projectA');
+    const registry = new ProjectRegistry(registryPath);
+    registry.add(cwd);
+    const store = new SessionStore({ root, registry });
+    const match = store.listProjects().find((p) => p.cwd === cwd);
+    expect(match).toBeDefined();
+    expect(match!.source).toBe('registry');
+    expect(match!.sessions).toEqual([]);
+  });
+
+  it('claude-only project appears with source="claude"', async () => {
+    const { ProjectRegistry } = await import('../../src/project-registry.js');
+    const { root, registryPath } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-cwd-'));
+    const cwd = makeCwd(cwdHost, 'projectB');
+    const projectDir = join(root, cwd.replace(/\//g, '-'));
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, 'aaa.jsonl'),
+      JSON.stringify({ type: 'user', cwd, message: { content: 'hi' } }) + '\n',
+    );
+    const registry = new ProjectRegistry(registryPath);
+    const store = new SessionStore({ root, registry });
+    const match = store.listProjects().find((p) => p.cwd === cwd);
+    expect(match).toBeDefined();
+    expect(match!.source).toBe('claude');
+    expect(match!.sessions.length).toBe(1);
+  });
+
+  it('project in both registry AND claude-history is tagged source="both"', async () => {
+    const { ProjectRegistry } = await import('../../src/project-registry.js');
+    const { root, registryPath } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-cwd-'));
+    const cwd = makeCwd(cwdHost, 'projectC');
+    const projectDir = join(root, cwd.replace(/\//g, '-'));
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, 'bbb.jsonl'),
+      JSON.stringify({ type: 'user', cwd, message: { content: 'hi' } }) + '\n',
+    );
+    const registry = new ProjectRegistry(registryPath);
+    registry.add(cwd);
+    const store = new SessionStore({ root, registry });
+    const match = store.listProjects().find((p) => p.cwd === cwd);
+    expect(match).toBeDefined();
+    expect(match!.source).toBe('both');
+    expect(match!.sessions.length).toBe(1);
+  });
+
+  it('registry entry whose cwd does not exist on disk is filtered out', async () => {
+    const { ProjectRegistry } = await import('../../src/project-registry.js');
+    const { root, registryPath } = makeRoot();
+    const registry = new ProjectRegistry(registryPath);
+    registry.add('/this/path/does/not/exist');
+    const store = new SessionStore({ root, registry });
+    expect(store.listProjects().find((p) => p.cwd === '/this/path/does/not/exist')).toBeUndefined();
+  });
+
+  it('isGitRepo=true when <cwd>/.git exists', async () => {
+    const { ProjectRegistry } = await import('../../src/project-registry.js');
+    const { execFileSync } = await import('node:child_process');
+    const { root, registryPath } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-cwd-'));
+    const cwd = makeCwd(cwdHost, 'projectGit');
+    execFileSync('git', ['init', '-q', cwd]);
+    const registry = new ProjectRegistry(registryPath);
+    registry.add(cwd);
+    const store = new SessionStore({ root, registry });
+    const match = store.listProjects().find((p) => p.cwd === cwd);
+    expect(match!.isGitRepo).toBe(true);
+  });
+
+  it('isGitRepo=false when <cwd>/.git absent', async () => {
+    const { ProjectRegistry } = await import('../../src/project-registry.js');
+    const { root, registryPath } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-cwd-'));
+    const cwd = makeCwd(cwdHost, 'projectPlain');
+    const registry = new ProjectRegistry(registryPath);
+    registry.add(cwd);
+    const store = new SessionStore({ root, registry });
+    const match = store.listProjects().find((p) => p.cwd === cwd);
+    expect(match!.isGitRepo).toBe(false);
+  });
+
+  it('store works without a registry (backward compat — registry option omitted)', () => {
+    const { root } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-cwd-'));
+    const cwd = makeCwd(cwdHost, 'projectBackcompat');
+    const projectDir = join(root, cwd.replace(/\//g, '-'));
+    mkdirSync(projectDir, { recursive: true });
+    writeFileSync(
+      join(projectDir, 'ccc.jsonl'),
+      JSON.stringify({ type: 'user', cwd, message: { content: 'hi' } }) + '\n',
+    );
+    const store = new SessionStore({ root });
+    const match = store.listProjects().find((p) => p.cwd === cwd);
+    expect(match!.source).toBe('claude');
+    expect(typeof match!.isGitRepo).toBe('boolean');
   });
 });

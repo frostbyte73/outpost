@@ -1,8 +1,9 @@
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, createReadStream, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, statSync, createReadStream, writeFileSync, renameSync } from 'node:fs';
 import { Allowlist } from './allowlist.js';
+import { ProjectRegistry } from './project-registry.js';
 import { ApprovalQueue } from './approvals.js';
 import { SessionStore } from './session-store.js';
 import { SessionManager } from './session-manager.js';
@@ -58,7 +59,8 @@ async function main() {
   // Outpost discovers projects under the standard claude code projects root. No per-daemon
   // cwd anymore — each session carries its own (recorded by claude in the JSONL).
   const projectsRoot = config.projectsRoot;
-  const sessionStore = new SessionStore({ root: projectsRoot });
+  const projectRegistry = new ProjectRegistry(join(RUNTIME_DIR, 'projects.json'));
+  const sessionStore = new SessionStore({ root: projectsRoot, registry: projectRegistry });
   console.log(`[daemon] projects root: ${projectsRoot}`);
 
   function findSessionTitle(id: string): string | undefined {
@@ -294,6 +296,52 @@ async function main() {
     console.log(`[api] delete session ${id.slice(0,8)} subprocess=killed file=${removed ? 'removed' : 'not-found'}`);
     res.statusCode = 204;
     res.end();
+  });
+
+  // Register a user-supplied project cwd in the ProjectRegistry. Used by the PWA's
+  // "+ Add project" button to expose a fresh directory before claude has touched it.
+  // Body: { cwd: <absolute path> }. Returns { added: boolean, cwd: string }.
+  server.route('POST', '/api/projects', async (req, res) => {
+    const body = await readBody(req);
+    let payload: { cwd?: string };
+    try { payload = JSON.parse(body); } catch {
+      res.statusCode = 400; res.end('invalid json'); return;
+    }
+    const { cwd } = payload;
+    if (typeof cwd !== 'string' || !cwd.startsWith('/')) {
+      res.statusCode = 400; res.end('cwd must be absolute'); return;
+    }
+    try {
+      if (!statSync(cwd).isDirectory()) {
+        res.statusCode = 400; res.end('cwd is not a directory'); return;
+      }
+    } catch {
+      res.statusCode = 400; res.end('cwd does not exist'); return;
+    }
+    const added = projectRegistry.add(cwd);
+    if (added) console.log(`[api] project registered: ${cwd}`);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ added, cwd }));
+  });
+
+  // Remove a user-added project from the registry. Doesn't touch any session JSONLs —
+  // claude-discovered projects (source='claude' or 'both') stay in the list after this
+  // because they still have session history on disk.
+  server.route('DELETE', '/api/projects', async (req, res) => {
+    const body = await readBody(req);
+    let payload: { cwd?: string };
+    try { payload = JSON.parse(body); } catch {
+      res.statusCode = 400; res.end('invalid json'); return;
+    }
+    if (typeof payload.cwd !== 'string') {
+      res.statusCode = 400; res.end('cwd required'); return;
+    }
+    const removed = projectRegistry.remove(payload.cwd);
+    if (removed) console.log(`[api] project unregistered: ${payload.cwd}`);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ removed }));
   });
 
   // Global notification channel — every running client holds one of these open for the

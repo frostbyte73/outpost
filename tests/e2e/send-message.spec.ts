@@ -1,5 +1,5 @@
 import { mkdirSync } from 'node:fs';
-import { test, expect } from './harness/browser.js';
+import { test, expect, openSessionAtCwd } from './harness/browser.js';
 
 const TEST_CWD = '/tmp/outpost-e2e-send-msg';
 
@@ -7,13 +7,8 @@ test.beforeAll(() => {
   mkdirSync(TEST_CWD, { recursive: true });
 });
 
-test('typing a message and pressing Enter produces an assistant response', async ({ outpostPage }) => {
-  // Open the new-session sheet.
-  await outpostPage.locator('#new-session').click();
-
-  // No recents in the fresh test daemon; type a custom cwd and submit.
-  await outpostPage.locator('#cwd-picker-custom-input').fill(TEST_CWD);
-  await outpostPage.locator('#cwd-picker-custom-form button[type=submit]').click();
+test('typing a message and pressing Enter produces an assistant response', async ({ daemon, outpostPage }) => {
+  await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   // Wait for the composer to appear (session view skeleton).
   const composer = outpostPage.locator('#composer');

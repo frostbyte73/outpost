@@ -1,7 +1,7 @@
 import { mkdirSync } from 'node:fs';
 import { resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect } from './harness/browser.js';
+import { test, expect, openSessionAtCwd } from './harness/browser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolvePath(__dirname, 'fixtures', 'tool-use-bash-write.jsonl');
@@ -23,9 +23,7 @@ test('plan mode denies a Bash call without enqueuing an approval', async ({ daem
   await outpostPage.locator('#sheet-close').click();
 
   // Open a session.
-  await outpostPage.locator('#new-session').click();
-  await outpostPage.locator('#cwd-picker-custom-input').fill(TEST_CWD);
-  await outpostPage.locator('#cwd-picker-custom-form button[type=submit]').click();
+  await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   const composer = outpostPage.locator('#composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
@@ -39,16 +37,13 @@ test('plan mode denies a Bash call without enqueuing an approval', async ({ daem
     { timeout: 10_000 },
   );
 
-  // Wait for the plan mode to be server-confirmed. When the WS opens, the client sends
-  // approval_mode_set (to sync the optimistic local mode) and the server echoes back,
-  // which causes renderApprovalModes() to update aria-pressed. We poll the DOM state
-  // rather than the WS message directly to avoid a race between the echo arriving and
-  // the evaluate() call registering the listener.
+  // Wait for the plan mode to be server-confirmed. The segmented-control buttons live in
+  // the settings sheet which is only open in list view — in session view they're absent
+  // from the DOM. Poll state.approvalMode directly via the __outpostGetState helper
+  // (which reads from the module-scoped state object that the WS echo updates).
   await outpostPage.waitForFunction(
-    () => {
-      const btn = document.querySelector('#permission-modes button[data-mode="plan"]');
-      return btn instanceof HTMLElement && btn.getAttribute('aria-pressed') === 'true';
-    },
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
+    () => globalThis.__outpostGetState?.()?.approvalMode === 'plan',
     undefined,
     { timeout: 10_000 },
   );

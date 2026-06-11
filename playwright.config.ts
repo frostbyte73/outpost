@@ -6,6 +6,10 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
+  // One retry: some tests pass individually but flake under suite load — usually
+  // daemon-spawn timing races (free-port allocation, fixture seeding). A single retry
+  // is enough to absorb the noise without hiding genuine failures.
+  retries: 1,
   use: {
     ignoreHTTPSErrors: true,
     trace: 'retain-on-failure',
