@@ -11,6 +11,8 @@ import { HookServer } from './hook-server.js';
 import { discoverTailscaleEnv } from './tailscale.js';
 import { writeDaemonSettings, generateSecret } from './settings-gen.js';
 import { handleHook } from './hook-handler.js';
+import { type ApprovalMode, ApprovalModeStore } from './approval-mode.js';
+import { RecurrenceTracker } from './recurrence-tracker.js';
 import { loadConfig } from './config.js';
 import allowlistConfig from '../config/allowlist.json' with { type: 'json' };
 import pkg from '../package.json' with { type: 'json' };
@@ -45,8 +47,13 @@ async function main() {
   const settingsPath = join(RUNTIME_DIR, 'daemon-settings.json');
   writeDaemonSettings({ outPath: settingsPath, hookPort: HOOK_PORT });
 
-  const allowlist = new Allowlist(allowlistConfig);
+  // Per-project allowlists live under <runtimeDir>/allowlists/<sanitized-cwd>.json.
+  // Created lazily on first promotion; absent dir = no project rules.
+  const projectAllowlistDir = join(RUNTIME_DIR, 'allowlists');
+  const allowlist = new Allowlist(allowlistConfig, { projectAllowlistDir });
   const queue = new ApprovalQueue({ timeoutMs: APPROVAL_TIMEOUT_MS });
+  const modes = new ApprovalModeStore();
+  const recurrence = new RecurrenceTracker();
 
   // Outpost discovers projects under the standard claude code projects root. No per-daemon
   // cwd anymore — each session carries its own (recorded by claude in the JSONL).
@@ -75,6 +82,14 @@ async function main() {
     bindAddress: config.bindAddress ?? tsEnv.ipv4,
     port: config.httpsPort,
   });
+
+  function cwdForSession(sessionId: string): string | undefined {
+    // Prefer the on-disk cwd (for resumed sessions). Fall back to the in-memory cwd
+    // recorded at spawn time so project-scoped allowlist rules apply even before the
+    // session JSONL has been written to disk (e.g. on the very first tool call of a
+    // brand-new session whose init record hasn't been flushed yet).
+    return sessionStore.findSession(sessionId)?.cwd ?? manager.getCwd(sessionId);
+  }
 
   // PreToolUse hook endpoint (loopback-only — see hook-server.ts for why)
   const hookServer = new HookServer({
@@ -118,6 +133,8 @@ async function main() {
         hookInput,
         allowlist,
         queue,
+        modes,
+        cwdForSession,
         onNotify: (approval) => {
           console.log(`[hook] enqueued approval ${approval.id.slice(0,8)} for ${approval.toolName}`);
           const summary = summarizeToolInput(approval.toolName, approval.toolInput);
@@ -125,6 +142,8 @@ async function main() {
           // rather than a meaningless id stub. Title may be undefined for very new sessions
           // whose JSONL hasn't been written yet — the client falls back to the id prefix.
           const sessionTitle = findSessionTitle(approval.sessionId);
+          const cwd = cwdForSession(approval.sessionId);
+          const suggestion = cwd ? recurrence.suggestionFor(cwd, approval.toolName, approval.toolInput) : null;
           // Goes to every attached notification WS, regardless of which session view is
           // active (if any). The client decides whether to render an inline card (own
           // session in view) or a toast (any other view).
@@ -144,6 +163,7 @@ async function main() {
             agentType: approval.agentType,
             summary,
             sessionTitle,
+            suggestion,
           });
         },
       });
@@ -171,18 +191,23 @@ async function main() {
     // "Approval on <title>" toasts cross-project the same as it does today.
     const titleById = new Map<string, string>();
     for (const p of projects) for (const s of p.sessions) titleById.set(s.id, s.title);
-    const pending = queue.listPending().map((a) => ({
-      approvalId: a.id,
-      sessionId: a.sessionId,
-      toolName: a.toolName,
-      toolInput: a.toolInput,
-      toolUseId: a.toolUseId,
-      agentId: a.agentId,
-      agentType: a.agentType,
-      summary: summarizeToolInput(a.toolName, a.toolInput),
-      sessionTitle: titleById.get(a.sessionId),
-      enqueuedAt: a.enqueuedAt,
-    }));
+    const pending = queue.listPending().map((a) => {
+      const cwd = cwdForSession(a.sessionId);
+      const suggestion = cwd ? recurrence.suggestionFor(cwd, a.toolName, a.toolInput) : null;
+      return {
+        approvalId: a.id,
+        sessionId: a.sessionId,
+        toolName: a.toolName,
+        toolInput: a.toolInput,
+        toolUseId: a.toolUseId,
+        agentId: a.agentId,
+        agentType: a.agentType,
+        summary: summarizeToolInput(a.toolName, a.toolInput),
+        sessionTitle: titleById.get(a.sessionId),
+        enqueuedAt: a.enqueuedAt,
+        suggestion,
+      };
+    });
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ projects, pending }));
@@ -214,37 +239,47 @@ async function main() {
     res.end(JSON.stringify({ subagents }));
   });
 
-  // Hot-add an allowlist rule. Body shape: { kind: 'tool' | 'bash' | 'mcp', value: string }.
+  // Hot-add an allowlist rule. Body shape: { kind: 'tool' | 'bash' | 'mcp', value: string, scope?: 'global' | { project: string } }.
   // Server validates the value (regex compilation for pattern kinds), dedupes against
-  // existing rules, and on success atomic-writes the updated allowlist.json so the rule
-  // survives a daemon restart. Returns the new rule count for the PWA to refresh.
+  // existing rules, and on success atomic-writes the updated allowlist.json (global) or
+  // the per-project file (project scope) so the rule survives a daemon restart. Returns
+  // the new rule count for the PWA to refresh.
   server.route('POST', '/api/allowlist/rules', async (req, res) => {
     const body = await readBody(req);
-    let payload: { kind?: string; value?: string };
+    let payload: { kind?: string; value?: string; scope?: 'global' | { project?: string } };
     try { payload = JSON.parse(body); } catch {
       res.statusCode = 400; res.end('invalid json'); return;
     }
-    const { kind, value } = payload;
+    const { kind, value, scope } = payload;
     if (kind !== 'tool' && kind !== 'bash' && kind !== 'mcp') {
       res.statusCode = 400; res.end('kind must be tool|bash|mcp'); return;
     }
     if (typeof value !== 'string' || value.length === 0 || value.length > 500) {
       res.statusCode = 400; res.end('value must be a 1..500 char string'); return;
     }
+    let normalizedScope: 'global' | { project: string };
+    if (scope === undefined || scope === 'global') {
+      normalizedScope = 'global';
+    } else if (typeof scope === 'object' && scope !== null && typeof scope.project === 'string' && scope.project.startsWith('/')) {
+      normalizedScope = { project: scope.project };
+    } else {
+      res.statusCode = 400; res.end('scope must be "global" or {project: <absolute-cwd>}'); return;
+    }
     let added: boolean;
     try {
-      added = allowlist.addRule(kind, value);
+      added = allowlist.addRule(kind, value, normalizedScope);
     } catch (e) {
-      // Invalid regex from a bash/mcp pattern — addRule rethrows the RegExp ctor error.
       res.statusCode = 400; res.end(`invalid pattern: ${(e as Error).message}`); return;
     }
-    if (added) {
-      // Atomic write: stage to .tmp, then rename — avoids leaving a partially-written
-      // allowlist.json if the process dies mid-write.
+    if (added && normalizedScope === 'global') {
+      // Atomic write of the global allowlist file (existing behavior).
       const tmp = `${ALLOWLIST_PATH}.tmp`;
-      writeFileSync(tmp, JSON.stringify(allowlist.toConfig(), null, 2) + '\n');
+      writeFileSync(tmp, JSON.stringify(allowlist.toConfig('global'), null, 2) + '\n');
       renameSync(tmp, ALLOWLIST_PATH);
-      console.log(`[api] allowlist: added ${kind} rule ${JSON.stringify(value)} (total ${allowlist.ruleCount()})`);
+      console.log(`[api] allowlist[global]: added ${kind} rule ${JSON.stringify(value)} (total ${allowlist.ruleCount()})`);
+    } else if (added) {
+      // Project file is persisted inside Allowlist.addRule via projectAllowlistDir.
+      console.log(`[api] allowlist[project=${(normalizedScope as { project: string }).project}]: added ${kind} rule ${JSON.stringify(value)}`);
     }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
@@ -275,6 +310,13 @@ async function main() {
   // tile rather than the card silently disappearing — and so a second device viewing
   // the same session sees the same decision the first device made.
   queue.onResolve = (approval, decision) => {
+    // Record before broadcasting so the next approval's onNotify sees the new count.
+    recurrence.record({
+      cwd: cwdForSession(approval.sessionId) ?? approval.sessionId,
+      toolName: approval.toolName,
+      toolInput: approval.toolInput,
+      decision: decision.allow ? 'allow' : 'deny',
+    });
     notifyAll({
       type: 'approval_resolved',
       approvalId: approval.id,
@@ -301,17 +343,22 @@ async function main() {
       for (const p of sessionStore.listProjects()) for (const s of p.sessions) titleById.set(s.id, s.title);
       ws.send(JSON.stringify({
         type: 'notifications_snapshot',
-        approvals: queue.listPending().map((a) => ({
-          approvalId: a.id,
-          sessionId: a.sessionId,
-          toolName: a.toolName,
-          toolInput: a.toolInput,
-          toolUseId: a.toolUseId,
-          agentId: a.agentId,
-          agentType: a.agentType,
-          summary: summarizeToolInput(a.toolName, a.toolInput),
-          sessionTitle: titleById.get(a.sessionId),
-        })),
+        approvals: queue.listPending().map((a) => {
+          const cwd = cwdForSession(a.sessionId);
+          const suggestion = cwd ? recurrence.suggestionFor(cwd, a.toolName, a.toolInput) : null;
+          return {
+            approvalId: a.id,
+            sessionId: a.sessionId,
+            toolName: a.toolName,
+            toolInput: a.toolInput,
+            toolUseId: a.toolUseId,
+            agentId: a.agentId,
+            agentType: a.agentType,
+            summary: summarizeToolInput(a.toolName, a.toolInput),
+            sessionTitle: titleById.get(a.sessionId),
+            suggestion,
+          };
+        }),
       }));
       // Accept approval_decide on the notifications WS too. The notifications channel is
       // the one engineered to survive iOS backgrounding (the session WS often drops), and
@@ -347,6 +394,9 @@ async function main() {
       if (raw) cwd = raw; // URLSearchParams already decodes
     }
     manager.attach(sessionId, ws, { cwd });
+    // Broadcast the current mode to this WS so the PWA can render the segmented control
+    // in sync with server state. Cheap; one message per WS connect.
+    ws.send(JSON.stringify({ type: 'approval_mode', sessionId, mode: modes.get(sessionId) }));
     ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
       let msg: { type?: string };
       try {
@@ -368,6 +418,19 @@ async function main() {
         // daemon_proc_exit path handles the UI follow-up.
         console.log(`[api] interrupt requested for session ${sessionId.slice(0, 8)}`);
         manager.interrupt(sessionId);
+      } else if (msg.type === 'approval_mode_set') {
+        const { mode } = msg as { mode?: string };
+        if (typeof mode === 'string') {
+          try {
+            // ApprovalModeStore.set() throws on invalid mode — it owns the valid-mode list.
+            modes.set(sessionId, mode as ApprovalMode);
+            // Broadcast new mode to every attached client on this session so multi-device stays in sync.
+            manager.broadcast(sessionId, { type: 'approval_mode', sessionId, mode });
+            console.log(`[api] approval mode for ${sessionId.slice(0, 8)} → ${mode}`);
+          } catch {
+            // Invalid mode string — silently ignore.
+          }
+        }
       }
     });
   });

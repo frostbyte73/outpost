@@ -14,12 +14,11 @@ test.beforeAll(() => {
 });
 
 test('accept-edits ON: Edit tool flows through without manual approval', async ({ daemon, outpostPage }) => {
-  // Toggle accept-edits via the settings sheet BEFORE opening a session, so the client-side
-  // auto-approve mirror is armed when the fixture's first Edit tool_use lands.
+  // Switch to accept-edits mode via the segmented control BEFORE opening a session,
+  // so the client-side auto-approve mirror is armed when the fixture's first Edit tool_use lands.
   await outpostPage.locator('.settings-btn').click();
-  await outpostPage.locator('#accept-edits-toggle').click();
-  // Verify the toggle armed before closing — saves a flaky failure if the click missed.
-  await expect(outpostPage.locator('#accept-edits-toggle')).toHaveAttribute('aria-pressed', 'true');
+  await outpostPage.locator('#permission-modes button[data-mode="accept-edits"]').click();
+  await expect(outpostPage.locator('#permission-modes button[data-mode="accept-edits"]')).toHaveAttribute('aria-pressed', 'true');
   await outpostPage.locator('#sheet-close').click();
 
   // Open a new session.

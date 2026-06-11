@@ -1,0 +1,63 @@
+const APPROVAL_MODES = ['ask', 'accept-edits', 'plan', 'bypass'] as const;
+export type ApprovalMode = (typeof APPROVAL_MODES)[number];
+const VALID_MODES: ReadonlySet<ApprovalMode> = new Set(APPROVAL_MODES);
+
+export class ApprovalModeStore {
+  private modes = new Map<string, ApprovalMode>();
+
+  get(sessionId: string): ApprovalMode {
+    return this.modes.get(sessionId) ?? 'ask';
+  }
+
+  set(sessionId: string, mode: ApprovalMode): void {
+    if (!VALID_MODES.has(mode)) {
+      throw new Error(`invalid ApprovalMode: ${JSON.stringify(mode)}`);
+    }
+    this.modes.set(sessionId, mode);
+  }
+}
+
+// Tools that Plan mode auto-allows regardless of allowlist contents. Mirrors the
+// "read-shaped" intent: anything that can't mutate filesystem or external state.
+// Includes claude agent meta-tools (TaskList/TaskGet/ToolSearch) which are read-only by construction.
+export const PLAN_MODE_ALWAYS: ReadonlySet<string> = new Set([
+  'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch',
+  'TaskList', 'TaskGet', 'ToolSearch',
+  'ListMcpResourcesTool', 'ReadMcpResourceTool',
+]);
+
+// MCP tools whose name contains a read-shaped verb are treated as read-only in plan
+// mode. The verb may appear at the start, middle, or end of the underscore/hyphen-
+// separated suffix — e.g. `list_issues`, `pull_request_read`, `notion-search`.
+// A trailing `s` is allowed to handle `search_dashboards` etc.
+// Anchored to the full tool name to prevent partial matches on unrelated segments.
+export const PLAN_MODE_MCP_READ_RE = /^mcp__[^_]+__(?:.*[_-])?(read|list|search|get|show|fetch|view|describe)s?(?:[_-].*)?$/;
+
+// Tokens that, when present anywhere in an MCP tool's name segments, indicate the
+// tool mutates state. Used as a defense-in-depth check on top of PLAN_MODE_MCP_READ_RE
+// — a tool like `mcp__foo__list_delete_all` matches the read regex (because "list"
+// appears) but contains "delete" and must NOT auto-allow in plan mode. Plurals via
+// trailing 's' are matched so `creates`/`updates` are also caught when used as verbs.
+export const PLAN_MODE_MCP_MUTATORS: ReadonlySet<string> = new Set([
+  'create', 'update', 'delete', 'merge', 'write', 'set', 'patch', 'put',
+  'remove', 'destroy', 'close', 'cancel', 'approve', 'deny', 'publish',
+  'enable', 'disable', 'grant', 'revoke', 'send', 'post', 'add', 'edit',
+  'modify', 'replace', 'reset', 'restart', 'kill', 'stop', 'start',
+  'open', 'submit', 'execute', 'run', 'invoke', 'trigger',
+]);
+
+// True if the tool name is safe to auto-allow in plan mode: it must match the
+// read-verb regex AND contain no mutator-verb segments. Both anchors matter —
+// either alone leaves a hole.
+export function isPlanModeReadableMcpTool(toolName: string): boolean {
+  if (!PLAN_MODE_MCP_READ_RE.test(toolName)) return false;
+  // Strip "mcp__<server>__" prefix, then split on either separator.
+  const suffix = toolName.replace(/^mcp__[^_]+__/, '');
+  const segments = suffix.split(/[_-]+/);
+  for (const seg of segments) {
+    // Allow trailing 's' plural ("creates", "updates") to also trigger the denylist.
+    const root = seg.endsWith('s') ? seg.slice(0, -1) : seg;
+    if (PLAN_MODE_MCP_MUTATORS.has(seg) || PLAN_MODE_MCP_MUTATORS.has(root)) return false;
+  }
+  return true;
+}

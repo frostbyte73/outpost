@@ -157,6 +157,13 @@ const state = {
   // user back to the picker. Without this, a daemon_error for an invalid cwd would render
   // as an empty session view with a "cwd does not exist" tile and no clear next step.
   pendingNewSession: null, // { id, cwd } | null
+  // Active permission mode, mirrored from server broadcasts ('ask' | 'accept-edits' | 'plan' | 'bypass').
+  approvalMode: 'ask',
+  // True when the bypass button has been tapped once — the second tap within 4 s commits.
+  bypassConfirmPending: false,
+  // Guards against an infinite push-back loop: set to true when we push our local mode back
+  // to the server; cleared when the server's echo finally agrees, or on a new WS attach.
+  approvalModePushBackSent: false,
 };
 
 // Threshold of consecutive failed retries before we flip to the user-facing 'failed' state
@@ -903,6 +910,7 @@ function connectWs(id, opts) {
   if (state.sessionWsTimer) { clearTimeout(state.sessionWsTimer); state.sessionWsTimer = null; }
   if (state.ws) state.ws.close();
   state.sessionWsReady = false;
+  state.approvalModePushBackSent = false;
   updateConnIndicator();
   const cwdQuery = opts?.cwd ? `?cwd=${encodeURIComponent(opts.cwd)}` : '';
   const ws = new WebSocket(`wss://${location.host}/ws/sessions/${id}${cwdQuery}`);
@@ -1317,6 +1325,28 @@ function handleWsMessage(msg) {
     });
     stopThinking();
     renderSession();
+  } else if (msg.type === 'approval_mode') {
+    // If the client had an optimistically-set non-default mode (chosen before the session
+    // opened and therefore never sent to the server), push it now so the server catches up.
+    // This handles the accept-edits test pattern: user enables accept-edits in settings
+    // BEFORE opening a session, then the server attach broadcasts 'ask' which would otherwise
+    // clobber the local preference.
+    // The approvalModePushBackSent sentinel prevents an infinite loop: if the server keeps
+    // broadcasting a mode we don't want, we only push back once per WS attach.
+    if (state.approvalMode !== 'ask' && state.approvalMode !== msg.mode
+        && state.ws?.readyState === WebSocket.OPEN
+        && !state.approvalModePushBackSent) {
+      state.approvalModePushBackSent = true;
+      state.ws.send(JSON.stringify({ type: 'approval_mode_set', mode: state.approvalMode }));
+      // Keep local state and wait for the server's echo from our approval_mode_set.
+      return;
+    }
+    state.approvalMode = msg.mode;
+    state.approvalModePushBackSent = false;
+    state.bypassConfirmPending = false;
+    // Keep accept-edits client-side mirror in sync when the server says we're in that mode.
+    setAcceptEdits(msg.mode === 'accept-edits');
+    renderApprovalModes();
   }
 }
 
@@ -1816,6 +1846,35 @@ function bindTranscriptHandlers() {
       const id = btn.dataset.alwaysId;
       const approval = state.pendingApprovals.find((a) => a.approvalId === id);
       if (approval) alwaysAllowAndApprove(id, approval.toolName, approval.toolInput);
+    };
+  }
+  for (const btn of document.querySelectorAll('.approval-card .suggestion-confirm')) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const card = btn.closest('.approval-suggestion');
+      const approvalId = card?.dataset.approvalId;
+      const pending = state.pendingApprovals.find((a) => a.approvalId === approvalId);
+      if (!pending?.suggestion) return;
+      const scopeChoice = card.querySelector('.suggestion-scope-select')?.value ?? 'project';
+      const sessionId = pending.sessionId;
+      const project = (state.projects || []).find((p) => (p.sessions || []).some((s) => s.id === sessionId));
+      const sessionProjectCwd = project?.cwd
+        ?? (sessionId === state.currentSessionId ? state.currentSessionCwd : null);
+      const scope = scopeChoice === 'global' ? 'global' : (sessionProjectCwd ? { project: sessionProjectCwd } : 'global');
+      const body = { kind: pending.suggestion.kind, value: pending.suggestion.suggestedValue, scope };
+      btn.disabled = true;
+      fetch('/api/allowlist/rules', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }).then((r) => {
+        if (!r.ok) throw new Error(`POST failed: ${r.status}`);
+        sendApprovalDecide({ approvalId, decision: 'allow' });
+      }).catch((err) => {
+        console.error('promotion failed', err);
+        btn.disabled = false;
+        if (typeof showStatusToast === 'function') showStatusToast('Promotion failed — try again');
+      });
     };
   }
   // Tap-to-expand for tool_use entries. Toggle is done in-place (class flip + state Set
@@ -3856,7 +3915,23 @@ function approvalCardHtml(a) {
         `<button class="approve" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Approve ${escapeHtml(f.label)}">Approve</button>` +
         `<button class="reject" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Reject ${escapeHtml(f.label)}">Reject</button>` +
       `</div>` +
-      `<button class="approval-always" data-always-id="${escapeHtml(a.approvalId)}" type="button">Always allow ${escapeHtml(suggestAllowRule(a.toolName, a.toolInput)?.label ?? a.toolName)}</button>` +
+      (a.suggestion ? (
+        `<div class="approval-suggestion" data-approval-id="${escapeHtml(a.approvalId)}">` +
+          `<div class="suggestion-text">` +
+            `You've approved this ${a.suggestion.matchCount}× ${a.suggestion.triggerWindow === '24h' ? 'in the past day' : 'this week'}.` +
+          `</div>` +
+          `<div class="suggestion-controls">` +
+            `<label class="suggestion-scope">` +
+              `Always allow <code>${escapeHtml(a.suggestion.suggestedValue)}</code> in ` +
+              `<select class="suggestion-scope-select">` +
+                `<option value="project">this project</option>` +
+                `<option value="global">all projects</option>` +
+              `</select>` +
+            `</label>` +
+            `<button class="suggestion-confirm" type="button">Always allow</button>` +
+          `</div>` +
+        `</div>`
+      ) : '') +
     `</div>`
   );
 }
@@ -4603,8 +4678,8 @@ function refreshSheetSelection() {
   for (const btn of document.querySelectorAll('.mode-toggle button')) {
     btn.classList.toggle('active', btn.dataset.mode === mode);
   }
-  const acceptBtn = document.getElementById('accept-edits-toggle');
-  if (acceptBtn) acceptBtn.setAttribute('aria-pressed', state.acceptEdits ? 'true' : 'false');
+  // Old accept-edits-toggle is gone; segmented control is the source of truth.
+  renderApprovalModes();
 }
 
 // Toggle accept-edits mode. Persisted to localStorage so the setting survives reload,
@@ -4644,15 +4719,68 @@ document.getElementById('theme-grid').addEventListener('click', (e) => {
   const card = e.target.closest('.theme-card');
   if (card?.dataset.themeKey) applyTheme(card.dataset.themeKey);
 });
-document.getElementById('accept-edits-toggle')?.addEventListener('click', () => {
-  setAcceptEdits(!state.acceptEdits);
+// Wire up the segmented permission-mode control. The single source of truth for
+// the mode is the server (broadcast on attach via `approval_mode`); the PWA mirrors
+// that into state.approvalMode and reflects it in the UI. Clicking a mode sends
+// `approval_mode_set` and waits for the server's echo to update local state.
+function setApprovalMode(mode) {
+  if (state.approvalMode === mode) return;
+  if (mode === 'bypass' && state.approvalMode !== 'bypass' && !state.bypassConfirmPending) {
+    state.bypassConfirmPending = true;
+    renderApprovalModes();
+    setTimeout(() => {
+      if (state.bypassConfirmPending) {
+        state.bypassConfirmPending = false;
+        renderApprovalModes();
+      }
+    }, 4000);
+    return;
+  }
+  state.bypassConfirmPending = false;
+  if (state.ws?.readyState === WebSocket.OPEN) {
+    // Connected: send to server and wait for the echo to commit state.approvalMode.
+    state.ws.send(JSON.stringify({ type: 'approval_mode_set', mode }));
+    // Online: defer state.approvalMode + setAcceptEdits to the server's echo (handled in the
+    // `approval_mode` WS message branch). Just send and wait.
+  } else {
+    // Offline (no session yet, or WS not connected): optimistically reflect the choice locally
+    // so the segmented control updates immediately. The push-back logic on next WS attach
+    // syncs this to the server.
+    state.approvalMode = mode;
+    setAcceptEdits(mode === 'accept-edits');
+    renderApprovalModes();
+  }
+}
+
+document.getElementById('permission-modes')?.addEventListener('click', (e) => {
+  const btn = e.target.closest('button[data-mode]');
+  if (btn?.dataset.mode) setApprovalMode(btn.dataset.mode);
 });
+
+function renderApprovalModes() {
+  const desired = state.approvalMode ?? 'ask';
+  const showBypassConfirm = state.bypassConfirmPending === true;
+  for (const btn of document.querySelectorAll('.permission-mode')) {
+    const m = btn.dataset.mode;
+    btn.setAttribute('aria-pressed', m === desired && !showBypassConfirm ? 'true' : 'false');
+    if (m === 'bypass' && showBypassConfirm) {
+      btn.textContent = 'Tap again to confirm';
+    } else if (m === 'bypass') {
+      btn.textContent = 'Bypass';
+    }
+  }
+  for (const span of document.querySelectorAll('.permission-desc [data-for-mode]')) {
+    span.hidden = span.dataset.forMode !== desired;
+  }
+}
+
 document.getElementById('mode-toggle').addEventListener('click', (e) => {
   const btn = e.target.closest('button[data-mode]');
   if (btn?.dataset.mode) applyMode(btn.dataset.mode);
 });
 
 syncThemeColorMeta();
+renderApprovalModes();
 
 // When the PWA comes back to the foreground (user unlocks phone, switches back from
 // another app), iOS may have severed the WS without firing onclose yet — the next
@@ -4695,3 +4823,35 @@ document.addEventListener('visibilitychange', () => {
 loadDaemonInfo();
 loadSessions();
 connectNotificationWs();
+
+// Test instrumentation: expose helpers so Playwright tests can send raw WS messages
+// and wait for specific incoming messages without needing window.state (ESM modules
+// don't expose top-level bindings to window). Named with double underscores to be
+// clearly non-API.
+//
+// __outpostSendWs(msg): sends msg over the open session WS. Returns true if sent.
+// @ts-expect-error — intentional globalThis assignment for test infrastructure only
+globalThis.__outpostSendWs = (msg) => {
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    return true;
+  }
+  return false;
+};
+// __outpostWaitWsMsg(predicate): returns a Promise that resolves with the first incoming
+// session WS message for which predicate(msg) returns true. Adds a one-shot addEventListener
+// so it doesn't interfere with app.js's own ws.onmessage handler.
+// @ts-expect-error — intentional globalThis assignment for test infrastructure only
+globalThis.__outpostWaitWsMsg = (predicate) => new Promise((resolve) => {
+  if (!state.ws) { resolve(null); return; }
+  const ws = state.ws;
+  const handler = (e) => {
+    let msg;
+    try { msg = JSON.parse(e.data); } catch { return; }
+    if (predicate(msg)) {
+      ws.removeEventListener('message', handler);
+      resolve(msg);
+    }
+  };
+  ws.addEventListener('message', handler);
+});

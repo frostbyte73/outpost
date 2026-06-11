@@ -2710,6 +2710,43 @@
     .approval-card .approval-always:active { color: var(--accent); }
     .approval-card .approval-always:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+    /* ───── Promotion suggestion footer ──────────────────────────
+       Server-driven footer shown when a.suggestion is present. Renders below the
+       Approve/Reject buttons with a count + scope picker + confirm button. */
+    .approval-suggestion {
+      border-top: 1px dashed var(--line);
+      padding: 10px 12px 12px;
+      background: var(--bg-elev);
+      font-size: 12px;
+      margin: 10px -14px -12px;
+    }
+    .suggestion-text { color: var(--text-mute); margin-bottom: 6px; }
+    .suggestion-controls {
+      display: flex; align-items: center; gap: 10px;
+      flex-wrap: wrap;
+    }
+    .suggestion-controls code {
+      font-family: var(--font-mono);
+      background: var(--bg);
+      padding: 1px 5px;
+      color: var(--text);
+    }
+    .suggestion-scope-select {
+      font-family: inherit; font-size: 12px;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--line);
+      padding: 3px 6px;
+    }
+    .suggestion-confirm {
+      background: var(--accent-soft); color: var(--accent);
+      border: 1px solid var(--accent);
+      font-family: var(--font-mono);
+      font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 6px 12px;
+      cursor: pointer;
+    }
+    .suggestion-confirm:disabled { opacity: 0.5; cursor: default; }
+
     /* ───── Thinking strip ─────────────────────────────────────────
        Persistent status bar above the agents strip. Visible whenever the assistant is
        working — hidden when blocked on user input (the approval card itself is signal
@@ -3250,54 +3287,38 @@
       border: 1px solid currentColor;
     }
 
-    /* Accept-edits permission toggle. Uses aria-pressed for state — when true the
-       border + background flip to accent and the glyph fills in. Matches the
-       inline-code chip aesthetic used elsewhere for "this is active." */
-    .permission-toggle {
-      width: 100%;
+    /* 4-way segmented permission-mode control. */
+    .permission-modes {
       display: grid;
-      grid-template-columns: 14px 1fr;
-      gap: 12px;
-      align-items: start;
-      padding: 12px 14px;
-      background: var(--bg);
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0;
       border: 1px solid var(--line);
-      color: var(--text);
-      font: inherit;
-      text-align: left;
+      margin-bottom: 8px;
+    }
+    .permission-mode {
+      background: transparent; color: var(--text-mute);
+      border: 0;
+      padding: 10px 6px;
+      font-family: var(--font-mono);
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
       cursor: pointer;
-      transition: border-color 0.12s ease, background 0.12s ease;
+      transition: background 0.15s ease, color 0.15s ease;
+      border-right: 1px solid var(--line);
     }
-    .permission-toggle:active { background: var(--bg-elev-2); }
-    .permission-toggle[aria-pressed="true"] {
-      border-color: var(--accent);
+    .permission-mode:last-child { border-right: 0; }
+    .permission-mode[aria-pressed="true"] {
       background: var(--accent-soft);
+      color: var(--accent);
     }
-    .permission-glyph {
-      width: 14px; height: 14px;
-      margin-top: 2px;
-      border: 1px solid var(--text-dim);
-      background: transparent;
-      transition: background 0.12s ease, border-color 0.12s ease, box-shadow 0.12s ease;
-    }
-    .permission-toggle[aria-pressed="true"] .permission-glyph {
-      background: var(--accent);
-      border-color: var(--accent);
-      box-shadow: 0 0 0 3px var(--accent-soft);
-    }
-    .permission-body {
-      display: flex; flex-direction: column;
-      gap: 4px;
-      min-width: 0;
-    }
-    .permission-label {
-      font-size: 13px; font-weight: 500;
-      color: var(--text);
-      line-height: 1.3;
+    .permission-mode[data-mode="bypass"][aria-pressed="true"] {
+      background: var(--danger-soft);
+      color: var(--danger);
     }
     .permission-desc {
-      font-size: 11px; line-height: 1.5;
+      font-family: var(--font-body);
+      font-size: 12px;
       color: var(--text-mute);
+      padding: 4px 0 0;
     }
 
     /* Themed confirm sheet — replaces native confirm() for destructive actions so the
@@ -3470,13 +3491,18 @@
     </div>
 
     <div class="sheet-section-label">Permissions</div>
-    <button class="permission-toggle" id="accept-edits-toggle" type="button" aria-pressed="false">
-      <span class="permission-glyph" aria-hidden="true"></span>
-      <span class="permission-body">
-        <span class="permission-label">Auto-approve file edits</span>
-        <span class="permission-desc">Claude can <strong>overwrite or create any file</strong> in this session's working directory without asking. Edit · Write · NotebookEdit · MultiEdit only — Bash and other side-effect tools still require approval.</span>
-      </span>
-    </button>
+    <div class="permission-modes" id="permission-modes" role="radiogroup" aria-label="Permission mode">
+      <button class="permission-mode" data-mode="ask" type="button" aria-pressed="true">Ask</button>
+      <button class="permission-mode" data-mode="accept-edits" type="button" aria-pressed="false">Accept edits</button>
+      <button class="permission-mode" data-mode="plan" type="button" aria-pressed="false">Plan</button>
+      <button class="permission-mode" data-mode="bypass" type="button" aria-pressed="false">Bypass</button>
+    </div>
+    <div class="permission-desc" id="permission-desc">
+      <span data-for-mode="ask">Tool calls outside the allowlist require explicit approval.</span>
+      <span data-for-mode="accept-edits" hidden>Edit, Write, MultiEdit, and NotebookEdit auto-approve. Bash and side-effect tools still require approval.</span>
+      <span data-for-mode="plan" hidden>Read-only mode. Only Read, Glob, Grep, Web*, Task list/get, and MCP read tools run.</span>
+      <span data-for-mode="bypass" hidden>All tool calls auto-approve. Equivalent to <code>--dangerously-skip-permissions</code>.</span>
+    </div>
   </aside>
 
   <script src="/app.js" type="module"></script>

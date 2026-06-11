@@ -122,6 +122,12 @@ async function main() {
     if (parsed.session_id === undefined && (parsed.type === 'system' || parsed.type === 'assistant' || parsed.type === 'user')) {
       parsed.session_id = sessionId;
     }
+    // Inject cwd into the system init record so SessionStore.findSession can resolve the
+    // session's working directory (used by project-scoped allowlist lookup). Real claude
+    // writes cwd into every record; we only need it on the first one the store sees.
+    if (parsed.type === 'system' && parsed.subtype === 'init' && parsed.cwd === undefined) {
+      parsed.cwd = process.cwd();
+    }
 
     // If this assistant message contains tool_use blocks, fire the hook for each one
     // BEFORE emitting. If any are denied, emit a synthetic deny tool_result instead.

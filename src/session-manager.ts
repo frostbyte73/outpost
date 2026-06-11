@@ -26,6 +26,9 @@ export interface SessionManagerOpts {
 
 export class SessionManager {
   private active = new Map<string, ActiveSession>();
+  // Tracks the cwd for every session we've spawned. Persists across the session's lifetime
+  // so getCwd() works even after the process exits (hook may fire mid-session).
+  private sessionCwds = new Map<string, string>();
 
   constructor(private opts: SessionManagerOpts) {}
 
@@ -84,6 +87,13 @@ export class SessionManager {
     s.proc.interrupt();
   }
 
+  // Returns the cwd used to spawn the given active session. Used by the daemon's
+  // cwdForSession so project-scoped allowlist lookups work even for sessions whose
+  // JSONL hasn't been flushed to disk yet (e.g. the very first tool call of a new session).
+  getCwd(sessionId: string): string | undefined {
+    return this.sessionCwds.get(sessionId);
+  }
+
   async close(sessionId: string): Promise<void> {
     const s = this.active.get(sessionId);
     if (!s) return;
@@ -111,6 +121,7 @@ export class SessionManager {
   }
 
   private spawn(sessionId: string, cwd: string): ActiveSession {
+    this.sessionCwds.set(sessionId, cwd);
     const s: ActiveSession = {
       id: sessionId,
       clients: new Set(),

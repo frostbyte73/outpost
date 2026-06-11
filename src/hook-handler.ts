@@ -1,5 +1,6 @@
 import type { Allowlist } from './allowlist.js';
 import type { ApprovalQueue, PendingApproval } from './approvals.js';
+import { ApprovalModeStore, PLAN_MODE_ALWAYS, isPlanModeReadableMcpTool } from './approval-mode.js';
 
 export interface HookInput {
   tool_name: string;
@@ -30,15 +31,52 @@ export interface HandleHookOpts {
   hookInput: HookInput;
   allowlist: Allowlist;
   queue: ApprovalQueue;
+  modes: ApprovalModeStore;
+  // Lookup a session's cwd for project-scoped allowlist resolution. Returns undefined
+  // if the session is unknown to the daemon (e.g. brand-new); allowlist then falls back
+  // to global rules only.
+  cwdForSession?: (sessionId: string) => string | undefined;
   onNotify: (approval: PendingApproval) => void;
 }
 
+function allowResp(): HookResponse {
+  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+}
+
+function denyResp(reason: string): HookResponse {
+  return {
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'deny',
+      permissionDecisionReason: reason,
+    },
+  };
+}
+
 export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
-  const { hookInput, allowlist, queue, onNotify } = opts;
-  if (allowlist.allows(hookInput.tool_name, hookInput.tool_input)) {
-    return {
-      hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
-    };
+  const { hookInput, allowlist, queue, modes, cwdForSession, onNotify } = opts;
+  const mode = modes.get(hookInput.session_id);
+
+  // Bypass: short-circuit before any check. Equivalent to --dangerously-skip-permissions.
+  if (mode === 'bypass') return allowResp();
+
+  // Plan: allow read-shaped only; deny everything else with a clear reason. Plan mode
+  // overrides even the allowlist — we want it to be a positive "lock the session into
+  // read-only" gesture, not a "merge with allowlist" gesture.
+  if (mode === 'plan') {
+    if (PLAN_MODE_ALWAYS.has(hookInput.tool_name)) return allowResp();
+    if (hookInput.tool_name.startsWith('mcp__') && isPlanModeReadableMcpTool(hookInput.tool_name)) {
+      return allowResp();
+    }
+    return denyResp('Plan mode — read-only');
+  }
+
+  // Ask / accept-edits: consult allowlist (global ∪ project). Accept-edits handling
+  // for Edit/Write/etc. is client-side in the PWA today (mirror); it auto-resolves the
+  // approval after enqueue. The server side just enqueues normally for those tools.
+  const projectCwd = cwdForSession?.(hookInput.session_id);
+  if (allowlist.allows(hookInput.tool_name, hookInput.tool_input, projectCwd)) {
+    return allowResp();
   }
 
   const decisionPromise = queue.enqueue({
