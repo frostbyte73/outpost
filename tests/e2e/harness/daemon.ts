@@ -21,11 +21,29 @@ export interface SeedProject {
   sessions?: SeedSession[];
 }
 
+// Phase 2b: pre-seed a worktree record under <runtimeDir>/worktrees/index.json so the
+// test can exercise UI affordances (badge, overflow menu) against a row that has both
+// a JSONL on disk AND a live worktree record. The on-disk worktree dir itself is
+// optional — many tests just need the record to drive UI; the few that need the dir
+// can create it manually via the worktreePath returned by the seeder.
+export interface SeedWorktreeRecord {
+  sessionId: string;
+  projectCwd: string;
+  worktreePath: string;
+  branch: string;
+  baseBranch: string;
+  createdAt?: number;
+  archivedAt?: number;
+}
+
 export interface StartDaemonOpts {
   // Path to the fixture JSONL the mock claude will replay.
   fixturePath: string;
   // Optional: pre-seed projects and sessions on disk before the daemon starts.
   initialProjects?: SeedProject[];
+  // Optional: pre-seed worktree records so UI tests can target archive/delete flows
+  // against rows that look like they were spawned via the worktree path.
+  initialWorktrees?: SeedWorktreeRecord[];
 }
 
 export interface DaemonHandle {
@@ -84,6 +102,26 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
     for (const s of p.sessions ?? []) {
       writeFileSync(join(projectDir, `${s.id}.jsonl`), s.jsonl);
     }
+  }
+
+  // Seed worktree records BEFORE the daemon starts so it picks them up on boot.
+  if (opts.initialWorktrees?.length) {
+    const wtRoot = join(runtimeDir, 'worktrees');
+    mkdirSync(wtRoot, { recursive: true, mode: 0o700 });
+    const records = opts.initialWorktrees.map((r) => ({
+      sessionId: r.sessionId,
+      projectCwd: r.projectCwd,
+      worktreePath: r.worktreePath,
+      branch: r.branch,
+      baseBranch: r.baseBranch,
+      createdAt: r.createdAt ?? Date.now(),
+      ...(r.archivedAt ? { archivedAt: r.archivedAt } : {}),
+    }));
+    writeFileSync(
+      join(wtRoot, 'index.json'),
+      JSON.stringify({ records }, null, 2) + '\n',
+      { mode: 0o600 },
+    );
   }
 
   const host = '127.0.0.1';

@@ -2,12 +2,20 @@ import { readdirSync, readFileSync, statSync, unlinkSync, openSync, readSync, cl
 import { join } from 'node:path';
 import { LineParser } from './stream-json.js';
 import type { ProjectRegistry } from './project-registry.js';
+import type { WorktreeManager, WorktreeRecord } from './worktree-manager.js';
 
 export interface SessionInfo {
   id: string;
   title: string;
   lastModified: number;
   path: string;
+  // Phase 2b: populated by listProjects() when this session was spawned in a worktree
+  // (and SessionStore was constructed with a WorktreeManager). The worktree-derived
+  // project-dir gets merged into the parent project's row; these fields let the PWA
+  // render a ⌥ badge + name the branch.
+  worktreePath?: string;
+  worktreeBranch?: string;
+  archived?: boolean;
 }
 
 export interface ProjectInfo {
@@ -430,14 +438,16 @@ function firstCwdInJsonl(path: string): string | null {
 export class SessionStore {
   private readonly root: string;
   private readonly registry: ProjectRegistry | undefined;
+  private readonly worktreeManager: WorktreeManager | undefined;
   private cwdCache = new Map<string, { cwd: string; mtime: number }>();
   // Per-cwd cache of isGitRepo. Computed on first listProjects() that sees the cwd;
   // never invalidated within a daemon lifetime — restart picks up new git inits.
   private gitRepoCache = new Map<string, boolean>();
 
-  constructor(opts: { root: string; registry?: ProjectRegistry }) {
+  constructor(opts: { root: string; registry?: ProjectRegistry; worktreeManager?: WorktreeManager }) {
     this.root = opts.root;
     this.registry = opts.registry;
+    this.worktreeManager = opts.worktreeManager;
   }
 
   private isGitRepo(cwd: string): boolean {
@@ -452,8 +462,10 @@ export class SessionStore {
     return result;
   }
 
-  listProjects(): ProjectInfo[] {
-    // 1. Claude-discovered projects (existing scan).
+  // Raw scan: claude's projects-root + the registry. Used internally by listProjects()
+  // (which merges worktree-derived rows into their parents) and by findSession (which
+  // wants the physical projectDir, not the merged-view parent).
+  private scanRawProjects(): ProjectInfo[] {
     let dirs: string[];
     try {
       dirs = readdirSync(this.root, { withFileTypes: true })
@@ -462,13 +474,25 @@ export class SessionStore {
     } catch {
       dirs = [];
     }
+    // Build the set of worktree paths (including tombstones) so we can keep their
+    // JSONLs visible even after the worktree dir was deleted by archive/remove. Those
+    // rows get folded under the parent project by listProjects().
+    const knownWorktreePaths = new Set<string>();
+    if (this.worktreeManager) {
+      for (const rec of this.worktreeManager.list()) {
+        if (rec.worktreePath) knownWorktreePaths.add(rec.worktreePath);
+      }
+    }
     const byCwd = new Map<string, ProjectInfo>();
     for (const projectDir of dirs) {
       const cwd = this.readCwdFromProject(projectDir);
       if (!cwd) continue;
       let cwdExists = false;
       try { cwdExists = statSync(cwd).isDirectory(); } catch { /* nope */ }
-      if (!cwdExists) continue;
+      // Drop dead claude-discovered cwds — UNLESS this cwd is a known worktree path
+      // (live or tombstoned). Tombstoned worktrees keep their JSONL on disk; the merge
+      // layer in listProjects() pulls them under their parent project.
+      if (!cwdExists && !knownWorktreePaths.has(cwd)) continue;
       const sessions = this.listSessionsInDir(projectDir);
       const lastModified = sessions.reduce((m, s) => Math.max(m, s.lastModified), 0);
       byCwd.set(cwd, {
@@ -480,8 +504,6 @@ export class SessionStore {
         source: 'claude',
       });
     }
-
-    // 2. Registry projects — merge or add as a synthetic empty project.
     if (this.registry) {
       for (const reg of this.registry.list()) {
         let cwdExists = false;
@@ -503,8 +525,88 @@ export class SessionStore {
         }
       }
     }
+    return [...byCwd.values()];
+  }
 
-    const out = [...byCwd.values()];
+  listProjects(): ProjectInfo[] {
+    const raw = this.scanRawProjects();
+    // No worktree manager → return raw view (Phase 2a behavior).
+    if (!this.worktreeManager) {
+      raw.sort((a, b) => b.lastModified - a.lastModified);
+      return raw;
+    }
+
+    // Build a fast cwd → record map. Claude's cwd uses realpath, so a worktree
+    // session's recorded cwd matches the worktreePath we stored. Tombstones (archived
+    // records) are included too — they keep their original worktreePath so the JSONL
+    // on disk still gets folded under the parent project as an archived row, not as
+    // an orphan standalone project.
+    const worktreeByCwd = new Map<string, WorktreeRecord>();
+    for (const rec of this.worktreeManager.list()) {
+      if (!rec.worktreePath) continue;
+      worktreeByCwd.set(rec.worktreePath, rec);
+    }
+    // Also index tombstoned worktrees by sessionId so we can stamp `archived: true`
+    // on any of their session rows we still have on disk.
+    const archivedSessionIds = new Set<string>();
+    for (const rec of this.worktreeManager.list()) {
+      if (rec.archivedAt) archivedSessionIds.add(rec.sessionId);
+    }
+
+    // First pass: split raw projects into "this is a real project" vs "this is a
+    // worktree-derived project-dir we need to fold into its parent."
+    const parents = new Map<string, ProjectInfo>();
+    const orphanWorktreeRows: { project: ProjectInfo; rec: WorktreeRecord }[] = [];
+    for (const p of raw) {
+      const rec = worktreeByCwd.get(p.cwd);
+      if (rec) {
+        orphanWorktreeRows.push({ project: p, rec });
+      } else {
+        parents.set(p.cwd, p);
+      }
+    }
+
+    // Second pass: fold each worktree row into its parent project. If the parent
+    // isn't in the raw scan (the user never opened a non-worktree session there),
+    // synthesize one so the row has somewhere to live.
+    for (const { project: wtProject, rec } of orphanWorktreeRows) {
+      let parent = parents.get(rec.projectCwd);
+      if (!parent) {
+        let cwdExists = false;
+        try { cwdExists = statSync(rec.projectCwd).isDirectory(); } catch { /* nope */ }
+        if (!cwdExists) continue;  // parent dir gone — drop the orphan rows
+        const sanitized = rec.projectCwd.replace(/\//g, '-');
+        parent = {
+          projectDir: join(this.root, sanitized),
+          cwd: rec.projectCwd,
+          lastModified: 0,
+          sessions: [],
+          isGitRepo: this.isGitRepo(rec.projectCwd),
+          source: 'claude',
+        };
+        parents.set(rec.projectCwd, parent);
+      }
+      // Annotate each session from the worktree row with its branch + worktree path.
+      const annotated = wtProject.sessions.map((s) => ({
+        ...s,
+        worktreePath: rec.worktreePath,
+        worktreeBranch: rec.branch,
+      }));
+      parent.sessions = [...parent.sessions, ...annotated];
+      parent.lastModified = Math.max(parent.lastModified, wtProject.lastModified);
+    }
+
+    // Stamp `archived: true` on any session whose worktree-manager record is a tombstone.
+    for (const p of parents.values()) {
+      for (let i = 0; i < p.sessions.length; i++) {
+        if (archivedSessionIds.has(p.sessions[i]!.id)) {
+          p.sessions[i] = { ...p.sessions[i]!, archived: true };
+        }
+      }
+      p.sessions.sort((a, b) => b.lastModified - a.lastModified);
+    }
+
+    const out = [...parents.values()];
     out.sort((a, b) => b.lastModified - a.lastModified);
     return out;
   }
@@ -548,7 +650,11 @@ export class SessionStore {
   }
 
   findSession(id: string): { projectDir: string; cwd: string; session: SessionInfo } | null {
-    for (const p of this.listProjects()) {
+    // Use the RAW scan so we get the physical projectDir where the JSONL actually
+    // lives, not the merged-view parent (which would be the wrong dir for worktree
+    // sessions). Consumers that need the user-visible parent cwd (e.g. project-allowlist
+    // lookups) consult WorktreeManager directly.
+    for (const p of this.scanRawProjects()) {
       const match = p.sessions.find((s) => s.id === id);
       if (match) return { projectDir: p.projectDir, cwd: p.cwd, session: match };
     }

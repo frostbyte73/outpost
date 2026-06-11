@@ -543,6 +543,61 @@ function bindSessionRowHandlers() {
       deleteSession(id);
     };
   }
+  for (const btn of document.querySelectorAll('.session-overflow')) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.sessionOverflow;
+      const row = btn.closest('.session-row');
+      const archivable = row?.dataset.archivable === 'yes';
+      showSessionOverflowMenu(btn, id, { archivable });
+    };
+  }
+}
+
+function showSessionOverflowMenu(anchor, sessionId, opts) {
+  document.querySelector('.session-overflow-menu')?.remove();
+  const menu = document.createElement('div');
+  menu.className = 'session-overflow-menu';
+  const archiveBtn = opts.archivable
+    ? `<button class="session-overflow-item" data-action="archive" type="button">Archive worktree</button>`
+    : '';
+  menu.innerHTML = `${archiveBtn}<button class="session-overflow-item session-overflow-item-danger" data-action="delete" type="button">Delete</button>`;
+  document.body.appendChild(menu);
+  const rect = anchor.getBoundingClientRect();
+  menu.style.top = `${rect.bottom + 4}px`;
+  menu.style.right = `${window.innerWidth - rect.right}px`;
+  const close = () => menu.remove();
+  setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
+  for (const item of menu.querySelectorAll('.session-overflow-item')) {
+    item.onclick = async (e) => {
+      e.stopPropagation();
+      close();
+      const action = item.dataset.action;
+      if (action === 'archive') {
+        const ok = await confirmInSheet({
+          title: 'Archive worktree?',
+          body: 'The worktree directory and its branch will be deleted. The session transcript stays.',
+          confirmLabel: 'Archive',
+          danger: true,
+        });
+        if (!ok) return;
+        try {
+          const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, { method: 'POST' });
+          if (!r.ok) console.warn('archive failed:', r.status);
+        } catch (err) { console.warn('archive failed:', err); }
+        if (globalThis.__outpostRefreshSessions) await globalThis.__outpostRefreshSessions();
+      } else if (action === 'delete') {
+        const ok = await confirmInSheet({
+          title: 'Delete session?',
+          body: 'The session transcript and any worktree will be removed permanently.',
+          confirmLabel: 'Delete',
+          danger: true,
+        });
+        if (!ok) return;
+        deleteSession(sessionId);
+      }
+    };
+  }
 }
 
 function projectSectionHtml(p, isMostRecent, pendingBySession) {
@@ -582,16 +637,57 @@ function projectSectionHtml(p, isMostRecent, pendingBySession) {
 }
 
 // Body shown when a project is expanded. "+ New session" sits at the TOP so projects
-// with many sessions don't require scrolling to start a fresh one. Empty-state line
-// shows below the button when the project has no sessions yet.
+// with many sessions don't require scrolling to start a fresh one. For git repos, a
+// branch picker sits above the button — its value drives the new session's base branch.
 function projectSectionBodyHtml(p, pendingBySession) {
-  const newBtn = `<button class="project-new-session" type="button" data-cwd="${escapeHtml(p.cwd)}">
+  const branchPicker = p.isGitRepo
+    ? `<div class="project-branch-picker" data-cwd="${escapeHtml(p.cwd)}">
+         <span class="project-branch-label">Branch</span>
+         <select class="project-branch-select"><option value="">loading…</option></select>
+       </div>`
+    : '';
+  const newBtn = `<button class="project-new-session" type="button" data-cwd="${escapeHtml(p.cwd)}" data-is-git="${p.isGitRepo ? 'yes' : 'no'}">
     <span class="plus">+</span><span>New session</span>
   </button>`;
   const rows = p.sessions.length === 0
     ? `<div class="project-section-empty">No sessions yet.</div>`
     : p.sessions.map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0)).join('');
-  return newBtn + rows;
+  return branchPicker + newBtn + rows;
+}
+
+// Cache the per-cwd branch list. /api/projects/:sanitized/branches caches on the daemon
+// side too (30s), so client + server work in tandem.
+const branchesByCwd = new Map();
+
+async function loadBranchesForCwd(cwd) {
+  const cached = branchesByCwd.get(cwd);
+  if (cached && Date.now() - cached.fetchedAt < 30_000) return cached;
+  const sanitized = cwd.replace(/\//g, '-');
+  try {
+    const r = await fetch(`/api/projects/${encodeURIComponent(sanitized)}/branches`);
+    if (!r.ok) return null;
+    const data = await r.json();
+    const entry = { branches: data.branches ?? [], defaultBranch: data.defaultBranch, fetchedAt: Date.now() };
+    branchesByCwd.set(cwd, entry);
+    return entry;
+  } catch { return null; }
+}
+
+async function populateBranchPicker(pickerEl) {
+  const cwd = pickerEl.dataset.cwd;
+  const select = pickerEl.querySelector('.project-branch-select');
+  if (!cwd || !select) return;
+  const data = await loadBranchesForCwd(cwd);
+  if (!data || data.branches.length === 0) {
+    select.innerHTML = `<option value="">unavailable</option>`;
+    return;
+  }
+  const def = data.defaultBranch
+    ?? data.branches.find((b) => b === 'main' || b === 'master')
+    ?? data.branches[0];
+  select.innerHTML = data.branches
+    .map((b) => `<option value="${escapeHtml(b)}"${b === def ? ' selected' : ''}>${escapeHtml(b)}</option>`)
+    .join('');
 }
 
 function bindProjectSectionToggles(pendingBySession) {
@@ -610,13 +706,18 @@ function bindProjectSectionToggles(pendingBySession) {
         body.innerHTML = p ? projectSectionBodyHtml(p, pendingBySession) : '';
         bindSessionRowHandlers();
         bindProjectNewSessionHandlers();
+        const picker = body.querySelector('.project-branch-picker');
+        if (picker) void populateBranchPicker(picker);
       } else {
         body.innerHTML = '';
       }
     };
   }
-  // Bind in-row "+ New session" buttons for already-expanded sections.
   bindProjectNewSessionHandlers();
+  // Populate branch dropdowns for already-expanded sections rendered by render().
+  for (const picker of document.querySelectorAll('.project-branch-picker')) {
+    void populateBranchPicker(picker);
+  }
 }
 
 function bindProjectNewSessionHandlers() {
@@ -624,10 +725,54 @@ function bindProjectNewSessionHandlers() {
     btn.onclick = (e) => {
       e.stopPropagation();
       const cwd = btn.dataset.cwd;
+      const isGit = btn.dataset.isGit === 'yes';
       if (!cwd) return;
-      commitNewSessionCwd(cwd);
+      if (isGit) {
+        // Default: spawn worktree on the picker-selected branch.
+        const section = btn.closest('.project-section');
+        const picker = section?.querySelector('.project-branch-picker .project-branch-select');
+        const branch = (picker && picker.value) || 'main';
+        commitNewSessionCwd(cwd, { spawnMode: 'worktree', baseBranch: branch });
+      } else {
+        commitNewSessionCwd(cwd);
+      }
+    };
+    btn.oncontextmenu = (e) => {
+      e.preventDefault();
+      showNewSessionAltMenu(btn);
+    };
+    // Touch long-press → alt menu (for "New shared session" override on a git repo).
+    let pressTimer = null;
+    btn.ontouchstart = () => {
+      if (pressTimer) clearTimeout(pressTimer);
+      pressTimer = setTimeout(() => showNewSessionAltMenu(btn), 600);
+    };
+    btn.ontouchend = () => {
+      if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; }
     };
   }
+}
+
+function showNewSessionAltMenu(btn) {
+  document.querySelector('.new-session-alt-menu')?.remove();
+  const cwd = btn.dataset.cwd;
+  const isGit = btn.dataset.isGit === 'yes';
+  // Only offer the override on git repos — for non-git, shared is already the default.
+  if (!isGit) return;
+  const menu = document.createElement('div');
+  menu.className = 'new-session-alt-menu';
+  menu.innerHTML = `<button class="new-session-alt-item" type="button">New shared session</button>`;
+  document.body.appendChild(menu);
+  const rect = btn.getBoundingClientRect();
+  menu.style.top = `${rect.top - 44}px`;
+  menu.style.left = `${rect.left}px`;
+  const close = () => menu.remove();
+  setTimeout(() => document.addEventListener('click', close, { once: true }), 0);
+  menu.querySelector('.new-session-alt-item').onclick = (e) => {
+    e.stopPropagation();
+    close();
+    if (cwd) commitNewSessionCwd(cwd, { spawnMode: 'shared' });
+  };
 }
 
 // Overflow ⋯ menu for registry-only projects. One item: "Remove from list" → DELETE /api/projects.
@@ -678,13 +823,21 @@ function sessionRowHtml(s, i, pendingCount) {
   const hasPending = pendingCount > 0;
   // pendingCount is a numeric integer derived from state, not interpolated user input.
   // All string fields (id, title, timeAgo output) are routed through escapeHtml.
-  const badge = hasPending
+  const pendingBadge = hasPending
     ? `<span class="sep">·</span><span class="pending-badge"><span class="dot"></span><span>${pendingCount} pending</span></span>`
     : '';
+  // Worktree sessions get a ⌥ badge showing the auto-generated branch name. Archived
+  // worktrees show a dimmed "archived" badge in place of the branch (the branch is gone).
+  const wtBadge = s.archived
+    ? `<span class="sep">·</span><span class="worktree-badge worktree-badge-archived">archived</span>`
+    : s.worktreeBranch
+      ? `<span class="sep">·</span><span class="worktree-badge">⌥ ${escapeHtml(s.worktreeBranch)}</span>`
+      : '';
+  const rowClass = `session-row${s.archived ? ' session-row-archived' : ''}`;
   return `
     <div class="session-row-wrap">
       <button class="delete-action" data-delete="${escapeHtml(s.id)}" aria-label="Delete session">Delete</button>
-      <div class="session-row" data-id="${escapeHtml(s.id)}">
+      <div class="${rowClass}" data-id="${escapeHtml(s.id)}" data-archivable="${s.worktreePath && !s.archived ? 'yes' : 'no'}">
         <span class="marker${hasPending ? ' pending' : ''}">${marker}</span>
         <div class="body">
           <div class="title">${escapeHtml(s.title)}</div>
@@ -692,9 +845,11 @@ function sessionRowHtml(s, i, pendingCount) {
             <span>${escapeHtml(timeAgo(s.lastModified))}</span>
             <span class="sep">·</span>
             <span>${escapeHtml(s.id.slice(0, 8))}</span>
-            ${badge}
+            ${wtBadge}
+            ${pendingBadge}
           </div>
         </div>
+        <button class="session-overflow" type="button" data-session-overflow="${escapeHtml(s.id)}" aria-label="More actions">⋯</button>
       </div>
     </div>
   `;
@@ -969,8 +1124,12 @@ function connectWs(id, opts) {
   state.sessionWsReady = false;
   state.approvalModePushBackSent = false;
   updateConnIndicator();
-  const cwdQuery = opts?.cwd ? `?cwd=${encodeURIComponent(opts.cwd)}` : '';
-  const ws = new WebSocket(`wss://${location.host}/ws/sessions/${id}${cwdQuery}`);
+  const params = new URLSearchParams();
+  if (opts?.cwd) params.set('cwd', opts.cwd);
+  if (opts?.spawn) params.set('spawn', opts.spawn);
+  if (opts?.base) params.set('base', opts.base);
+  const query = params.toString();
+  const ws = new WebSocket(`wss://${location.host}/ws/sessions/${id}${query ? `?${query}` : ''}`);
   state.ws = ws;
   ws.onmessage = (e) => {
     let msg;
@@ -4018,13 +4177,15 @@ function bindCwdPickerHandlers(sheet, backdrop) {
   if (form) form.addEventListener('submit', submitCustom);
 }
 
-// Commit handler: closes the picker, then opens a new session under the chosen cwd. The
-// cwd flows to the daemon as a query param on the WS URL (Task 8 plumbs this through).
-function commitNewSessionCwd(cwd) {
+// Commit handler: closes the picker, then opens a new session under the chosen cwd.
+// Phase 2b: callers in git-repo projects pass spawnMode='worktree' + baseBranch so the
+// daemon spins up a per-session worktree. Non-git callers (or explicit shared overrides)
+// omit those fields and get the shared-cwd behavior.
+function commitNewSessionCwd(cwd, opts = {}) {
   closeCwdPickerSheet();
   const id = crypto.randomUUID();
   state.pendingNewSession = { id, cwd };
-  openSession(id, { cwd });
+  openSession(id, { cwd, ...(opts.spawnMode ? { spawn: opts.spawnMode } : {}), ...(opts.baseBranch ? { base: opts.baseBranch } : {}) });
 }
 
 // Approval cards now route through the same formatter the transcript uses, so the
@@ -5015,6 +5176,18 @@ globalThis.__outpostGetState = () => ({
   connState: state.connState,
   currentSessionId: state.currentSessionId,
 });
+// __outpostOpenSession({id, cwd, spawn?, base?}): synthesize a session WS open with the
+// given query params. Used by Phase 2b e2e tests that need to spawn a worktree session
+// without going through the in-row click (which the PWA UI work in T8 wires up).
+// @ts-expect-error — intentional globalThis assignment for test infrastructure only
+globalThis.__outpostOpenSession = (opts) => {
+  if (!opts?.id) throw new Error('__outpostOpenSession requires an id');
+  openSession(opts.id, {
+    cwd: opts.cwd,
+    ...(opts.spawn ? { spawn: opts.spawn } : {}),
+    ...(opts.base ? { base: opts.base } : {}),
+  });
+};
 // __outpostRefreshSessions(): re-fetches /api/sessions and re-renders the list. Lets
 // tests pull in a newly-registered project without doing a full page reload (which
 // would wipe state.approvalMode set optimistically in list view before opening a session).

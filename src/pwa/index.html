@@ -641,6 +641,90 @@
     }
     .project-overflow-item:hover { background: var(--bg-elev-2); }
 
+    /* Phase 2b: branch picker above "+ New session" on git-repo projects. */
+    .project-branch-picker {
+      display: flex; align-items: center; gap: 10px;
+      margin-bottom: 8px;
+      padding: 0 2px;
+      font-family: var(--font-mono);
+      font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text-mute);
+    }
+    .project-branch-label { flex: 0 0 auto; }
+    .project-branch-select {
+      flex: 1 1 auto; min-width: 0;
+      background: var(--bg-elev); color: var(--text);
+      border: 1px solid var(--line);
+      padding: 6px 8px;
+      font-family: var(--font-mono); font-size: 12px;
+      letter-spacing: 0; text-transform: none;
+    }
+
+    /* Phase 2b: worktree badge on session rows (⌥ branch-name). */
+    .worktree-badge {
+      color: var(--accent);
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.04em;
+    }
+    .worktree-badge-archived { color: var(--text-mute); font-style: italic; }
+    .session-row-archived { opacity: 0.55; }
+    .session-row-archived .title { text-decoration: line-through; text-decoration-color: var(--text-mute); }
+
+    /* Phase 2b: per-session overflow ⋯ button + menu (Archive / Delete). */
+    .session-overflow {
+      background: transparent;
+      color: var(--text-mute);
+      border: 0;
+      padding: 4px 8px;
+      margin-left: auto;
+      cursor: pointer;
+      font-size: 18px; line-height: 1;
+      align-self: center;
+    }
+    .session-overflow:hover, .session-overflow:active { color: var(--text); }
+    .session-overflow-menu {
+      position: fixed;
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      padding: 4px 0;
+      z-index: 1000;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .session-overflow-item {
+      display: block; width: 100%;
+      background: transparent; color: var(--text);
+      border: 0;
+      padding: 8px 16px;
+      text-align: left;
+      font-family: var(--font-body);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .session-overflow-item:hover { background: var(--bg-elev-2); }
+    .session-overflow-item-danger { color: var(--danger); }
+
+    /* Phase 2b: long-press / right-click "New shared session" override menu. */
+    .new-session-alt-menu {
+      position: fixed;
+      background: var(--bg-elev);
+      border: 1px solid var(--line);
+      padding: 4px 0;
+      z-index: 1000;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+    }
+    .new-session-alt-item {
+      display: block; width: 100%;
+      background: transparent; color: var(--text);
+      border: 0;
+      padding: 8px 16px;
+      text-align: left;
+      font-family: var(--font-body);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .new-session-alt-item:hover { background: var(--bg-elev-2); }
+
     .empty-state {
       padding: 40px 20px; text-align: center;
       color: var(--text-mute); font-size: 13px;

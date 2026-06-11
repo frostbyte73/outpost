@@ -31,20 +31,35 @@ export { expect } from '@playwright/test';
 
 // Phase 2a flow helper: register a project via POST /api/projects, refresh the session
 // list IN-PLACE (no reload, which would wipe optimistic state like permission mode set
-// in settings before opening a session), then click the in-row "+ New session" button.
-// Replaces the Phase 0/1 cwd-picker flow.
+// in settings before opening a session), then either click the in-row "+ New session"
+// button (default = shared cwd) or programmatically open the session WS with worktree
+// query params (Phase 2b — when caller supplies spawnMode='worktree' + baseBranch).
 export async function openSessionAtCwd(
   outpostPage: Page,
   daemon: DaemonHandle,
   cwd: string,
+  opts: { spawnMode?: 'shared' | 'worktree'; baseBranch?: string } = {},
 ): Promise<void> {
   const res = await outpostPage.request.post(`${daemon.baseUrl}/api/projects`, { data: { cwd } });
-  // 200 added=true OR 200 added=false (idempotent). Either way the project is registered.
   if (!res.ok()) throw new Error(`POST /api/projects failed: ${res.status()}`);
-  // Refresh in-place so newly-registered projects appear without losing state.
   await outpostPage.evaluate(async () => {
     // @ts-expect-error — globalThis helper from app.js test instrumentation
     await globalThis.__outpostRefreshSessions?.();
   });
-  await outpostPage.locator(`.project-new-session[data-cwd="${cwd}"]`).click();
+  if (opts.spawnMode === 'worktree') {
+    // Bypass the UI and open the session WS directly with the spawn=worktree query
+    // params. The PWA work in T8 maps the default in-row click to this same path for
+    // git repos — for the API-level e2e here we just synthesize the WS request.
+    await outpostPage.evaluate(({ cwd, baseBranch }) => {
+      // @ts-expect-error
+      globalThis.__outpostOpenSession?.({
+        id: crypto.randomUUID(),
+        cwd,
+        spawn: 'worktree',
+        base: baseBranch ?? 'main',
+      });
+    }, { cwd, baseBranch: opts.baseBranch });
+  } else {
+    await outpostPage.locator(`.project-new-session[data-cwd="${cwd}"]`).click();
+  }
 }

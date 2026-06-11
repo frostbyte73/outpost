@@ -1,6 +1,7 @@
 import { statSync } from 'node:fs';
 import { ClaudeProc } from './claude-proc.js';
 import type { WebSocket } from 'ws';
+import type { WorktreeManager } from './worktree-manager.js';
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 const BUFFER_REPLAY_MS = 30 * 1000;
@@ -21,6 +22,9 @@ export interface SessionManagerOpts {
   // Used to resolve cwd for known sessions (resume) and to confirm session existence.
   // For brand-new sessions the cwd arrives via attach()'s opts.cwd parameter.
   sessionStore: import('./session-store.js').SessionStore;
+  // Optional: when set, attach() honors spawnMode='worktree' by calling create() on
+  // the manager and spawning claude at the resulting worktreePath. Phase 2b plumbing.
+  worktreeManager?: WorktreeManager;
   onProcMessage?: (sessionId: string, msg: unknown) => void;
 }
 
@@ -35,22 +39,93 @@ export class SessionManager {
   // `cwd` is honored only when the session does not exist yet (first attach for a new id).
   // On resume, the cwd is read from the session's own JSONL via SessionStore.findSession,
   // so the query-param cwd from the URL is ignored.
-  attach(sessionId: string, ws: WebSocket, opts: { cwd?: string } = {}): void {
+  //
+  // `spawnMode='worktree'` (Phase 2b) creates a fresh git worktree under WorktreeManager
+  // and spawns claude there. Requires `baseBranch`. On worktree-creation failure (e.g.
+  // not a git repo, dirty index, branch conflict) the daemon emits `daemon_error` and
+  // closes the WS — no silent fallback to shared mode.
+  attach(sessionId: string, ws: WebSocket, opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string } = {}): void {
     let s = this.active.get(sessionId);
-    if (!s) {
-      const cwd = this.resolveCwdForAttach(sessionId, opts.cwd);
-      if (!cwd) {
-        ws.send(JSON.stringify({
-          type: 'daemon_error',
-          message: opts.cwd
-            ? `cwd does not exist or is not a directory: ${opts.cwd}`
-            : 'cwd required for new session',
-        }));
+    if (s) {
+      this.attachClient(s, ws);
+      return;
+    }
+    // Resume path: an existing worktree session re-attaches to its recorded worktreePath.
+    const existingWt = this.opts.worktreeManager?.get(sessionId);
+    if (existingWt && !existingWt.archivedAt && existingWt.worktreePath) {
+      s = this.spawn(sessionId, existingWt.worktreePath);
+      this.attachClient(s, ws);
+      return;
+    }
+    // Resume path for a known shared-cwd session: use SessionStore's recorded cwd.
+    const known = this.opts.sessionStore.findSession(sessionId);
+    if (known) {
+      s = this.spawn(sessionId, known.cwd);
+      this.attachClient(s, ws);
+      return;
+    }
+    // New session path: validate the supplied cwd, then either spawn straight at it
+    // (shared) or hand it to WorktreeManager (worktree) and spawn at the resulting path.
+    if (!opts.cwd || !opts.cwd.startsWith('/')) {
+      ws.send(JSON.stringify({
+        type: 'daemon_error',
+        message: opts.cwd
+          ? `cwd must be absolute: ${opts.cwd}`
+          : 'cwd required for new session',
+      }));
+      ws.close();
+      return;
+    }
+    try {
+      if (!statSync(opts.cwd).isDirectory()) {
+        ws.send(JSON.stringify({ type: 'daemon_error', message: `cwd is not a directory: ${opts.cwd}` }));
         ws.close();
         return;
       }
-      s = this.spawn(sessionId, cwd);
+    } catch {
+      ws.send(JSON.stringify({ type: 'daemon_error', message: `cwd does not exist: ${opts.cwd}` }));
+      ws.close();
+      return;
     }
+    if (opts.spawnMode === 'worktree') {
+      if (!this.opts.worktreeManager) {
+        ws.send(JSON.stringify({ type: 'daemon_error', message: 'worktreeManager not configured but spawnMode=worktree requested' }));
+        ws.close();
+        return;
+      }
+      if (!opts.baseBranch) {
+        ws.send(JSON.stringify({ type: 'daemon_error', message: 'baseBranch required for spawnMode=worktree' }));
+        ws.close();
+        return;
+      }
+      const cwd = opts.cwd;
+      const baseBranch = opts.baseBranch;
+      const wtMgr = this.opts.worktreeManager;
+      // Asynchronously create the worktree, then spawn. Errors → daemon_error + close.
+      void (async () => {
+        let worktreePath: string;
+        try {
+          const rec = await wtMgr.create({ sessionId, projectCwd: cwd, baseBranch });
+          worktreePath = rec.worktreePath;
+        } catch (e) {
+          ws.send(JSON.stringify({
+            type: 'daemon_error',
+            message: `worktree creation failed: ${(e as Error).message}`,
+          }));
+          ws.close();
+          return;
+        }
+        const session = this.spawn(sessionId, worktreePath);
+        this.attachClient(session, ws);
+      })();
+      return;
+    }
+    // Default: shared cwd (Phase 2a behavior).
+    s = this.spawn(sessionId, opts.cwd);
+    this.attachClient(s, ws);
+  }
+
+  private attachClient(s: ActiveSession, ws: WebSocket): void {
     s.clients.add(ws);
     this.cancelIdleTimer(s);
     const cutoff = Date.now() - BUFFER_REPLAY_MS;
@@ -58,8 +133,8 @@ export class SessionManager {
       if (m.at >= cutoff) ws.send(JSON.stringify(m.msg));
     }
     ws.on('close', () => {
-      s!.clients.delete(ws);
-      if (s!.clients.size === 0) this.startIdleTimer(s!);
+      s.clients.delete(ws);
+      if (s.clients.size === 0) this.startIdleTimer(s);
     });
   }
 
@@ -101,23 +176,6 @@ export class SessionManager {
     await s.proc.kill();
     for (const ws of s.clients) ws.close();
     this.active.delete(sessionId);
-  }
-
-  // Determine which cwd to spawn a session under. For an existing session, return the
-  // SessionStore's recorded cwd (ignoring whatever the client passed). For a brand-new
-  // session, require an absolute path to a real directory. Returns null on validation
-  // failure; caller surfaces a daemon_error.
-  private resolveCwdForAttach(sessionId: string, requestedCwd: string | undefined): string | null {
-    const known = this.opts.sessionStore.findSession(sessionId);
-    if (known) return known.cwd;
-    if (!requestedCwd) return null;
-    if (!requestedCwd.startsWith('/')) return null;
-    try {
-      if (!statSync(requestedCwd).isDirectory()) return null;
-    } catch {
-      return null;
-    }
-    return requestedCwd;
   }
 
   private spawn(sessionId: string, cwd: string): ActiveSession {

@@ -381,3 +381,159 @@ describe('SessionStore — registry merge + isGitRepo', () => {
     expect(typeof match!.isGitRepo).toBe('boolean');
   });
 });
+
+describe('SessionStore — worktree merge', () => {
+  function makeRoot(): { root: string } {
+    return { root: mkdtempSync(join(tmpdir(), 'ss-wt-root-')) };
+  }
+  function makeCwd(parent: string, name: string): string {
+    const cwd = join(parent, name);
+    mkdirSync(cwd, { recursive: true });
+    return cwd;
+  }
+
+  it('worktree-derived project-dir is folded into its parent (sessions annotated)', async () => {
+    const { WorktreeManager } = await import('../../src/worktree-manager.js');
+    const { root } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-wt-cwd-'));
+    const parentCwd = makeCwd(cwdHost, 'parent');
+    const worktreePath = makeCwd(cwdHost, 'wt-abc');
+    // Pre-seed: parent has 1 raw session.
+    const parentDir = join(root, parentCwd.replace(/\//g, '-'));
+    mkdirSync(parentDir, { recursive: true });
+    writeFileSync(
+      join(parentDir, 'sess-parent.jsonl'),
+      JSON.stringify({ type: 'user', cwd: parentCwd, message: { content: 'hi from parent' } }) + '\n',
+    );
+    // Worktree dir has 1 session (claude wrote it because we spawned at worktreePath).
+    const wtDir = join(root, worktreePath.replace(/\//g, '-'));
+    mkdirSync(wtDir, { recursive: true });
+    writeFileSync(
+      join(wtDir, 'sessworktree.jsonl'),
+      JSON.stringify({ type: 'user', cwd: worktreePath, message: { content: 'hi from worktree' } }) + '\n',
+    );
+    // WorktreeManager record ties the worktreePath back to the parent.
+    const wtMgrRoot = mkdtempSync(join(tmpdir(), 'wt-mgr-'));
+    const wtMgr = new WorktreeManager({ root: wtMgrRoot });
+    wtMgr._testSeedRecord({
+      sessionId: 'sessworktree',
+      projectCwd: parentCwd,
+      worktreePath,
+      branch: 'outpost/abc',
+      baseBranch: 'main',
+      createdAt: 100,
+    });
+    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const projects = store.listProjects();
+    // Only ONE row in the merged view (worktree got folded in).
+    expect(projects.find((p) => p.cwd === parentCwd)).toBeDefined();
+    expect(projects.find((p) => p.cwd === worktreePath)).toBeUndefined();
+    const parent = projects.find((p) => p.cwd === parentCwd)!;
+    // Both sessions visible on the parent row.
+    expect(parent.sessions.map((s) => s.id).sort()).toEqual(['sess-parent', 'sessworktree']);
+    // Worktree session is annotated.
+    const wtSess = parent.sessions.find((s) => s.id === 'sessworktree')!;
+    expect(wtSess.worktreePath).toBe(worktreePath);
+    expect(wtSess.worktreeBranch).toBe('outpost/abc');
+    // Parent session has no worktree annotation.
+    const parSess = parent.sessions.find((s) => s.id === 'sess-parent')!;
+    expect(parSess.worktreePath).toBeUndefined();
+  });
+
+  it('worktree-only project (no parent JSONL yet) synthesizes the parent row', async () => {
+    const { WorktreeManager } = await import('../../src/worktree-manager.js');
+    const { root } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-wt-cwd-'));
+    const parentCwd = makeCwd(cwdHost, 'newparent');
+    const worktreePath = makeCwd(cwdHost, 'wt-new');
+    // No raw scan hit for the parent — only the worktree dir has a session.
+    const wtDir = join(root, worktreePath.replace(/\//g, '-'));
+    mkdirSync(wtDir, { recursive: true });
+    writeFileSync(
+      join(wtDir, 'sessnew.jsonl'),
+      JSON.stringify({ type: 'user', cwd: worktreePath, message: { content: 'first session in this project' } }) + '\n',
+    );
+    const wtMgrRoot = mkdtempSync(join(tmpdir(), 'wt-mgr-'));
+    const wtMgr = new WorktreeManager({ root: wtMgrRoot });
+    wtMgr._testSeedRecord({
+      sessionId: 'sessnew',
+      projectCwd: parentCwd,
+      worktreePath,
+      branch: 'outpost/new',
+      baseBranch: 'main',
+      createdAt: 100,
+    });
+    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const projects = store.listProjects();
+    const parent = projects.find((p) => p.cwd === parentCwd);
+    expect(parent).toBeDefined();
+    expect(parent!.sessions.map((s) => s.id)).toEqual(['sessnew']);
+    expect(parent!.sessions[0]!.worktreeBranch).toBe('outpost/new');
+  });
+
+  it('archived worktree records: session row stamped archived:true', async () => {
+    const { WorktreeManager } = await import('../../src/worktree-manager.js');
+    const { root } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-wt-cwd-'));
+    const parentCwd = makeCwd(cwdHost, 'archpar');
+    const parentDir = join(root, parentCwd.replace(/\//g, '-'));
+    mkdirSync(parentDir, { recursive: true });
+    // The archived session's JSONL is still on disk in the WORKTREE-derived dir
+    // (the JSONL wasn't deleted on archive — only the worktree path was). For the
+    // purposes of this test the dir doesn't need to exist on disk because the
+    // tombstone has `worktreePath: ''` and we look up by sessionId not by dir.
+    // Instead, we put the session JSONL in the parent's dir (simulating a "started
+    // in shared mode" session that then got worktree-archived) — unrealistic but
+    // exercises the archived-stamp logic.
+    writeFileSync(
+      join(parentDir, 'sessarc.jsonl'),
+      JSON.stringify({ type: 'user', cwd: parentCwd, message: { content: 'archived session' } }) + '\n',
+    );
+    const wtMgrRoot = mkdtempSync(join(tmpdir(), 'wt-mgr-'));
+    const wtMgr = new WorktreeManager({ root: wtMgrRoot });
+    wtMgr._testSeedRecord({
+      sessionId: 'sessarc',
+      projectCwd: parentCwd,
+      worktreePath: '',  // tombstone
+      branch: '',
+      baseBranch: 'main',
+      createdAt: 100,
+      archivedAt: 200,
+    });
+    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const parent = store.listProjects().find((p) => p.cwd === parentCwd)!;
+    const sess = parent.sessions.find((s) => s.id === 'sessarc');
+    expect(sess?.archived).toBe(true);
+  });
+
+  it('findSession returns the PHYSICAL projectDir (raw scan), not the merged-view parent', async () => {
+    const { WorktreeManager } = await import('../../src/worktree-manager.js');
+    const { root } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-wt-cwd-'));
+    const parentCwd = makeCwd(cwdHost, 'physpar');
+    const worktreePath = makeCwd(cwdHost, 'wt-phys');
+    const wtDir = join(root, worktreePath.replace(/\//g, '-'));
+    mkdirSync(wtDir, { recursive: true });
+    writeFileSync(
+      join(wtDir, 'sessphys.jsonl'),
+      JSON.stringify({ type: 'user', cwd: worktreePath, message: { content: 'hi' } }) + '\n',
+    );
+    const wtMgrRoot = mkdtempSync(join(tmpdir(), 'wt-mgr-'));
+    const wtMgr = new WorktreeManager({ root: wtMgrRoot });
+    wtMgr._testSeedRecord({
+      sessionId: 'sessphys',
+      projectCwd: parentCwd,
+      worktreePath,
+      branch: 'outpost/phys',
+      baseBranch: 'main',
+      createdAt: 100,
+    });
+    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const found = store.findSession('sessphys');
+    expect(found).toBeDefined();
+    // Physical projectDir = the worktree-derived dir (where the JSONL actually lives).
+    expect(found!.projectDir).toBe(wtDir);
+    // findSession's cwd is also the raw scan's cwd (the worktree path).
+    expect(found!.cwd).toBe(worktreePath);
+  });
+});

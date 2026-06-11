@@ -14,6 +14,7 @@ import { writeDaemonSettings, generateSecret } from './settings-gen.js';
 import { handleHook } from './hook-handler.js';
 import { type ApprovalMode, ApprovalModeStore } from './approval-mode.js';
 import { RecurrenceTracker } from './recurrence-tracker.js';
+import { WorktreeManager } from './worktree-manager.js';
 import { loadConfig } from './config.js';
 import allowlistConfig from '../config/allowlist.json' with { type: 'json' };
 import pkg from '../package.json' with { type: 'json' };
@@ -60,7 +61,8 @@ async function main() {
   // cwd anymore — each session carries its own (recorded by claude in the JSONL).
   const projectsRoot = config.projectsRoot;
   const projectRegistry = new ProjectRegistry(join(RUNTIME_DIR, 'projects.json'));
-  const sessionStore = new SessionStore({ root: projectsRoot, registry: projectRegistry });
+  const worktreeManager = new WorktreeManager({ root: join(RUNTIME_DIR, 'worktrees') });
+  const sessionStore = new SessionStore({ root: projectsRoot, registry: projectRegistry, worktreeManager });
   console.log(`[daemon] projects root: ${projectsRoot}`);
 
   function findSessionTitle(id: string): string | undefined {
@@ -76,6 +78,7 @@ async function main() {
     daemonAuthSecret: secret,
     daemonHost: config.host ?? tsEnv.hostname,
     sessionStore,
+    worktreeManager,
   });
 
   const server = new Server({
@@ -86,10 +89,13 @@ async function main() {
   });
 
   function cwdForSession(sessionId: string): string | undefined {
-    // Prefer the on-disk cwd (for resumed sessions). Fall back to the in-memory cwd
-    // recorded at spawn time so project-scoped allowlist rules apply even before the
-    // session JSONL has been written to disk (e.g. on the very first tool call of a
-    // brand-new session whose init record hasn't been flushed yet).
+    // For worktree sessions, return the PARENT project's cwd so project-scoped allowlist
+    // rules (applied at the user-visible project level) still match. Only fall through
+    // to SessionStore/manager when there's no worktree record for this id.
+    const wtRec = worktreeManager.get(sessionId);
+    if (wtRec && !wtRec.archivedAt) return wtRec.projectCwd;
+    // Otherwise: on-disk cwd if known, else the in-memory spawn cwd. The latter handles
+    // the brand-new-session case where the first JSONL line hasn't been flushed yet.
     return sessionStore.findSession(sessionId)?.cwd ?? manager.getCwd(sessionId);
   }
 
@@ -288,14 +294,83 @@ async function main() {
     res.end(JSON.stringify({ added, ruleCount: allowlist.ruleCount() }));
   });
 
-  // Delete a session — kills the subprocess AND removes the .jsonl from disk. Unrecoverable.
+  // Delete a session — kills the subprocess, removes the .jsonl from disk, and (if the
+  // session ran in a worktree) removes the worktree + branch via WorktreeManager.remove().
   server.route('DELETE', '/api/sessions/:id', async (req, res) => {
     const id = (req.url ?? '').split('/').pop()!;
     await manager.close(id);
     const removed = sessionStore.delete(id);
+    await worktreeManager.remove(id);
     console.log(`[api] delete session ${id.slice(0,8)} subprocess=killed file=${removed ? 'removed' : 'not-found'}`);
     res.statusCode = 204;
     res.end();
+  });
+
+  // Archive a session — keeps the .jsonl but tears down the worktree + branch. The
+  // session row stays visible in the list (marked archived) so the transcript is still
+  // reachable. Reopening an archived session falls through to shared-cwd mode.
+  server.route('POST', '/api/sessions/:id/archive', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/archive$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const id = m[1]!;
+    await manager.close(id);
+    await worktreeManager.archive(id);
+    console.log(`[api] archive session ${id.slice(0,8)} (worktree removed, JSONL kept)`);
+    res.statusCode = 204;
+    res.end();
+  });
+
+  // Per-project git branch listing for the branch picker. Cached 30s per cwd; returns
+  // local + remote branches deduped + sorted by committer-date, plus the repo's default
+  // branch (origin/HEAD if present, else first match of main/master).
+  const branchesCache = new Map<string, { branches: string[]; defaultBranch: string | null; at: number }>();
+  const BRANCHES_CACHE_MS = 30_000;
+  server.route('GET', '/api/projects/:sanitized/branches', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/projects\/([\w.\-]+)\/branches$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const sanitized = m[1]!;
+    const project = sessionStore.listProjects().find((p) => p.cwd.replace(/\//g, '-') === sanitized);
+    if (!project) { res.statusCode = 404; res.end('project not found'); return; }
+    const cached = branchesCache.get(project.cwd);
+    if (cached && Date.now() - cached.at < BRANCHES_CACHE_MS) {
+      res.statusCode = 200;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ branches: cached.branches, defaultBranch: cached.defaultBranch }));
+      return;
+    }
+    const { execFileSync } = await import('node:child_process');
+    const branches: string[] = [];
+    let defaultBranch: string | null = null;
+    try {
+      const local = execFileSync('git', ['-C', project.cwd, 'branch', '--format=%(refname:short)', '--sort=-committerdate'])
+        .toString().split('\n').filter(Boolean);
+      let remote: string[] = [];
+      try {
+        remote = execFileSync('git', ['-C', project.cwd, 'branch', '-r', '--format=%(refname:short)', '--sort=-committerdate'])
+          .toString().split('\n').filter(Boolean)
+          .filter((b) => b !== 'origin/HEAD' && !b.includes('->'))
+          .map((b) => b.replace(/^origin\//, ''));
+      } catch { /* no remote — fine */ }
+      const seen = new Set<string>();
+      for (const b of [...local, ...remote]) {
+        if (!seen.has(b)) { seen.add(b); branches.push(b); }
+      }
+      try {
+        const head = execFileSync('git', ['-C', project.cwd, 'symbolic-ref', 'refs/remotes/origin/HEAD'], { stdio: ['ignore', 'pipe', 'ignore'] })
+          .toString().trim();
+        defaultBranch = head.replace(/^refs\/remotes\/origin\//, '') || null;
+      } catch {
+        defaultBranch = branches.find((b) => b === 'main' || b === 'master') ?? branches[0] ?? null;
+      }
+    } catch (e) {
+      res.statusCode = 500;
+      res.end(`git error: ${(e as Error).message}`);
+      return;
+    }
+    branchesCache.set(project.cwd, { branches, defaultBranch, at: Date.now() });
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ branches, defaultBranch }));
   });
 
   // Register a user-supplied project cwd in the ProjectRegistry. Used by the PWA's
@@ -434,14 +509,21 @@ async function main() {
     // Optional ?cwd=<absolute-path> on the WS URL. Honored only on the first attach for a
     // brand-new session id; SessionManager.attach validates it and emits a daemon_error + closes
     // the WS on failure.
+    // Phase 2b: also accept &spawn=worktree|shared and &base=<branch> for worktree-mode spawns.
     let cwd: string | undefined;
+    let spawnMode: 'shared' | 'worktree' | undefined;
+    let baseBranch: string | undefined;
     const queryIdx = url.indexOf('?');
     if (queryIdx >= 0) {
       const params = new URLSearchParams(url.slice(queryIdx + 1));
-      const raw = params.get('cwd');
-      if (raw) cwd = raw; // URLSearchParams already decodes
+      const rawCwd = params.get('cwd');
+      if (rawCwd) cwd = rawCwd;
+      const rawSpawn = params.get('spawn');
+      if (rawSpawn === 'worktree' || rawSpawn === 'shared') spawnMode = rawSpawn;
+      const rawBase = params.get('base');
+      if (rawBase) baseBranch = rawBase;
     }
-    manager.attach(sessionId, ws, { cwd });
+    manager.attach(sessionId, ws, { cwd, spawnMode, baseBranch });
     // Broadcast the current mode to this WS so the PWA can render the segmented control
     // in sync with server state. Cheap; one message per WS connect.
     ws.send(JSON.stringify({ type: 'approval_mode', sessionId, mode: modes.get(sessionId) }));
