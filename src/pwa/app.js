@@ -164,7 +164,36 @@ const state = {
   // Guards against an infinite push-back loop: set to true when we push our local mode back
   // to the server; cleared when the server's echo finally agrees, or on a new WS attach.
   approvalModePushBackSent: false,
+  // Last seen usage payload from an `assistant` stream-json message — drives the
+  // context-window meter above the composer. Reset per session (the bar is hidden until
+  // the first assistant message comes in). cacheRead+cacheCreate occupy the context
+  // window even though they bill differently, so the meter sums all four.
+  lastUsage: null, // { inputTokens, outputTokens, cacheCreate, cacheRead, model }
+  contextWindow: 200_000,
+  // Whether the meter breakdown popup is open. Toggled by tapping the bar.
+  meterBreakdownOpen: false,
+  // Slash-command palette — populated once from /api/info, opened by typing `/` at the
+  // start of the composer. Filter text is the composer's current contents (trimmed).
+  slashCommands: [],
+  paletteOpen: false,
+  paletteFilter: '',
+  paletteHighlight: 0, // index of the highlighted row for keyboard navigation
 };
+
+// Per-model context-window sizes. Updated by PR when Anthropic ships new models; unknown
+// ids fall through to a safe 200k default that matches the current production Sonnet/Opus
+// shape. The 1M-context Opus build advertises itself with the [1m] suffix.
+const CONTEXT_WINDOWS = {
+  'claude-opus-4-7[1m]': 1_000_000,
+  'claude-opus-4-7': 200_000,
+  'claude-sonnet-4-6': 200_000,
+  'claude-haiku-4-5-20251001': 200_000,
+  _default: 200_000,
+};
+function lookupContextWindow(modelId) {
+  if (!modelId) return CONTEXT_WINDOWS._default;
+  return CONTEXT_WINDOWS[modelId] ?? CONTEXT_WINDOWS._default;
+}
 
 // Threshold of consecutive failed retries before we flip to the user-facing 'failed' state
 // (banner + danger dot). 3 retries with backoff ≈ ~5s before the user sees the banner —
@@ -399,7 +428,11 @@ async function loadDaemonInfo() {
     const r = await fetch('/api/info');
     if (!r.ok) return;
     state.daemonInfo = await r.json();
+    if (Array.isArray(state.daemonInfo.slashCommands)) {
+      state.slashCommands = state.daemonInfo.slashCommands;
+    }
     if (state.view === 'list') renderList();
+    else if (state.view === 'session') updateSlashPalette();
   } catch { /* offline-ok */ }
 }
 
@@ -889,6 +922,14 @@ async function openSession(id, opts) {
   state.autoAllowedEdits = 0;
   state.activeTools = [];
   state.pendingExpand = [];
+  // Token meter is per-session — usage from a previous session would otherwise show
+  // until the new session's first assistant turn lands.
+  state.lastUsage = null;
+  state.meterBreakdownOpen = false;
+  // Slash palette also per-session so a stale filter doesn't carry across.
+  state.paletteOpen = false;
+  state.paletteFilter = '';
+  state.paletteHighlight = 0;
   if (state.lingeringTimer) clearTimeout(state.lingeringTimer);
   state.lingeringVerb = null;
   state.lingeringTimer = null;
@@ -1366,6 +1407,11 @@ function handleWsMessage(msg) {
       }
     }
     if (!processed) return; // thinking-only delivery — wait for the real content
+    // Record the assistant turn's usage for the context-window meter. cache_read and
+    // cache_create tokens count against the window even though only input/output bill —
+    // we sum all four. The model id can shift mid-session (Opus → Sonnet on /model
+    // switch), so we re-lookup the window size on every payload.
+    recordUsage(msg.message?.usage, msg.message?.model);
     // Don't stop thinking on first content block. Claude emits one `assistant` line per
     // content_block_stop, so a tool-using turn produces several `assistant` envelopes
     // before the response is actually done — flipping the caret off on the first one
@@ -1924,10 +1970,189 @@ function renderSession() {
   updateAgentsRegion();
   updateTodosRegion();
   updateBannerRegion();
+  updateMeterRegion();
+  updateSlashPalette();
   refreshAgentsSheet();
   refreshTodosSheet();
   ensureAskSheet();
   if (wasAtBottom) scrollTranscriptBottom();
+}
+
+// Record an assistant turn's usage payload. Stamps state.lastUsage and re-derives the
+// context-window size from the model id. Tolerates a missing usage block (the
+// content_block_stop envelopes that aren't message_start/_delta carry no usage — the
+// message_start delivery seeds the values, later deltas refine the output_tokens count).
+function recordUsage(usage, model) {
+  if (!usage) return;
+  state.lastUsage = {
+    inputTokens: usage.input_tokens ?? 0,
+    outputTokens: usage.output_tokens ?? 0,
+    cacheCreate: usage.cache_creation_input_tokens ?? 0,
+    cacheRead: usage.cache_read_input_tokens ?? 0,
+    model: model ?? state.lastUsage?.model ?? null,
+  };
+  if (model) state.contextWindow = lookupContextWindow(model);
+}
+
+// Render the context-window meter above the composer. Hidden until the first assistant
+// turn lands a usage payload. The bar uses three threshold colours: green <60%, amber
+// 60–80%, red >80% — mirroring the on-disk pricing tiers but more importantly giving the
+// user a clear "you're about to be force-compacted" warning before claude triggers its
+// own internal compaction.
+function updateMeterRegion() {
+  const region = document.getElementById('meter-region');
+  if (!region) return;
+  const u = state.lastUsage;
+  if (!u) { region.innerHTML = ''; return; }
+  const used = u.inputTokens + u.outputTokens + u.cacheCreate + u.cacheRead;
+  const total = state.contextWindow || CONTEXT_WINDOWS._default;
+  const pct = Math.min(100, Math.max(0, (used / total) * 100));
+  let tier = 'ok';
+  if (pct >= 80) tier = 'danger';
+  else if (pct >= 60) tier = 'warn';
+  const breakdown = state.meterBreakdownOpen
+    ? `<div class="meter-breakdown">
+        <div><span>Input</span><span>${fmtNumber(u.inputTokens)}</span></div>
+        <div><span>Cache read</span><span>${fmtNumber(u.cacheRead)}</span></div>
+        <div><span>Cache create</span><span>${fmtNumber(u.cacheCreate)}</span></div>
+        <div><span>Output</span><span>${fmtNumber(u.outputTokens)}</span></div>
+        ${u.model ? `<div class="meter-model"><span>Model</span><span>${escapeHtml(u.model)}</span></div>` : ''}
+      </div>`
+    : '';
+  region.innerHTML = `
+    <button class="meter" id="meter" data-tier="${tier}" aria-expanded="${state.meterBreakdownOpen ? 'true' : 'false'}"
+            aria-label="Context window: ${fmtNumber(used)} of ${fmtNumber(total)} tokens used, ${Math.round(pct)} percent">
+      <span class="meter-text">${fmtNumber(used)} / ${fmtNumber(total)} tokens (${Math.round(pct)}%)</span>
+      <span class="meter-bar"><span class="meter-fill" style="width:${pct}%"></span></span>
+    </button>
+    ${breakdown}
+  `;
+  const btn = document.getElementById('meter');
+  if (btn) btn.onclick = () => {
+    state.meterBreakdownOpen = !state.meterBreakdownOpen;
+    updateMeterRegion();
+  };
+}
+
+function fmtNumber(n) {
+  return Number(n || 0).toLocaleString('en-US');
+}
+
+// Open-state for the slash command palette is derived directly from the composer's text:
+// any time the trimmed contents start with `/`, the palette is open and the filter is
+// whatever comes after the slash. evaluatePaletteState() runs on every composer input
+// event; deleting the leading `/` (or focusing away) naturally closes the palette.
+function evaluatePaletteState() {
+  const composer = document.getElementById('composer');
+  if (!composer) return;
+  const text = composer.textContent || '';
+  const trimmed = text.trimStart();
+  const open = trimmed.startsWith('/');
+  if (!open) {
+    if (state.paletteOpen) {
+      state.paletteOpen = false;
+      state.paletteFilter = '';
+      state.paletteHighlight = 0;
+      updateSlashPalette();
+    }
+    return;
+  }
+  // Strip the leading slash + any leading whitespace before it. We allow whitespace before
+  // the slash so an indented quote-paste still triggers the palette (the spec's "at the
+  // start of the input (or with only whitespace before it)" rule).
+  const filter = trimmed.slice(1).split(/\s/)[0] ?? '';
+  const wasOpen = state.paletteOpen;
+  const prevFilter = state.paletteFilter;
+  state.paletteOpen = true;
+  state.paletteFilter = filter;
+  if (!wasOpen || prevFilter !== filter) state.paletteHighlight = 0;
+  updateSlashPalette();
+}
+
+// Filter the discovered list by fuzzy-match on the command name (sans leading slash).
+// "Fuzzy" here is the simple subsequence form — every char in the filter must appear, in
+// order, in the candidate. Matches that start with the filter prefix are sorted ahead of
+// later-position matches so typing `/inv` puts `/investigate-cscu` above any incidental
+// matches in unrelated names.
+function filteredSlashCommands() {
+  const f = state.paletteFilter.toLowerCase();
+  if (!f) return state.slashCommands.slice(0, 50);
+  const scored = [];
+  for (const c of state.slashCommands) {
+    const name = c.name.slice(1).toLowerCase(); // drop the `/`
+    if (name.startsWith(f)) { scored.push({ c, rank: 0, pos: 0 }); continue; }
+    // Subsequence: every char of f appears in name in order.
+    let i = 0, pos = -1;
+    for (let j = 0; j < name.length && i < f.length; j++) {
+      if (name[j] === f[i]) { if (pos < 0) pos = j; i++; }
+    }
+    if (i === f.length) scored.push({ c, rank: 1, pos });
+  }
+  scored.sort((a, b) => a.rank - b.rank || a.pos - b.pos || a.c.name.localeCompare(b.c.name));
+  return scored.slice(0, 50).map((s) => s.c);
+}
+
+function updateSlashPalette() {
+  const region = document.getElementById('slash-palette');
+  if (!region) return;
+  if (!state.paletteOpen) {
+    region.hidden = true;
+    region.innerHTML = '';
+    return;
+  }
+  const items = filteredSlashCommands();
+  if (items.length === 0) {
+    region.hidden = false;
+    region.innerHTML = `<div class="slash-empty">No matches</div>`;
+    return;
+  }
+  const high = Math.min(state.paletteHighlight, items.length - 1);
+  state.paletteHighlight = high;
+  region.hidden = false;
+  region.innerHTML = `
+    <ul class="slash-list" role="listbox" aria-label="Slash commands">
+      ${items.map((c, i) => `
+        <li role="option" class="slash-item${i === high ? ' slash-item-highlight' : ''}" data-cmd="${escapeHtml(c.name)}" aria-selected="${i === high ? 'true' : 'false'}">
+          <span class="slash-name">${escapeHtml(c.name)}</span>
+          ${c.description ? `<span class="slash-desc">${escapeHtml(c.description)}</span>` : ''}
+        </li>
+      `).join('')}
+    </ul>
+  `;
+  for (const li of region.querySelectorAll('.slash-item')) {
+    li.addEventListener('click', (e) => {
+      e.preventDefault();
+      insertSlashCommand(li.dataset.cmd);
+    });
+  }
+}
+
+function insertSlashCommand(cmd) {
+  const composer = document.getElementById('composer');
+  if (!composer) return;
+  // Insert the command followed by a trailing space so the user can start typing args
+  // immediately. Filling the field via textContent (rather than execCommand) keeps the
+  // contenteditable in a clean state — no half-formed text node residue from the slash
+  // the user typed.
+  composer.textContent = `${cmd} `;
+  state.paletteOpen = false;
+  state.paletteFilter = '';
+  state.paletteHighlight = 0;
+  // Move the cursor to the end so the next keystroke lands after the command.
+  placeCursorAtEnd(composer);
+  composer.focus();
+  document.getElementById('send')?.classList.toggle('armed', composer.textContent.trim().length > 0);
+  updateSlashPalette();
+}
+
+function placeCursorAtEnd(el) {
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  range.collapse(false);
+  const sel = window.getSelection();
+  if (!sel) return;
+  sel.removeAllRanges();
+  sel.addRange(range);
 }
 
 function buildSessionSkeleton() {
@@ -1937,12 +2162,16 @@ function buildSessionSkeleton() {
     <div id="agents-region"></div>
     <div id="todos-region"></div>
     <div id="banner-region"></div>
-    <div class="composer">
-      <div class="field" id="composer" contenteditable="true"
-           role="textbox" aria-multiline="true" aria-label="Message"
-           autocapitalize="sentences"
-           data-placeholder="Type a message…"></div>
-      <button class="send" id="send" aria-label="Send">↵</button>
+    <div class="composer-wrap">
+      <div id="slash-palette" class="slash-palette" hidden></div>
+      <div id="meter-region"></div>
+      <div class="composer">
+        <div class="field" id="composer" contenteditable="true"
+             role="textbox" aria-multiline="true" aria-label="Message"
+             autocapitalize="sentences"
+             data-placeholder="Type a message…"></div>
+        <button class="send" id="send" aria-label="Send">↵</button>
+      </div>
     </div>
   `;
   const composer = document.getElementById('composer');
@@ -1950,8 +2179,40 @@ function buildSessionSkeleton() {
   const armSend = () => {
     send.classList.toggle('armed', composer.textContent.trim().length > 0);
   };
-  composer.addEventListener('input', armSend);
+  composer.addEventListener('input', () => {
+    armSend();
+    evaluatePaletteState();
+  });
   composer.addEventListener('keydown', (e) => {
+    // Slash-palette keyboard handling on desktop (mouse/keyboard devices). Arrow keys
+    // cycle through the filtered list; Enter inserts the highlighted match. Escape
+    // closes the palette without inserting. Touch devices fall through to tap-only.
+    if (state.paletteOpen) {
+      const items = filteredSlashCommands();
+      if (e.key === 'ArrowDown' && items.length > 0) {
+        e.preventDefault();
+        state.paletteHighlight = (state.paletteHighlight + 1) % items.length;
+        updateSlashPalette();
+        return;
+      }
+      if (e.key === 'ArrowUp' && items.length > 0) {
+        e.preventDefault();
+        state.paletteHighlight = (state.paletteHighlight - 1 + items.length) % items.length;
+        updateSlashPalette();
+        return;
+      }
+      if (e.key === 'Enter' && items.length > 0 && !window.matchMedia('(hover: none)').matches) {
+        e.preventDefault();
+        insertSlashCommand(items[state.paletteHighlight].name);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        state.paletteOpen = false;
+        updateSlashPalette();
+        return;
+      }
+    }
     // Desktop: Enter sends, Shift+Enter inserts a newline.
     // Touch devices: Enter always inserts a newline — users send via the on-screen button,
     // so an on-screen keyboard's Return key shouldn't fire off a half-typed message.
@@ -1972,6 +2233,19 @@ function buildSessionSkeleton() {
     }
   };
 }
+
+// Outside-tap closes the slash palette. Attached once at module load — re-attaching from
+// buildSessionSkeleton would leak a fresh listener every time the user re-enters the
+// session view, and the listener cheaply no-ops when the palette is closed.
+document.addEventListener('pointerdown', (e) => {
+  if (!state.paletteOpen) return;
+  const target = e.target;
+  if (!(target instanceof Node)) return;
+  if (document.getElementById('slash-palette')?.contains(target)) return;
+  if (document.getElementById('composer')?.contains(target)) return;
+  state.paletteOpen = false;
+  updateSlashPalette();
+}, true);
 
 // Tell the daemon to SIGINT the claude subprocess. The daemon's existing
 // daemon_proc_exit path then surfaces a Reopen tile in the transcript; tapping it

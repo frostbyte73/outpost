@@ -1,7 +1,7 @@
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, statSync, createReadStream, writeFileSync, renameSync } from 'node:fs';
+import { mkdirSync, statSync, createReadStream, writeFileSync, renameSync, readdirSync, readFileSync } from 'node:fs';
 import { Allowlist } from './allowlist.js';
 import { ProjectRegistry } from './project-registry.js';
 import { ApprovalQueue } from './approvals.js';
@@ -180,6 +180,12 @@ async function main() {
     },
   });
 
+  // Discover slash commands once at startup. The set is effectively static for a daemon
+  // lifetime — installing a new plugin or skill requires a daemon restart to surface in
+  // the palette, same as it requires a `claude` restart to be picked up.
+  const slashCommands = discoverSlashCommands();
+  console.log(`[daemon] discovered ${slashCommands.length} slash commands`);
+
   server.route('GET', '/api/info', (_req, res) => {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
@@ -190,6 +196,7 @@ async function main() {
       // Used by the PWA to expand `~/foo` into an absolute path in the cwd picker
       // without baking a username into the client.
       home: homedir(),
+      slashCommands,
     }));
   });
 
@@ -600,6 +607,98 @@ function summarizeToolInput(toolName: string, toolInput: unknown): string {
   } catch {
     return toolName;
   }
+}
+
+type SlashCommand = { name: string; source: string; description?: string };
+
+// Scanned once at daemon startup and surfaced via /api/info. The PWA's slash-command
+// palette uses this to populate its picker — saves the user typing long names on a
+// phone keyboard. Scan order is hardcoded → user → plugin → skill; first occurrence
+// of a given /name wins so a user override beats the plugin shipping the same name.
+function discoverSlashCommands(): SlashCommand[] {
+  const out: SlashCommand[] = [];
+  const seen = new Set<string>();
+  const push = (c: SlashCommand) => {
+    if (seen.has(c.name)) return;
+    seen.add(c.name);
+    out.push(c);
+  };
+  // Built-ins: `claude --help` doesn't enumerate slash commands in a parse-friendly form,
+  // so we maintain a known list. Update when the CLI ships new ones.
+  for (const b of ['clear', 'compact', 'context', 'usage', 'help', 'exit', 'mcp', 'config', 'login', 'logout', 'model']) {
+    push({ name: `/${b}`, source: 'builtin' });
+  }
+  const claudeDir = join(homedir(), '.claude');
+  // 1. User commands.
+  scanCommandDir(join(claudeDir, 'commands'), 'user', push);
+  // 2. Plugin commands. Layout is ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/commands/*.md
+  // — walk to depth 4 looking for any `commands` subdirectory and scan it.
+  scanPluginCommands(join(claudeDir, 'plugins', 'cache'), push);
+  // 3. User skills at ~/.claude/skills/<name>/SKILL.md.
+  scanSkillDir(join(claudeDir, 'skills'), 'skill', push);
+  return out;
+}
+
+function scanCommandDir(dir: string, source: string, push: (c: SlashCommand) => void) {
+  let entries: string[];
+  try { entries = readdirSync(dir); } catch { return; }
+  for (const f of entries) {
+    if (!f.endsWith('.md')) continue;
+    const name = f.slice(0, -3);
+    const description = readFrontmatterDescription(join(dir, f));
+    push({ name: `/${name}`, source, ...(description ? { description } : {}) });
+  }
+}
+
+function scanPluginCommands(root: string, push: (c: SlashCommand) => void) {
+  // BFS up to 5 levels deep; any directory named "commands" gets scanned, with the source
+  // tagged as `plugin:<owner-dir>`. The exact nesting depends on the marketplace, so we
+  // walk rather than glob-match a fixed shape.
+  const stack: { dir: string; depth: number; owner: string | null }[] = [{ dir: root, depth: 0, owner: null }];
+  while (stack.length) {
+    const { dir, depth, owner } = stack.pop()!;
+    if (depth > 5) continue;
+    let entries: { name: string; isDirectory(): boolean }[];
+    try { entries = readdirSync(dir, { withFileTypes: true }); } catch { continue; }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (e.name === 'commands') {
+        scanCommandDir(join(dir, e.name), `plugin${owner ? `:${owner}` : ''}`, push);
+        continue;
+      }
+      // Use the first directory below cache/<marketplace> as the plugin label.
+      const nextOwner = owner ?? (depth === 1 ? e.name : null);
+      stack.push({ dir: join(dir, e.name), depth: depth + 1, owner: nextOwner });
+    }
+  }
+}
+
+function scanSkillDir(root: string, source: string, push: (c: SlashCommand) => void) {
+  let entries: { name: string; isDirectory(): boolean }[];
+  try { entries = readdirSync(root, { withFileTypes: true }); } catch { return; }
+  for (const e of entries) {
+    if (!e.isDirectory()) continue;
+    const skillFile = join(root, e.name, 'SKILL.md');
+    try { statSync(skillFile); } catch { continue; }
+    const description = readFrontmatterDescription(skillFile);
+    push({ name: `/${e.name}`, source, ...(description ? { description } : {}) });
+  }
+}
+
+// Read just the `description:` line from the YAML frontmatter at the top of a .md file.
+// Description text can span multiple lines in YAML, but in practice Anthropic's command
+// and skill files keep it to a single line — we mirror that and only support the simple
+// form. Returns undefined if the file has no frontmatter or no description key.
+function readFrontmatterDescription(path: string): string | undefined {
+  let content: string;
+  try { content = readFileSync(path, 'utf-8'); } catch { return undefined; }
+  // Read at most the first 4KB — frontmatter never gets close to that, and skill bodies
+  // can be huge.
+  const head = content.slice(0, 4096);
+  const fm = head.match(/^---\s*\n([\s\S]*?)\n---/);
+  if (!fm || !fm[1]) return undefined;
+  const m = fm[1].match(/^description:\s*(.+?)\s*$/m);
+  return m && m[1] ? m[1] : undefined;
 }
 
 function readBody(req: NodeJS.ReadableStream): Promise<string> {
