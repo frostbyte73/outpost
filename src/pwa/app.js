@@ -4478,9 +4478,27 @@ function renderInline(text) {
 
   // Links: [text](href). Only allow http(s):// and mailto: hrefs for safety; everything else
   // renders as the raw text so a malformed href can't smuggle in a javascript: URL.
+  // Stash the rendered anchor in a placeholder so the bare-URL autolinker below doesn't
+  // re-match the href inside it.
+  const links = [];
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g, (full, label, href) => {
     if (!/^(?:https?:\/\/|mailto:|tel:|\/)/.test(href)) return full;
-    return `<a class="md-link" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+    links.push(`<a class="md-link" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`);
+    return `\x00LINK${links.length - 1}\x00`;
+  });
+
+  // Bare URLs: linkify http(s)://… so URLs Claude prints inline (e.g. a `gh run` link)
+  // are tappable. Trim trailing sentence punctuation back out of the href so "see
+  // https://example.com." doesn't include the period.
+  s = s.replace(/\bhttps?:\/\/[^\s<]+/g, (url) => {
+    let trail = '';
+    while (url.length && /[.,;:!?)\]}'"]/.test(url.slice(-1))) {
+      trail = url.slice(-1) + trail;
+      url = url.slice(0, -1);
+    }
+    if (!url) return trail;
+    links.push(`<a class="md-link" href="${url}" target="_blank" rel="noopener noreferrer">${url}</a>`);
+    return `\x00LINK${links.length - 1}\x00${trail}`;
   });
 
   // Bold-italic ***x***
@@ -4493,6 +4511,10 @@ function renderInline(text) {
   s = s.replace(/(^|[\s({\[>])_([^_\n]+)_/g, '$1<em>$2</em>');
   // Strikethrough ~~x~~
   s = s.replace(/~~([^~\n]+)~~/g, '<del>$1</del>');
+
+  // Restore link placeholders before code, so anchors don't get mistakenly wrapped in
+  // <code> if a future transform ever shifts ordering.
+  s = s.replace(/\x00LINK(\d+)\x00/g, (_, i) => links[Number(i)] ?? '');
 
   // Restore inline code
   s = s.replace(/\x00CODE(\d+)\x00/g, (_, i) => {
