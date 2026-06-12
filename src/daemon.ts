@@ -144,10 +144,64 @@ async function main() {
     return sessionStore.findSession(sessionId)?.cwd ?? manager.getCwd(sessionId);
   }
 
-  // PreToolUse + Stop hook endpoints (loopback-only — see hook-server.ts for why)
+  // PreToolUse + Stop + StatusLine hook endpoints (loopback-only — see hook-server.ts for why)
   const hookServer = new HookServer({
     port: HOOK_PORT,
     daemonAuthSecret: secret,
+    onStatusLineHook: async (body) => {
+      // claude pipes its statusLine JSON to a shell command we install in settings.json;
+      // that command POSTs the payload here, then we fan it out to every attached WS
+      // client for the session. Goes through manager.broadcast so the daemon's per-session
+      // event log replays the latest snapshot to a reconnecting client.
+      //
+      // Schema: see https://code.claude.com/docs/en/statusline#available-data.
+      let payload: {
+        session_id?: string;
+        model?: { id?: string; display_name?: string };
+        context_window?: {
+          context_window_size?: number;
+          used_percentage?: number | null;
+          remaining_percentage?: number | null;
+          total_input_tokens?: number;
+          total_output_tokens?: number;
+          current_usage?: {
+            input_tokens?: number;
+            output_tokens?: number;
+            cache_creation_input_tokens?: number;
+            cache_read_input_tokens?: number;
+          } | null;
+        };
+        cost?: {
+          total_cost_usd?: number;
+          total_duration_ms?: number;
+          total_api_duration_ms?: number;
+          total_lines_added?: number;
+          total_lines_removed?: number;
+        };
+        rate_limits?: {
+          five_hour?: { used_percentage?: number; resets_at?: number };
+          seven_day?: { used_percentage?: number; resets_at?: number };
+        };
+        effort?: { level?: string };
+        exceeds_200k_tokens?: boolean;
+      };
+      try { payload = JSON.parse(body); } catch {
+        console.error('[hook] statusline: invalid JSON body');
+        return;
+      }
+      const sessionId = payload.session_id;
+      if (!sessionId) return;
+      manager.broadcast(sessionId, {
+        type: 'daemon_statusline',
+        sessionId,
+        model: payload.model,
+        contextWindow: payload.context_window,
+        cost: payload.cost,
+        rateLimits: payload.rate_limits,
+        effort: payload.effort,
+        exceeds200k: payload.exceeds_200k_tokens,
+      });
+    },
     onStopHook: async (body) => {
       let payload: { session_id?: string };
       try { payload = JSON.parse(body); } catch {

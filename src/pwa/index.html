@@ -2727,46 +2727,80 @@
     .composer-wrap { flex: none; position: relative; background: var(--bg); }
 
     /* ───── Context-window meter ─────────────────────────────────
-       Thin bar above the composer. Hidden until the first assistant turn lands a usage
-       payload — recordUsage() seeds state.lastUsage which makes updateMeterRegion emit
-       the button. Tapping toggles the breakdown. The tier attr drives the fill colour. */
+       Thin strip above the composer carrying three side-by-side cells: CTX (context
+       window), 5H (5-hour rate limit), 7D (7-day rate limit). Each cell shows label +
+       percentage on one line and a 3px progress bar below. A trailing tag shows the model
+       and context-window size (1M / 200K). Tapping the strip toggles the breakdown panel
+       (token kinds + reset times + session cost). Hidden until the first usage signal
+       arrives — recordUsage seeds the CTX fallback, daemon_statusline replaces it. */
     #meter-region { display: contents; }
     .meter {
       width: 100%;
-      display: flex; align-items: center; gap: 10px;
-      padding: 6px 18px 4px;
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 5px 18px 5px;
       background: transparent;
       border: 0;
       border-top: 1px solid var(--line-soft);
       cursor: pointer;
       font-family: var(--font-mono);
-      font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+      font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
       color: var(--text-mute);
       text-align: left;
     }
     .meter:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-    .meter-text { flex: none; }
-    .meter-bar {
-      flex: 1; min-width: 0;
-      height: 4px;
-      background: var(--bg-elev-2);
-      border-radius: 2px;
-      overflow: hidden;
-      position: relative;
+    .meter-cells {
+      flex: 1 1 auto; min-width: 0;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
     }
-    .meter-fill {
+    .meter-cell {
+      display: flex; flex-direction: column; gap: 3px;
+      min-width: 0;
+    }
+    .meter-cell-head {
+      display: flex; align-items: baseline; justify-content: space-between; gap: 6px;
+      min-width: 0;
+    }
+    .meter-cell-label { flex: none; color: var(--text-mute); }
+    .meter-cell-pct {
+      flex: none;
+      color: var(--text);
+      font-variant-numeric: tabular-nums;
+    }
+    .meter-cell[data-empty="true"] .meter-cell-pct { color: var(--text-dim); }
+    .meter-cell-bar {
+      height: 3px;
+      background: var(--bg-elev-2);
+      border-radius: 1.5px;
+      overflow: hidden;
+    }
+    .meter-cell-fill {
       display: block;
       height: 100%;
       background: var(--accent);
       transition: width 0.35s ease, background 0.2s ease;
     }
-    .meter[data-tier="warn"] .meter-fill { background: #d39a2a; }
-    .meter[data-tier="danger"] .meter-fill { background: var(--danger); }
-    .meter[data-tier="danger"] { color: var(--danger); }
+    .meter-cell[data-tier="warn"] .meter-cell-fill { background: #d39a2a; }
+    .meter-cell[data-tier="warn"] .meter-cell-pct { color: #d39a2a; }
+    .meter-cell[data-tier="danger"] .meter-cell-fill { background: var(--danger); }
+    .meter-cell[data-tier="danger"] .meter-cell-pct { color: var(--danger); }
+    .meter-tag {
+      flex: 0 0 auto;
+      padding-top: 1px;
+      color: var(--text-mute);
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.1em;
+      white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+      max-width: 42vw;
+    }
+    .meter-tag-model { color: var(--text); }
+    .meter-tag-size { color: var(--text-mute); }
+    /* Breakdown panel: grouped sections (CONTEXT / LIMITS / SESSION) with two-column
+       label-value rows. Section headers are dimmer + slightly tracked, matching the
+       uppercase mono treatment of the strip above. */
     .meter-breakdown {
-      display: grid;
-      grid-template-columns: 1fr auto;
-      gap: 2px 12px;
       padding: 8px 18px 10px;
       border-top: 1px solid var(--line-soft);
       background: var(--bg-elev);
@@ -2774,20 +2808,43 @@
       font-size: 11px;
       color: var(--text-mute);
     }
-    .meter-breakdown > div {
+    .meter-breakdown-section {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 2px 12px;
+    }
+    .meter-breakdown-section + .meter-breakdown-section {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px dashed var(--line-soft);
+    }
+    .meter-breakdown-head {
+      grid-column: 1 / -1;
+      color: var(--text-dim);
+      font-size: 9px;
+      letter-spacing: 0.16em;
+      text-transform: uppercase;
+      padding-bottom: 2px;
+    }
+    .meter-breakdown-row {
       display: contents;
     }
-    .meter-breakdown > div > span:last-child {
+    .meter-breakdown-row > span:last-child {
       text-align: right;
       color: var(--text);
+      font-variant-numeric: tabular-nums;
     }
-    .meter-breakdown .meter-model > span:last-child {
+    .meter-breakdown-row.meter-model > span:last-child {
       font-size: 10px;
       color: var(--text-mute);
       max-width: 50vw;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+    .meter-breakdown-row.meter-row-indent > span:first-child {
+      padding-left: 10px;
+      color: var(--text-mute);
     }
 
     /* ───── Slash command palette ────────────────────────────────

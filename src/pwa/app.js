@@ -170,11 +170,25 @@ const state = {
   // to the server; cleared when the server's echo finally agrees, or on a new WS attach.
   approvalModePushBackSent: false,
   // Last seen usage payload from an `assistant` stream-json message — drives the
-  // context-window meter above the composer. Reset per session (the bar is hidden until
-  // the first assistant message comes in). cacheRead+cacheCreate occupy the context
-  // window even though they bill differently, so the meter sums all four.
+  // context-window meter above the composer when no daemon_statusline payload has arrived
+  // yet (e.g. brand-new session before claude's first statusLine fire). Reset per session
+  // (the bar is hidden until the first assistant message comes in). cacheRead+cacheCreate
+  // occupy the context window even though they bill differently, so the meter sums all four.
   lastUsage: null, // { inputTokens, outputTokens, cacheCreate, cacheRead, model }
   contextWindow: 200_000,
+  // Last seen statusLine payload from the daemon. Source of truth for the meter when
+  // present — supplies the real context_window_size (200k vs 1M), claude-side
+  // used_percentage, session cost, and rate-limit %s. Reset per session.
+  //
+  // Shape (from the daemon's daemon_statusline broadcast — subset of claude's statusLine
+  // JSON, see https://code.claude.com/docs/en/statusline#available-data):
+  //   { model: {id, display_name},
+  //     contextWindow: { context_window_size, used_percentage, current_usage: {...} },
+  //     cost: { total_cost_usd, total_duration_ms, total_api_duration_ms, ... },
+  //     rateLimits: { five_hour: {used_percentage, resets_at}, seven_day: {...} },
+  //     effort: { level },
+  //     exceeds200k: bool }
+  statusline: null,
   // Whether the meter breakdown popup is open. Toggled by tapping the bar.
   meterBreakdownOpen: false,
   // Slash-command palette — populated once from /api/info, opened by typing `/` at the
@@ -932,6 +946,7 @@ async function openSession(id, opts) {
   // Token meter is per-session — usage from a previous session would otherwise show
   // until the new session's first assistant turn lands.
   state.lastUsage = null;
+  state.statusline = null;
   state.meterBreakdownOpen = false;
   // Slash palette also per-session so a stale filter doesn't carry across.
   state.paletteOpen = false;
@@ -1616,6 +1631,20 @@ function handleWsMessage(msg) {
     });
     stopThinking();
     renderSession();
+  } else if (msg.type === 'daemon_statusline') {
+    // Authoritative context-window snapshot from claude's own statusLine hook — fires
+    // after each assistant message and after /compact. Supplies the real
+    // context_window_size (so the 1M-context Opus build doesn't look 5× over budget on
+    // the 200k-default bar) plus session cost and rate-limit %s for the breakdown popup.
+    state.statusline = {
+      model: msg.model ?? null,
+      contextWindow: msg.contextWindow ?? null,
+      cost: msg.cost ?? null,
+      rateLimits: msg.rateLimits ?? null,
+      effort: msg.effort ?? null,
+      exceeds200k: !!msg.exceeds200k,
+    };
+    updateMeterRegion();
   } else if (msg.type === 'approval_mode') {
     // If the client had an optimistically-set non-default mode (chosen before the session
     // opened and therefore never sent to the server), push it now so the server catches up.
@@ -2023,36 +2052,111 @@ function recordUsage(usage, model) {
   if (model) state.contextWindow = lookupContextWindow(model);
 }
 
-// Render the context-window meter above the composer. Hidden until the first assistant
-// turn lands a usage payload. The bar uses three threshold colours: green <60%, amber
-// 60–80%, red >80% — mirroring the on-disk pricing tiers but more importantly giving the
-// user a clear "you're about to be force-compacted" warning before claude triggers its
-// own internal compaction.
+// Render the context-window + rate-limit meter strip above the composer. Three side-by-
+// side cells (CTX / 5H / 7D) keep all three live percentages always visible; a trailing
+// tag shows the model and context-window size. Tapping the strip toggles the breakdown
+// panel which adds token-kind splits, reset times, and session cost.
+//
+// Each cell uses three threshold colours: green <60%, amber 60–80%, red >80%. The CTX
+// cell's threshold is about Claude's own auto-compact warning; the 5H/7D cells use the
+// same thresholds as a general "approaching the cap" signal.
+//
+// Preference order for CTX numbers:
+//   1. state.statusline.contextWindow.* — authoritative, from claude's own statusLine
+//      hook. claude pre-computes used_percentage; we round to whole digits to match its
+//      on-disk numbers and trust it as the source of truth when present.
+//   2. state.lastUsage + state.contextWindow — fallback estimate from message_start
+//      events plus the per-model window lookup. Covers the brief gap between session
+//      open and the first statusLine fire (and any non-statusLine paths).
 function updateMeterRegion() {
   const region = document.getElementById('meter-region');
   if (!region) return;
-  const u = state.lastUsage;
-  if (!u) { region.innerHTML = ''; return; }
-  const used = u.inputTokens + u.outputTokens + u.cacheCreate + u.cacheRead;
-  const total = state.contextWindow || CONTEXT_WINDOWS._default;
-  const pct = Math.min(100, Math.max(0, (used / total) * 100));
-  let tier = 'ok';
-  if (pct >= 80) tier = 'danger';
-  else if (pct >= 60) tier = 'warn';
+  const sl = state.statusline;
+  const slCtx = sl?.contextWindow;
+  const slCur = slCtx?.current_usage;
+
+  // ── CTX: prefer statusline, fall back to per-message usage ──
+  let ctxUsed, ctxTotal, ctxPct, breakdownTokens, modelLabel, modelDisplay;
+  if (slCtx && typeof slCtx.context_window_size === 'number') {
+    ctxTotal = slCtx.context_window_size;
+    const inp = slCur?.input_tokens ?? 0;
+    const out = slCur?.output_tokens ?? 0;
+    const cc = slCur?.cache_creation_input_tokens ?? 0;
+    const cr = slCur?.cache_read_input_tokens ?? 0;
+    ctxUsed = (typeof slCtx.total_input_tokens === 'number' && typeof slCtx.total_output_tokens === 'number')
+      ? slCtx.total_input_tokens + slCtx.total_output_tokens
+      : inp + out + cc + cr;
+    ctxPct = (typeof slCtx.used_percentage === 'number')
+      ? Math.min(100, Math.max(0, slCtx.used_percentage))
+      : (ctxTotal > 0 ? Math.min(100, Math.max(0, (ctxUsed / ctxTotal) * 100)) : 0);
+    breakdownTokens = { input: inp, output: out, cacheCreate: cc, cacheRead: cr };
+    modelDisplay = sl.model?.display_name ?? null;
+    modelLabel = sl.model?.id ?? sl.model?.display_name ?? null;
+  } else {
+    const u = state.lastUsage;
+    if (!u) { region.innerHTML = ''; return; }
+    ctxUsed = u.inputTokens + u.outputTokens + u.cacheCreate + u.cacheRead;
+    ctxTotal = state.contextWindow || CONTEXT_WINDOWS._default;
+    ctxPct = Math.min(100, Math.max(0, (ctxUsed / ctxTotal) * 100));
+    breakdownTokens = { input: u.inputTokens, output: u.outputTokens, cacheCreate: u.cacheCreate, cacheRead: u.cacheRead };
+    modelDisplay = null;
+    modelLabel = u.model ?? null;
+  }
+
+  const r5 = sl?.rateLimits?.five_hour?.used_percentage;
+  const r5Reset = sl?.rateLimits?.five_hour?.resets_at;
+  const r7 = sl?.rateLimits?.seven_day?.used_percentage;
+  const r7Reset = sl?.rateLimits?.seven_day?.resets_at;
+  const cost = sl?.cost?.total_cost_usd;
+  const effort = sl?.effort?.level;
+
+  const cells = [
+    cellMarkup('CTX', ctxPct, true, `Context window: ${fmtNumber(ctxUsed)} of ${fmtNumber(ctxTotal)} tokens (${Math.round(ctxPct)}%)`),
+    cellMarkup('5H', r5, typeof r5 === 'number', typeof r5 === 'number' ? `5-hour rate limit: ${Math.round(r5)}%` : 'No 5-hour rate-limit data yet'),
+    cellMarkup('7D', r7, typeof r7 === 'number', typeof r7 === 'number' ? `7-day rate limit: ${Math.round(r7)}%` : 'No 7-day rate-limit data yet'),
+  ].join('');
+
+  const tagText = modelDisplay
+    ? `<span class="meter-tag-model">${escapeHtml(modelDisplay)}</span> · <span class="meter-tag-size">${fmtCtxSize(ctxTotal)}</span>`
+    : `<span class="meter-tag-size">${fmtCtxSize(ctxTotal)}</span>`;
+
+  const ariaSummary = [
+    `Context ${Math.round(ctxPct)} percent of ${fmtCtxSize(ctxTotal)}`,
+    typeof r5 === 'number' ? `5-hour limit ${Math.round(r5)} percent` : null,
+    typeof r7 === 'number' ? `7-day limit ${Math.round(r7)} percent` : null,
+  ].filter(Boolean).join(', ');
+
   const breakdown = state.meterBreakdownOpen
     ? `<div class="meter-breakdown">
-        <div><span>Input</span><span>${fmtNumber(u.inputTokens)}</span></div>
-        <div><span>Cache read</span><span>${fmtNumber(u.cacheRead)}</span></div>
-        <div><span>Cache create</span><span>${fmtNumber(u.cacheCreate)}</span></div>
-        <div><span>Output</span><span>${fmtNumber(u.outputTokens)}</span></div>
-        ${u.model ? `<div class="meter-model"><span>Model</span><span>${escapeHtml(u.model)}</span></div>` : ''}
+        <div class="meter-breakdown-section">
+          <div class="meter-breakdown-head">Context</div>
+          <div class="meter-breakdown-row"><span>Total</span><span>${fmtNumber(ctxUsed)} / ${fmtCtxSize(ctxTotal)}</span></div>
+          <div class="meter-breakdown-row meter-row-indent"><span>Input</span><span>${fmtNumber(breakdownTokens.input)}</span></div>
+          <div class="meter-breakdown-row meter-row-indent"><span>Cache read</span><span>${fmtNumber(breakdownTokens.cacheRead)}</span></div>
+          <div class="meter-breakdown-row meter-row-indent"><span>Cache create</span><span>${fmtNumber(breakdownTokens.cacheCreate)}</span></div>
+          <div class="meter-breakdown-row meter-row-indent"><span>Output</span><span>${fmtNumber(breakdownTokens.output)}</span></div>
+        </div>
+        ${(typeof r5 === 'number' || typeof r7 === 'number') ? `
+        <div class="meter-breakdown-section">
+          <div class="meter-breakdown-head">Limits</div>
+          ${typeof r5 === 'number' ? `<div class="meter-breakdown-row"><span>5-hour</span><span>${Math.round(r5)}% · resets ${fmtResetAt(r5Reset)}</span></div>` : ''}
+          ${typeof r7 === 'number' ? `<div class="meter-breakdown-row"><span>7-day</span><span>${Math.round(r7)}% · resets ${fmtResetAt(r7Reset)}</span></div>` : ''}
+        </div>` : ''}
+        ${(typeof cost === 'number' || effort || modelLabel) ? `
+        <div class="meter-breakdown-section">
+          <div class="meter-breakdown-head">Session</div>
+          ${typeof cost === 'number' ? `<div class="meter-breakdown-row"><span>Cost</span><span>$${cost.toFixed(2)}</span></div>` : ''}
+          ${effort ? `<div class="meter-breakdown-row"><span>Effort</span><span>${escapeHtml(effort)}</span></div>` : ''}
+          ${modelLabel ? `<div class="meter-breakdown-row meter-model"><span>Model</span><span>${escapeHtml(modelLabel)}</span></div>` : ''}
+        </div>` : ''}
       </div>`
     : '';
+
   region.innerHTML = `
-    <button class="meter" id="meter" data-tier="${tier}" aria-expanded="${state.meterBreakdownOpen ? 'true' : 'false'}"
-            aria-label="Context window: ${fmtNumber(used)} of ${fmtNumber(total)} tokens used, ${Math.round(pct)} percent">
-      <span class="meter-text">${fmtNumber(used)} / ${fmtNumber(total)} tokens (${Math.round(pct)}%)</span>
-      <span class="meter-bar"><span class="meter-fill" style="width:${pct}%"></span></span>
+    <button class="meter" id="meter" aria-expanded="${state.meterBreakdownOpen ? 'true' : 'false'}"
+            aria-label="${escapeHtml(ariaSummary)}. Tap to expand.">
+      <div class="meter-cells">${cells}</div>
+      <div class="meter-tag">${tagText}</div>
     </button>
     ${breakdown}
   `;
@@ -2061,6 +2165,63 @@ function updateMeterRegion() {
     state.meterBreakdownOpen = !state.meterBreakdownOpen;
     updateMeterRegion();
   };
+}
+
+// Render a single CTX/5H/7D cell. `pct` may be null/undefined when the source hasn't
+// supplied that field yet (non-Pro accounts have no rate_limits; cold-start has no
+// statusline yet) — render an em-dash placeholder so the slot doesn't shift.
+function cellMarkup(label, pct, hasValue, ariaLabel) {
+  if (!hasValue || typeof pct !== 'number') {
+    return `<div class="meter-cell" data-tier="ok" data-empty="true" aria-label="${escapeHtml(ariaLabel)}">
+      <div class="meter-cell-head"><span class="meter-cell-label">${label}</span><span class="meter-cell-pct">—</span></div>
+      <div class="meter-cell-bar"><span class="meter-cell-fill" style="width:0%"></span></div>
+    </div>`;
+  }
+  const clamped = Math.min(100, Math.max(0, pct));
+  let tier = 'ok';
+  if (clamped >= 80) tier = 'danger';
+  else if (clamped >= 60) tier = 'warn';
+  return `<div class="meter-cell" data-tier="${tier}" aria-label="${escapeHtml(ariaLabel)}">
+    <div class="meter-cell-head"><span class="meter-cell-label">${label}</span><span class="meter-cell-pct">${Math.round(clamped)}%</span></div>
+    <div class="meter-cell-bar"><span class="meter-cell-fill" style="width:${clamped}%"></span></div>
+  </div>`;
+}
+
+// Compact rendering of a context-window size: 1,000,000 → "1M", 200,000 → "200K".
+// Falls back to the raw integer for unusual values so nothing important gets hidden.
+function fmtCtxSize(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n) || n <= 0) return '—';
+  if (n >= 1_000_000 && n % 1_000_000 === 0) return `${n / 1_000_000}M`;
+  if (n >= 1_000 && n % 1_000 === 0) return `${n / 1_000}K`;
+  return n.toLocaleString('en-US');
+}
+
+// Format a unix-epoch-seconds timestamp as a compact "in Xh Ym" relative duration plus
+// the absolute clock time, e.g. "in 2h 14m · 4:32 PM". If the time is in the past
+// (which can happen briefly between reset and the next statusLine fire), show "now".
+function fmtResetAt(epochSeconds) {
+  if (typeof epochSeconds !== 'number' || !Number.isFinite(epochSeconds)) return '—';
+  const now = Date.now();
+  const target = epochSeconds * 1000;
+  const diffMs = target - now;
+  if (diffMs <= 0) return 'now';
+  const totalMin = Math.floor(diffMs / 60_000);
+  const days = Math.floor(totalMin / (60 * 24));
+  const hours = Math.floor((totalMin - days * 60 * 24) / 60);
+  const mins = totalMin % 60;
+  let rel;
+  if (days > 0) rel = `${days}d ${hours}h`;
+  else if (hours > 0) rel = `${hours}h ${mins}m`;
+  else rel = `${mins}m`;
+  // Absolute clock time — short form, user's locale. Skip the date part; if the reset is
+  // days away the relative duration already conveys "later this week" clearly enough.
+  let clock;
+  try {
+    clock = new Date(target).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+  } catch {
+    clock = '';
+  }
+  return clock ? `in ${rel} · ${clock}` : `in ${rel}`;
 }
 
 function fmtNumber(n) {

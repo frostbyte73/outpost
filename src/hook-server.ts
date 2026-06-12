@@ -12,6 +12,11 @@ export interface HookServerOpts {
   // Stop has no permission gate; a 204 is enough. Handler errors are logged but the
   // listener still returns 204 so claude's Stop loop doesn't stall on transient issues.
   onStopHook: (body: string) => Promise<void>;
+  // statusLine fires after each assistant message + on /compact + on permission-mode
+  // changes (claude debounces at 300ms). Body is the full JSON payload claude pipes to
+  // the status-line command's stdin — see writeDaemonSettings in src/settings-gen.ts.
+  // Fire-and-forget like Stop: any 2xx is fine.
+  onStatusLineHook: (body: string) => Promise<void>;
 }
 
 export class HookServer {
@@ -28,7 +33,8 @@ export class HookServer {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method !== 'POST' || (req.url !== '/hook/pretool' && req.url !== '/hook/stop')) {
+    const KNOWN_ROUTES = new Set(['/hook/pretool', '/hook/stop', '/hook/statusline']);
+    if (req.method !== 'POST' || !KNOWN_ROUTES.has(req.url ?? '')) {
       res.statusCode = 404;
       res.end('not found');
       return;
@@ -49,6 +55,10 @@ export class HookServer {
           res.statusCode = 200;
           res.setHeader('content-type', 'application/json');
           res.end(result);
+        } else if (url === '/hook/statusline') {
+          await this.opts.onStatusLineHook(body);
+          res.statusCode = 204;
+          res.end();
         } else {
           await this.opts.onStopHook(body);
           res.statusCode = 204;
@@ -56,12 +66,14 @@ export class HookServer {
         }
       } catch (e) {
         console.error(`[hook-server] handler error (${url}):`, (e as Error).stack);
-        if (url === '/hook/stop') {
-          res.statusCode = 204;
-          res.end();
-        } else {
+        // Fire-and-forget hooks (stop, statusline) always 204 so claude's loop doesn't
+        // stall on transient issues. Only pretool needs an error surface.
+        if (url === '/hook/pretool') {
           res.statusCode = 500;
           res.end('error');
+        } else {
+          res.statusCode = 204;
+          res.end();
         }
       }
     });
