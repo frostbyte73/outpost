@@ -414,7 +414,7 @@ describe('SessionStore — worktree merge', () => {
     );
     // WorktreeManager record ties the worktreePath back to the parent.
     const wtMgrRoot = mkdtempSync(join(tmpdir(), 'wt-mgr-'));
-    const wtMgr = new WorktreeManager({ root: wtMgrRoot });
+    const wtMgr = new WorktreeManager({ root: wtMgrRoot, projectsRoot: mkdtempSync(join(tmpdir(), 'wt-proj-')) });
     wtMgr._testSeedRecord({
       sessionId: 'sessworktree',
       projectCwd: parentCwd,
@@ -454,7 +454,7 @@ describe('SessionStore — worktree merge', () => {
       JSON.stringify({ type: 'user', cwd: worktreePath, message: { content: 'first session in this project' } }) + '\n',
     );
     const wtMgrRoot = mkdtempSync(join(tmpdir(), 'wt-mgr-'));
-    const wtMgr = new WorktreeManager({ root: wtMgrRoot });
+    const wtMgr = new WorktreeManager({ root: wtMgrRoot, projectsRoot: mkdtempSync(join(tmpdir(), 'wt-proj-')) });
     wtMgr._testSeedRecord({
       sessionId: 'sessnew',
       projectCwd: parentCwd,
@@ -490,7 +490,7 @@ describe('SessionStore — worktree merge', () => {
       JSON.stringify({ type: 'user', cwd: parentCwd, message: { content: 'archived session' } }) + '\n',
     );
     const wtMgrRoot = mkdtempSync(join(tmpdir(), 'wt-mgr-'));
-    const wtMgr = new WorktreeManager({ root: wtMgrRoot });
+    const wtMgr = new WorktreeManager({ root: wtMgrRoot, projectsRoot: mkdtempSync(join(tmpdir(), 'wt-proj-')) });
     wtMgr._testSeedRecord({
       sessionId: 'sessarc',
       projectCwd: parentCwd,
@@ -519,7 +519,7 @@ describe('SessionStore — worktree merge', () => {
       JSON.stringify({ type: 'user', cwd: worktreePath, message: { content: 'hi' } }) + '\n',
     );
     const wtMgrRoot = mkdtempSync(join(tmpdir(), 'wt-mgr-'));
-    const wtMgr = new WorktreeManager({ root: wtMgrRoot });
+    const wtMgr = new WorktreeManager({ root: wtMgrRoot, projectsRoot: mkdtempSync(join(tmpdir(), 'wt-proj-')) });
     wtMgr._testSeedRecord({
       sessionId: 'sessphys',
       projectCwd: parentCwd,

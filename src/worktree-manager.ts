@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface WorktreeRecord {
@@ -22,6 +22,10 @@ export interface WorktreeManagerOpts {
   // Directory holding the index file and the per-session worktree subdirs.
   // Convention: `~/.outpost/worktrees`.
   root: string;
+  // Claude's projects root (`~/.claude/projects`). Used by archive() to relocate the
+  // session's JSONL from the worktree-derived project dir into the parent project's
+  // dir, so `claude --resume <id>` can find it after the worktree is torn down.
+  projectsRoot: string;
 }
 
 // Strict allowlist for sessionIds: UUID-shape characters only, must NOT start with `-`.
@@ -37,9 +41,11 @@ export class WorktreeManager {
   private records = new Map<string, WorktreeRecord>();
   private readonly indexPath: string;
   protected readonly root: string;
+  protected readonly projectsRoot: string;
 
   constructor(opts: WorktreeManagerOpts) {
     this.root = opts.root;
+    this.projectsRoot = opts.projectsRoot;
     this.indexPath = join(this.root, 'index.json');
     this.load();
   }
@@ -134,16 +140,42 @@ export class WorktreeManager {
   async archive(sessionId: string): Promise<void> {
     const rec = this.records.get(sessionId);
     if (!rec || rec.archivedAt) return;
+    // Relocate the JSONL + sidecars into the parent project's dir BEFORE tearing the
+    // worktree down. After this move, `claude --resume <id>` run with cwd=projectCwd
+    // can find the session (claude looks under sanitize(cwd) in projectsRoot). Failing
+    // to move would orphan the session — resume would land in an empty parent dir.
+    this.relocateSessionFiles(rec);
     await this.tearDown(rec);
-    // KEEP the worktreePath/branch fields on the tombstone — they're how SessionStore
-    // folds the still-on-disk JSONL (claude wrote it under sanitize(worktreePath)) into
-    // the parent project. Without them the archived row would appear as an orphan
-    // standalone project instead of under its parent.
+    // Tombstone fields worktreePath/branch are vestigial after relocation (kept on the
+    // record for forensics; SessionStore no longer needs them to fold the row, since
+    // the JSONL now lives directly under the parent project's dir).
     this.records.set(sessionId, {
       ...rec,
       archivedAt: Date.now(),
     });
     this.persist();
+  }
+
+  // Move `<projectsRoot>/<sanitize(worktreePath)>/<id>.{jsonl,title}` and the matching
+  // `<id>/` subagent dir into `<projectsRoot>/<sanitize(projectCwd)>/`. Best-effort per
+  // file — a missing sidecar doesn't poison the archive. Same-filesystem renames are
+  // atomic, which is the common case here (both paths live under ~/.claude/projects/).
+  private relocateSessionFiles(rec: WorktreeRecord): void {
+    if (!rec.worktreePath) return;
+    const fromDir = join(this.projectsRoot, rec.worktreePath.replace(/\//g, '-'));
+    const toDir = join(this.projectsRoot, rec.projectCwd.replace(/\//g, '-'));
+    if (!existsSync(fromDir)) return;
+    mkdirSync(toDir, { recursive: true });
+    for (const name of [`${rec.sessionId}.jsonl`, `${rec.sessionId}.title`, rec.sessionId]) {
+      const src = join(fromDir, name);
+      const dst = join(toDir, name);
+      if (!existsSync(src)) continue;
+      try { renameSync(src, dst); } catch { /* best-effort */ }
+    }
+    // Clean up the source dir if we emptied it. Leave it alone if anything remains
+    // (orphan files from another session, or future claude-written sidecars we don't
+    // know about) — better to leak an empty-ish dir than to lose data.
+    try { if (readdirSync(fromDir).length === 0) rmdirSync(fromDir); } catch { /* leave it */ }
   }
 
   // Shared cleanup for remove() and archive(): nuke the worktree dir + delete the

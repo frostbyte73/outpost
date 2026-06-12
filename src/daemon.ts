@@ -61,7 +61,7 @@ async function main() {
   // cwd anymore — each session carries its own (recorded by claude in the JSONL).
   const projectsRoot = config.projectsRoot;
   const projectRegistry = new ProjectRegistry(join(RUNTIME_DIR, 'projects.json'));
-  const worktreeManager = new WorktreeManager({ root: join(RUNTIME_DIR, 'worktrees') });
+  const worktreeManager = new WorktreeManager({ root: join(RUNTIME_DIR, 'worktrees'), projectsRoot });
   const sessionStore = new SessionStore({ root: projectsRoot, registry: projectRegistry, worktreeManager });
   console.log(`[daemon] projects root: ${projectsRoot}`);
 

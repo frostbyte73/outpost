@@ -639,14 +639,25 @@ export class SessionStore {
     const newest = entries[0]!;
     const cached = this.cwdCache.get(projectDir);
     if (cached && cached.mtime === newest.mtime) return cached.cwd;
+    // Prefer a cwd whose sanitization matches this dir's basename — that's claude's
+    // own invariant (it writes session files under sanitize(cwd)/). A relocated session
+    // (archive() moves a worktree JSONL up into the parent project's dir) still carries
+    // its old worktree cwd in the first line; without preferring matches, it could
+    // hijack the parent project's reported cwd. Falls back to first-found if nothing
+    // matches, to stay compatible with synthetic project dirs in tests.
+    const expectedBasename = projectDir.split('/').pop() ?? '';
+    let fallback: string | null = null;
     for (const e of entries) {
       const cwd = firstCwdInJsonl(e.name);
-      if (cwd) {
+      if (!cwd) continue;
+      if (cwd.replace(/\//g, '-') === expectedBasename) {
         this.cwdCache.set(projectDir, { cwd, mtime: newest.mtime });
         return cwd;
       }
+      if (fallback === null) fallback = cwd;
     }
-    return null;
+    if (fallback !== null) this.cwdCache.set(projectDir, { cwd: fallback, mtime: newest.mtime });
+    return fallback;
   }
 
   findSession(id: string): { projectDir: string; cwd: string; session: SessionInfo } | null {
