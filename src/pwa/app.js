@@ -1,3 +1,5 @@
+import { partitionSessions } from './session-filter.js';
+
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('sw register failed', e));
 }
@@ -17,6 +19,11 @@ const state = {
     try { return JSON.parse(localStorage.getItem('op:expandedProjects') ?? '{}'); }
     catch { return {}; }
   })(),
+  // In-memory pagination cursor for "Load more" in each project section, keyed by
+  // projectDir. Tracks how many extra rows beyond the always-show set the user has
+  // revealed. Not persisted: a page reload returns the user to the default filtered
+  // view. See partitionSessions() in session-filter.js.
+  loadedExtraByProject: new Map(),
   currentSessionId: null,
   // The cwd of the session currently open in the session view. Set when openSession() runs
   // (either from the picker for new sessions or by looking up the project for existing
@@ -579,6 +586,7 @@ function renderList() {
   document.getElementById('conn-banner-retry')?.addEventListener('click', forceReconnect);
   bindSessionRowHandlers();
   bindProjectOverflowHandlers();
+  bindProjectLoadMoreHandlers();
 }
 
 function bindSessionRowHandlers() {
@@ -698,11 +706,13 @@ function projectSectionHtml(p, isMostRecent, pendingBySession) {
 // Body shown when a project is expanded. "+ New session" sits at the TOP so projects
 // with many sessions don't require scrolling to start a fresh one. For git repos, a
 // branch picker sits above the button — its value drives the new session's base branch.
+// Older sessions are hidden behind a "Load more" footer button per the visibility rule
+// in session-filter.js.
 function projectSectionBodyHtml(p, pendingBySession) {
   const branchPicker = p.isGitRepo
     ? `<div class="project-branch-picker" data-cwd="${escapeHtml(p.cwd)}">
          <label class="project-worktree-toggle">
-           <input type="checkbox" class="project-worktree-checkbox" checked>
+           <input type="checkbox" class="project-worktree-checkbox">
            <span>Worktree</span>
          </label>
          <span class="project-branch-label">Branch</span>
@@ -712,10 +722,23 @@ function projectSectionBodyHtml(p, pendingBySession) {
   const newBtn = `<button class="project-new-session" type="button" data-cwd="${escapeHtml(p.cwd)}" data-is-git="${p.isGitRepo ? 'yes' : 'no'}">
     <span class="plus">+</span><span>New session</span>
   </button>`;
-  const rows = p.sessions.length === 0
-    ? `<div class="project-section-empty">No sessions yet.</div>`
-    : p.sessions.map((s, i) => sessionRowHtml(s, i, pendingBySession[s.id] ?? 0)).join('');
-  return branchPicker + newBtn + rows;
+  if (p.sessions.length === 0) {
+    return branchPicker + newBtn + `<div class="project-section-empty">No sessions yet.</div>`;
+  }
+  const extraRevealed = state.loadedExtraByProject.get(p.projectDir) ?? 0;
+  const { visible, hiddenRemaining } = partitionSessions(p.sessions, extraRevealed, Date.now());
+  // sessionRowHtml's marker uses i+1; keep numbering stable to the original newest-first
+  // order so a user-visible "01" doesn't shuffle when load-more reveals a session deeper
+  // in the list. p.sessions[] still holds the full sorted order.
+  const rows = visible
+    .map((s) => sessionRowHtml(s, p.sessions.indexOf(s), pendingBySession[s.id] ?? 0))
+    .join('');
+  const loadMore = hiddenRemaining > 0
+    ? `<button class="project-load-more" type="button" data-project-dir="${escapeHtml(p.projectDir)}">
+         Load ${Math.min(10, hiddenRemaining)} more (${hiddenRemaining} hidden)
+       </button>`
+    : '';
+  return branchPicker + newBtn + rows + loadMore;
 }
 
 // Cache the per-cwd branch list. /api/projects/:sanitized/branches caches on the daemon
@@ -778,6 +801,7 @@ function bindProjectSectionToggles(pendingBySession) {
         body.innerHTML = p ? projectSectionBodyHtml(p, pendingBySession) : '';
         bindSessionRowHandlers();
         bindProjectNewSessionHandlers();
+        bindProjectLoadMoreHandlers();
         const picker = body.querySelector('.project-branch-picker');
         if (picker) void populateBranchPicker(picker);
       } else {
@@ -786,9 +810,23 @@ function bindProjectSectionToggles(pendingBySession) {
     };
   }
   bindProjectNewSessionHandlers();
+  bindProjectLoadMoreHandlers();
   // Populate branch dropdowns for already-expanded sections rendered by render().
   for (const picker of document.querySelectorAll('.project-branch-picker')) {
     void populateBranchPicker(picker);
+  }
+}
+
+function bindProjectLoadMoreHandlers() {
+  for (const btn of document.querySelectorAll('.project-load-more')) {
+    btn.onclick = (e) => {
+      e.stopPropagation();
+      const projectDir = btn.dataset.projectDir;
+      if (!projectDir) return;
+      const current = state.loadedExtraByProject.get(projectDir) ?? 0;
+      state.loadedExtraByProject.set(projectDir, current + 10);
+      renderList();
+    };
   }
 }
 
@@ -2565,11 +2603,18 @@ function updateTranscriptRegion() {
     && a.toolName !== 'AskUserQuestion'
     && !a.agentId
   );
+  // Suppress transcript tool_use rows whose approval is still pending — the approval
+  // card below already shows the call. Once the user decides, the approval drops out
+  // of pendingApprovals and the transcript entry renders on the next paint.
+  const pendingToolUseIds = new Set(cards.map((a) => a.toolUseId).filter(Boolean));
+  const visible = state.transcript.filter((m) =>
+    !(m.role === 'tool_use' && m.toolUseId && pendingToolUseIds.has(m.toolUseId))
+  );
   const transcript = document.getElementById('transcript');
   transcript.innerHTML = `
     ${loading}
     ${empty}
-    ${state.transcript.map((m, i, arr) => msgHtml(m, i === arr.length - 1)).join('')}
+    ${visible.map((m, i, arr) => msgHtml(m, i === arr.length - 1)).join('')}
     ${cards.map((a) => approvalCardHtml(a)).join('')}
   `;
   bindTranscriptHandlers();
@@ -3296,9 +3341,17 @@ function agentEntryHtml(entry, isLast) {
   if (entry.toolName === 'Read') {
     return readLineHtml(entry.toolInput);
   }
-  // Bash / Grep / Glob get the same inline shell-line treatment in subagent feeds as in
-  // the parent transcript — slim mono row, no card chrome.
-  if (entry.toolName === 'Bash' || entry.toolName === 'Grep' || entry.toolName === 'Glob') {
+  // Bash / Grep / Glob / WebFetch / WebSearch get the same inline shell-line treatment
+  // in subagent feeds as in the parent transcript — slim mono row, no card chrome.
+  if (
+    entry.toolName === 'Bash'
+    || entry.toolName === 'Grep'
+    || entry.toolName === 'Glob'
+    || entry.toolName === 'WebFetch'
+    || entry.toolName === 'WebSearch'
+    || entry.toolName === 'Skill'
+    || entry.toolName === 'ToolSearch'
+  ) {
     const tile = shellLineHtml(entry.toolName, entry.toolInput);
     if (entry.decision === 'deny') {
       const tag = entry.timedOut ? 'Timed out' : 'Rejected';
@@ -3671,6 +3724,10 @@ function shellLineHtml(toolName, input) {
   if (toolName === 'Bash') return bashShellHtml(input);
   if (toolName === 'Grep') return grepShellHtml(input);
   if (toolName === 'Glob') return globShellHtml(input);
+  if (toolName === 'WebFetch') return webFetchShellHtml(input);
+  if (toolName === 'WebSearch') return webSearchShellHtml(input);
+  if (toolName === 'Skill') return skillShellHtml(input);
+  if (toolName === 'ToolSearch') return toolSearchShellHtml(input);
   return '';
 }
 
@@ -3847,8 +3904,8 @@ function grepShellHtml(input) {
   );
 }
 
-// Glob inline tile — pattern, optionally followed by an "in <path>" aside. No $-prompt
-// since `glob` isn't a real shell command; the verb already labels what the row is.
+// Glob inline tile — `* <pattern>` with the glob wildcard itself as the marker.
+// Optional "in <path>" aside renders below, same shape as WebSearch's domain hints.
 function globShellHtml(input) {
   const pattern = String(input?.pattern ?? '');
   const path = input?.path ? `in ${shortenPath(String(input.path))}` : '';
@@ -3856,8 +3913,88 @@ function globShellHtml(input) {
   return (
     `<div class="msg msg-shell">` +
       `<div class="shell-body">` +
-        `<div class="shell-line shell-line-bare"><span class="shell-cmd">${escapeHtml(pattern)}</span></div>` +
+        `<div class="shell-line"><span class="shell-prompt">*</span><span class="shell-cmd">${escapeHtml(pattern)}</span></div>` +
         aside +
+      `</div>` +
+    `</div>`
+  );
+}
+
+// WebFetch inline tile — `# <prompt>` riding above `<< <url>`. Shell-line-comment
+// dims/italicizes the prompt to read as a shell comment; the URL row keeps full
+// contrast and the URL is tappable when http(s):// (same posture as the markdown
+// link renderer — anything else falls back to plain text).
+function webFetchShellHtml(input) {
+  const url = String(input?.url ?? '');
+  const prompt = compactWs(input?.prompt);
+  const safeUrl = /^https?:\/\//i.test(url) ? url : '';
+  const urlInner = safeUrl
+    ? `<a href="${escapeHtml(safeUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(url)}</a>`
+    : escapeHtml(url);
+  const promptLine = prompt
+    ? `<div class="shell-line shell-line-comment"><span class="shell-prompt">#</span><span class="shell-cmd">${escapeHtml(prompt)}</span></div>`
+    : '';
+  const urlLine = url
+    ? `<div class="shell-line"><span class="shell-prompt">&lt;&lt;</span><span class="shell-cmd">${urlInner}</span></div>`
+    : '';
+  return (
+    `<div class="msg msg-shell">` +
+      `<div class="shell-body">${promptLine}${urlLine}</div>` +
+    `</div>`
+  );
+}
+
+// WebSearch inline tile — `? <query>`. Optional allowed/blocked domain lists
+// render as muted asides below, same shape as Glob's "in <path>".
+function webSearchShellHtml(input) {
+  const query = String(input?.query ?? '');
+  const asides = [];
+  if (Array.isArray(input?.allowed_domains) && input.allowed_domains.length) {
+    asides.push(`only ${input.allowed_domains.join(', ')}`);
+  }
+  if (Array.isArray(input?.blocked_domains) && input.blocked_domains.length) {
+    asides.push(`exclude ${input.blocked_domains.join(', ')}`);
+  }
+  const asideHtml = asides
+    .map((a) => `<div class="shell-aside">${escapeHtml(a)}</div>`)
+    .join('');
+  return (
+    `<div class="msg msg-shell">` +
+      `<div class="shell-body">` +
+        `<div class="shell-line"><span class="shell-prompt">?</span><span class="shell-cmd">${escapeHtml(query)}</span></div>` +
+        asideHtml +
+      `</div>` +
+    `</div>`
+  );
+}
+
+// Skill inline tile — `/ <skill-name>` mirrors the slash-command syntax users
+// type to invoke skills. Args (when present) wrap on the same line as a single
+// pre-wrap string, matching how /skill arg1 arg2 reads in the terminal.
+function skillShellHtml(input) {
+  const name = String(input?.skill ?? '');
+  const args = compactWs(input?.args);
+  const cmd = args ? `${name} ${args}` : name;
+  return (
+    `<div class="msg msg-shell">` +
+      `<div class="shell-body">` +
+        `<div class="shell-line"><span class="shell-prompt">/</span><span class="shell-cmd">${escapeHtml(cmd)}</span></div>` +
+      `</div>` +
+    `</div>`
+  );
+}
+
+// ToolSearch inline tile — `@ <query>` reads as "look up by name". `select:A,B`
+// queries unfold to the bare tool list since the `select:` prefix is a wire-
+// format detail, not user-meaningful; the `@` already says "look these up".
+function toolSearchShellHtml(input) {
+  const q = String(input?.query ?? '');
+  const sel = q.match(/^select:(.+)$/);
+  const cmd = sel ? sel[1].split(',').map((s) => s.trim()).filter(Boolean).join(', ') : q;
+  return (
+    `<div class="msg msg-shell">` +
+      `<div class="shell-body">` +
+        `<div class="shell-line"><span class="shell-prompt">@</span><span class="shell-cmd">${escapeHtml(cmd)}</span></div>` +
       `</div>` +
     `</div>`
   );
@@ -3989,6 +4126,7 @@ function renderBashCommand(input) {
 // highlighted — matching the diff renderer, which is honest about being a payload preview.
 function renderWriteContent(input) {
   const content = String(input?.content ?? '');
+  const path = projectRelativePath(String(input?.file_path ?? ''));
   const lines = content.split('\n');
   const MAX = 500;
   const visible = lines.slice(0, MAX);
@@ -4002,7 +4140,12 @@ function renderWriteContent(input) {
   const overflowRow = overflow > 0
     ? `<div class="write-overflow">+ ${overflow.toLocaleString()} more lines</div>`
     : '';
-  return `<div class="tool-write"><div class="write-body">${rows}${overflowRow}</div></div>`;
+  // Header bar mirrors Edit's diff-head — path in the bar so the collapsed summary
+  // can be hidden when expanded. `+` marker (vs Edit's `~`) signals new content
+  // rather than modification. Flag carries the size hint Edit's summary doesn't need.
+  const flag = `<span class="diff-head-flag">${lines.length.toLocaleString()} lines</span>`;
+  const head = `<div class="diff-head"><span class="diff-head-marker">+</span>${escapeHtml(path)}${flag}</div>`;
+  return `<div class="tool-write">${head}<div class="write-body">${rows}${overflowRow}</div></div>`;
 }
 
 // Agent's `prompt` is the most interesting payload in the entire transcript — it's the
@@ -4062,7 +4205,15 @@ function msgHtml(m, isLast) {
   if (m.role === 'tool_use' && m.toolName === 'Read') {
     return readLineHtml(m.toolInput);
   }
-  if (m.role === 'tool_use' && (m.toolName === 'Bash' || m.toolName === 'Grep' || m.toolName === 'Glob')) {
+  if (m.role === 'tool_use' && (
+    m.toolName === 'Bash'
+    || m.toolName === 'Grep'
+    || m.toolName === 'Glob'
+    || m.toolName === 'WebFetch'
+    || m.toolName === 'WebSearch'
+    || m.toolName === 'Skill'
+    || m.toolName === 'ToolSearch'
+  )) {
     return shellLineHtml(m.toolName, m.toolInput);
   }
   if (m.role === 'tool_use') return toolUseHtml(m);
@@ -4098,26 +4249,25 @@ function msgHtml(m, isLast) {
 // Inline Q&A card. Each question is rendered with its paired answer right below it, so
 // the reader's eye doesn't have to cross-reference a separate "you answered" block. A
 // small header line shows the question count and whether the user has answered yet.
+//
+// Pending and answered states render distinctly. Pending is a tap-to-reply card with
+// full header chrome and a "waiting…" answer slot per question. Answered drops the
+// header, the gutter, and the arrow — see askAnsweredHtml — so the card reads as a
+// quiet editorial record of the decision rather than restating "you answered" twice.
 function askMsgHtml(m) {
   const questions = Array.isArray(m.questions) ? m.questions : [];
   const multi = questions.length > 1;
   const parsed = parseAskAnswer(m.answer, questions);
   const answered = parsed.answers.some((a) => a) || !!parsed.reply;
 
+  if (answered) return askAnsweredHtml(questions, parsed);
+
   const rows = questions.map((q, i) => {
     const qText = String(q?.question ?? '');
-    const a = parsed.answers[i] || '';
     const num = multi
       ? `<span class="ask-msg-num">${String(i + 1).padStart(2, '0')}</span>`
       : '<span class="ask-msg-num ask-msg-num-spacer" aria-hidden="true"></span>';
-    let answerEl;
-    if (answered && a) {
-      answerEl = `<div class="ask-msg-a"><span class="ask-msg-arrow" aria-hidden="true">↳</span><span class="ask-msg-a-text">${escapeHtml(a)}</span></div>`;
-    } else if (answered) {
-      answerEl = `<div class="ask-msg-a ask-msg-a-skipped"><span class="ask-msg-arrow" aria-hidden="true">↳</span><span class="ask-msg-a-text">no answer</span></div>`;
-    } else {
-      answerEl = `<div class="ask-msg-a ask-msg-a-pending"><span class="ask-msg-arrow" aria-hidden="true">↳</span><span class="ask-msg-a-text">waiting…</span></div>`;
-    }
+    const answerEl = `<div class="ask-msg-a ask-msg-a-pending"><span class="ask-msg-arrow" aria-hidden="true">↳</span><span class="ask-msg-a-text">waiting…</span></div>`;
     return (
       `<div class="ask-msg-pair">` +
         num +
@@ -4129,28 +4279,54 @@ function askMsgHtml(m) {
     );
   }).join('');
 
+  const countLabel = multi
+    ? `Asked · ${questions.length} questions`
+    : 'Asked';
+
+  return (
+    `<div class="msg ask ask-pending" role="button" tabindex="0" aria-label="Reply to question">` +
+      `<div class="ask-msg-head">` +
+        `<span class="ask-msg-label">${escapeHtml(countLabel)}</span>` +
+        `<span class="ask-msg-status">Pending</span>` +
+      `</div>` +
+      `<div class="ask-msg-pairs">${rows}</div>` +
+      `<div class="ask-msg-reply-hint" aria-hidden="true">Tap to reply <span class="ask-msg-reply-hint-arrow">→</span></div>` +
+    `</div>`
+  );
+}
+
+// Answered card — editorial pull-quote shape. The chosen answer is the visual hero
+// (display italic, large) with the question sitting above as a small mono kicker.
+// No header label, no status badge, no arrow gutter: the layout itself signals
+// "this is a resolved decision" without restating it in chrome.
+function askAnsweredHtml(questions, parsed) {
+  const multi = questions.length > 1;
+  const rows = questions.map((q, i) => {
+    const qText = compactWs(String(q?.question ?? ''));
+    const a = parsed.answers[i] || '';
+    const skipped = !a;
+    const num = multi
+      ? `<span class="ask-kicker-num">Q${i + 1}</span>`
+      : '';
+    const answerHtml = a
+      ? escapeHtml(a)
+      : `<span class="ask-msg-answer-empty">— no answer</span>`;
+    return (
+      `<div class="ask-msg-pair-answered${skipped ? ' ask-msg-pair-skipped' : ''}">` +
+        `<div class="ask-msg-kicker">${num}${escapeHtml(qText)}</div>` +
+        `<div class="ask-msg-answer-text">${answerHtml}</div>` +
+      `</div>`
+    );
+  }).join('');
+
   const replyBlock = parsed.reply
     ? `<div class="ask-msg-reply"><div class="ask-msg-reply-label">Also added</div><div class="ask-msg-reply-text">${escapeHtml(parsed.reply)}</div></div>`
     : '';
 
-  const countLabel = multi
-    ? `Asked · ${questions.length} questions`
-    : 'Asked';
-  const statusBadge = answered ? 'Answered' : 'Pending';
-
-  const replyHint = !answered
-    ? `<div class="ask-msg-reply-hint" aria-hidden="true">Tap to reply <span class="ask-msg-reply-hint-arrow">→</span></div>`
-    : '';
-
   return (
-    `<div class="msg ask${answered ? ' ask-answered' : ' ask-pending'}"${answered ? '' : ' role="button" tabindex="0" aria-label="Reply to question"'}>` +
-      `<div class="ask-msg-head">` +
-        `<span class="ask-msg-label">${escapeHtml(countLabel)}</span>` +
-        `<span class="ask-msg-status">${escapeHtml(statusBadge)}</span>` +
-      `</div>` +
+    `<div class="msg ask ask-answered">` +
       `<div class="ask-msg-pairs">${rows}</div>` +
       replyBlock +
-      replyHint +
     `</div>`
   );
 }
@@ -4431,13 +4607,13 @@ const TOOL_FORMATTERS = {
     };
   },
   Write(inp) {
-    const content = String(inp.content ?? '');
-    const lines = content ? content.split('\n').length : 0;
+    // Mirrors Edit: filename in the summary, full content lives in the expanded
+    // header (renderWriteContent). The collapsed summary is hidden when expanded
+    // via the :has(.tool-write) CSS rule so the path appears only once.
     return {
       label: 'Write',
-      body: shortenPath(inp.file_path),
-      bodyKind: 'code',
-      detail: `${lines.toLocaleString()} lines · ${content.length.toLocaleString()} chars`,
+      body: projectRelativePath(inp.file_path),
+      bodyKind: 'path',
     };
   },
   Grep(_inp) {
@@ -4469,15 +4645,29 @@ const TOOL_FORMATTERS = {
     return { label: 'ToolSearch', body: truncate(q, 140), bodyKind: 'code' };
   },
   WebFetch(inp) {
-    return {
-      label: 'WebFetch',
-      body: shortenUrl(inp.url),
-      bodyKind: 'code',
-      detail: inp.prompt ? truncate(compactWs(inp.prompt), 120) : null,
-    };
+    // Two-line shell vocab: `# ` is the bash-comment marker for the extraction
+    // brief (prose intent), `<< ` mirrors Read's slurp glyph for the URL being
+    // fetched. With no prompt the URL takes the body line directly.
+    const url = shortenUrl(inp.url);
+    const prompt = compactWs(inp.prompt);
+    if (prompt) {
+      return {
+        label: 'WebFetch',
+        body: `# ${truncate(prompt, 140)}`,
+        bodyKind: 'code',
+        detail: `<< ${url}`,
+      };
+    }
+    return { label: 'WebFetch', body: `<< ${url}`, bodyKind: 'code' };
   },
   WebSearch(inp) {
-    return { label: 'WebSearch', body: truncate(String(inp.query ?? ''), 140) };
+    // `? ` marker signals "query" — same shell-vocab family as Bash's `$`,
+    // Read's `<<`, WebFetch's `# `/`<<`.
+    return {
+      label: 'WebSearch',
+      body: `? ${truncate(String(inp.query ?? ''), 140)}`,
+      bodyKind: 'code',
+    };
   },
   Agent(inp) {
     const type = inp.subagent_type ? ` · ${inp.subagent_type}` : '';

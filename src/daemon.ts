@@ -832,6 +832,7 @@ async function main() {
     '/': { contentType: 'text/html', file: 'index.html' },
     '/index.html': { contentType: 'text/html', file: 'index.html' },
     '/app.js': { contentType: 'text/javascript', file: 'app.js' },
+    '/session-filter.js': { contentType: 'text/javascript', file: 'session-filter.js' },
     '/sw.js': { contentType: 'text/javascript', file: 'sw.js' },
     '/manifest.json': { contentType: 'application/manifest+json', file: 'manifest.json' },
     '/icon-512.png': { contentType: 'image/png', file: 'icon-512.png' },
