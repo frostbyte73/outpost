@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { Allowlist, Allowlist as AllowlistCtor } from '../../src/allowlist.js';
-import config from '../../config/allowlist.json' with { type: 'json' };
+import config from '../../config/allowlist.default.json' with { type: 'json' };
 import { mkdtempSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

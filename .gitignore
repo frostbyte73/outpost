@@ -8,3 +8,7 @@ dist/
 /test-results/
 /playwright-report/
 /playwright/.cache/
+
+# Runtime allowlist — copied from config/allowlist.default.json on first daemon
+# start, then mutated in place when rules are hot-added via the PWA.
+/config/allowlist.json

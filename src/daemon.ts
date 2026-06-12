@@ -1,8 +1,8 @@
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { mkdirSync, statSync, createReadStream, writeFileSync, renameSync, readdirSync, readFileSync } from 'node:fs';
-import { Allowlist } from './allowlist.js';
+import { existsSync, mkdirSync, statSync, createReadStream, writeFileSync, renameSync, readdirSync, readFileSync } from 'node:fs';
+import { Allowlist, type AllowlistConfig } from './allowlist.js';
 import { ProjectRegistry } from './project-registry.js';
 import { ApprovalQueue } from './approvals.js';
 import { SessionStore } from './session-store.js';
@@ -21,7 +21,7 @@ import { PushSender } from './push-sender.js';
 import { StopHookTracker } from './stop-hook-tracker.js';
 import { UsagePoller, type AccountUsageSnapshot } from './usage-poller.js';
 import { loadConfig } from './config.js';
-import allowlistConfig from '../config/allowlist.json' with { type: 'json' };
+import allowlistDefault from '../config/allowlist.default.json' with { type: 'json' };
 import pkg from '../package.json' with { type: 'json' };
 
 const config = loadConfig();
@@ -35,9 +35,22 @@ const APPROVAL_TIMEOUT_MS = config.approvalTimeoutMs;
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 const PWA_DIR = join(SRC_DIR, 'pwa');
-// Path to the on-disk allowlist config. After a hot-add via /api/allowlist/rules we
-// atomic-write the updated JSON here so the rule survives a daemon restart.
+// Path to the on-disk runtime allowlist. The tracked `allowlist.default.json` ships
+// the defaults; first daemon start copies them here, after which every hot-add via
+// /api/allowlist/rules atomic-writes back so rules survive a restart. The runtime
+// file is gitignored so per-host rule additions don't show up as repo diffs.
 const ALLOWLIST_PATH = config.allowlistPath ?? join(SRC_DIR, '..', 'config', 'allowlist.json');
+
+function loadRuntimeAllowlist(path: string): AllowlistConfig {
+  if (existsSync(path)) {
+    return JSON.parse(readFileSync(path, 'utf8')) as AllowlistConfig;
+  }
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, JSON.stringify(allowlistDefault, null, 2) + '\n');
+  renameSync(tmp, path);
+  return allowlistDefault;
+}
 
 async function main() {
   const tsEnv = (config.certPath && config.keyPath && config.host)
@@ -57,7 +70,7 @@ async function main() {
   // Per-project allowlists live under <runtimeDir>/allowlists/<sanitized-cwd>.json.
   // Created lazily on first promotion; absent dir = no project rules.
   const projectAllowlistDir = join(RUNTIME_DIR, 'allowlists');
-  const allowlist = new Allowlist(allowlistConfig, { projectAllowlistDir });
+  const allowlist = new Allowlist(loadRuntimeAllowlist(ALLOWLIST_PATH), { projectAllowlistDir });
   const queue = new ApprovalQueue({ timeoutMs: APPROVAL_TIMEOUT_MS });
   const modes = new ApprovalModeStore();
   const recurrence = new RecurrenceTracker();

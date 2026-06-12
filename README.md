@@ -100,7 +100,7 @@ See [Configuration](#configuration) for the full list of env vars.
 
 ### 4. Review the allowlist
 
-`config/allowlist.json` controls which tools auto-approve vs. queue for explicit confirmation in the PWA. The defaults are tuned for read-only incident-response work — open the file and trim or extend it before going live. See [Allowlist](#allowlist) below.
+`config/allowlist.default.json` ships the defaults for which tools auto-approve vs. queue for explicit confirmation in the PWA. On first daemon start it's copied to `config/allowlist.json` (gitignored), which is the runtime file the daemon reads and writes. The defaults are tuned for read-only incident-response work — open either file and trim or extend it before going live. See [Allowlist](#allowlist) below.
 
 ### 5. Install the LaunchAgent
 
@@ -138,7 +138,7 @@ All configuration is via environment variables read at daemon startup. To make t
 
 ### Allowlist
 
-`config/allowlist.json` controls which tool calls run without prompting. There are three lists:
+`config/allowlist.json` (created on first daemon start from the tracked `config/allowlist.default.json`) controls which tool calls run without prompting. There are three lists:
 
 - `alwaysAllow`: exact tool names that always pass (e.g. `Read`, `Grep`).
 - `alwaysAllowBashPatterns`: regex matched against the `command` arg of `Bash` calls.
