@@ -601,23 +601,23 @@
       color: var(--accent); font-style: italic;
     }
 
-    /* Low-emphasis footer button revealing the next chunk of older sessions hidden
-       by the session-filter rule. Visually quieter than .project-new-session. */
-    .project-load-more {
+    /* Per-project show/hide archived sessions. Footer slot, low-emphasis: no
+       border — it's a toggle, not an "I want more" action, so it reads quieter. */
+    .project-show-archived {
       display: block;
       width: 100%;
       background: transparent;
       color: var(--text-mute);
-      border: 1px dashed var(--line);
-      padding: 10px 16px;
-      margin-top: 8px;
+      border: none;
+      padding: 8px 16px;
+      margin-top: 4px;
       font-family: var(--font-mono);
       font-size: 11px; letter-spacing: 0.06em;
       cursor: pointer;
-      transition: color 0.15s ease, border-color 0.15s ease;
+      transition: color 0.15s ease;
     }
-    .project-load-more:hover,
-    .project-load-more:active { color: var(--text); border-color: var(--text-mute); }
+    .project-show-archived:hover,
+    .project-show-archived:active { color: var(--text); }
 
     /* Empty-but-expanded project body */
     .project-section-empty {
@@ -957,6 +957,18 @@
     }
     .session-row-wrap:first-of-type { border-top: 1px solid var(--line-soft); }
 
+    /* Removal: height collapses to 0 while contents fade. The wrap already clips
+       (overflow:hidden) so the inner row content compresses cleanly. Easing matches
+       the swipe gesture — same curve, same "settles into place" feel. */
+    .session-row-wrap.removing {
+      transition:
+        height 220ms cubic-bezier(0.32, 0.72, 0, 1),
+        opacity 180ms ease-out,
+        border-color 220ms ease-out;
+      border-color: transparent;
+      pointer-events: none;
+    }
+
     .session-row {
       padding: 18px 4px;
       background: var(--bg);
@@ -1023,6 +1035,23 @@
     }
     .delete-action.swiping { transition: none; }
     .delete-action:active { filter: brightness(0.85); }
+
+    /* Archive-action mirrors delete-action but anchored to the left side and uses a
+       neutral, non-destructive color so the gesture vocabulary matches: red on the right
+       = permanent, neutral on the left = hide-but-recoverable. */
+    .archive-action {
+      position: absolute; top: 0; left: 0; bottom: 0;
+      background: var(--text-mute); color: white;
+      display: flex; align-items: center; justify-content: center;
+      width: 92px;
+      font-size: 11px; letter-spacing: 0.18em; text-transform: uppercase; font-weight: 600;
+      border: none; cursor: pointer;
+      transform: translateX(-100%);
+      transition: transform 0.24s cubic-bezier(0.32, 0.72, 0, 1);
+      will-change: transform;
+    }
+    .archive-action.swiping { transition: none; }
+    .archive-action:active { filter: brightness(0.85); }
 
     /* ───── In-session view ─────────────────────────────────────── */
     /* Compact tasks "trail" — sits between the transcript and the composer, anchored to
@@ -1513,6 +1542,46 @@
       pointer-events: none;
     }
 
+    /* Rejected tool tile in the main transcript — mirrors .agent-entry-rejected for the
+       subagent feed: the inner tile keeps its chrome so the user can still inspect what
+       was rejected, plus a small "Rejected" tag in the top-right and the user's note
+       (if any) below the tile in danger-tinted italic. */
+    .tool-rejected {
+      position: relative;
+    }
+    .tool-rejected .msg.tool_use { border-left-color: var(--danger); opacity: 0.62; }
+    .tool-rejected .msg.tool_use .tool-label {
+      color: var(--danger);
+      text-decoration: line-through;
+      text-decoration-color: var(--danger);
+    }
+    .tool-rejected .msg.msg-shell { opacity: 0.62; }
+    .tool-rejected .msg.msg-shell .shell-cmd {
+      color: var(--danger);
+      text-decoration: line-through;
+      text-decoration-color: var(--danger);
+    }
+    .tool-rejected .msg.msg-read { opacity: 0.62; }
+    .tool-reject-tag {
+      position: absolute;
+      top: 8px; right: 12px;
+      font-family: var(--font-mono);
+      font-size: 9px; letter-spacing: 0.2em; text-transform: uppercase;
+      color: var(--danger);
+      pointer-events: none;
+    }
+    .tool-reject-reason {
+      margin: 6px 0 14px 14px;
+      padding: 8px 12px;
+      border-left: 2px solid var(--danger);
+      color: var(--text-mute);
+      font-family: var(--font-display);
+      font-style: italic;
+      font-size: 14px; line-height: 1.4;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
     /* ───── Cwd picker sheet ──────────────────────────────────────────
        Choose where a new session lands. Two zones: a list of recent project
        cwds (chapter-style rows mirroring the project sections in the main
@@ -1862,7 +1931,13 @@
       flex: 1; min-height: 0; overflow-y: auto;
       padding: 20px 20px 12px;
       -webkit-overflow-scrolling: touch;
+      /* Anchor content to the bottom when it doesn't fill the viewport. When an expanded
+         approval card collapses to a small resolved tile, total content height can drop
+         below the viewport — without this, content sits at the top with empty space below
+         the tile. The inner wrapper's margin-top:auto absorbs any extra space above. */
+      display: flex; flex-direction: column;
     }
+    .transcript-inner { margin-top: auto; }
 
     .msg {
       margin: 14px 0; max-width: 100%;
@@ -1894,6 +1969,144 @@
     }
     .msg.user .role { color: var(--accent); }
     .msg.assistant { color: var(--text); }
+
+    /* ───── Diff-review memo ─────────────────────────────────────────
+       Rendered in place of the standard "YOU said …" bubble when the user submits comments
+       from the diff overlay. Reads as an editorial review — eyebrow + meta line up top,
+       then a numbered ledger of comments. Each comment is a 3-row stack:
+         1. Citation (file → L42), small mono caps, with a § leading mark.
+         2. The cited source line, in the same green/red palette as the diff overlay.
+         3. The user's note, set off by a left rule + numbered marginalia drop-cap.
+       No card chrome or border around the whole memo — it stands alone in the feed via
+       typographic weight, not boxiness. Rule above/below sets it off from neighbours. */
+    .msg.user.diff-review-msg {
+      margin: 28px 0;
+      padding: 18px 0 6px;
+      border-top: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      white-space: normal;
+      position: relative;
+    }
+    .diff-review-msg .dr-head {
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+      margin-bottom: 14px;
+      padding-bottom: 10px;
+      border-bottom: 1px dashed var(--line-soft);
+    }
+    .diff-review-msg .dr-eyebrow {
+      font-family: var(--font-display);
+      font-style: italic;
+      font-size: 19px;
+      line-height: 1;
+      color: var(--accent);
+      letter-spacing: -0.01em;
+    }
+    .diff-review-msg .dr-meta {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.22em;
+      text-transform: uppercase;
+      color: var(--text-mute);
+      margin-left: auto;
+    }
+    .diff-review-msg .dr-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+      counter-reset: dr;
+    }
+    .diff-review-msg .dr-item {
+      counter-increment: dr;
+      padding: 14px 0 16px;
+      border-top: 1px solid var(--line-soft);
+    }
+    .diff-review-msg .dr-item:first-child { border-top: 0; padding-top: 4px; }
+
+    /* Citation: file → L42, mono caps. The § looks like a manuscript section mark, ties
+       back to the editorial feel without overloading the visual with icons. */
+    .diff-review-msg .dr-cite {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text-mute);
+      margin-bottom: 8px;
+    }
+    .diff-review-msg .dr-cite-mark {
+      color: var(--accent);
+      font-size: 13px;
+      letter-spacing: 0;
+      text-transform: none;
+      line-height: 1;
+      position: relative;
+      top: 1px;
+    }
+    .diff-review-msg .dr-cite-file {
+      color: var(--text);
+      font-weight: 600;
+      letter-spacing: 0.08em;
+      text-transform: none;
+    }
+    .diff-review-msg .dr-cite-sep { opacity: 0.7; }
+    .diff-review-msg .dr-cite-line {
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    /* Cited source line — leans on the existing .diff-line rules for the green/red
+       palette but tightens vertical rhythm so it nests cleanly inside the comment block.
+       The mark column is slim here since we don't need to align with a full diff. */
+    .diff-review-msg .dr-line {
+      margin: 0 0 12px;
+      border-radius: 2px;
+      padding: 2px 8px 2px 0;
+    }
+    .diff-review-msg .dr-line .diff-mark { width: 18px; }
+
+    /* The user's note. Numbered marginalia drop-cap in display italic — the same font
+       family as the section-marker italics elsewhere in the app, so a review feels like
+       part of the editorial vocabulary instead of a one-off. */
+    .diff-review-msg .dr-note {
+      position: relative;
+      padding-left: 22px;
+      border-left: 2px solid var(--accent-2, var(--line));
+      font-size: 14px;
+      line-height: 1.55;
+      color: var(--text);
+      white-space: pre-wrap;
+    }
+    .diff-review-msg .dr-note::before {
+      content: counter(dr, decimal-leading-zero);
+      position: absolute;
+      left: -2px;
+      top: -2px;
+      transform: translateX(-100%);
+      padding-right: 10px;
+      font-family: var(--font-display);
+      font-style: italic;
+      font-size: 13px;
+      color: var(--text-mute);
+      line-height: 1.6;
+    }
+    /* On narrow screens, the drop-cap counter would push into the screen edge — tuck it
+       above the note instead. Same character, just relocated. */
+    @media (max-width: 480px) {
+      .diff-review-msg .dr-note {
+        padding-left: 14px;
+      }
+      .diff-review-msg .dr-note::before {
+        position: static;
+        transform: none;
+        display: block;
+        padding-right: 0;
+        margin-bottom: 4px;
+      }
+    }
     /* Tool-use entries — overridden from the default .msg layout. The role label is
        replaced by a tool-specific tag at the top (e.g. EDIT, GRAFANA · query_loki_logs),
        followed by a human summary line and, optionally, a mono detail line with the raw
@@ -3348,6 +3561,41 @@
     .approval-card .approval-actions .approve:active { transform: scale(0.98); filter: brightness(0.92); }
     .approval-card .approval-actions .reject { color: var(--danger); border-color: var(--danger); }
     .approval-card .approval-actions .reject:active { background: var(--danger); color: var(--bg); }
+
+    /* Reject-with-note swaps the action row for a textarea + Cancel / Send rejection.
+       Send rejection takes the primary slot (filled danger) to make the destructive
+       action read as the next step the user already chose by tapping Reject. */
+    .approval-card .approval-reject-form { margin-top: 14px; }
+    .approval-card .approval-reject-form .approval-actions { margin-top: 10px; }
+    .approval-card .approval-reject-reason {
+      width: 100%;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      font-family: var(--font-body);
+      /* 16px minimum to avoid iOS Safari's focus auto-zoom. */
+      font-size: 16px; line-height: 1.4;
+      outline: none;
+      resize: none;
+      transition: border-color 0.12s ease;
+      caret-color: var(--accent);
+      box-sizing: border-box;
+    }
+    .approval-card .approval-reject-reason:focus { border-color: var(--danger); }
+    .approval-card .approval-reject-reason::placeholder {
+      color: var(--text-dim);
+      font-family: var(--font-display); font-style: italic;
+      font-size: 15px;
+    }
+    .approval-card .approval-actions .reject-cancel { color: var(--text-mute); }
+    .approval-card .approval-actions .reject-cancel:active { background: var(--line); color: var(--text); }
+    .approval-card .approval-actions .reject-send {
+      background: var(--danger);
+      color: var(--bg);
+      border-color: var(--danger);
+    }
+    .approval-card .approval-actions .reject-send:active { transform: scale(0.98); filter: brightness(0.92); }
 
     /* "Always allow" — small tertiary link below the action buttons. Adds a rule to the
        allowlist and approves the current call in one shot. Mono caps to match the

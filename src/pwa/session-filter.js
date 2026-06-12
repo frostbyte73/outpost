@@ -1,37 +1,28 @@
-// Pure session-list partitioning. Used by the PWA's project section body to decide
-// which session rows to render vs. hide behind the "Load more" button.
+// Pure session-list partitioning. The daemon already stamps `archived: true` on any
+// session whose lastModified is past the 7d activity window (see
+// AUTO_ARCHIVE_WINDOW_MS in session-store.ts), so this filter only needs to honour
+// the archived flag — there's no separate "old but not yet archived" bucket to manage.
 //
-// Rule (mirrors docs/superpowers/specs/2026-06-12-session-list-filtering-design.md):
-//   - Sessions whose index < 3 are always visible (top-3 carve-out).
-//   - Sessions with an active worktree (worktreePath set AND !archived) are always
-//     visible, regardless of position.
-//   - Of the remaining sessions, those modified within the last 7 days are visible.
-//   - Older remaining sessions form the "hidden pool". The first `extraRevealed` of
-//     them (newest-first, matching the input order) are revealed; the rest stay hidden.
+// Rule:
+//   - Archived sessions are excluded by default. They reappear (in their natural
+//     newest-first slot) only when `showArchived` is true.
+//   - Non-archived sessions are always visible. The top-3 / active-worktree carve-outs
+//     of older rules are now redundant (anything that would have triggered them is
+//     either still ≤7d old, or has a live worktree which keeps it non-archived).
 //
-// Input invariant: `sessions` is sorted newest-first by lastModified, the same shape
-// that listProjects() produces server-side.
+// Input invariant: `sessions` is sorted newest-first by lastModified.
 
-const WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-const ALWAYS_SHOW_TOP = 3;
-
-export function partitionSessions(sessions, extraRevealed, nowMs) {
-  const visibleIds = new Set();
-  const hiddenPool = [];
-  for (let i = 0; i < sessions.length; i++) {
-    const s = sessions[i];
-    const hasActiveWorktree = !!s.worktreePath && !s.archived;
-    const inTopThree = i < ALWAYS_SHOW_TOP;
-    const withinAgeWindow = (nowMs - s.lastModified) <= WINDOW_MS;
-    if (inTopThree || hasActiveWorktree || withinAgeWindow) {
-      visibleIds.add(s.id);
+export function partitionSessions(sessions, _extraRevealed, _nowMs, opts) {
+  const showArchived = !!(opts && opts.showArchived);
+  const visible = [];
+  let archivedCount = 0;
+  for (const s of sessions) {
+    if (s.archived) {
+      archivedCount++;
+      if (showArchived) visible.push(s);
     } else {
-      hiddenPool.push(s);
+      visible.push(s);
     }
   }
-  const revealCount = Math.min(Math.max(0, extraRevealed | 0), hiddenPool.length);
-  for (let i = 0; i < revealCount; i++) visibleIds.add(hiddenPool[i].id);
-  const visible = sessions.filter((s) => visibleIds.has(s.id));
-  const hiddenRemaining = hiddenPool.length - revealCount;
-  return { visible, hiddenRemaining };
+  return { visible, hiddenRemaining: 0, archivedCount };
 }

@@ -25,8 +25,22 @@ test('Deny resolves the approval; mock claude emits deny tool_result instead of 
   // Wait for the approval card.
   await expect(outpostPage.getByText(/incident_update/i).first()).toBeVisible({ timeout: 10_000 });
 
-  // Click Reject.
+  // Click Reject — this now opens the inline note form rather than deciding immediately.
   await outpostPage.locator('button.reject').first().click();
+
+  // The textarea appears in place of the Approve/Reject pair.
+  const textarea = outpostPage.locator('textarea.approval-reject-reason').first();
+  await expect(textarea).toBeVisible({ timeout: 2_000 });
+
+  // Type a reason so the rejection appears in the feed.
+  await textarea.fill('not the right tool for this');
+
+  // Send the rejection with the typed note.
+  await outpostPage.locator('button.reject-send').first().click();
+
+  // The rejection should appear in the feed: "Rejected" tag + the user's note.
+  await expect(outpostPage.locator('.tool-reject-tag').first()).toBeVisible({ timeout: 5_000 });
+  await expect(outpostPage.getByText('not the right tool for this')).toBeVisible({ timeout: 5_000 });
 
   // Pending queue empties.
   await expect.poll(async () => {

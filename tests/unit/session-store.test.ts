@@ -506,6 +506,80 @@ describe('SessionStore — worktree merge', () => {
     expect(sess?.archived).toBe(true);
   });
 
+  it('stamps archived:true on a session whose mtime is older than the 7d auto-archive window', async () => {
+    const { root } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-stale-cwd-'));
+    const cwd = makeCwd(cwdHost, 'stale-project');
+    const projDir = join(root, cwd.replace(/\//g, '-'));
+    mkdirSync(projDir, { recursive: true });
+    const stalePath = join(projDir, 'sessstale.jsonl');
+    const freshPath = join(projDir, 'sessfresh.jsonl');
+    writeFileSync(stalePath, JSON.stringify({ type: 'user', cwd, message: { content: 'old' } }) + '\n');
+    writeFileSync(freshPath, JSON.stringify({ type: 'user', cwd, message: { content: 'new' } }) + '\n');
+    // Backdate stale file to 8 days ago; leave fresh at "now".
+    const eightDaysAgoSec = (Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000;
+    utimesSync(stalePath, eightDaysAgoSec, eightDaysAgoSec);
+
+    const store = new SessionStore({ root });
+    const project = store.listProjects().find((p) => p.cwd === cwd)!;
+    const stale = project.sessions.find((s) => s.id === 'sessstale')!;
+    const fresh = project.sessions.find((s) => s.id === 'sessfresh')!;
+    expect(stale.archived).toBe(true);
+    expect(fresh.archived).toBeUndefined();
+  });
+
+  it('a project whose every session is auto-archived still appears in listProjects()', async () => {
+    const { root } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-all-stale-'));
+    const cwd = makeCwd(cwdHost, 'all-stale-project');
+    const projDir = join(root, cwd.replace(/\//g, '-'));
+    mkdirSync(projDir, { recursive: true });
+    // Two stale JSONLs, both backdated past 7d.
+    const p1 = join(projDir, 'oldone.jsonl');
+    const p2 = join(projDir, 'oldtwo.jsonl');
+    writeFileSync(p1, JSON.stringify({ type: 'user', cwd, message: { content: 'a' } }) + '\n');
+    writeFileSync(p2, JSON.stringify({ type: 'user', cwd, message: { content: 'b' } }) + '\n');
+    const oldSec = (Date.now() - 10 * 24 * 60 * 60 * 1000) / 1000;
+    utimesSync(p1, oldSec, oldSec);
+    utimesSync(p2, oldSec, oldSec);
+
+    const store = new SessionStore({ root });
+    const project = store.listProjects().find((p) => p.cwd === cwd);
+    expect(project).toBeDefined();
+    expect(project!.sessions).toHaveLength(2);
+    expect(project!.sessions.every((s) => s.archived === true)).toBe(true);
+  });
+
+  it('does NOT auto-archive a stale session whose worktree is still active', async () => {
+    const { WorktreeManager } = await import('../../src/worktree-manager.js');
+    const { root } = makeRoot();
+    const cwdHost = mkdtempSync(join(tmpdir(), 'ss-stale-wt-cwd-'));
+    const parentCwd = makeCwd(cwdHost, 'parent');
+    const worktreePath = makeCwd(cwdHost, 'wt-stale');
+    const wtDir = join(root, worktreePath.replace(/\//g, '-'));
+    mkdirSync(wtDir, { recursive: true });
+    const stalePath = join(wtDir, 'sessstalewt.jsonl');
+    writeFileSync(stalePath, JSON.stringify({ type: 'user', cwd: worktreePath, message: { content: 'long-running branch' } }) + '\n');
+    // Backdate well past 7d.
+    const oldSec = (Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000;
+    utimesSync(stalePath, oldSec, oldSec);
+    const wtMgrRoot = mkdtempSync(join(tmpdir(), 'wt-mgr-'));
+    const wtMgr = new WorktreeManager({ root: wtMgrRoot, projectsRoot: mkdtempSync(join(tmpdir(), 'wt-proj-')) });
+    wtMgr._testSeedRecord({
+      sessionId: 'sessstalewt',
+      projectCwd: parentCwd,
+      worktreePath,
+      branch: 'outpost/stalewt',
+      baseBranch: 'main',
+      createdAt: 100,
+    });
+    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const parent = store.listProjects().find((p) => p.cwd === parentCwd)!;
+    const sess = parent.sessions.find((s) => s.id === 'sessstalewt')!;
+    expect(sess.worktreePath).toBe(worktreePath);
+    expect(sess.archived).toBeUndefined();
+  });
+
   it('findSession returns the PHYSICAL projectDir (raw scan), not the merged-view parent', async () => {
     const { WorktreeManager } = await import('../../src/worktree-manager.js');
     const { root } = makeRoot();

@@ -480,6 +480,29 @@ function firstCwdInJsonl(path: string): string | null {
   }
 }
 
+// Sessions older than this with no active worktree are stamped archived: true at read
+// time. Resuming the session updates the JSONL's mtime so the row reappears on the next
+// listProjects() call. Active worktrees are exempt — long-running branches shouldn't
+// vanish at the 7d mark.
+export const AUTO_ARCHIVE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Stamp archived:true on any session whose mtime is past the 7d window AND that has no
+// active worktree. Mutates the project list in place. Idempotent — already-archived
+// sessions stay archived. Skips sessions with a live worktreePath so a long-running
+// branch doesn't get hidden behind "Show archived".
+function stampAutoArchived(projects: ProjectInfo[]): void {
+  const ageCutoff = Date.now() - AUTO_ARCHIVE_WINDOW_MS;
+  for (const p of projects) {
+    for (let i = 0; i < p.sessions.length; i++) {
+      const s = p.sessions[i]!;
+      if (s.archived) continue;
+      if (s.lastModified < ageCutoff && !s.worktreePath) {
+        p.sessions[i] = { ...s, archived: true };
+      }
+    }
+  }
+}
+
 export class SessionStore {
   private readonly root: string;
   private readonly registry: ProjectRegistry | undefined;
@@ -578,9 +601,11 @@ export class SessionStore {
 
   listProjects(): ProjectInfo[] {
     const raw = this.scanRawProjects();
-    // No worktree manager → return raw view (Phase 2a behavior).
+    // No worktree manager → return raw view (Phase 2a behavior), still applying the
+    // 7d auto-archive stamp so tests + non-worktree deployments behave consistently.
     if (!this.worktreeManager) {
       raw.sort((a, b) => b.lastModified - a.lastModified);
+      stampAutoArchived(raw);
       return raw;
     }
 
@@ -644,7 +669,8 @@ export class SessionStore {
       parent.lastModified = Math.max(parent.lastModified, wtProject.lastModified);
     }
 
-    // Stamp `archived: true` on any session whose worktree-manager record is a tombstone.
+    // Stamp `archived: true` on any session whose worktree-manager record is a tombstone,
+    // or whose mtime falls past the 7d auto-archive window.
     for (const p of parents.values()) {
       for (let i = 0; i < p.sessions.length; i++) {
         if (archivedSessionIds.has(p.sessions[i]!.id)) {
@@ -653,6 +679,7 @@ export class SessionStore {
       }
       p.sessions.sort((a, b) => b.lastModified - a.lastModified);
     }
+    stampAutoArchived([...parents.values()]);
 
     const out = [...parents.values()];
     out.sort((a, b) => b.lastModified - a.lastModified);

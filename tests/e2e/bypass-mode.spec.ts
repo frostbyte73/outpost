@@ -14,12 +14,11 @@ test.beforeAll(() => {
 });
 
 test('bypass mode allows mcp__incident-io__incident_update without any approval card', async ({ daemon, outpostPage }) => {
-  // Switch to bypass mode via the segmented control BEFORE opening a session (settings
-  // is only accessible from the list view). Use the 2-tap confirm gesture.
+  // Set bypass as the default-for-new-sessions via the settings sheet. This sheet's
+  // segmented control sets state.defaultApprovalMode only (single-click, no confirm) —
+  // the per-session two-tap confirm lives in the in-session header chip popover, not
+  // here. When the session WS connects below it inherits this default.
   await outpostPage.locator('.settings-btn').click();
-  await outpostPage.locator('#permission-modes button[data-mode="bypass"]').click();
-  // First tap arms; aria-pressed stays false but button text becomes "Tap again to confirm".
-  await expect(outpostPage.locator('#permission-modes button[data-mode="bypass"]')).toHaveText(/tap again to confirm/i);
   await outpostPage.locator('#permission-modes button[data-mode="bypass"]').click();
   await expect(outpostPage.locator('#permission-modes button[data-mode="bypass"]')).toHaveAttribute('aria-pressed', 'true');
   await outpostPage.locator('#sheet-close').click();

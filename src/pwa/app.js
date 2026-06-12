@@ -19,11 +19,9 @@ const state = {
     try { return JSON.parse(localStorage.getItem('op:expandedProjects') ?? '{}'); }
     catch { return {}; }
   })(),
-  // In-memory pagination cursor for "Load more" in each project section, keyed by
-  // projectDir. Tracks how many extra rows beyond the always-show set the user has
-  // revealed. Not persisted: a page reload returns the user to the default filtered
-  // view. See partitionSessions() in session-filter.js.
-  loadedExtraByProject: new Map(),
+  // Per-project toggle to reveal archived sessions. Not persisted — a reload returns
+  // to the default hidden-archived view.
+  showArchivedByProject: new Map(),
   currentSessionId: null,
   // The cwd of the session currently open in the session view. Set when openSession() runs
   // (either from the picker for new sessions or by looking up the project for existing
@@ -159,10 +157,6 @@ const state = {
   // fast tools (Read, Grep) don't flash by too quickly to read. A new push clears these.
   lingeringVerb: null,
   lingeringTimer: null,
-  // Count of file edits auto-allowed during the current session via accept-edits mode.
-  // Surfaced as a counter on the header chip so the user can audit what Claude did
-  // unsupervised. Reset per session in openSession.
-  autoAllowedEdits: 0,
   // Daemon config loaded once at startup via /api/info. Surfaced in the empty state
   // (cwd / rule count) and used to size the approval-card countdown.
   daemonInfo: null,
@@ -204,6 +198,16 @@ const state = {
   // (the bar is hidden until the first assistant message comes in). cacheRead+cacheCreate
   // occupy the context window even though they bill differently, so the meter sums all four.
   lastUsage: null, // { inputTokens, outputTokens, cacheCreate, cacheRead, model }
+  // Per-session in-memory caches for the meter inputs. Swapping into a session that's
+  // been opened before in this page session hydrates the meter instantly, instead of
+  // waiting for the daemon to replay a cached statusline (which is empty if claude has
+  // been idle) or for the next assistant turn to refill lastUsage.
+  //   statuslineBySession: Map<sessionId, state.statusline>
+  //   lastUsageBySession:  Map<sessionId, state.lastUsage>
+  // Memory-only — a reload starts fresh. Entries are dropped when the underlying
+  // session is deleted.
+  statuslineBySession: new Map(),
+  lastUsageBySession: new Map(),
   contextWindow: 200_000,
   // Project-level override for the context-window size, resolved at openSession from
   // /api/sessions' `contextWindowSize` field (which the daemon derives from claude code's
@@ -240,6 +244,20 @@ const state = {
   paletteOpen: false,
   paletteFilter: '',
   paletteHighlight: 0, // index of the highlighted row for keyboard navigation
+  // Approval IDs currently in "reject with note" mode → draft text the user has typed
+  // so far. Keeping the draft on state (not in the DOM) means renderSession() rebuilds
+  // triggered by unrelated WS traffic don't wipe what the user is mid-typing.
+  rejectingApprovals: new Map(),
+  // tool_use_id → { reason } for tool calls the user explicitly rejected. The matching
+  // tool_use tile in state.transcript may arrive before OR after the decide round-trip
+  // (the approval card races the tool_use block), so we stash by id and stamp the entry
+  // wherever — both at decide time and at tool_use ingestion time.
+  rejections: new Map(),
+  // Set by interruptSession() so the next daemon_proc_exit is treated as expected — we
+  // auto-resume via openSession() instead of pushing the "Session subprocess exited"
+  // error tile. Claude's own "[Request interrupted by user]" line in the on-disk
+  // transcript surfaces on resume and acts as the visible marker.
+  expectedInterrupt: false,
 };
 
 // Per-model context-window sizes. Updated by PR when Anthropic ships new models; unknown
@@ -570,14 +588,11 @@ function setHeader(mode) {
   }
 }
 
-// Human label for the header badge. Accept-edits hides a running counter of silently-
-// approved edits inside the badge so the user can audit unsupervised activity at a glance.
 function modeBadgeLabel(mode) {
   if (mode === 'ask') return 'ASK';
   if (mode === 'plan') return 'PLAN';
   if (mode === 'bypass') return 'BYPASS';
-  // accept-edits: surface the counter once anything has been auto-allowed.
-  return state.autoAllowedEdits > 0 ? `AUTO-EDIT · ${state.autoAllowedEdits}` : 'AUTO-EDIT';
+  return 'AUTO-EDIT';
 }
 
 const MODE_DESCRIPTIONS = {
@@ -741,6 +756,10 @@ function currentSessionDiffable() {
 }
 
 function renderList() {
+  // Preserve the list scroll position across re-renders (archive, delete, polling).
+  // renderList replaces root.innerHTML wholesale, which destroys the scroll container;
+  // capture before, restore after. No-op on first paint when the old list is absent.
+  const prevListScroll = document.querySelector('.session-list')?.scrollTop ?? 0;
   const pendingBySession = state.pendingApprovals.reduce((acc, a) => {
     acc[a.sessionId] = (acc[a.sessionId] || 0) + 1;
     return acc;
@@ -789,12 +808,16 @@ function renderList() {
   document.getElementById('conn-banner-retry')?.addEventListener('click', forceReconnect);
   bindSessionRowHandlers();
   bindProjectOverflowHandlers();
-  bindProjectLoadMoreHandlers();
+  bindProjectFooterHandlers();
+  // Restore scroll on the freshly-rebuilt .session-list. Clamped naturally by the
+  // browser if the new content is shorter than the old position.
+  const newList = document.querySelector('.session-list');
+  if (newList && prevListScroll > 0) newList.scrollTop = prevListScroll;
 }
 
 function bindSessionRowHandlers() {
   for (const row of document.querySelectorAll('.session-row')) {
-    wireSwipeToDelete(row);
+    wireSwipeActions(row);
   }
   for (const btn of document.querySelectorAll('.delete-action')) {
     btn.onclick = async (e) => {
@@ -813,23 +836,67 @@ function bindSessionRowHandlers() {
       deleteSession(id);
     };
   }
+  for (const btn of document.querySelectorAll('.archive-action')) {
+    btn.onclick = async (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.archive;
+      const wrap = btn.closest('.session-row-wrap');
+      const row = wrap?.querySelector('.session-row');
+      const isWorktree = btn.dataset.worktree === 'yes';
+      if (isWorktree) {
+        // Worktree archive is destructive (teardown + branch delete) — confirm.
+        const ok = await confirmInSheet({
+          title: 'Archive worktree?',
+          body: 'The worktree directory and its branch will be deleted. The session transcript stays.',
+          confirmLabel: 'Archive',
+          danger: true,
+        });
+        if (!ok) { if (row) snapRowClosed(row); return; }
+      }
+      await archiveSession(id);
+    };
+  }
   for (const btn of document.querySelectorAll('.session-overflow')) {
     btn.onclick = (e) => {
       e.stopPropagation();
       const id = btn.dataset.sessionOverflow;
       const row = btn.closest('.session-row');
-      const archivable = row?.dataset.archivable === 'yes';
-      showSessionOverflowMenu(btn, id, { archivable });
+      const isWorktree = row?.dataset.worktree === 'yes';
+      const isArchived = row?.dataset.archived === 'yes';
+      showSessionOverflowMenu(btn, id, { isWorktree, isArchived });
     };
   }
+}
+
+async function archiveSession(sessionId) {
+  // Animate only if the row will actually disappear post-archive. If the row's project
+  // has "Show archived" on, the row stays visible (just re-styled) — animating and then
+  // re-rendering would flicker.
+  if (willRowDisappearOnArchive(sessionId)) {
+    await animateRowOutById(sessionId);
+  }
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, { method: 'POST' });
+    if (!r.ok) console.warn('archive failed:', r.status);
+  } catch (err) { console.warn('archive failed:', err); }
+  if (globalThis.__outpostRefreshSessions) await globalThis.__outpostRefreshSessions();
+}
+
+function willRowDisappearOnArchive(sessionId) {
+  for (const p of state.projects) {
+    if (p.sessions.some((s) => s.id === sessionId)) {
+      return !state.showArchivedByProject.get(p.projectDir);
+    }
+  }
+  return true;
 }
 
 function showSessionOverflowMenu(anchor, sessionId, opts) {
   document.querySelector('.session-overflow-menu')?.remove();
   const menu = document.createElement('div');
   menu.className = 'session-overflow-menu';
-  const archiveBtn = opts.archivable
-    ? `<button class="session-overflow-item" data-action="archive" type="button">Archive worktree</button>`
+  const archiveBtn = !opts.isArchived
+    ? `<button class="session-overflow-item" data-action="archive" type="button">${opts.isWorktree ? 'Archive worktree' : 'Archive'}</button>`
     : '';
   menu.innerHTML = `${archiveBtn}<button class="session-overflow-item session-overflow-item-danger" data-action="delete" type="button">Delete</button>`;
   document.body.appendChild(menu);
@@ -844,18 +911,16 @@ function showSessionOverflowMenu(anchor, sessionId, opts) {
       close();
       const action = item.dataset.action;
       if (action === 'archive') {
-        const ok = await confirmInSheet({
-          title: 'Archive worktree?',
-          body: 'The worktree directory and its branch will be deleted. The session transcript stays.',
-          confirmLabel: 'Archive',
-          danger: true,
-        });
-        if (!ok) return;
-        try {
-          const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/archive`, { method: 'POST' });
-          if (!r.ok) console.warn('archive failed:', r.status);
-        } catch (err) { console.warn('archive failed:', err); }
-        if (globalThis.__outpostRefreshSessions) await globalThis.__outpostRefreshSessions();
+        if (opts.isWorktree) {
+          const ok = await confirmInSheet({
+            title: 'Archive worktree?',
+            body: 'The worktree directory and its branch will be deleted. The session transcript stays.',
+            confirmLabel: 'Archive',
+            danger: true,
+          });
+          if (!ok) return;
+        }
+        await archiveSession(sessionId);
       } else if (action === 'delete') {
         const ok = await confirmInSheet({
           title: 'Delete session?',
@@ -909,8 +974,8 @@ function projectSectionHtml(p, isMostRecent, pendingBySession) {
 // Body shown when a project is expanded. "+ New session" sits at the TOP so projects
 // with many sessions don't require scrolling to start a fresh one. For git repos, a
 // branch picker sits above the button — its value drives the new session's base branch.
-// Older sessions are hidden behind a "Load more" footer button per the visibility rule
-// in session-filter.js.
+// Sessions auto-archive at 7d (server-side, in session-store.ts) and are folded behind
+// the "Show N archived" footer toggle.
 function projectSectionBodyHtml(p, pendingBySession) {
   const branchPicker = p.isGitRepo
     ? `<div class="project-branch-picker" data-cwd="${escapeHtml(p.cwd)}">
@@ -928,20 +993,20 @@ function projectSectionBodyHtml(p, pendingBySession) {
   if (p.sessions.length === 0) {
     return branchPicker + newBtn + `<div class="project-section-empty">No sessions yet.</div>`;
   }
-  const extraRevealed = state.loadedExtraByProject.get(p.projectDir) ?? 0;
-  const { visible, hiddenRemaining } = partitionSessions(p.sessions, extraRevealed, Date.now());
+  const showArchived = state.showArchivedByProject.get(p.projectDir) ?? false;
+  const { visible, archivedCount } = partitionSessions(p.sessions, 0, 0, { showArchived });
   // sessionRowHtml's marker uses i+1; keep numbering stable to the original newest-first
-  // order so a user-visible "01" doesn't shuffle when load-more reveals a session deeper
-  // in the list. p.sessions[] still holds the full sorted order.
+  // order so a user-visible "01" doesn't shuffle when archived rows surface via toggle.
+  // p.sessions[] still holds the full sorted order including archived rows.
   const rows = visible
     .map((s) => sessionRowHtml(s, p.sessions.indexOf(s), pendingBySession[s.id] ?? 0))
     .join('');
-  const loadMore = hiddenRemaining > 0
-    ? `<button class="project-load-more" type="button" data-project-dir="${escapeHtml(p.projectDir)}">
-         Load ${Math.min(10, hiddenRemaining)} more (${hiddenRemaining} hidden)
+  const archivedToggle = archivedCount > 0
+    ? `<button class="project-show-archived" type="button" data-project-dir="${escapeHtml(p.projectDir)}">
+         ${showArchived ? 'Hide archived' : `Show ${archivedCount} archived`}
        </button>`
     : '';
-  return branchPicker + newBtn + rows + loadMore;
+  return branchPicker + newBtn + rows + archivedToggle;
 }
 
 // Cache the per-cwd branch list. /api/projects/:sanitized/branches caches on the daemon
@@ -1004,7 +1069,7 @@ function bindProjectSectionToggles(pendingBySession) {
         body.innerHTML = p ? projectSectionBodyHtml(p, pendingBySession) : '';
         bindSessionRowHandlers();
         bindProjectNewSessionHandlers();
-        bindProjectLoadMoreHandlers();
+        bindProjectFooterHandlers();
         const picker = body.querySelector('.project-branch-picker');
         if (picker) void populateBranchPicker(picker);
       } else {
@@ -1013,21 +1078,21 @@ function bindProjectSectionToggles(pendingBySession) {
     };
   }
   bindProjectNewSessionHandlers();
-  bindProjectLoadMoreHandlers();
+  bindProjectFooterHandlers();
   // Populate branch dropdowns for already-expanded sections rendered by render().
   for (const picker of document.querySelectorAll('.project-branch-picker')) {
     void populateBranchPicker(picker);
   }
 }
 
-function bindProjectLoadMoreHandlers() {
-  for (const btn of document.querySelectorAll('.project-load-more')) {
+function bindProjectFooterHandlers() {
+  for (const btn of document.querySelectorAll('.project-show-archived')) {
     btn.onclick = (e) => {
       e.stopPropagation();
       const projectDir = btn.dataset.projectDir;
       if (!projectDir) return;
-      const current = state.loadedExtraByProject.get(projectDir) ?? 0;
-      state.loadedExtraByProject.set(projectDir, current + 10);
+      const current = state.showArchivedByProject.get(projectDir) ?? false;
+      state.showArchivedByProject.set(projectDir, !current);
       renderList();
     };
   }
@@ -1152,10 +1217,17 @@ function sessionRowHtml(s, i, pendingCount) {
       ? `<span class="sep">·</span><span class="worktree-badge">⌥ ${escapeHtml(s.worktreeBranch)}</span>`
       : '';
   const rowClass = `session-row${s.archived ? ' session-row-archived' : ''}`;
+  // data-worktree marks the row as needing a confirm sheet on archive (destructive
+  // teardown). Already-archived rows skip the archive action entirely.
+  const isWorktree = !!(s.worktreePath && !s.archived);
+  const archiveBtn = !s.archived
+    ? `<button class="archive-action" data-archive="${escapeHtml(s.id)}" data-worktree="${isWorktree ? 'yes' : 'no'}" aria-label="Archive session">Archive</button>`
+    : '';
   return `
     <div class="session-row-wrap">
+      ${archiveBtn}
       <button class="delete-action" data-delete="${escapeHtml(s.id)}" aria-label="Delete session">Delete</button>
-      <div class="${rowClass}" data-id="${escapeHtml(s.id)}" data-archivable="${s.worktreePath && !s.archived ? 'yes' : 'no'}">
+      <div class="${rowClass}" data-id="${escapeHtml(s.id)}" data-archived="${s.archived ? 'yes' : 'no'}" data-worktree="${isWorktree ? 'yes' : 'no'}">
         <span class="marker${hasPending ? ' pending' : ''}">${marker}</span>
         <div class="body">
           <div class="title">${escapeHtml(s.title)}</div>
@@ -1227,13 +1299,13 @@ async function openSession(id, opts) {
   state.activeAgentId = null;
   state.agentTabOrder = [];
   state.unboundAgentInvocations = [];
-  state.autoAllowedEdits = 0;
   state.activeTools = [];
   state.pendingExpand = [];
-  // Token meter is per-session — usage from a previous session would otherwise show
-  // until the new session's first assistant turn lands.
-  state.lastUsage = null;
-  state.statusline = null;
+  // Token meter is per-session. Hydrate from the per-session caches so a re-open is
+  // instant; falls back to null for brand-new sessions, in which case the meter shows
+  // em-dashes until the first daemon_statusline / assistant turn arrives.
+  state.lastUsage = state.lastUsageBySession.get(id) ?? null;
+  state.statusline = state.statuslineBySession.get(id) ?? null;
   state.meterBreakdownOpen = false;
   // Slash palette also per-session so a stale filter doesn't carry across.
   state.paletteOpen = false;
@@ -1460,6 +1532,9 @@ function leaveSession() {
   state.sessionWsReady = false;
   state.sessionWsRetries = 0;
   state.sessionWsHasConnected = false;
+  state.expectedInterrupt = false;
+  state.rejectingApprovals.clear();
+  state.rejections.clear();
   stopThinking();
   document.getElementById('toast')?.remove();
   closeTodosSheet();
@@ -1712,12 +1787,17 @@ function handleWsMessage(msg) {
         // Carry structured fields so toolUseHtml() can render a tool-specific summary on
         // both live and disk-replayed paths. The fallback `text` stays for unknown tools
         // and any edge case where toolInput is missing.
+        // If the user already rejected this call before its tool_use block landed
+        // (approval card races the assistant content_block_stop), pre-stamp the entry so
+        // it renders as Rejected on first paint instead of as a plain tile.
+        const preReject = b.id ? state.rejections.get(b.id) : undefined;
         state.transcript.push({
           role: 'tool_use',
           text: `${b.name}(${JSON.stringify(b.input).slice(0, 200)})`,
           toolName: b.name,
           toolInput: b.input,
           ...(b.id ? { toolUseId: b.id } : {}),
+          ...(preReject ? { decision: 'deny', rejectReason: preReject.reason } : {}),
           msgId,
         });
         // If the auto-expand notification raced ahead of this tool_use block, the
@@ -1932,12 +2012,21 @@ function handleWsMessage(msg) {
     stopThinking();
     renderSession();
   } else if (msg.type === 'daemon_proc_exit') {
+    stopThinking();
+    if (state.expectedInterrupt) {
+      // User tapped stop. Skip the error+Reopen tile and resume the session
+      // transparently — statusline/context state lives on state (not on the WS) so it
+      // persists across the bounce; claude's "[Request interrupted by user]" line
+      // surfaces via the disk replay inside openSession.
+      state.expectedInterrupt = false;
+      const id = state.currentSessionId;
+      if (id) { openSession(id); return; }
+    }
     state.transcript.push({
       role: 'error',
       text: `Session subprocess exited (code ${msg.code}).`,
       action: 'reopen',
     });
-    stopThinking();
     renderSession();
   } else if (msg.type === 'daemon_statusline') {
     // Authoritative context-window snapshot from claude's own statusLine hook — fires
@@ -1952,6 +2041,9 @@ function handleWsMessage(msg) {
       effort: msg.effort ?? null,
       exceeds200k: !!msg.exceeds200k,
     };
+    if (state.currentSessionId) {
+      state.statuslineBySession.set(state.currentSessionId, state.statusline);
+    }
     updateMeterRegion();
   } else if (msg.type === 'approval_mode') {
     // New-session default push: if we just spawned this session and the per-client
@@ -2045,7 +2137,6 @@ function handleNotificationMessage(msg) {
     // straight to the WS without pushing onto pendingApprovals — but for subagents we
     // DO mirror the entry into the agents sheet (already resolved as 'allow') so the
     // user can audit what was auto-written without scrolling the parent transcript.
-    // The header chip's auto-edits counter also increments here.
     if (state.acceptEdits && EDIT_TOOLS.has(msg.toolName)) {
       // Send the auto-decide on the notifications WS, which is the channel that survives
       // iOS backgrounding (and is the one that just delivered the approval_pending). Falling
@@ -2053,7 +2144,6 @@ function handleNotificationMessage(msg) {
       // session-WS close caused the hook to time out after 10 minutes with a denied edit.
       sendApprovalDecide({ approvalId: msg.approvalId, decision: 'allow' });
       if (msg.sessionId === state.currentSessionId) {
-        state.autoAllowedEdits += 1;
         if (msg.agentId) {
           // Subagent edit: addSubagentEntry handles expand-by-default for high-detail.
           addSubagentEntry({ ...msg, decision: 'allow' });
@@ -2362,6 +2452,9 @@ function recordUsage(usage, model) {
     cacheRead: usage.cache_read_input_tokens ?? 0,
     model: realModel ?? state.lastUsage?.model ?? null,
   };
+  if (state.currentSessionId) {
+    state.lastUsageBySession.set(state.currentSessionId, state.lastUsage);
+  }
   if (realModel) {
     // Project-level override (from claude code's own ~/.claude.json) wins over the
     // per-model lookup, since the API response strips the [1m] suffix and we can't
@@ -2516,9 +2609,30 @@ function updateMeterRegion() {
       bd.setAttribute('aria-hidden', open ? 'false' : 'true');
     }
   };
-  if (btn) btn.onclick = (e) => { e.stopPropagation(); setOpen(!state.meterBreakdownOpen); };
-  // Tap anywhere inside the expanded breakdown collapses it.
-  if (bd) bd.onclick = () => setOpen(false);
+  // Tapping the meter or its breakdown panel would otherwise pull focus off the
+  // contenteditable composer, dismissing the on-screen keyboard mid-conversation.
+  // preventDefault on pointerdown blocks the button's native focus grab; for the panel
+  // (a div) iOS still drops the keyboard via its tap-outside-input behavior, so we
+  // snapshot the composer's focus state on pointerdown and restore it after the click.
+  let composerWasFocused = false;
+  const captureFocus = () => {
+    const c = document.getElementById('composer');
+    composerWasFocused = !!c && document.activeElement === c;
+  };
+  const restoreFocus = () => {
+    if (!composerWasFocused) return;
+    const c = document.getElementById('composer');
+    if (c && document.activeElement !== c) c.focus();
+  };
+  if (btn) {
+    btn.onpointerdown = (e) => { captureFocus(); e.preventDefault(); };
+    btn.onclick = (e) => { e.stopPropagation(); setOpen(!state.meterBreakdownOpen); restoreFocus(); };
+  }
+  if (bd) {
+    bd.onpointerdown = (e) => { captureFocus(); e.preventDefault(); };
+    // Tap anywhere inside the expanded breakdown collapses it.
+    bd.onclick = () => { setOpen(false); restoreFocus(); };
+  }
 }
 
 // Render a single CTX/5H/7D cell. `pct` may be null/undefined when the source hasn't
@@ -2732,7 +2846,7 @@ function placeCursorAtEnd(el) {
 
 function buildSessionSkeleton() {
   root.innerHTML = `
-    <div class="transcript" id="transcript"></div>
+    <div class="transcript" id="transcript"><div class="transcript-inner" id="transcript-inner"></div></div>
     <div id="thinking-region"></div>
     <div id="agents-region"></div>
     <div id="todos-region"></div>
@@ -2749,6 +2863,28 @@ function buildSessionSkeleton() {
       </div>
     </div>
   `;
+  // When composer-wrap grows (meter breakdown opens, meter appears for the first time, etc),
+  // the transcript shrinks. Without compensation, the bottom of the visible transcript content
+  // gets clipped behind the new strip — covering whatever the user was reading (including big
+  // approval cards). Mirror the growth onto transcript.scrollTop so visible content stays put.
+  // Only adjust on growth: on shrink (breakdown closing), the natural behavior is the right
+  // one — the transcript expands downward into the freed space and reveals more content at the
+  // bottom. Shifting scrollTop in the other direction would scroll the content upward, leaving
+  // a gap between the feed and the now-shorter composer-wrap.
+  const composerWrap = root.querySelector('.composer-wrap');
+  const transcriptEl = document.getElementById('transcript');
+  if (composerWrap && transcriptEl && typeof ResizeObserver === 'function') {
+    let lastH = composerWrap.getBoundingClientRect().height;
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const newH = entry.contentRect.height;
+        const delta = newH - lastH;
+        lastH = newH;
+        if (delta > 0) transcriptEl.scrollTop += delta;
+      }
+    });
+    ro.observe(composerWrap);
+  }
   const composer = document.getElementById('composer');
   const send = document.getElementById('send');
   const armSend = () => {
@@ -2822,15 +2958,17 @@ document.addEventListener('pointerdown', (e) => {
   updateSlashPalette();
 }, true);
 
-// Tell the daemon to SIGINT the claude subprocess. The daemon's existing
-// daemon_proc_exit path then surfaces a Reopen tile in the transcript; tapping it
-// resumes the session from disk via claude --resume, so the user can continue from
-// wherever the interrupt cut things off.
+// Tell the daemon to SIGINT the claude subprocess. The matching daemon_proc_exit is
+// expected — state.expectedInterrupt makes that handler skip the error tile and
+// silently call openSession() to resume via claude --resume. Claude's own
+// "[Request interrupted by user]" line shows up via the disk-replay path on reopen
+// and acts as the visible "interrupted here" marker.
 function interruptSession() {
   if (state.ws?.readyState !== WebSocket.OPEN) {
     showStatusToast('Disconnected — try again');
     return;
   }
+  state.expectedInterrupt = true;
   state.ws.send(JSON.stringify({ type: 'interrupt' }));
   // Optimistic UI: the strip will keep showing 'thinking' until daemon_proc_exit lands,
   // but that's brief — claude exits within a couple hundred ms of SIGINT. No need to
@@ -2862,8 +3000,8 @@ function updateTranscriptRegion() {
   const visible = state.transcript.filter((m) =>
     !(m.role === 'tool_use' && m.toolUseId && pendingToolUseIds.has(m.toolUseId))
   );
-  const transcript = document.getElementById('transcript');
-  transcript.innerHTML = `
+  const inner = document.getElementById('transcript-inner');
+  inner.innerHTML = `
     ${loading}
     ${empty}
     ${visible.map((m, i, arr) => msgHtml(m, i === arr.length - 1)).join('')}
@@ -2910,7 +3048,19 @@ function bindTranscriptHandlers() {
     btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'allow'); };
   }
   for (const btn of document.querySelectorAll('.approval-card .reject')) {
-    btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'deny'); };
+    btn.onclick = (e) => { e.stopPropagation(); beginRejectWithNote(btn.dataset.id); };
+  }
+  for (const btn of document.querySelectorAll('.approval-card .reject-send')) {
+    btn.onclick = (e) => { e.stopPropagation(); submitRejectWithNote(btn.dataset.id); };
+  }
+  for (const btn of document.querySelectorAll('.approval-card .reject-cancel')) {
+    btn.onclick = (e) => { e.stopPropagation(); cancelRejectWithNote(btn.dataset.id); };
+  }
+  for (const ta of document.querySelectorAll('.approval-card .approval-reject-reason')) {
+    ta.oninput = (e) => {
+      const id = ta.dataset.id;
+      if (state.rejectingApprovals.has(id)) state.rejectingApprovals.set(id, ta.value);
+    };
   }
   for (const btn of document.querySelectorAll('.approval-card .approval-always')) {
     btn.onclick = (e) => {
@@ -2954,6 +3104,10 @@ function bindTranscriptHandlers() {
   // the user is selecting inside the JSON block survives the interaction.
   for (const el of document.querySelectorAll('.msg.tool_use-expandable')) {
     el.addEventListener('click', (e) => {
+      // Taps inside the reject-with-note form (textarea, buttons) shouldn't fold the
+      // card. Buttons stopPropagation themselves; this guard covers the textarea and
+      // any blank space within the form.
+      if (e.target instanceof Element && e.target.closest('.approval-reject-form')) return;
       // Don't toggle if the user is selecting text — most likely they're trying to copy
       // a path, URL, or chunk of JSON. Selection.toString() is empty for a plain click.
       const sel = window.getSelection();
@@ -3672,12 +3826,25 @@ function wireAgentsSheetHandlers(sheet) {
     };
   }
   for (const btn of sheet.querySelectorAll('.approval-card .reject')) {
-    btn.onclick = (e) => { e.stopPropagation(); decideApproval(btn.dataset.id, 'deny'); };
+    btn.onclick = (e) => { e.stopPropagation(); beginRejectWithNote(btn.dataset.id); };
+  }
+  for (const btn of sheet.querySelectorAll('.approval-card .reject-send')) {
+    btn.onclick = (e) => { e.stopPropagation(); submitRejectWithNote(btn.dataset.id); };
+  }
+  for (const btn of sheet.querySelectorAll('.approval-card .reject-cancel')) {
+    btn.onclick = (e) => { e.stopPropagation(); cancelRejectWithNote(btn.dataset.id); };
+  }
+  for (const ta of sheet.querySelectorAll('.approval-card .approval-reject-reason')) {
+    ta.oninput = () => {
+      const id = ta.dataset.id;
+      if (state.rejectingApprovals.has(id)) state.rejectingApprovals.set(id, ta.value);
+    };
   }
   // Tap-to-expand for resolved tool tiles (and the approval-card containers, which
   // also expose the JSON/diff payload preview).
   for (const el of sheet.querySelectorAll('.msg.tool_use-expandable')) {
     el.addEventListener('click', (ev) => {
+      if (ev.target instanceof Element && ev.target.closest('.approval-reject-form')) return;
       const sel = window.getSelection();
       if (sel && sel.toString().length > 0 && el.contains(sel.anchorNode)) return;
       const id = el.dataset.toolId;
@@ -4454,21 +4621,28 @@ function refreshTodosSheet() {
 }
 
 function msgHtml(m, isLast) {
-  if (m.role === 'tool_use' && m.toolName === 'Read') {
-    return readLineHtml(m.toolInput);
+  if (m.role === 'tool_use') {
+    let tile;
+    if (m.toolName === 'Read') tile = readLineHtml(m.toolInput);
+    else if (
+      m.toolName === 'Bash'
+      || m.toolName === 'Grep'
+      || m.toolName === 'Glob'
+      || m.toolName === 'WebFetch'
+      || m.toolName === 'WebSearch'
+      || m.toolName === 'Skill'
+      || m.toolName === 'ToolSearch'
+    ) tile = shellLineHtml(m.toolName, m.toolInput);
+    else tile = toolUseHtml(m);
+    if (m.decision !== 'deny') return tile;
+    // Rejected — wrap the rendered tile in rejection chrome, with the user's note (if
+    // any) shown inline beneath the tile so the feed reads "this call → I rejected
+    // because <reason>". Mirrors the agents-sheet rejected-entry styling.
+    const reasonHtml = m.rejectReason
+      ? `<div class="tool-reject-reason">${escapeHtml(m.rejectReason)}</div>`
+      : '';
+    return `<div class="tool-rejected"><span class="tool-reject-tag">Rejected</span>${tile}${reasonHtml}</div>`;
   }
-  if (m.role === 'tool_use' && (
-    m.toolName === 'Bash'
-    || m.toolName === 'Grep'
-    || m.toolName === 'Glob'
-    || m.toolName === 'WebFetch'
-    || m.toolName === 'WebSearch'
-    || m.toolName === 'Skill'
-    || m.toolName === 'ToolSearch'
-  )) {
-    return shellLineHtml(m.toolName, m.toolInput);
-  }
-  if (m.role === 'tool_use') return toolUseHtml(m);
   if (m.role === 'ask') return askMsgHtml(m);
   const labels = { user: 'You', assistant: 'Assistant', error: 'Error' };
   // claude's TUI wraps unresolved-slash-command output in <local-command-stdout>/<-stderr>
@@ -4486,16 +4660,95 @@ function msgHtml(m, isLast) {
       .trim();
     if (!text) return '';
   }
+  // Diff-review user messages render as a structured "review memo" card instead of the
+  // default text bubble — each comment is anchored to a file:line citation with the cited
+  // diff line preserved as code. Detection by content prefix so it works on both live
+  // submission and disk replay.
+  if (m.role === 'user' && typeof text === 'string' && text.startsWith(DIFF_REVIEW_PREFIX)) {
+    const parsed = parseDiffReviewMessage(text);
+    if (parsed) return diffReviewMsgHtml(parsed);
+    // Fallback: parser couldn't recognise the shape — render as markdown rather than
+    // raw text so the user still gets bold/blockquotes/HR separators.
+    return userMarkdownMsgHtml(text);
+  }
   // Assistant messages get full markdown rendering. Everything else is plain text — user
-  // messages shouldn't be parsed (they're as the user typed them), and error messages are
-  // unstructured logs.
-  const body = m.role === 'assistant' ? renderMarkdown(m.text) : escapeHtml(text);
+  // messages shouldn't be parsed (they're as the user typed them).
+  const body = m.role === 'assistant' ? renderMarkdown(text) : escapeHtml(text);
   // Error messages can carry an inline action (currently only 'reopen' for the daemon
   // subprocess exit). The handler is wired by renderSession after the HTML is in the DOM.
   const action = m.action === 'reopen'
     ? `<button class="msg-action" type="button" data-msg-action="reopen">Reopen</button>`
     : '';
   return `<div class="msg ${escapeHtml(m.role)}"><span class="role">${escapeHtml(labels[m.role] ?? m.role)}</span><span class="body-text">${body}</span>${action}</div>`;
+}
+
+// Parse the markdown blob produced by formatDiffReviewMessage back into a structured list
+// of comments. Returns null on shape mismatch (the caller falls back to a generic render).
+// Tolerant of the trailing whitespace + spacing variations that survive a JSONL round-trip.
+function parseDiffReviewMessage(text) {
+  if (!text.startsWith(DIFF_REVIEW_PREFIX)) return null;
+  const rest = text.slice(DIFF_REVIEW_PREFIX.length).replace(/^\s+/, '');
+  const blocks = rest.split(/\n\n---\n\n/);
+  const comments = [];
+  for (const block of blocks) {
+    const m = block.match(/^\*\*(.+?):(\d+)\*\*\s*\((old|new)\)\s*\n>\s*([+\-])\s?(.*?)\n+([\s\S]*)$/);
+    if (!m) return null;
+    comments.push({
+      file: m[1],
+      line: Number(m[2]),
+      side: m[3],
+      mark: m[4],
+      lineText: m[5],
+      comment: m[6].trim(),
+    });
+  }
+  return comments.length ? { comments } : null;
+}
+
+// Render a parsed diff-review payload as an editorial "review memo" tile — each comment
+// is its own block with a file:line citation, the cited source line in the same green/red
+// palette as the diff overlay, and the user's prose set off by a left rule.
+function diffReviewMsgHtml(parsed) {
+  const { comments } = parsed;
+  // Distinct file count for the header — "3 comments across 2 files" reads tighter than
+  // just "3 comments" when the review spans multiple targets.
+  const fileCount = new Set(comments.map((c) => c.file)).size;
+  const countLabel = `${comments.length} ${comments.length === 1 ? 'note' : 'notes'}`;
+  const fileLabel = fileCount > 1 ? ` · ${fileCount} files` : '';
+  const items = comments.map((c, i) => {
+    const sideClass = c.side === 'new' ? 'diff-add' : 'diff-del';
+    return `
+      <li class="dr-item" style="--dr-i: ${i}">
+        <div class="dr-cite">
+          <span class="dr-cite-mark" aria-hidden="true">§</span>
+          <span class="dr-cite-file">${escapeHtml(c.file)}</span>
+          <span class="dr-cite-sep" aria-hidden="true">→</span>
+          <span class="dr-cite-line">L${c.line}</span>
+        </div>
+        <div class="diff-line ${sideClass} dr-line">
+          <span class="diff-mark">${escapeHtml(c.mark)}</span>
+          <span class="diff-text">${escapeHtml(c.lineText)}</span>
+        </div>
+        <div class="dr-note">${escapeHtml(c.comment)}</div>
+      </li>
+    `;
+  }).join('');
+  return `
+    <div class="msg user diff-review-msg">
+      <div class="dr-head">
+        <span class="dr-eyebrow">Review</span>
+        <span class="dr-meta">${escapeHtml(countLabel)}${escapeHtml(fileLabel)}</span>
+      </div>
+      <ol class="dr-list">${items}</ol>
+    </div>
+  `;
+}
+
+// Fallback for user-authored text that we expect to contain markdown but didn't parse as
+// a structured review (e.g., a future format we don't know about). Still better than raw
+// asterisks in the feed.
+function userMarkdownMsgHtml(text) {
+  return `<div class="msg user"><span class="role">YOU</span><span class="body-text">${renderMarkdown(text)}</span></div>`;
 }
 
 // Inline Q&A card. Each question is rendered with its paired answer right below it, so
@@ -5489,11 +5742,24 @@ function approvalCardHtml(a) {
         detail +
         expandedBody +
       `</div>` +
-      `<div class="approval-actions">` +
-        `<button class="approve" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Approve ${escapeHtml(f.label)}">Approve</button>` +
-        `<button class="reject" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Reject ${escapeHtml(f.label)}">Reject</button>` +
-      `</div>` +
-      (a.suggestion ? (
+      (state.rejectingApprovals.has(a.approvalId)
+        ? (
+          `<div class="approval-reject-form">` +
+            `<textarea class="approval-reject-reason" data-id="${escapeHtml(a.approvalId)}" rows="2" placeholder="Tell Claude why (optional)">${escapeHtml(state.rejectingApprovals.get(a.approvalId) || '')}</textarea>` +
+            `<div class="approval-actions">` +
+              `<button class="reject-cancel" data-id="${escapeHtml(a.approvalId)}" type="button">Cancel</button>` +
+              `<button class="reject-send" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Send rejection for ${escapeHtml(f.label)}">Send rejection</button>` +
+            `</div>` +
+          `</div>`
+        )
+        : (
+          `<div class="approval-actions">` +
+            `<button class="approve" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Approve ${escapeHtml(f.label)}">Approve</button>` +
+            `<button class="reject" data-id="${escapeHtml(a.approvalId)}" type="button" aria-label="Reject ${escapeHtml(f.label)}">Reject</button>` +
+          `</div>`
+        )
+      ) +
+      (a.suggestion && !state.rejectingApprovals.has(a.approvalId) ? (
         `<div class="approval-suggestion" data-approval-id="${escapeHtml(a.approvalId)}">` +
           `<div class="suggestion-text">` +
             `You've approved this ${a.suggestion.matchCount}× ${a.suggestion.triggerWindow === '24h' ? 'in the past day' : 'this week'}.` +
@@ -5833,6 +6099,53 @@ function flushPendingDecides() {
   for (const p of drain) state.notifyWs.send(JSON.stringify({ type: 'approval_decide', ...p }));
 }
 
+// Reject-with-note flow. The transcript reject button no longer decides immediately —
+// it swaps the card's actions for a textarea so the user can tell Claude WHY. The
+// reason is plumbed as permissionDecisionReason (hook-handler.ts), which Claude reads
+// as feedback instead of looping into another tool attempt.
+function beginRejectWithNote(id) {
+  state.rejectingApprovals.set(id, '');
+  renderSession();
+  // Focus the textarea after the re-render lands so the keyboard pops on touch devices.
+  requestAnimationFrame(() => {
+    const ta = document.querySelector(`.approval-reject-reason[data-id="${id}"]`);
+    if (ta instanceof HTMLTextAreaElement) ta.focus();
+  });
+}
+
+function cancelRejectWithNote(id) {
+  if (!state.rejectingApprovals.has(id)) return;
+  state.rejectingApprovals.delete(id);
+  renderSession();
+}
+
+function submitRejectWithNote(id) {
+  // Prefer the live textarea value (covers the case where renderSession hasn't fired
+  // since the user's last keystroke), falling back to whatever we've cached in state.
+  const ta = document.querySelector(`.approval-reject-reason[data-id="${id}"]`);
+  const live = ta instanceof HTMLTextAreaElement ? ta.value : null;
+  const draft = live != null ? live : (state.rejectingApprovals.get(id) || '');
+  const reason = draft.trim() || undefined;
+  state.rejectingApprovals.delete(id);
+  // Find the toolUseId before decideApproval removes the pendingApproval entry, so the
+  // rejection is visible in the transcript regardless of whether the matching tool_use
+  // block has already arrived. Stamp any matching transcript entry now (covers the
+  // tool_use-arrived-first case); stash by toolUseId so the live WS push path
+  // (arrived-after case) picks it up too. Also covers subagent buckets.
+  const approval = state.pendingApprovals.find((a) => a.approvalId === id);
+  const useId = approval?.toolUseId;
+  if (useId) {
+    state.rejections.set(useId, { reason: reason || '' });
+    for (const m of state.transcript) {
+      if (m.role === 'tool_use' && m.toolUseId === useId) {
+        m.decision = 'deny';
+        m.rejectReason = reason || '';
+      }
+    }
+  }
+  decideApproval(id, 'deny', reason);
+}
+
 function decideApproval(id, decision, reason) {
   // Route through sendApprovalDecide so the notifications WS is the preferred channel —
   // iOS backgrounding can close the session WS while leaving notifications WS alive, and
@@ -5869,31 +6182,73 @@ function scrollTranscriptBottom() {
 }
 
 async function deleteSession(id) {
+  await animateRowOutById(id);
   try {
     const r = await fetch(`/api/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' });
     if (!r.ok && r.status !== 204) throw new Error(`HTTP ${r.status}`);
+    state.statuslineBySession.delete(id);
+    state.lastUsageBySession.delete(id);
     // Refresh from the server so projects whose last session was just deleted naturally
-    // disappear from the list.
+    // disappear from the list. renderList preserves .session-list scroll position.
     await loadSessions();
   } catch (e) {
     alert(`Failed to delete: ${e.message}`);
   }
 }
 
-/* ───── Swipe-to-delete ─────────────────────────────────────────── */
+// Collapse-fade the row matching this sessionId, resolving when the transition ends.
+// No-op (resolves immediately) if no row matches — covers the case where the user
+// archived/deleted from a non-list view, or the row was already removed.
+function animateRowOutById(id) {
+  const row = document.querySelector(`.session-row[data-id="${cssEscape(id)}"]`);
+  const wrap = row?.closest('.session-row-wrap');
+  if (!wrap) return Promise.resolve();
+  return animateRowOut(wrap);
+}
+
+function animateRowOut(wrap) {
+  return new Promise((resolve) => {
+    // Lock in the current height so the transition has a concrete start value (the
+    // computed `height: auto` doesn't animate). One forced reflow before flipping to
+    // 0 ensures the browser registers the change as a transitionable jump.
+    const startH = wrap.offsetHeight;
+    wrap.style.height = `${startH}px`;
+    // eslint-disable-next-line no-unused-expressions
+    wrap.offsetHeight; // force layout
+    wrap.classList.add('removing');
+    wrap.style.height = '0px';
+    wrap.style.opacity = '0';
+    let done = false;
+    const finish = () => { if (!done) { done = true; resolve(); } };
+    wrap.addEventListener('transitionend', (e) => {
+      // Multiple properties transition; resolve on the height one (the longest).
+      if (e.propertyName === 'height') finish();
+    });
+    // Safety net in case transitionend never fires (display:none ancestor, etc.).
+    setTimeout(finish, 360);
+  });
+}
+
+/* ───── Swipe-to-act ────────────────────────────────────────────── */
+/* Two-sided gesture: swipe LEFT to reveal Delete on the right, swipe RIGHT to reveal
+   Archive on the left. State per row lives in dataset.openSide: 'left' | 'right' | unset. */
 
 const SWIPE_OPEN_THRESHOLD = 24;
 const SWIPE_OPEN_DISTANCE = 92;
 let openRow = null;
 
-function wireSwipeToDelete(row) {
+function wireSwipeActions(row) {
   let startX = 0, startY = 0, currentX = 0, isSwiping = false, swipeStarted = false, gestureCancelled = false;
   let longPressTimer = null;
   let longPressFired = false;
-  // The delete button is a sibling of the row inside the same .session-row-wrap.
-  // Driving its transform in lockstep with the row keeps it off-screen at rest
-  // (no flicker during scroll) and lets it slide in cleanly during a swipe.
+  // Both action buttons are siblings of the row inside the same .session-row-wrap.
+  // Driving their transforms in lockstep with the row keeps them off-screen at rest
+  // (no flicker during scroll) and lets them slide in cleanly during a swipe.
   const deleteAction = row.parentElement?.querySelector('.delete-action');
+  const archiveAction = row.parentElement?.querySelector('.archive-action');
+  // Already-archived rows can't be archived again — leftward-swipe disabled, but
+  // delete (rightward-open) still works.
+  const canArchive = !!archiveAction;
 
   const cancelLongPress = () => {
     if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
@@ -5904,8 +6259,6 @@ function wireSwipeToDelete(row) {
     startX = t.clientX; startY = t.clientY;
     currentX = 0; isSwiping = false; swipeStarted = false; gestureCancelled = false;
     longPressFired = false;
-    // Long-press = 550ms held without horizontal swipe; copies `claude --resume <id>` so
-    // the user can pick the session back up on their laptop without typing the id by hand.
     longPressTimer = setTimeout(() => {
       longPressFired = true;
       longPressTimer = null;
@@ -5920,28 +6273,40 @@ function wireSwipeToDelete(row) {
     const dy = t.clientY - startY;
     if (!swipeStarted) {
       if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
-      // Any meaningful movement aborts the long-press — treat the gesture as a
-      // swipe/scroll instead.
       cancelLongPress();
       if (Math.abs(dx) <= Math.abs(dy)) { gestureCancelled = true; return; }
       swipeStarted = true;
       row.classList.add('swiping');
       deleteAction?.classList.add('swiping');
+      archiveAction?.classList.add('swiping');
       if (openRow && openRow !== row) snapRowClosed(openRow);
     }
     isSwiping = true;
-    const base = row.dataset.openOffset ? -SWIPE_OPEN_DISTANCE : 0;
-    currentX = Math.min(0, base + dx);
+    const openSide = row.dataset.openSide;
+    const base = openSide === 'right' ? -SWIPE_OPEN_DISTANCE : openSide === 'left' ? SWIPE_OPEN_DISTANCE : 0;
+    currentX = base + dx;
+    // Clamp + overshoot dampening on each side.
     if (currentX < -SWIPE_OPEN_DISTANCE) {
       const overshoot = -currentX - SWIPE_OPEN_DISTANCE;
       currentX = -SWIPE_OPEN_DISTANCE - overshoot * 0.3;
+    } else if (currentX > SWIPE_OPEN_DISTANCE) {
+      const overshoot = currentX - SWIPE_OPEN_DISTANCE;
+      currentX = SWIPE_OPEN_DISTANCE + overshoot * 0.3;
     }
+    // Disable rightward (archive) swipe on rows that can't be archived.
+    if (!canArchive && currentX > 0) currentX = 0;
     row.style.transform = `translateX(${currentX}px)`;
     if (deleteAction) {
-      // Delete starts off-screen at translateX(SWIPE_OPEN_DISTANCE) and slides leftward
-      // with the row; clamp at 0 so its overshoot doesn't disappear behind a side edge.
+      // Delete sits off-screen at translateX(100%) at rest, slides leftward as the row
+      // moves left. Clamp at 0 so it stays in its anchor when row moves the other way.
       const deleteX = Math.max(0, SWIPE_OPEN_DISTANCE + currentX);
       deleteAction.style.transform = `translateX(${deleteX}px)`;
+    }
+    if (archiveAction) {
+      // Archive sits off-screen at translateX(-100%) at rest, slides rightward as the
+      // row moves right. Clamp at 0 so it stays anchored when row moves the other way.
+      const archiveX = Math.min(0, -SWIPE_OPEN_DISTANCE + currentX);
+      archiveAction.style.transform = `translateX(${archiveX}px)`;
     }
   }, { passive: true });
 
@@ -5949,22 +6314,22 @@ function wireSwipeToDelete(row) {
     cancelLongPress();
     row.classList.remove('swiping');
     deleteAction?.classList.remove('swiping');
+    archiveAction?.classList.remove('swiping');
     if (!isSwiping) return;
-    if (currentX < -SWIPE_OPEN_THRESHOLD) snapRowOpen(row);
+    if (currentX < -SWIPE_OPEN_THRESHOLD) snapRowOpen(row, 'right');
+    else if (currentX > SWIPE_OPEN_THRESHOLD && canArchive) snapRowOpen(row, 'left');
     else snapRowClosed(row);
   });
   row.addEventListener('touchcancel', cancelLongPress);
 
   row.addEventListener('click', (e) => {
-    // If the long-press already fired (clipboard write + toast), swallow the click so we
-    // don't also open the session out from under the user.
     if (longPressFired) {
       e.preventDefault();
       e.stopPropagation();
       longPressFired = false;
       return;
     }
-    if (row.dataset.openOffset) {
+    if (row.dataset.openSide) {
       e.preventDefault();
       e.stopPropagation();
       snapRowClosed(row);
@@ -5988,19 +6353,28 @@ async function copyResumeCommand(id) {
   }
 }
 
-function snapRowOpen(row) {
-  row.style.transform = `translateX(-${SWIPE_OPEN_DISTANCE}px)`;
-  row.dataset.openOffset = '1';
+function snapRowOpen(row, side) {
+  const offset = side === 'left' ? SWIPE_OPEN_DISTANCE : -SWIPE_OPEN_DISTANCE;
+  row.style.transform = `translateX(${offset}px)`;
+  row.dataset.openSide = side;
   const deleteAction = row.parentElement?.querySelector('.delete-action');
-  if (deleteAction) deleteAction.style.transform = 'translateX(0)';
+  const archiveAction = row.parentElement?.querySelector('.archive-action');
+  if (deleteAction) {
+    deleteAction.style.transform = side === 'right' ? 'translateX(0)' : `translateX(${SWIPE_OPEN_DISTANCE}px)`;
+  }
+  if (archiveAction) {
+    archiveAction.style.transform = side === 'left' ? 'translateX(0)' : `translateX(-${SWIPE_OPEN_DISTANCE}px)`;
+  }
   openRow = row;
 }
 
 function snapRowClosed(row) {
   row.style.transform = 'translateX(0)';
-  delete row.dataset.openOffset;
+  delete row.dataset.openSide;
   const deleteAction = row.parentElement?.querySelector('.delete-action');
+  const archiveAction = row.parentElement?.querySelector('.archive-action');
   if (deleteAction) deleteAction.style.transform = `translateX(${SWIPE_OPEN_DISTANCE}px)`;
+  if (archiveAction) archiveAction.style.transform = `translateX(-${SWIPE_OPEN_DISTANCE}px)`;
   if (openRow === row) openRow = null;
 }
 
@@ -6098,12 +6472,19 @@ function renderBlock(block) {
     return `<blockquote class="md-quote">${renderInline(inner)}</blockquote>`;
   }
 
-  // Unordered or ordered list
+  // Unordered or ordered list. For ordered lists we preserve the source's first number
+  // via `start=` — otherwise a list split across blank-line-separated blocks renders as
+  // 1, 1, 1 (each block is its own <ol>) instead of 1, 2, 3.
   if (lines.every((l) => /^\s*[-*+]\s+/.test(l)) || lines.every((l) => /^\s*\d+\.\s+/.test(l))) {
     const ordered = /^\s*\d+\.\s+/.test(lines[0]);
-    const items = lines.map((l) => l.replace(/^\s*(?:[-*+]|\d+\.)\s+/, ''));
-    const tag = ordered ? 'ol' : 'ul';
-    return `<${tag} class="md-list">${items.map((it) => `<li>${renderInline(it)}</li>`).join('')}</${tag}>`;
+    if (ordered) {
+      const start = Number(lines[0].match(/^\s*(\d+)\.\s+/)[1]);
+      const items = lines.map((l) => l.replace(/^\s*\d+\.\s+/, ''));
+      const startAttr = start !== 1 ? ` start="${start}"` : '';
+      return `<ol class="md-list"${startAttr}>${items.map((it) => `<li>${renderInline(it)}</li>`).join('')}</ol>`;
+    }
+    const items = lines.map((l) => l.replace(/^\s*[-*+]\s+/, ''));
+    return `<ul class="md-list">${items.map((it) => `<li>${renderInline(it)}</li>`).join('')}</ul>`;
   }
 
   // Default: paragraph. Single newlines within become <br> for soft line breaks.
@@ -7087,6 +7468,12 @@ function updateDiffCommentBadges() {
   }
 }
 
+// Prefix used by both formatDiffReviewMessage and the transcript renderer to detect a
+// diff-review submission. Detection is content-based (not state-tagged) so the message
+// renders as formatted markdown both live AND after a session resume — by which point
+// the original `state.transcript` entry is gone and only the JSONL text remains.
+const DIFF_REVIEW_PREFIX = 'Code review comments on the diff:';
+
 function formatDiffReviewMessage() {
   const sorted = [...diffState.comments.values()].sort((a, b) => {
     if (a.file !== b.file) return a.file < b.file ? -1 : 1;
@@ -7098,7 +7485,7 @@ function formatDiffReviewMessage() {
     const quote = c.lineText.length > 240 ? c.lineText.slice(0, 240) + '…' : c.lineText;
     return `**${c.file}:${c.line}**${sideLabel}\n> ${mark} ${quote}\n\n${c.content}`;
   });
-  return `Code review comments on the diff:\n\n${blocks.join('\n\n---\n\n')}`;
+  return `${DIFF_REVIEW_PREFIX}\n\n${blocks.join('\n\n---\n\n')}`;
 }
 
 document.getElementById('diff-send')?.addEventListener('click', () => {

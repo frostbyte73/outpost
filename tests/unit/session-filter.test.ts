@@ -21,101 +21,61 @@ function mkSessions(specs: Array<{
 }
 
 describe('partitionSessions', () => {
-  it('returns nothing visible and 0 hidden for an empty list', () => {
+  it('returns nothing for an empty list', () => {
     const out = partitionSessions([], 0, NOW);
     expect(out.visible).toEqual([]);
     expect(out.hiddenRemaining).toBe(0);
+    expect(out.archivedCount).toBe(0);
   });
 
-  it('shows everything when there are <= 3 recent sessions', () => {
-    const sessions = mkSessions([{ ageDays: 0 }, { ageDays: 1 }, { ageDays: 2 }]);
+  it('shows every non-archived session regardless of age', () => {
+    // The daemon stamps archived: true on anything past 7d, so by the time the PWA's
+    // filter runs, any non-archived session is by definition "live" — show all of them.
+    const sessions = mkSessions([
+      { ageDays: 0 }, { ageDays: 1 }, { ageDays: 6 },
+    ]);
     const out = partitionSessions(sessions, 0, NOW);
     expect(out.visible).toHaveLength(3);
+    expect(out.archivedCount).toBe(0);
     expect(out.hiddenRemaining).toBe(0);
   });
 
-  it('shows all sessions when all are within the 7-day window', () => {
-    const sessions = mkSessions([0, 1, 2, 3, 4].map((d) => ({ ageDays: d })));
-    const out = partitionSessions(sessions, 0, NOW);
-    expect(out.visible).toHaveLength(5);
-    expect(out.hiddenRemaining).toBe(0);
-  });
-
-  it('hides sessions past position 3 that are older than 7 days', () => {
+  it('excludes archived sessions by default, counts them in archivedCount', () => {
     const sessions = mkSessions([
-      { ageDays: 0 }, { ageDays: 1 }, { ageDays: 2 },
-      { ageDays: 10 }, { ageDays: 20 },
+      { ageDays: 0 },
+      { ageDays: 1, archived: true },
+      { ageDays: 2 },
+      { ageDays: 30, archived: true },
     ]);
     const out = partitionSessions(sessions, 0, NOW);
-    expect(out.visible.map((s) => s.id)).toEqual(['s0', 's1', 's2']);
-    expect(out.hiddenRemaining).toBe(2);
+    expect(out.visible.map((s) => s.id)).toEqual(['s0', 's2']);
+    expect(out.archivedCount).toBe(2);
   });
 
-  it('always surfaces a session with an active worktree, regardless of age/position', () => {
-    const sessions = mkSessions([
-      { ageDays: 0 }, { ageDays: 1 }, { ageDays: 2 },
-      { ageDays: 30 }, { ageDays: 40 },
-      { id: 'wt', ageDays: 50, worktreePath: '/tmp/wt' },
-      { ageDays: 60 },
-    ]);
-    const out = partitionSessions(sessions, 0, NOW);
-    expect(out.visible.map((s) => s.id)).toEqual(['s0', 's1', 's2', 'wt']);
-    expect(out.hiddenRemaining).toBe(3);
-  });
-
-  it('does NOT give archived worktrees a carve-out', () => {
-    const sessions = mkSessions([
-      { ageDays: 0 }, { ageDays: 1 }, { ageDays: 2 },
-      { ageDays: 30, worktreePath: '/tmp/wt', archived: true },
-    ]);
-    const out = partitionSessions(sessions, 0, NOW);
-    expect(out.visible.map((s) => s.id)).toEqual(['s0', 's1', 's2']);
-    expect(out.hiddenRemaining).toBe(1);
-  });
-
-  it('reveals hidden sessions in newest-of-hidden first order as extraRevealed grows', () => {
-    const sessions = mkSessions([
-      { ageDays: 0 }, { ageDays: 1 }, { ageDays: 2 },
-      { id: 'h1', ageDays: 10 },
-      { id: 'h2', ageDays: 20 },
-      { id: 'h3', ageDays: 30 },
-    ]);
-    const out = partitionSessions(sessions, 2, NOW);
-    expect(out.visible.map((s) => s.id)).toEqual(['s0', 's1', 's2', 'h1', 'h2']);
-    expect(out.hiddenRemaining).toBe(1);
-  });
-
-  it('preserves newest-first order across always-show, age-visible, and revealed buckets', () => {
+  it('merges archived sessions back into visible (in original order) when showArchived is true', () => {
     const sessions = mkSessions([
       { id: 'a', ageDays: 0 },
-      { id: 'b', ageDays: 1 },
-      { id: 'c', ageDays: 3 },
-      { id: 'd', ageDays: 10, worktreePath: '/tmp/d' },
-      { id: 'e', ageDays: 15 },
-      { id: 'f', ageDays: 20 },
+      { id: 'b', ageDays: 1, archived: true },
+      { id: 'c', ageDays: 2 },
     ]);
-    const out = partitionSessions(sessions, 1, NOW);
-    expect(out.visible.map((s) => s.id)).toEqual(['a', 'b', 'c', 'd', 'e']);
-    expect(out.hiddenRemaining).toBe(1);
+    const out = partitionSessions(sessions, 0, NOW, { showArchived: true });
+    expect(out.visible.map((s) => s.id)).toEqual(['a', 'b', 'c']);
+    expect(out.archivedCount).toBe(1);
   });
 
-  it('clamps extraRevealed: an oversized value yields all-visible and 0 hidden', () => {
+  it('handles a list of only archived sessions', () => {
+    // Edge case underpinning "project with only archived sessions still shows": the
+    // partition itself returns 0 visible but a positive archivedCount, so the PWA
+    // can render the "Show N archived" toggle.
     const sessions = mkSessions([
-      { ageDays: 0 }, { ageDays: 1 }, { ageDays: 2 },
-      { ageDays: 10 }, { ageDays: 20 },
-    ]);
-    const out = partitionSessions(sessions, 999, NOW);
-    expect(out.visible).toHaveLength(5);
-    expect(out.hiddenRemaining).toBe(0);
-  });
-
-  it('treats lastModified exactly 7 days old as visible (inclusive boundary)', () => {
-    const sessions = mkSessions([
-      { ageDays: 0 }, { ageDays: 1 }, { ageDays: 2 },
-      { id: 'edge', ageDays: 7 },
+      { ageDays: 10, archived: true },
+      { ageDays: 20, archived: true },
     ]);
     const out = partitionSessions(sessions, 0, NOW);
-    expect(out.visible.map((s) => s.id)).toContain('edge');
-    expect(out.hiddenRemaining).toBe(0);
+    expect(out.visible).toEqual([]);
+    expect(out.archivedCount).toBe(2);
+    const shown = partitionSessions(sessions, 0, NOW, { showArchived: true });
+    expect(shown.visible).toHaveLength(2);
+    expect(shown.archivedCount).toBe(2);
   });
 });

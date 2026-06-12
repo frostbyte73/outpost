@@ -13,7 +13,7 @@ test.beforeAll(() => {
   mkdirSync(TEST_CWD, { recursive: true });
 });
 
-test('clicking Stop interrupts the claude subprocess and surfaces proc_exit', async ({ daemon, outpostPage }) => {
+test('clicking Stop interrupts the claude subprocess and silently resumes the session', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   const composer = outpostPage.locator('#composer');
@@ -29,8 +29,13 @@ test('clicking Stop interrupts the claude subprocess and surfaces proc_exit', as
   // and the send button doubles as Stop. Click it.
   await outpostPage.locator('#send').click();
 
-  // Daemon sends daemon_proc_exit; the PWA shows "Session subprocess exited".
-  await expect(outpostPage.getByText(/subprocess exited/i)).toBeVisible({ timeout: 10_000 });
+  // The user-initiated interrupt should NOT produce the "subprocess exited" error tile —
+  // the PWA treats it as expected and silently resumes the session.
+  await outpostPage.waitForTimeout(1_000);
+  await expect(outpostPage.getByText(/subprocess exited/i)).toHaveCount(0);
+
+  // The composer is still present (still in the session view, not bounced to the picker).
+  await expect(composer).toBeVisible();
 
   // The second assistant chunk "done!" must NOT appear (process was killed before).
   await expect(outpostPage.getByText(/^done!$/)).toHaveCount(0);

@@ -157,13 +157,29 @@ export class WorktreeManager {
     });
   }
 
-  async archive(sessionId: string): Promise<void> {
+  async archive(sessionId: string, projectCwd?: string): Promise<void> {
     const rec = this.records.get(sessionId);
-    if (!rec || rec.archivedAt) return;
-    // Relocate the JSONL + sidecars into the parent project's dir BEFORE tearing the
-    // worktree down. After this move, `claude --resume <id>` run with cwd=projectCwd
-    // can find the session (claude looks under sanitize(cwd) in projectsRoot). Failing
-    // to move would orphan the session — resume would land in an empty parent dir.
+    if (rec?.archivedAt) return;
+    if (!rec) {
+      // No worktree for this session — record a tombstone-only entry so SessionStore
+      // can stamp `archived: true` on the row. No files to relocate, no git teardown.
+      if (!SESSION_ID_RE.test(sessionId)) return;
+      this.records.set(sessionId, {
+        sessionId,
+        projectCwd: projectCwd ?? '',
+        worktreePath: '',
+        branch: '',
+        baseBranch: '',
+        createdAt: Date.now(),
+        archivedAt: Date.now(),
+      });
+      this.persist();
+      return;
+    }
+    // Worktree session — relocate the JSONL + sidecars into the parent project's dir
+    // BEFORE tearing the worktree down. After this move, `claude --resume <id>` run
+    // with cwd=projectCwd can find the session (claude looks under sanitize(cwd) in
+    // projectsRoot). Failing to move would orphan the session.
     this.relocateSessionFiles(rec);
     await this.tearDown(rec);
     // Tombstone fields worktreePath/branch are vestigial after relocation (kept on the

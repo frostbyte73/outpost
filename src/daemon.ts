@@ -499,15 +499,19 @@ async function main() {
     res.end();
   });
 
-  // Archive a session — keeps the .jsonl but tears down the worktree + branch. The
-  // session row stays visible in the list (marked archived) so the transcript is still
-  // reachable. Reopening an archived session falls through to shared-cwd mode.
+  // Archive a session — hides it from the default list view. For worktree sessions this
+  // also tears down the worktree + branch (destructive). For non-worktree sessions it
+  // only records a tombstone so SessionStore can stamp `archived: true`. The JSONL is
+  // always retained, so the transcript stays reachable when archived rows are revealed.
   server.route('POST', '/api/sessions/:id/archive', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/archive$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const id = m[1]!;
     await manager.close(id);
-    await worktreeManager.archive(id);
+    // Pass the session's project cwd so a non-worktree tombstone has a real anchor
+    // for forensics. archive() falls back to '' if undefined.
+    const found = sessionStore.findSession(id);
+    await worktreeManager.archive(id, found?.cwd);
     latestStatuslineBySession.delete(id);
     console.log(`[api] archive session ${id.slice(0,8)} (worktree removed, JSONL kept)`);
     res.statusCode = 204;

@@ -61,8 +61,14 @@ test('branch picker populates with repo branches and a "+ New session" click spa
   // the most-recent one — clicking the header is the deterministic way).
   await ensureSectionOpen(outpostPage, testRepo);
 
+  // The "Worktree" checkbox gates the branch picker — unchecked, the select is disabled
+  // and "+ New session" falls back to shared-cwd spawn. Check it first.
+  const wtCheckbox = outpostPage.locator(`.project-section[data-cwd="${testRepo}"] .project-worktree-checkbox`);
+  await wtCheckbox.check();
+
   const picker = outpostPage.locator(`.project-section[data-cwd="${testRepo}"] .project-branch-select`);
   await expect(picker).toBeVisible();
+  await expect(picker).toBeEnabled();
   // Picker populates async via /api/projects/:sanitized/branches.
   await expect.poll(async () => picker.locator('option').count(), { timeout: 5_000 }).toBeGreaterThan(1);
   // 'main' should be the default selection.
@@ -185,7 +191,15 @@ seededTest('overflow menu → Archive removes the worktree and the row shows arc
   const branches = execFileSync('git', ['-C', seedRepo, 'branch', '--list', SEED_BRANCH]).toString();
   expect(branches).not.toContain(SEED_BRANCH);
 
-  // After the PWA refreshes the session list, the row should be marked archived.
+  // Archived rows are hidden by default; the row should drop out of the visible list
+  // and the project section gets a "Show 1 archived" toggle.
+  await expect(row).toBeHidden({ timeout: 5_000 });
+  const showArchived = outpostPage.locator('.project-show-archived');
+  await expect(showArchived).toBeVisible();
+  await expect(showArchived).toContainText('Show 1 archived');
+
+  // Toggling the footer surfaces the archived row with its archived badge + class.
+  await showArchived.click();
   const archivedBadge = row.locator('.worktree-badge-archived');
   await expect(archivedBadge).toBeVisible({ timeout: 5_000 });
   await expect(row).toHaveClass(/session-row-archived/);

@@ -1,4 +1,4 @@
-import { mkdtempSync, existsSync, readdirSync } from 'node:fs';
+import { mkdtempSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath, dirname } from 'node:path';
@@ -67,6 +67,40 @@ test('POST /api/sessions/:id/archive removes worktree + branch, leaves index tom
   // Tombstone retains the original worktreePath as a label — the dir is gone but
   // SessionStore uses the path to fold the still-on-disk JSONL under the parent.
   expect(tombstone!.worktreePath).toBe(rec.worktreePath);
+});
+
+test('POST /api/sessions/:id/archive writes a tombstone for a non-worktree session', async ({ daemon, outpostPage }) => {
+  // Seed a JSONL directly into the daemon's projects root so findSession() picks it
+  // up. No worktree record — exercises the tombstone-only path in archive().
+  const plainDir = mkdtempSync(join(tmpdir(), 'outpost-e2e-arc-plain-'));
+  const sessionId = '33333333-3333-3333-3333-333333333333';
+  const projectsRoot = join(daemon.runtimeDir, 'claude-projects');
+  const projectDir = join(projectsRoot, plainDir.replace(/\//g, '-'));
+  mkdirSync(projectDir, { recursive: true });
+  writeFileSync(
+    join(projectDir, `${sessionId}.jsonl`),
+    JSON.stringify({ type: 'user', message: { role: 'user', content: 'hi' }, cwd: plainDir }) + '\n',
+  );
+
+  const res = await outpostPage.request.post(`${daemon.baseUrl}/api/sessions/${sessionId}/archive`);
+  expect(res.status()).toBe(204);
+
+  // Tombstone-only entry in the index — sessionId + archivedAt + projectCwd, no
+  // worktreePath/branch.
+  const { readFileSync } = await import('node:fs');
+  const idx = JSON.parse(readFileSync(join(daemon.runtimeDir, 'worktrees', 'index.json'), 'utf8'));
+  const tombstone = (idx.records as Array<{ sessionId: string; archivedAt?: number; worktreePath: string; projectCwd: string }>)
+    .find((r) => r.sessionId === sessionId);
+  expect(tombstone).toBeDefined();
+  expect(tombstone!.archivedAt).toBeGreaterThan(0);
+  expect(tombstone!.worktreePath).toBe('');
+  expect(tombstone!.projectCwd).toBe(plainDir);
+
+  // The session row should still surface via /api/sessions but with archived: true.
+  const list = await (await outpostPage.request.get(`${daemon.baseUrl}/api/sessions`)).json();
+  const proj = (list.projects as Array<{ cwd: string; sessions: Array<{ id: string; archived?: boolean }> }>)
+    .find((p) => p.cwd === plainDir);
+  expect(proj?.sessions.find((s) => s.id === sessionId)?.archived).toBe(true);
 });
 
 test('DELETE /api/sessions/:id removes both worktree and branch', async ({ daemon, outpostPage }) => {
