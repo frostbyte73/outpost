@@ -35,12 +35,15 @@ test('stale ?since= triggers replay_gap and catchUpFromDisk recovers', async ({ 
 
   // Rewind lastSeenSeq to 1 so the reconnect's ?since=1 is stale, then force-close.
   await outpostPage.evaluate(() => {
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
     globalThis.__outpostSetLastSeenSeq?.(1);
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
     globalThis.__outpostForceCloseSessionWs?.();
   });
 
   // Wait for reconnect.
   await outpostPage.waitForFunction(
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
     () => globalThis.__outpostSessionWsReadyState?.() === 1,
     null,
     { timeout: 5_000 },
@@ -48,6 +51,7 @@ test('stale ?since= triggers replay_gap and catchUpFromDisk recovers', async ({ 
 
   // Confirm replay_gap was received and counted.
   await outpostPage.waitForFunction(
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
     () => (globalThis.__outpostGetState?.().replayGapCount ?? 0) >= 1,
     null,
     { timeout: 5_000 },

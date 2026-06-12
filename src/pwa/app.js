@@ -2164,8 +2164,8 @@ function updateMeterRegion() {
     cellMarkup('CTX', ctxPct, ctxKnown, ctxKnown
       ? `Context window: ${fmtNumber(ctxUsed)} of ${fmtNumber(ctxTotal)} tokens (${Math.round(ctxPct)}%)`
       : 'No context-window data yet'),
-    cellMarkup('5H', r5, typeof r5 === 'number', typeof r5 === 'number' ? `5-hour rate limit: ${Math.round(r5)}%` : 'No 5-hour rate-limit data yet'),
-    cellMarkup('7D', r7, typeof r7 === 'number', typeof r7 === 'number' ? `7-day rate limit: ${Math.round(r7)}%` : 'No 7-day rate-limit data yet'),
+    cellMarkup(fmtRemaining(r5Reset) ?? '5H', r5, typeof r5 === 'number', typeof r5 === 'number' ? `5-hour rate limit: ${Math.round(r5)}%, resets ${fmtResetAt(r5Reset)}` : 'No 5-hour rate-limit data yet'),
+    cellMarkup(fmtRemaining(r7Reset) ?? '7D', r7, typeof r7 === 'number', typeof r7 === 'number' ? `7-day rate limit: ${Math.round(r7)}%, resets ${fmtResetAt(r7Reset)}` : 'No 7-day rate-limit data yet'),
   ].join('');
 
   const tagText = modelDisplay
@@ -2300,6 +2300,23 @@ function fmtResetAt(epochSeconds) {
     clock = '';
   }
   return clock ? `in ${rel} · ${clock}` : `in ${rel}`;
+}
+
+// Compact remaining-time label for a rate-limit cell, e.g. "4h32m", "5d12h", "45m".
+// Returns null when the input isn't a number so the caller can fall back to the static
+// "5H"/"7D" label. Returns "now" if the reset is already past (brief gap between reset
+// and the next statusLine fire).
+function fmtRemaining(epochSeconds) {
+  if (typeof epochSeconds !== 'number' || !Number.isFinite(epochSeconds)) return null;
+  const diffMs = epochSeconds * 1000 - Date.now();
+  if (diffMs <= 0) return 'now';
+  const totalMin = Math.floor(diffMs / 60_000);
+  const days = Math.floor(totalMin / (60 * 24));
+  const hours = Math.floor((totalMin - days * 60 * 24) / 60);
+  const mins = totalMin % 60;
+  if (days > 0) return hours > 0 ? `${days}d${hours}h` : `${days}d`;
+  if (hours > 0) return mins > 0 ? `${hours}h${mins}m` : `${hours}h`;
+  return `${mins}m`;
 }
 
 function fmtNumber(n) {
@@ -6124,6 +6141,12 @@ loadSessions().then(() => {
   if (initialDeepLink) applyDeepLink(initialDeepLink);
 });
 connectNotificationWs();
+
+// Tick the meter once a minute so the 5H/7D remaining-time labels stay current between
+// statusline / account-usage updates (which fire on activity, not the clock).
+setInterval(() => {
+  if (state.view === 'session') updateMeterRegion();
+}, 60_000);
 
 // Test instrumentation: expose helpers so Playwright tests can send raw WS messages
 // and wait for specific incoming messages without needing window.state (ESM modules

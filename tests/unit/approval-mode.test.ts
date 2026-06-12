@@ -25,7 +25,6 @@ describe('ApprovalModeStore', () => {
 
   it('rejects invalid mode strings (TS guards at compile-time; runtime accepts only the union)', () => {
     const s = new ApprovalModeStore();
-    // @ts-expect-error — runtime accepts the cast but tests-as-docs of intent.
     expect(() => s.set('s', 'nonsense' as ApprovalMode)).toThrow();
   });
 });

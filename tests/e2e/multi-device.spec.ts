@@ -71,7 +71,9 @@ test('two devices on the same session see each other\'s activity', async ({ daem
 
     // lastSeenSeq advanced on both devices through the fanout.
     const [seqA, seqB] = await Promise.all([
+      // @ts-expect-error — globalThis helper from app.js test instrumentation
       outpostPage.evaluate(() => globalThis.__outpostGetState?.().lastSeenSeq ?? 0),
+      // @ts-expect-error — globalThis helper from app.js test instrumentation
       pageB.evaluate(() => globalThis.__outpostGetState?.().lastSeenSeq ?? 0),
     ]);
     expect(seqA).toBeGreaterThan(0);

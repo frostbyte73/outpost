@@ -28,15 +28,18 @@ test('reconnect with ?since=N replays missed messages', async ({ daemon, outpost
 
   // Capture lastSeenSeq before the drop — should be > 0 (assistant message stamped one).
   const seqBeforeDrop = await outpostPage.evaluate(() => {
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
     return globalThis.__outpostGetState?.().lastSeenSeq ?? 0;
   });
   expect(seqBeforeDrop, 'lastSeenSeq advances after the first assistant response').toBeGreaterThan(0);
 
   // Force-close the session WS. The existing backoff timer will reconnect.
+  // @ts-expect-error — globalThis helper from app.js test instrumentation
   await outpostPage.evaluate(() => globalThis.__outpostForceCloseSessionWs?.());
 
   // Wait for the new WS to reach OPEN.
   await outpostPage.waitForFunction(
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
     () => globalThis.__outpostSessionWsReadyState?.() === 1,
     null,
     { timeout: 5_000 },
@@ -46,6 +49,7 @@ test('reconnect with ?since=N replays missed messages', async ({ daemon, outpost
   // and the log still has them. lastSeenSeq stays >= the pre-drop value (the replay
   // re-delivered events with the same seqs, and the client's `>` guard prevents regression).
   const seqAfterReconnect = await outpostPage.evaluate(() => {
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
     return globalThis.__outpostGetState?.().lastSeenSeq ?? 0;
   });
   expect(seqAfterReconnect).toBeGreaterThanOrEqual(seqBeforeDrop);
@@ -58,12 +62,14 @@ test('reconnect with ?since=N replays missed messages', async ({ daemon, outpost
 
   // lastSeenSeq advanced past the post-reconnect value once the new response landed.
   const seqAfterSecond = await outpostPage.evaluate(() => {
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
     return globalThis.__outpostGetState?.().lastSeenSeq ?? 0;
   });
   expect(seqAfterSecond).toBeGreaterThan(seqAfterReconnect);
 
   // No replay_gap should have fired — the log easily held the seqs from the first turn.
   const gapCount = await outpostPage.evaluate(() => {
+    // @ts-expect-error — globalThis helper from app.js test instrumentation
     return globalThis.__outpostGetState?.().replayGapCount ?? 0;
   });
   expect(gapCount).toBe(0);
