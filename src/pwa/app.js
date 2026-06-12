@@ -3279,6 +3279,16 @@ function agentEntryHtml(entry, isLast) {
   if (entry.toolName === 'Read') {
     return readLineHtml(entry.toolInput);
   }
+  // Bash / Grep / Glob get the same inline shell-line treatment in subagent feeds as in
+  // the parent transcript — slim mono row, no card chrome.
+  if (entry.toolName === 'Bash' || entry.toolName === 'Grep' || entry.toolName === 'Glob') {
+    const tile = shellLineHtml(entry.toolName, entry.toolInput);
+    if (entry.decision === 'deny') {
+      const tag = entry.timedOut ? 'Timed out' : 'Rejected';
+      return `<div class="agent-entry-rejected">${tile}<span class="agent-entry-reject-tag">${tag}</span></div>`;
+    }
+    return tile;
+  }
   // Resolved: render as a plain tool tile. Reuse toolUseHtml by synthesizing a
   // transcript-message-shaped object. Prefer the real tool_use_id (auto-allowed
   // entries) and fall back to approvalId (entries that came through the approval
@@ -3636,6 +3646,206 @@ function diffLines(oldText, newText) {
   return out;
 }
 
+// Inline shell-style render for Bash/Grep/Glob — replaces the full tool card with a
+// slim verb + body line modeled on readLineHtml. The card chrome (border, label header,
+// expand/collapse) wasted vertical space and cropped the command's horizontal width;
+// these tools have shallow, terminal-y inputs that read better as a single mono line.
+function shellLineHtml(toolName, input) {
+  if (toolName === 'Bash') return bashShellHtml(input);
+  if (toolName === 'Grep') return grepShellHtml(input);
+  if (toolName === 'Glob') return globShellHtml(input);
+  return '';
+}
+
+// Walk a bash command and insert a literal newline after every top-level `&&` or `;`,
+// preserving any whitespace/heredoc/quoted regions where those tokens aren't actual
+// separators. Keeps the source's existing newlines intact (won't double them up).
+//
+// Tracked state: single quotes, double quotes (with \-escape), backticks, $( … ) subshell
+// depth, and <<TAG / <<-TAG / <<'TAG' heredocs. Edge cases that don't matter in practice
+// (case ;; — preserved since we only split on a lone `;` — and `||`, which we don't split
+// on at all since the user only asked for `&&` and `;`).
+function formatBashCommandText(cmd) {
+  const out = [];
+  const n = cmd.length;
+  let i = 0;
+  let inSingle = false, inDouble = false, inBacktick = false;
+  let parenDepth = 0;
+  let heredocTag = null;
+
+  while (i < n) {
+    const c = cmd[i];
+
+    if (heredocTag) {
+      out.push(c);
+      if (c === '\n') {
+        const rest = cmd.slice(i + 1);
+        const m = rest.match(/^(\s*)([A-Za-z_]\w*)/);
+        if (m && m[2] === heredocTag) {
+          const after = i + 1 + m[0].length;
+          if (after === n || cmd[after] === '\n') {
+            out.push(m[0]);
+            i = after;
+            heredocTag = null;
+            continue;
+          }
+        }
+      }
+      i++;
+      continue;
+    }
+
+    if (inSingle) {
+      out.push(c);
+      if (c === "'") inSingle = false;
+      i++;
+      continue;
+    }
+    if (inDouble) {
+      if (c === '\\' && i + 1 < n) { out.push(c, cmd[i + 1]); i += 2; continue; }
+      out.push(c);
+      if (c === '"') inDouble = false;
+      i++;
+      continue;
+    }
+    if (inBacktick) {
+      if (c === '\\' && i + 1 < n) { out.push(c, cmd[i + 1]); i += 2; continue; }
+      out.push(c);
+      if (c === '`') inBacktick = false;
+      i++;
+      continue;
+    }
+
+    if (c === '\\' && i + 1 < n) {
+      out.push(c, cmd[i + 1]);
+      i += 2;
+      continue;
+    }
+
+    const hd = cmd.slice(i).match(/^<<-?\s*['"]?([A-Za-z_]\w*)['"]?/);
+    if (hd) {
+      out.push(hd[0]);
+      heredocTag = hd[1];
+      i += hd[0].length;
+      continue;
+    }
+
+    if (c === "'") { inSingle = true; out.push(c); i++; continue; }
+    if (c === '"') { inDouble = true; out.push(c); i++; continue; }
+    if (c === '`') { inBacktick = true; out.push(c); i++; continue; }
+
+    if (cmd[i] === '$' && cmd[i + 1] === '(') {
+      out.push('$(');
+      parenDepth++;
+      i += 2;
+      continue;
+    }
+    if (parenDepth > 0) {
+      if (c === '(') { parenDepth++; out.push(c); i++; continue; }
+      if (c === ')') { parenDepth--; out.push(c); i++; continue; }
+    }
+
+    if (parenDepth === 0) {
+      if (c === '&' && cmd[i + 1] === '&') {
+        out.push('&&');
+        i += 2;
+        while (i < n && (cmd[i] === ' ' || cmd[i] === '\t')) i++;
+        if (i < n && cmd[i] !== '\n') out.push('\n');
+        continue;
+      }
+      if (c === ';' && cmd[i + 1] !== ';') {
+        out.push(';');
+        i++;
+        while (i < n && (cmd[i] === ' ' || cmd[i] === '\t')) i++;
+        if (i < n && cmd[i] !== '\n') out.push('\n');
+        continue;
+      }
+    }
+
+    out.push(c);
+    i++;
+  }
+  return out.join('');
+}
+
+// Bash inline tile — a single $-prompt line with `&&`/`;` broken onto their own lines.
+// Description (Claude's natural-language summary) rides above as a `# comment` row when
+// present. Background + timeout become small uppercase chips below — same pattern as the
+// old expanded view, just inline.
+function bashShellHtml(input) {
+  const cmd = String(input?.command ?? '');
+  const desc = String(input?.description ?? '');
+  const formatted = formatBashCommandText(cmd);
+
+  const descLine = desc
+    ? `<div class="shell-line shell-line-comment"><span class="shell-prompt">#</span><span class="shell-cmd">${escapeHtml(desc)}</span></div>`
+    : '';
+  const cmdLine = cmd
+    ? `<div class="shell-line"><span class="shell-prompt">$</span><span class="shell-cmd">${escapeHtml(formatted)}</span></div>`
+    : '';
+
+  const flags = [];
+  if (input?.run_in_background) flags.push('background');
+  if (input?.timeout) flags.push(`timeout ${input.timeout}ms`);
+  const flagsHtml = flags.length
+    ? `<div class="shell-flags">${flags.map((f) => `<span class="shell-flag">${escapeHtml(f)}</span>`).join('')}</div>`
+    : '';
+
+  return (
+    `<div class="msg msg-shell">` +
+      `<div class="shell-body">${descLine}${cmdLine}${flagsHtml}</div>` +
+    `</div>`
+  );
+}
+
+// Grep inline tile — renders as the `rg` command-line equivalent (same construction as
+// renderGrepSearch, just embedded in the slim shell-line frame instead of a card).
+function grepShellHtml(input) {
+  const parts = ['rg'];
+  if (input?.['-i']) parts.push('-i');
+  if (input?.['-n']) parts.push('-n');
+  if (input?.multiline) parts.push('-U');
+  if (input?.output_mode === 'files_with_matches') parts.push('-l');
+  else if (input?.output_mode === 'count') parts.push('-c');
+  if (input?.['-A'] != null) parts.push(`-A ${input['-A']}`);
+  if (input?.['-B'] != null) parts.push(`-B ${input['-B']}`);
+  if (input?.['-C'] != null) parts.push(`-C ${input['-C']}`);
+  if (input?.type) parts.push(`--type ${shellQuote(String(input.type))}`);
+  if (input?.glob) parts.push(`-g ${shellQuote(String(input.glob))}`);
+  const pattern = shellQuote(String(input?.pattern ?? ''));
+  const suffix = [];
+  if (input?.path) suffix.push(shellQuote(shortenPath(String(input.path))));
+  let tail = suffix.length ? ` ${suffix.join(' ')}` : '';
+  if (input?.head_limit) tail += ` | head -${input.head_limit}`;
+  const cmdHtml =
+    `${escapeHtml(parts.join(' '))} ` +
+    `<span class="shell-grep-pattern">${escapeHtml(pattern)}</span>` +
+    `${escapeHtml(tail)}`;
+  return (
+    `<div class="msg msg-shell">` +
+      `<div class="shell-body">` +
+        `<div class="shell-line"><span class="shell-prompt">$</span><span class="shell-cmd">${cmdHtml}</span></div>` +
+      `</div>` +
+    `</div>`
+  );
+}
+
+// Glob inline tile — pattern, optionally followed by an "in <path>" aside. No $-prompt
+// since `glob` isn't a real shell command; the verb already labels what the row is.
+function globShellHtml(input) {
+  const pattern = String(input?.pattern ?? '');
+  const path = input?.path ? `in ${shortenPath(String(input.path))}` : '';
+  const aside = path ? `<div class="shell-aside">${escapeHtml(path)}</div>` : '';
+  return (
+    `<div class="msg msg-shell">` +
+      `<div class="shell-body">` +
+        `<div class="shell-line shell-line-bare"><span class="shell-cmd">${escapeHtml(pattern)}</span></div>` +
+        aside +
+      `</div>` +
+    `</div>`
+  );
+}
+
 // Slim one-liner for Read tool calls. Replaces the standard tool tile because the input
 // is shallow (file path + optional line range) and the user mostly wants a live signal
 // that something's happening. Active when this is the most recent message in its feed —
@@ -3651,7 +3861,7 @@ function readLineHtml(input) {
     : '';
   return (
     `<div class="msg msg-read">` +
-      `<span class="read-verb">Read</span>` +
+      `<span class="read-verb">&lt;&lt;</span>` +
       `<span class="read-target">${escapeHtml(path)}</span>` +
       rangeLine +
     `</div>`
@@ -3673,9 +3883,8 @@ function readRangeSuffix(input) {
 function renderEditDiff(input) {
   const oldStr = input?.old_string ?? '';
   const newStr = input?.new_string ?? '';
+  const path = projectRelativePath(String(input?.file_path ?? ''));
   const diff = diffLines(oldStr, newStr);
-  // The filename + replace-all flag already live in the collapsed tile's label + summary
-  // above; the diff doesn't need to repeat them in its own header bar.
   const rows = diff.map(({ op, text }) => {
     const cls = op === '+' ? 'diff-add' : op === '-' ? 'diff-del' : 'diff-eq';
     const prefix = op;
@@ -3684,7 +3893,12 @@ function renderEditDiff(input) {
     const body = text === '' ? ' ' : text;
     return `<div class="diff-line ${cls}"><span class="diff-mark">${escapeHtml(prefix)}</span><span class="diff-text">${escapeHtml(body)}</span></div>`;
   }).join('');
-  return `<div class="tool-diff"><div class="diff-body">${rows}</div></div>`;
+  // Header bar — filename styled like the top line of a git diff, attached to the diff
+  // body via shared border-left + bottom-only divider. The collapsed summary above is
+  // hidden when expanded (see CSS) so the path appears only once.
+  const flag = input?.replace_all ? `<span class="diff-head-flag">replace-all</span>` : '';
+  const head = `<div class="diff-head"><span class="diff-head-marker">~</span>${escapeHtml(path)}${flag}</div>`;
+  return `<div class="tool-diff">${head}<div class="diff-body">${rows}</div></div>`;
 }
 
 // Grep's input is structured (pattern, path, glob, type, flags, output_mode, context)
@@ -3739,12 +3953,13 @@ function renderBashCommand(input) {
     ? `<span class="bash-flag">timeout ${escapeHtml(String(input.timeout))}ms</span>`
     : '';
   const flags = (bg || timeout) ? `<div class="bash-flags">${bg}${timeout}</div>` : '';
-  // The description is already shown as the collapsed tile's summary above — no need
-  // to repeat it as a comment line here. white-space: pre-wrap on .bash-cmd preserves
-  // newlines and indentation in heredocs and multi-line scripts.
+  // formatBashCommandText drops a newline after every top-level `&&` and `;` so chained
+  // commands read top-to-bottom instead of running off the right edge. The pre-wrap CSS
+  // on .bash-cmd-text preserves those breaks along with any heredoc/embedded newlines.
+  const formatted = formatBashCommandText(cmd);
   return `
     <div class="tool-bash">
-      <div class="bash-cmd"><span class="bash-prompt">$</span><span class="bash-cmd-text">${escapeHtml(cmd)}</span></div>
+      <div class="bash-cmd"><span class="bash-prompt">$</span><span class="bash-cmd-text">${escapeHtml(formatted)}</span></div>
       ${flags}
     </div>
   `;
@@ -3829,6 +4044,9 @@ function refreshTodosSheet() {
 function msgHtml(m, isLast) {
   if (m.role === 'tool_use' && m.toolName === 'Read') {
     return readLineHtml(m.toolInput);
+  }
+  if (m.role === 'tool_use' && (m.toolName === 'Bash' || m.toolName === 'Grep' || m.toolName === 'Glob')) {
+    return shellLineHtml(m.toolName, m.toolInput);
   }
   if (m.role === 'tool_use') return toolUseHtml(m);
   if (m.role === 'ask') return askMsgHtml(m);
@@ -4016,7 +4234,9 @@ function toolUseHtml(m) {
   const summary = (!alwaysExpanded && f.body)
     ? f.bodyKind === 'code'
       ? `<div class="tool-summary tool-summary-code"><code>${escapeHtml(f.body)}</code></div>`
-      : `<div class="tool-summary">${escapeHtml(f.body)}</div>`
+      : f.bodyKind === 'path'
+        ? `<div class="tool-summary tool-summary-path">${escapeHtml(f.body)}</div>`
+        : `<div class="tool-summary">${escapeHtml(f.body)}</div>`
     : '';
   return (
     `<div class="${cls}"${idAttr}>` +
@@ -4183,13 +4403,14 @@ const TOOL_FORMATTERS = {
     return { label: 'Read', body: shortenPath(inp.file_path), bodyKind: 'code', detail: range };
   },
   Edit(inp) {
-    // Collapsed: label + filename only. The expanded view (renderEditDiff) is what
-    // shows the actual change — until then the filename is the only useful thing to
-    // surface, and the before→after preview was always a lie.
+    // Collapsed: label + filename only. Expanded (renderEditDiff): the filename moves
+    // into the diff's header bar and the collapsed summary is hidden — see the
+    // .tool_use-expanded:has(.tool-diff) rule in CSS. The summary uses bodyKind='path'
+    // for plain mono (no chip), matching the inline Read/Bash/Grep aesthetic.
     return {
       label: inp.replace_all ? 'Edit · all' : 'Edit',
-      body: shortenPath(inp.file_path),
-      bodyKind: 'code',
+      body: projectRelativePath(inp.file_path),
+      bodyKind: 'path',
     };
   },
   Write(inp) {

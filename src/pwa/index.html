@@ -1959,6 +1959,17 @@
       color: var(--text);
       overflow-wrap: anywhere;
     }
+    /* Plain mono path — no chip chrome. Used by Edit's collapsed view so the filename
+       reads like a real file path, not a tagged identifier. */
+    .msg.tool_use .tool-summary-path {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--text-mute);
+      overflow-wrap: anywhere;
+    }
+    /* When an Edit tile expands, the filename moves into the diff's own header bar —
+       hide the collapsed summary so the path doesn't appear twice. */
+    .msg.tool_use-expanded:has(.tool-diff) .tool-summary { display: none; }
     .msg.tool_use .tool-summary-code code {
       font-family: var(--font-mono);
       font-size: 0.92em;
@@ -2037,13 +2048,33 @@
       -webkit-overflow-scrolling: touch;
     }
     .msg.tool_use-expanded .tool-diff { display: block; }
+    /* Filename header attached to the top of the diff. Shares the parent .tool-diff's
+       left border (no own border-left needed — it lives inside it) and is divided from
+       the diff body by a single hairline so the two read as one component. The leading
+       ~ marker mirrors Read's <<: a small accent-2 glyph that labels what the row is. */
     .tool-diff .diff-head {
-      padding: 6px 10px 5px;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 7px 10px 6px;
       border-bottom: 1px solid var(--line-soft);
       font-family: var(--font-mono);
-      font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+      font-size: 12px;
       color: var(--text-mute);
       background: var(--bg-elev);
+      overflow-wrap: anywhere;
+    }
+    .tool-diff .diff-head-marker {
+      color: var(--accent-2);
+      font-weight: 600;
+      user-select: none;
+    }
+    .tool-diff .diff-head-flag {
+      margin-left: auto;
+      font-size: 10px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
     }
     .tool-diff .diff-body {
       padding: 4px 0;
@@ -2568,17 +2599,18 @@
     .msg.msg-read .read-verb {
       grid-column: 1;
       grid-row: 1;
-      font-family: var(--font-display); font-style: italic;
-      font-size: 14px;
-      color: var(--accent);
-      letter-spacing: 0.005em;
+      font-family: var(--font-mono);
+      font-size: 12px;
+      color: var(--accent-2);
+      font-weight: 600;
+      user-select: none;
     }
     .msg.msg-read .read-target {
       grid-column: 2;
       grid-row: 1;
       font-family: var(--font-mono);
       font-size: 12px;
-      color: var(--text);
+      color: var(--text-mute);
       overflow-wrap: anywhere;
       min-width: 0;
     }
@@ -2596,6 +2628,101 @@
     @keyframes read-dot {
       0%, 65%, 100% { opacity: 0.25; transform: translateY(0); }
       30% { opacity: 1; transform: translateY(-1px); }
+    }
+
+    /* Inline shell-line tile — used for Bash / Grep / Glob in place of the standard
+       tool card. Mirrors the .msg-read shape: italic display verb on the left, mono
+       body on the right. The body holds one or more $-prompt rows (Bash, Grep) or a
+       bare pattern row (Glob), plus optional flag chips and asides. There is no
+       border, no padding chrome, and no expand/collapse — these tools' inputs are
+       shallow enough that the inline render IS the full information.
+
+       The fixed verb column keeps the body's left edge aligned across consecutive
+       shell lines in the feed, so a run of bash/grep/glob reads as a connected
+       column instead of three differently-indented rows. */
+    .msg.msg-shell {
+      padding: 4px 0;
+      margin: 8px 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: var(--text-mute);
+      white-space: normal;
+    }
+    .msg.msg-shell .shell-body {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      line-height: 1.55;
+      color: var(--text-mute);
+      min-width: 0;
+    }
+    /* Each command row: a 14px prompt gutter + the command cell. Continuation lines
+       inside the .shell-cmd (from inserted \n after && / ;) wrap visually under the
+       command column via grid + pre-wrap — they stay aligned with the first character
+       of the command, not under the $. */
+    /* Two-column grid sized to match .msg-read's auto/1fr — the prompt column reserves
+       2ch (matching the width of Read's "<<" glyph) so command text and filenames in
+       interleaved rows share the same left edge. */
+    .msg.msg-shell .shell-line {
+      display: grid;
+      grid-template-columns: 2ch 1fr;
+      column-gap: 8px;
+      align-items: baseline;
+      min-width: 0;
+    }
+    /* Bare row (no prompt) — used by Glob. Keeps the same 2ch gutter so the pattern
+       still aligns with $-prefixed shell rows and Read's filenames. */
+    .msg.msg-shell .shell-line-bare {
+      grid-template-columns: 1fr;
+      padding-left: calc(2ch + 8px);
+    }
+    .msg.msg-shell .shell-line + .shell-line { margin-top: 1px; }
+    .msg.msg-shell .shell-prompt {
+      color: var(--accent-2);
+      user-select: none;
+      font-weight: 600;
+    }
+    .msg.msg-shell .shell-cmd {
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      min-width: 0;
+    }
+    /* Description rows render with a # prompt and dim italic body — reads as a shell
+       comment, which is what it semantically is. */
+    .msg.msg-shell .shell-line-comment .shell-prompt { color: var(--text-dim); }
+    .msg.msg-shell .shell-line-comment .shell-cmd {
+      color: var(--text-dim);
+      font-style: italic;
+    }
+    /* Highlight Grep's search pattern against the surrounding flags + paths. Same
+       treatment as the old .bash-grep-pattern lived in. */
+    .msg.msg-shell .shell-grep-pattern { color: var(--text); font-weight: 500; }
+    /* Aside line — used by Glob's "in <path>" hint. Smaller, dimmer than the pattern. */
+    .msg.msg-shell .shell-aside {
+      font-size: 11px;
+      color: var(--text-dim);
+      margin-top: 2px;
+      overflow-wrap: anywhere;
+    }
+    /* Flag chips — background / timeout. Mirrors .bash-flag from the card view. */
+    .msg.msg-shell .shell-flags {
+      display: flex; gap: 6px; flex-wrap: wrap;
+      margin-top: 6px;
+    }
+    .msg.msg-shell .shell-flag {
+      font-family: var(--font-mono);
+      font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase;
+      color: var(--text-mute);
+      border: 1px solid var(--line);
+      padding: 1px 6px;
+    }
+    /* Rejected entry in the subagent feed — mirror .agent-entry-rejected's treatment
+       of .msg.tool_use: opacity dim on the whole row, danger strike on the command. */
+    .agent-entry-rejected .msg.msg-shell { opacity: 0.62; }
+    .agent-entry-rejected .msg.msg-shell .shell-cmd {
+      color: var(--danger);
+      text-decoration: line-through;
+      text-decoration-color: var(--danger);
     }
 
     .msg.error {
