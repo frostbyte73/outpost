@@ -4077,6 +4077,366 @@
         transition-duration: 0.001ms !important;
       }
     }
+
+    /* ───── Header: "Review diff" button ─────────────────────────────── */
+    header .header-review-diff-btn {
+      font-family: var(--font-body); font-size: 12px;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      background: transparent; color: var(--accent);
+      border: 1px solid var(--accent); border-radius: 2px;
+      padding: 4px 10px; cursor: pointer;
+      transition: background 0.12s ease;
+    }
+    header .header-review-diff-btn:active { background: var(--accent-soft); }
+
+    /* ───── Diff review overlay ──────────────────────────────────────── */
+    #diff-overlay {
+      position: fixed; inset: 0;
+      background: var(--bg);
+      z-index: 1000;
+      display: flex; flex-direction: column;
+    }
+    #diff-overlay[hidden] { display: none; }
+    .diff-overlay-header {
+      flex: none;
+      display: grid;
+      grid-template-columns: minmax(0, auto) 1fr minmax(0, auto);
+      align-items: center;
+      gap: 20px;
+      padding: max(14px, env(safe-area-inset-top)) 20px 14px;
+      border-bottom: 1px solid var(--line);
+      background: var(--bg);
+    }
+    .diff-overlay-title { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .diff-overlay-eyebrow {
+      font-family: var(--font-display);
+      font-size: 11px;
+      letter-spacing: 0.32em;
+      text-transform: uppercase;
+      color: var(--text-mute);
+    }
+    .diff-overlay-meta {
+      display: flex; gap: 8px; align-items: baseline;
+      color: var(--text-dim);
+      font-family: var(--font-body); font-size: 11px;
+      letter-spacing: 0.04em;
+    }
+    .diff-overlay-meta .diff-meta-sep { color: var(--text-dim); }
+
+    /* Comparison pills. Each pill encodes the diff it represents — `main → feat/x`,
+       `HEAD → working tree`. Click to switch; active pill gets the accent underline.
+       This replaces the old "Branch / Worktree" toggle whose terminology lied about
+       what you were comparing. */
+    .diff-overlay-compare {
+      display: flex; flex-wrap: wrap; gap: 4px 20px;
+      justify-self: center;
+      align-items: baseline;
+      min-width: 0;
+    }
+    .diff-compare-pill {
+      display: inline-flex; align-items: baseline; gap: 8px;
+      background: transparent;
+      border: 0;
+      padding: 4px 2px 6px;
+      font-family: var(--font-mono); font-size: 12px;
+      color: var(--text-mute);
+      cursor: pointer;
+      border-bottom: 1px solid transparent;
+      transition: color 0.15s ease, border-color 0.15s ease;
+      max-width: 100%;
+      min-width: 0;
+    }
+    .diff-compare-pill:hover { color: var(--text); }
+    .diff-compare-pill .diff-compare-from,
+    .diff-compare-pill .diff-compare-to {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: 18ch;
+    }
+    .diff-compare-pill .diff-compare-arrow {
+      color: var(--text-dim); font-size: 11px;
+      flex: none;
+    }
+    .diff-compare-pill.diff-compare-active {
+      color: var(--text);
+      border-bottom-color: var(--accent);
+    }
+    .diff-compare-pill.diff-compare-active .diff-compare-to { color: var(--accent); }
+    .diff-compare-pill.diff-compare-active .diff-compare-arrow { color: var(--accent); }
+
+    .diff-overlay-actions { display: flex; align-items: center; gap: 8px; justify-self: end; }
+    #diff-send {
+      font-family: var(--font-body); font-size: 12px;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 7px 14px;
+      background: var(--accent); color: var(--bg);
+      border: 0; cursor: pointer;
+      transition: opacity 0.12s ease;
+    }
+    #diff-send[disabled] { opacity: 0.35; cursor: not-allowed; }
+    #diff-close {
+      width: 32px; height: 32px;
+      background: transparent; color: var(--text-mute);
+      border: 1px solid transparent; border-radius: 2px;
+      font-size: 20px; line-height: 1;
+      cursor: pointer;
+      transition: color 0.12s ease, border-color 0.12s ease;
+    }
+    #diff-close:hover { color: var(--text); border-color: var(--line); }
+    #diff-send-warning {
+      flex: none;
+      padding: 8px 18px;
+      background: var(--danger-soft);
+      color: var(--danger);
+      font-size: 12px;
+      border-bottom: 1px solid var(--line);
+    }
+    .diff-overlay-body {
+      flex: 1; min-height: 0;
+      display: grid;
+      grid-template-columns: 240px 1fr;
+      overflow: hidden;
+    }
+    #diff-file-list {
+      border-right: 1px solid var(--line);
+      overflow-y: auto;
+      padding: 10px 0;
+      -webkit-overflow-scrolling: touch;
+    }
+    #diff-file-list .diff-file-link {
+      display: flex; gap: 10px; align-items: center;
+      padding: 7px 16px;
+      cursor: pointer;
+      font-family: var(--font-mono); font-size: 11px;
+      color: var(--text);
+      border-left: 2px solid transparent;
+      transition: background 0.1s ease, border-color 0.12s ease;
+    }
+    #diff-file-list .diff-file-link:hover { background: var(--line-soft); }
+    #diff-file-list .diff-file-link.is-active {
+      background: var(--accent-soft);
+      border-left-color: var(--accent);
+    }
+    #diff-file-list .diff-file-status {
+      flex: none;
+      width: 16px; height: 16px;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700;
+      border-radius: 2px;
+      background: var(--line);
+      color: var(--text-mute);
+    }
+    /* Semantic status colors. Green for additions, accent for modifies, red for deletes,
+       muted accent for renames/copies. Pinned to GitHub-style green/red so they don't
+       depend on the active theme's accent hue. */
+    #diff-file-list .diff-file-status[data-status="added"] {
+      background: rgba(46, 160, 67, 0.18); color: #2ea043;
+    }
+    #diff-file-list .diff-file-status[data-status="modified"] {
+      background: var(--accent-soft); color: var(--accent);
+    }
+    #diff-file-list .diff-file-status[data-status="deleted"] {
+      background: rgba(248, 81, 73, 0.16); color: #f85149;
+    }
+    #diff-file-list .diff-file-status[data-status="renamed"],
+    #diff-file-list .diff-file-status[data-status="copied"] {
+      background: var(--accent-2-soft); color: var(--accent-2);
+    }
+    [data-mode="light"] #diff-file-list .diff-file-status[data-status="added"] { color: #1a7f37; }
+    [data-mode="light"] #diff-file-list .diff-file-status[data-status="deleted"] { color: #cf222e; }
+    #diff-file-list .diff-file-path {
+      flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    #diff-file-list .diff-file-link.is-collapsed .diff-file-path { color: var(--text-mute); }
+    #diff-file-list .diff-file-comments {
+      flex: none;
+      background: var(--accent); color: var(--bg);
+      border-radius: 10px;
+      padding: 1px 7px;
+      font-size: 10px; font-weight: 600;
+      font-family: var(--font-body);
+    }
+    #diff-file-list .diff-empty,
+    #diff-content .diff-empty {
+      padding: 20px;
+      color: var(--text-mute);
+      font-size: 12px;
+      letter-spacing: 0.02em;
+    }
+    #diff-content {
+      overflow-y: auto;
+      padding: 0 18px 80px;
+      -webkit-overflow-scrolling: touch;
+    }
+    #diff-content .diff-file-card {
+      margin: 16px 0;
+      border: 1px solid var(--line);
+      background: var(--bg-elev);
+    }
+    /* File card head doubles as the collapse toggle. The caret rotates between
+       expanded (▼) and collapsed (▶); when collapsed everything except the head is
+       hidden so the reader can scan the file list inline without scrolling past hunks. */
+    #diff-content .diff-file-card-head {
+      position: sticky; top: 0;
+      display: flex; align-items: center; gap: 10px;
+      padding: 10px 14px;
+      background: var(--bg-elev);
+      border-bottom: 1px solid var(--line);
+      font-family: var(--font-mono); font-size: 12px;
+      color: var(--text);
+      cursor: pointer;
+      user-select: none;
+      z-index: 1;
+      transition: background 0.12s ease;
+    }
+    #diff-content .diff-file-card-head:hover { background: var(--bg-elev-2); }
+    #diff-content .diff-file-card-caret {
+      flex: none;
+      width: 0; height: 0;
+      border-left: 5px solid var(--text-mute);
+      border-top: 4px solid transparent;
+      border-bottom: 4px solid transparent;
+      transform: rotate(90deg);
+      transition: transform 0.15s ease;
+    }
+    #diff-content .diff-file-card.is-collapsed .diff-file-card-caret {
+      transform: rotate(0deg);
+    }
+    #diff-content .diff-file-card.is-collapsed .diff-file-card-head {
+      border-bottom-color: transparent;
+    }
+    #diff-content .diff-file-card.is-collapsed > *:not(.diff-file-card-head) { display: none; }
+    #diff-content .diff-file-card-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    #diff-content .diff-file-renamed,
+    #diff-content .diff-file-truncated {
+      color: var(--text-mute); font-size: 11px; font-weight: 400;
+      margin-left: 6px;
+    }
+    #diff-content .diff-file-card-status {
+      flex: none;
+      width: 16px; height: 16px;
+      display: inline-flex; align-items: center; justify-content: center;
+      font-size: 10px; font-weight: 700;
+      border-radius: 2px;
+      background: var(--line);
+      color: var(--text-mute);
+    }
+    #diff-content .diff-file-card-status[data-status="added"] { background: rgba(46, 160, 67, 0.18); color: #2ea043; }
+    #diff-content .diff-file-card-status[data-status="modified"] { background: var(--accent-soft); color: var(--accent); }
+    #diff-content .diff-file-card-status[data-status="deleted"] { background: rgba(248, 81, 73, 0.16); color: #f85149; }
+    #diff-content .diff-file-card-status[data-status="renamed"],
+    #diff-content .diff-file-card-status[data-status="copied"] { background: var(--accent-2-soft); color: var(--accent-2); }
+    [data-mode="light"] #diff-content .diff-file-card-status[data-status="added"] { color: #1a7f37; }
+    [data-mode="light"] #diff-content .diff-file-card-status[data-status="deleted"] { color: #cf222e; }
+    #diff-content .diff-binary {
+      padding: 12px;
+      color: var(--text-mute);
+      font-family: var(--font-mono); font-size: 11px;
+    }
+    #diff-content .diff-hunk-head {
+      padding: 4px 12px;
+      background: var(--line-soft);
+      color: var(--text-mute);
+      font-family: var(--font-mono); font-size: 11px;
+    }
+    #diff-content .diff-row { cursor: pointer; }
+    #diff-content .diff-row:hover {
+      outline: 1px solid var(--accent);
+      outline-offset: -1px;
+    }
+    #diff-content .diff-row-empty {
+      background: var(--line-soft);
+      min-height: 1.5em;
+      cursor: default;
+    }
+    #diff-content .diff-row-empty:hover { outline: 0; }
+    #diff-content .diff-comment-card {
+      margin: 4px 12px;
+      padding: 8px 10px;
+      background: var(--accent-soft);
+      border-left: 3px solid var(--accent);
+      font-size: 12px;
+    }
+    #diff-content .diff-comment-content {
+      white-space: pre-wrap; word-break: break-word;
+      margin-bottom: 6px;
+    }
+    #diff-content .diff-comment-actions { display: flex; gap: 8px; }
+    #diff-content .diff-comment-actions button {
+      background: transparent; color: var(--accent);
+      border: 0; cursor: pointer;
+      font-size: 11px; letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 0;
+    }
+    #diff-content .diff-comment-form {
+      margin: 4px 12px;
+      display: flex; flex-direction: column; gap: 6px;
+    }
+    #diff-content .diff-comment-form textarea {
+      width: 100%; min-height: 70px;
+      background: var(--bg); color: var(--text);
+      border: 1px solid var(--line);
+      padding: 8px;
+      font: inherit;
+      resize: vertical;
+    }
+    #diff-content .diff-comment-form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+    #diff-content .diff-comment-form-actions button {
+      font-family: var(--font-body); font-size: 11px;
+      letter-spacing: 0.06em; text-transform: uppercase;
+      padding: 4px 10px;
+      border: 1px solid var(--line);
+      background: transparent; color: var(--text);
+      cursor: pointer;
+    }
+    #diff-content .diff-comment-form-actions button[type="submit"] {
+      background: var(--accent); color: var(--bg); border-color: var(--accent);
+    }
+
+    /* Desktop: split-diff layout — two columns inside each hunk. */
+    @media (min-width: 701px) {
+      .diff-hunk-split {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+      }
+      .diff-hunk-split > div { min-width: 0; border-right: 1px solid var(--line); }
+      .diff-hunk-split > div:last-child { border-right: 0; }
+    }
+
+    /* Mobile: collapse to single column; file list becomes a top accordion. The
+       header reflows so the compare pills sit on their own row under the title. */
+    @media (max-width: 700px) {
+      .diff-overlay-header {
+        grid-template-columns: 1fr auto;
+        grid-template-areas:
+          "title actions"
+          "compare compare";
+        row-gap: 10px;
+      }
+      .diff-overlay-title { grid-area: title; }
+      .diff-overlay-actions { grid-area: actions; }
+      .diff-overlay-compare {
+        grid-area: compare;
+        justify-self: stretch;
+        justify-content: flex-start;
+        gap: 12px;
+      }
+      .diff-compare-pill { font-size: 11px; }
+      .diff-compare-pill .diff-compare-from,
+      .diff-compare-pill .diff-compare-to { max-width: 14ch; }
+      #diff-send {
+        font-size: 11px; padding: 6px 10px;
+      }
+      .diff-overlay-body {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr;
+      }
+      #diff-file-list {
+        max-height: 30vh;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+    }
   </style>
 </head>
 <body>
@@ -4208,6 +4568,41 @@
       <div class="push-status" id="push-status" aria-live="polite"></div>
     </div>
   </aside>
+
+  <!-- In-app diff review overlay. Hidden until #open-diff-review opens it. -->
+  <div id="diff-overlay" hidden role="dialog" aria-modal="true" aria-label="Diff review">
+    <header class="diff-overlay-header">
+      <div class="diff-overlay-title">
+        <span class="diff-overlay-eyebrow">Review</span>
+        <div class="diff-overlay-meta">
+          <span id="diff-file-count">0 files</span>
+          <span class="diff-meta-sep" aria-hidden="true">·</span>
+          <span id="diff-comment-count">0 comments</span>
+        </div>
+      </div>
+      <div class="diff-overlay-compare" role="tablist" aria-label="Compare">
+        <button class="diff-compare-pill diff-compare-active" data-diff-mode="branch" role="tab" type="button">
+          <span class="diff-compare-from">…</span>
+          <span class="diff-compare-arrow" aria-hidden="true">→</span>
+          <span class="diff-compare-to">…</span>
+        </button>
+        <button class="diff-compare-pill" data-diff-mode="worktree" role="tab" type="button">
+          <span class="diff-compare-from">HEAD</span>
+          <span class="diff-compare-arrow" aria-hidden="true">→</span>
+          <span class="diff-compare-to">working tree</span>
+        </button>
+      </div>
+      <div class="diff-overlay-actions">
+        <button id="diff-send" type="button" disabled>Submit</button>
+        <button id="diff-close" type="button" aria-label="Close diff review">×</button>
+      </div>
+    </header>
+    <div id="diff-send-warning" hidden></div>
+    <div class="diff-overlay-body">
+      <nav id="diff-file-list" aria-label="Files"></nav>
+      <main id="diff-content"></main>
+    </div>
+  </div>
 
   <script src="/app.js" type="module"></script>
 </body>

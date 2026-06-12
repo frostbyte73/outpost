@@ -225,6 +225,90 @@ export class WorktreeManager {
   }
 }
 
+export type DiffMode = 'branch' | 'worktree';
+
+// Run `git diff` for a worktree record in one of two modes. Returns UTF-8 stdout.
+// Argv-only — no shell. The sessionId/branch regexes upstream and the `--` separator
+// below keep ref/path inputs from being parsed as flags. Throws if the record is
+// tombstoned (worktreePath cleared).
+export function runGitDiff(rec: WorktreeRecord, mode: DiffMode): string {
+  if (!rec.worktreePath) throw new Error('cannot diff a tombstoned worktree record');
+  const baseBranch = rec.baseBranch && rec.baseBranch.length > 0 ? rec.baseBranch : 'main';
+  if (!BRANCH_NAME_RE.test(baseBranch)) throw new Error(`invalid baseBranch: ${JSON.stringify(baseBranch)}`);
+  if (!BRANCH_NAME_RE.test(rec.branch)) throw new Error(`invalid branch: ${JSON.stringify(rec.branch)}`);
+
+  const args = mode === 'branch'
+    ? ['-C', rec.projectCwd, 'diff', '--no-color', '--find-renames', '-U3', `${baseBranch}...${rec.branch}`, '--']
+    : ['-C', rec.worktreePath, 'diff', '--no-color', '--find-renames', '-U3', 'HEAD', '--'];
+
+  const buf = execFileSync('git', args, { stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 });
+  return buf.toString('utf8');
+}
+
+export interface CwdDiffResult {
+  text: string;
+  baseRef: string;
+  headRef: string;
+  // true when HEAD resolves to the base branch — branch-vs-base would be empty by
+  // definition, so the diff endpoint uses this to tell the PWA to hide the toggle.
+  onBaseBranch: boolean;
+}
+
+// Same as runGitDiff but for sessions that aren't backed by an outpost worktree —
+// i.e. claude was launched directly inside the user's repo. Detects the current
+// branch and base (main → master fallback) at call time; the worktree-manager has
+// no record to lean on.
+export function runGitDiffInCwd(cwd: string, mode: DiffMode): CwdDiffResult {
+  const currentBranch = readCurrentBranch(cwd);
+  const baseBranch = resolveBaseBranch(cwd);
+  const onBaseBranch = !!currentBranch && currentBranch === baseBranch;
+
+  if (mode === 'worktree') {
+    const buf = execFileSync(
+      'git',
+      ['-C', cwd, 'diff', '--no-color', '--find-renames', '-U3', 'HEAD', '--'],
+      { stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 },
+    );
+    return { text: buf.toString('utf8'), baseRef: 'HEAD', headRef: 'WORKTREE', onBaseBranch };
+  }
+
+  // branch mode — empty when there's no branch to compare against.
+  if (!currentBranch || onBaseBranch) {
+    return { text: '', baseRef: baseBranch, headRef: currentBranch ?? '', onBaseBranch: true };
+  }
+  if (!BRANCH_NAME_RE.test(currentBranch)) throw new Error(`invalid branch: ${JSON.stringify(currentBranch)}`);
+  if (!BRANCH_NAME_RE.test(baseBranch)) throw new Error(`invalid baseBranch: ${JSON.stringify(baseBranch)}`);
+  const buf = execFileSync(
+    'git',
+    ['-C', cwd, 'diff', '--no-color', '--find-renames', '-U3', `${baseBranch}...${currentBranch}`, '--'],
+    { stdio: 'pipe', maxBuffer: 32 * 1024 * 1024 },
+  );
+  return { text: buf.toString('utf8'), baseRef: baseBranch, headRef: currentBranch, onBaseBranch: false };
+}
+
+function readCurrentBranch(cwd: string): string | null {
+  try {
+    const out = execFileSync('git', ['-C', cwd, 'rev-parse', '--abbrev-ref', 'HEAD'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+    }).trim();
+    // 'HEAD' means detached; treat as no branch.
+    return out && out !== 'HEAD' ? out : null;
+  } catch { return null; }
+}
+
+function resolveBaseBranch(cwd: string): string {
+  for (const ref of ['main', 'master']) {
+    try {
+      execFileSync('git', ['-C', cwd, 'rev-parse', '--verify', '--quiet', ref], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      return ref;
+    } catch { /* not present */ }
+  }
+  return 'main';
+}
+
 // `git worktree add` only checks out tracked files. CLAUDE.md, project-local `.claude/`,
 // `.env*`, and ignored docs live outside the tree — copy them into the worktree so a
 // fresh session has the same local context the user sees in the parent checkout.

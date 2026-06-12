@@ -545,8 +545,30 @@ function setHeader(mode) {
         : 'auto-edits on';
       header.appendChild(chip);
     }
+    // "Review diff" button — shown for any non-archived session whose project (or
+    // worktree) is a git repo. The endpoint handles both worktree-backed sessions and
+    // sessions running directly in the user's repo.
+    if (currentSessionDiffable()) {
+      const btn = document.createElement('button');
+      btn.id = 'open-diff-review';
+      btn.className = 'header-review-diff-btn';
+      btn.type = 'button';
+      btn.textContent = 'Diff';
+      btn.onclick = openDiffOverlay;
+      header.appendChild(btn);
+    }
     header.appendChild(m);
   }
+}
+
+function currentSessionDiffable() {
+  const id = state.currentSessionId;
+  if (!id || !state.projects) return false;
+  for (const p of state.projects) {
+    const s = p.sessions?.find((s) => s.id === id);
+    if (s) return Boolean(p.isGitRepo) && !s.archived;
+  }
+  return false;
 }
 
 function renderList() {
@@ -6516,3 +6538,444 @@ globalThis.__outpostOpenSession = (opts) => {
 // would wipe state.approvalMode set optimistically in list view before opening a session).
 // @ts-expect-error — intentional globalThis assignment for test infrastructure only
 globalThis.__outpostRefreshSessions = () => loadSessions();
+
+// ───── Diff review overlay ─────────────────────────────────────────────
+// Ephemeral, in-memory review surface for the current session's branch. Drafted
+// comments live in `diffState.comments`; on submit they're packed into a single
+// `user_message` envelope and sent through the existing WS path. Closing the
+// overlay or reloading the page discards everything.
+const diffState = {
+  mode: 'branch',
+  files: [],
+  comments: new Map(), // key: `${file}:${side}:${line}` -> { file, side, line, content, lineText }
+  openDraftKey: null,
+  collapsed: new Set(), // file paths currently collapsed in the content area
+  // Cached refs per mode so the inactive pill keeps its label after switching.
+  // Worktree refs are constant ("HEAD → working tree"); branch refs come from the API.
+  refs: {
+    branch: { base: '…', head: '…' },
+    worktree: { base: 'HEAD', head: 'working tree' },
+  },
+};
+
+const DIFF_STATUS_ICON = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R', copied: 'C' };
+function diffRefLabel(s) {
+  if (s === 'WORKTREE') return 'working tree';
+  return s || '—';
+}
+function diffCommentKey(file, side, line) { return `${file}:${side}:${line}`; }
+function cssEscape(s) { return String(s).replace(/["\\]/g, '\\$&'); }
+
+function openDiffOverlay() {
+  document.getElementById('diff-overlay').hidden = false;
+  document.body.style.overflow = 'hidden';
+  diffState.comments.clear();
+  diffState.openDraftKey = null;
+  diffState.collapsed.clear();
+  diffState.mode = 'branch';
+  // Pre-fill the branch pill from session metadata so the user sees a meaningful
+  // label before the first fetch lands. Worktree-backed sessions carry their branch
+  // name on the session row; non-worktree sessions get placeholders.
+  diffState.refs.branch = currentSessionBranchHint();
+  diffState.refs.worktree = { base: 'HEAD', head: 'working tree' };
+  for (const pill of document.querySelectorAll('.diff-compare-pill')) {
+    pill.classList.toggle('diff-compare-active', pill.dataset.diffMode === 'branch');
+    pill.hidden = false;
+  }
+  syncDiffComparePills();
+  clearDiffSendWarning();
+  fetchAndRenderDiff();
+}
+
+function currentSessionBranchHint() {
+  const id = state.currentSessionId;
+  if (id && state.projects) {
+    for (const p of state.projects) {
+      const s = p.sessions?.find((s) => s.id === id);
+      if (s && s.worktreeBranch) return { base: 'main', head: s.worktreeBranch };
+    }
+  }
+  return { base: '…', head: '…' };
+}
+
+function syncDiffComparePills() {
+  for (const pill of document.querySelectorAll('.diff-compare-pill')) {
+    const m = pill.dataset.diffMode;
+    const refs = diffState.refs[m];
+    if (!refs) continue;
+    pill.querySelector('.diff-compare-from').textContent = refs.base;
+    pill.querySelector('.diff-compare-to').textContent = refs.head;
+  }
+}
+
+function closeDiffOverlay() {
+  document.getElementById('diff-overlay').hidden = true;
+  document.body.style.overflow = '';
+}
+
+document.getElementById('diff-close')?.addEventListener('click', closeDiffOverlay);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !document.getElementById('diff-overlay')?.hidden) closeDiffOverlay();
+});
+for (const btn of document.querySelectorAll('.diff-compare-pill')) {
+  btn.addEventListener('click', () => {
+    if (diffState.mode === btn.dataset.diffMode) return;
+    diffState.mode = btn.dataset.diffMode;
+    for (const b of document.querySelectorAll('.diff-compare-pill')) {
+      b.classList.toggle('diff-compare-active', b === btn);
+    }
+    // Switching modes drops drafted comments — they're anchored to specific lines that
+    // may not even exist in the other view. Collapse state also resets so the new file
+    // list paints in its default expanded form.
+    diffState.comments.clear();
+    diffState.openDraftKey = null;
+    diffState.collapsed.clear();
+    clearDiffSendWarning();
+    fetchAndRenderDiff();
+  });
+}
+
+function setDiffSendWarning(text) {
+  const w = document.getElementById('diff-send-warning');
+  if (!w) return;
+  w.hidden = false;
+  w.textContent = text;
+}
+function clearDiffSendWarning() {
+  const w = document.getElementById('diff-send-warning');
+  if (!w) return;
+  w.hidden = true;
+  w.textContent = '';
+}
+
+async function fetchAndRenderDiff() {
+  const sessionId = state.currentSessionId;
+  if (!sessionId) return;
+  const content = document.getElementById('diff-content');
+  const fileList = document.getElementById('diff-file-list');
+  content.textContent = 'Loading…';
+  fileList.innerHTML = '';
+
+  let payload;
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/diff?mode=${diffState.mode}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    payload = await r.json();
+  } catch (err) {
+    content.textContent = `Failed to load diff: ${err.message}`;
+    return;
+  }
+  // Cache the refs for this mode so the pill label is accurate. Worktree mode's refs
+  // are constant so we only update the branch cache from the response.
+  if (diffState.mode === 'branch') {
+    diffState.refs.branch = { base: diffRefLabel(payload.baseRef), head: diffRefLabel(payload.headRef) };
+  }
+  syncDiffComparePills();
+
+  // If HEAD is already on the base branch, branch-vs-base is empty by definition.
+  // Hide the branch pill and, if it's the active mode, fall back to worktree.
+  const branchPill = document.querySelector('.diff-compare-pill[data-diff-mode="branch"]');
+  if (branchPill) branchPill.hidden = Boolean(payload.onBaseBranch);
+  if (payload.onBaseBranch && diffState.mode === 'branch') {
+    diffState.mode = 'worktree';
+    for (const b of document.querySelectorAll('.diff-compare-pill')) {
+      b.classList.toggle('diff-compare-active', b.dataset.diffMode === 'worktree');
+    }
+    return fetchAndRenderDiff();
+  }
+  diffState.files = payload.files || [];
+  renderDiffFileList();
+  renderDiffContent();
+  updateDiffHeaderCounts();
+}
+
+function renderDiffFileList() {
+  const list = document.getElementById('diff-file-list');
+  if (diffState.files.length === 0) {
+    list.innerHTML = '<div class="diff-empty">No changes.</div>';
+    return;
+  }
+  list.innerHTML = diffState.files.map((f) => {
+    const icon = DIFF_STATUS_ICON[f.status] ?? '?';
+    return `<div class="diff-file-link" data-file="${escapeHtml(f.path)}">
+      <span class="diff-file-status" data-status="${escapeHtml(f.status)}">${icon}</span>
+      <span class="diff-file-path">${escapeHtml(f.path)}</span>
+      <span class="diff-file-comments" data-file-badge="${escapeHtml(f.path)}" hidden>0</span>
+    </div>`;
+  }).join('');
+  for (const el of list.querySelectorAll('.diff-file-link')) {
+    el.addEventListener('click', () => {
+      const path = el.dataset.file;
+      // Always expand the file before scrolling — collapsing from the sidebar would
+      // hide the file the user just clicked on, which is the opposite of useful.
+      if (diffState.collapsed.has(path)) {
+        diffState.collapsed.delete(path);
+        const card = document.querySelector(`#diff-content .diff-file-card[data-file="${cssEscape(path)}"]`);
+        card?.classList.remove('is-collapsed');
+      }
+      document.querySelector(`#diff-content .diff-file-card[data-file="${cssEscape(path)}"]`)
+        ?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    });
+  }
+}
+
+function renderDiffContent() {
+  const content = document.getElementById('diff-content');
+  if (diffState.files.length === 0) {
+    content.innerHTML = '<div class="diff-empty">No changes in this view.</div>';
+    return;
+  }
+  const isMobile = window.matchMedia('(max-width: 700px)').matches;
+  content.innerHTML = diffState.files.map((f) => renderDiffFileHtml(f, isMobile)).join('');
+  // Single delegated click handler — file-head clicks toggle collapse; line clicks open
+  // a comment form; nested chip/form clicks short-circuit inside onDiffContentClick.
+  content.addEventListener('click', onDiffContentClick);
+}
+
+function renderDiffFileHtml(f, isMobile) {
+  const renameNote = f.oldPath ? ` <span class="diff-file-renamed">(was ${escapeHtml(f.oldPath)})</span>` : '';
+  const truncNote = f.truncated ? ' <span class="diff-file-truncated">(truncated — view in terminal)</span>' : '';
+  const icon = DIFF_STATUS_ICON[f.status] ?? '?';
+  const status = `<span class="diff-file-card-status" data-status="${escapeHtml(f.status)}">${icon}</span>`;
+  const head = `<div class="diff-file-card-head" role="button" tabindex="0" aria-label="Toggle ${escapeHtml(f.path)}">
+    <span class="diff-file-card-caret" aria-hidden="true"></span>
+    ${status}
+    <span class="diff-file-card-name">${escapeHtml(f.path)}${renameNote}${truncNote}</span>
+  </div>`;
+  const collapsedCls = diffState.collapsed.has(f.path) ? ' is-collapsed' : '';
+  if (f.binary) {
+    return `<section class="diff-file-card${collapsedCls}" data-file="${escapeHtml(f.path)}">${head}<div class="diff-binary">Binary file changed.</div></section>`;
+  }
+  const hunks = f.hunks.map((h) => renderDiffHunkHtml(f.path, h, isMobile)).join('');
+  return `<section class="diff-file-card${collapsedCls}" data-file="${escapeHtml(f.path)}">${head}${hunks}</section>`;
+}
+
+function renderDiffHunkHtml(filePath, h, isMobile) {
+  const header = `<div class="diff-hunk-head">@@ -${h.oldStart},${h.oldLines} +${h.newStart},${h.newLines} @@</div>`;
+  if (isMobile) {
+    const rows = h.rows.map((r) => renderUnifiedRowHtml(filePath, r)).join('');
+    return `${header}<div class="diff-hunk-unified">${rows}</div>`;
+  }
+  // Desktop split. Walk rows; pair adjacent `-` runs with following `+` runs side-by-side.
+  const left = [];
+  const right = [];
+  let i = 0;
+  while (i < h.rows.length) {
+    const r = h.rows[i];
+    if (r.op === ' ') {
+      left.push(renderSplitRowHtml(filePath, 'old', ' ', r.content, r.oldLine));
+      right.push(renderSplitRowHtml(filePath, 'new', ' ', r.content, r.newLine));
+      i++;
+      continue;
+    }
+    // Collect a `-` run.
+    const dels = [];
+    while (i < h.rows.length && h.rows[i].op === '-') { dels.push(h.rows[i]); i++; }
+    // Then a `+` run.
+    const adds = [];
+    while (i < h.rows.length && h.rows[i].op === '+') { adds.push(h.rows[i]); i++; }
+    const pairs = Math.max(dels.length, adds.length);
+    for (let k = 0; k < pairs; k++) {
+      const d = dels[k];
+      const a = adds[k];
+      left.push(d
+        ? renderSplitRowHtml(filePath, 'old', '-', d.content, d.oldLine)
+        : '<div class="diff-row diff-row-empty"></div>');
+      right.push(a
+        ? renderSplitRowHtml(filePath, 'new', '+', a.content, a.newLine)
+        : '<div class="diff-row diff-row-empty"></div>');
+    }
+  }
+  return `${header}<div class="diff-hunk-split"><div>${left.join('')}</div><div>${right.join('')}</div></div>`;
+}
+
+function renderUnifiedRowHtml(filePath, r) {
+  const cls = r.op === '+' ? 'diff-add' : r.op === '-' ? 'diff-del' : 'diff-eq';
+  const side = r.op === '-' ? 'old' : 'new';
+  const line = r.op === '-' ? r.oldLine : r.newLine;
+  return `<div class="diff-row diff-line ${cls}" data-file="${escapeHtml(filePath)}" data-side="${side}" data-line="${line}">
+    <span class="diff-mark">${r.op}</span><span class="diff-text">${escapeHtml(r.content)}</span>
+  </div>`;
+}
+
+function renderSplitRowHtml(filePath, side, mark, content, line) {
+  const cls = mark === '+' ? 'diff-add' : mark === '-' ? 'diff-del' : 'diff-eq';
+  return `<div class="diff-row diff-line ${cls}" data-file="${escapeHtml(filePath)}" data-side="${side}" data-line="${line}">
+    <span class="diff-mark">${mark}</span><span class="diff-text">${escapeHtml(content)}</span>
+  </div>`;
+}
+
+function updateDiffHeaderCounts() {
+  const fc = document.getElementById('diff-file-count');
+  fc.textContent = `${diffState.files.length} file${diffState.files.length === 1 ? '' : 's'}`;
+  const n = diffState.comments.size;
+  document.getElementById('diff-comment-count').textContent = `${n} comment${n === 1 ? '' : 's'}`;
+  const send = document.getElementById('diff-send');
+  send.disabled = n === 0;
+  send.textContent = 'Submit';
+}
+
+function onDiffContentClick(e) {
+  if (e.target.closest('.diff-comment-card') || e.target.closest('.diff-comment-form')) return;
+  const head = e.target.closest('.diff-file-card-head');
+  if (head) {
+    const card = head.closest('.diff-file-card');
+    const path = card?.dataset.file;
+    if (!path) return;
+    if (diffState.collapsed.has(path)) {
+      diffState.collapsed.delete(path);
+      card.classList.remove('is-collapsed');
+    } else {
+      diffState.collapsed.add(path);
+      card.classList.add('is-collapsed');
+    }
+    return;
+  }
+  const row = e.target.closest('.diff-row');
+  if (!row || row.classList.contains('diff-row-empty')) return;
+
+  const file = row.dataset.file;
+  const side = row.dataset.side === 'old' ? 'old' : 'new';
+  const line = Number(row.dataset.line);
+  if (!file || !line) return;
+  const key = diffCommentKey(file, side, line);
+  if (diffState.openDraftKey && diffState.openDraftKey !== key) return; // one draft open at a time
+  // If an existing chip is mounted below this row, treat the click as "edit".
+  if (row.nextElementSibling?.classList.contains('diff-comment-card')) {
+    row.nextElementSibling.remove();
+  }
+  openDiffCommentForm(row, key, file, side, line, row.querySelector('.diff-text')?.textContent ?? '');
+}
+
+function openDiffCommentForm(row, key, file, side, line, lineText) {
+  if (row.nextElementSibling?.classList.contains('diff-comment-form')) return; // already open
+
+  const existing = diffState.comments.get(key);
+  const form = document.createElement('form');
+  form.className = 'diff-comment-form';
+  const ta = document.createElement('textarea');
+  ta.placeholder = 'Leave a comment…';
+  ta.value = existing?.content ?? '';
+  const actions = document.createElement('div');
+  actions.className = 'diff-comment-form-actions';
+  const cancel = document.createElement('button');
+  cancel.type = 'button';
+  cancel.textContent = 'Cancel';
+  const save = document.createElement('button');
+  save.type = 'submit';
+  save.textContent = 'Save';
+  actions.append(cancel, save);
+  form.append(ta, actions);
+  row.insertAdjacentElement('afterend', form);
+  diffState.openDraftKey = key;
+  ta.focus();
+
+  ta.addEventListener('keydown', (ev) => {
+    if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
+      ev.preventDefault();
+      form.requestSubmit();
+    }
+  });
+  cancel.addEventListener('click', () => {
+    form.remove();
+    diffState.openDraftKey = null;
+    // If the row had a pre-existing comment, restore its chip.
+    if (existing) renderDiffCommentChip(row, key);
+  });
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const content = ta.value.trim();
+    if (!content) return;
+    diffState.comments.set(key, { file, side, line, content, lineText });
+    form.remove();
+    diffState.openDraftKey = null;
+    renderDiffCommentChip(row, key);
+    updateDiffCommentBadges();
+    updateDiffHeaderCounts();
+    clearDiffSendWarning();
+  });
+}
+
+function renderDiffCommentChip(row, key) {
+  // Remove any prior chip for this row first.
+  if (row.nextElementSibling?.classList.contains('diff-comment-card')
+      && row.nextElementSibling.dataset.key === key) {
+    row.nextElementSibling.remove();
+  }
+  const c = diffState.comments.get(key);
+  if (!c) return;
+  const chip = document.createElement('div');
+  chip.className = 'diff-comment-card';
+  chip.dataset.key = key;
+  const body = document.createElement('div');
+  body.className = 'diff-comment-content';
+  body.textContent = c.content;
+  const actions = document.createElement('div');
+  actions.className = 'diff-comment-actions';
+  const editBtn = document.createElement('button');
+  editBtn.type = 'button';
+  editBtn.textContent = 'Edit';
+  const delBtn = document.createElement('button');
+  delBtn.type = 'button';
+  delBtn.textContent = 'Delete';
+  actions.append(editBtn, delBtn);
+  chip.append(body, actions);
+  row.insertAdjacentElement('afterend', chip);
+
+  delBtn.addEventListener('click', () => {
+    diffState.comments.delete(key);
+    chip.remove();
+    updateDiffCommentBadges();
+    updateDiffHeaderCounts();
+  });
+  editBtn.addEventListener('click', () => {
+    chip.remove();
+    openDiffCommentForm(row, key, c.file, c.side, c.line, c.lineText);
+  });
+}
+
+function updateDiffCommentBadges() {
+  const counts = new Map();
+  for (const c of diffState.comments.values()) counts.set(c.file, (counts.get(c.file) ?? 0) + 1);
+  for (const badge of document.querySelectorAll('[data-file-badge]')) {
+    const file = badge.getAttribute('data-file-badge');
+    const n = counts.get(file) ?? 0;
+    badge.textContent = String(n);
+    badge.hidden = n === 0;
+  }
+}
+
+function formatDiffReviewMessage() {
+  const sorted = [...diffState.comments.values()].sort((a, b) => {
+    if (a.file !== b.file) return a.file < b.file ? -1 : 1;
+    return a.line - b.line;
+  });
+  const blocks = sorted.map((c) => {
+    const sideLabel = c.side === 'old' ? ' (old)' : ' (new)';
+    const mark = c.side === 'old' ? '-' : '+';
+    const quote = c.lineText.length > 240 ? c.lineText.slice(0, 240) + '…' : c.lineText;
+    return `**${c.file}:${c.line}**${sideLabel}\n> ${mark} ${quote}\n\n${c.content}`;
+  });
+  return `Code review comments on the diff:\n\n${blocks.join('\n\n---\n\n')}`;
+}
+
+document.getElementById('diff-send')?.addEventListener('click', () => {
+  if (diffState.openDraftKey) {
+    setDiffSendWarning('Save or cancel the open draft first.');
+    document.querySelector('.diff-comment-form')?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    return;
+  }
+  if (diffState.comments.size === 0) return;
+  if (state.ws?.readyState !== WebSocket.OPEN) {
+    setDiffSendWarning('Disconnected — not sent. Try again once reconnected.');
+    return;
+  }
+  const text = formatDiffReviewMessage();
+  state.transcript.push({ role: 'user', text });
+  startThinking();
+  state.ws.send(JSON.stringify({ type: 'user_message', content: text }));
+  diffState.comments.clear();
+  closeDiffOverlay();
+  renderSession();
+  scrollTranscriptBottom();
+});

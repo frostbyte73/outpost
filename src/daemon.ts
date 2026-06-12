@@ -15,6 +15,7 @@ import { handleHook } from './hook-handler.js';
 import { type ApprovalMode, ApprovalModeStore } from './approval-mode.js';
 import { RecurrenceTracker } from './recurrence-tracker.js';
 import { WorktreeManager } from './worktree-manager.js';
+import { handleDiffRoute } from './diff-endpoint.js';
 import { loadOrCreateVapid } from './push-keys.js';
 import { SubscriptionStore } from './push-subscriptions.js';
 import { PushSender } from './push-sender.js';
@@ -417,6 +418,25 @@ async function main() {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ subagents }));
+  });
+
+  // Structured diff of a session's branch (or its uncommitted worktree changes), used
+  // by the PWA's in-app review UI to render hunks and capture inline comments.
+  server.route('GET', '/api/sessions/:id/diff', (req, res) => {
+    const url = new URL(req.url ?? '/', 'http://x');
+    const m = url.pathname.match(/^\/api\/sessions\/([\w-]+)\/diff$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const mode = url.searchParams.get('mode') ?? 'branch';
+    try {
+      const result = handleDiffRoute(worktreeManager, sessionStore, m[1]!, mode);
+      res.statusCode = result.status;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify(result.body));
+    } catch (err) {
+      res.statusCode = 500;
+      res.setHeader('content-type', 'application/json');
+      res.end(JSON.stringify({ error: (err as Error).message }));
+    }
   });
 
   // Hot-add an allowlist rule. Body shape: { kind: 'tool' | 'bash' | 'mcp', value: string, scope?: 'global' | { project: string } }.

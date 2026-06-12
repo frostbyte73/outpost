@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, statSync, existsSync, writeFileSy
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { WorktreeManager } from '../../src/worktree-manager.js';
+import { WorktreeManager, runGitDiff } from '../../src/worktree-manager.js';
 
 function makeGitRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), 'wt-repo-'));
@@ -251,5 +251,77 @@ describe('WorktreeManager — git operations', () => {
     await expect(
       m.create({ sessionId: 'okid2', projectCwd: repo, baseBranch: 'has spaces' }),
     ).rejects.toThrow(/invalid baseBranch/);
+  });
+});
+
+describe('runGitDiff', () => {
+  it('branch mode returns committed branch-vs-base changes', async () => {
+    const root = newRoot();
+    const repo = makeGitRepo();
+    // Seed a tracked file on main so the worktree branch can modify it.
+    writeFileSync(join(repo, 'a.txt'), 'one\ntwo\nthree\n');
+    execFileSync('git', ['-C', repo, 'add', 'a.txt']);
+    execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'seed']);
+
+    const m = new WorktreeManager({ root, projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-diff-b', projectCwd: repo, baseBranch: 'main' });
+    writeFileSync(join(rec.worktreePath, 'a.txt'), 'one\nTWO\nthree\n');
+    execFileSync('git', ['-C', rec.worktreePath, 'add', 'a.txt']);
+    execFileSync('git', ['-C', rec.worktreePath, 'commit', '-q', '-m', 'change']);
+
+    const out = runGitDiff(rec, 'branch');
+    expect(out).toContain('diff --git a/a.txt b/a.txt');
+    expect(out).toContain('-two');
+    expect(out).toContain('+TWO');
+  });
+
+  it('worktree mode returns uncommitted changes only', async () => {
+    const root = newRoot();
+    const repo = makeGitRepo();
+    writeFileSync(join(repo, 'a.txt'), 'one\ntwo\n');
+    execFileSync('git', ['-C', repo, 'add', 'a.txt']);
+    execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'seed']);
+
+    const m = new WorktreeManager({ root, projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-diff-w', projectCwd: repo, baseBranch: 'main' });
+    // Uncommitted edit in the worktree.
+    writeFileSync(join(rec.worktreePath, 'a.txt'), 'one\nTWO\n');
+
+    const out = runGitDiff(rec, 'worktree');
+    expect(out).toContain('-two');
+    expect(out).toContain('+TWO');
+  });
+
+  it('falls back to "main" when baseBranch is empty', async () => {
+    const root = newRoot();
+    const repo = makeGitRepo();
+    writeFileSync(join(repo, 'a.txt'), 'x\n');
+    execFileSync('git', ['-C', repo, 'add', 'a.txt']);
+    execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'seed']);
+
+    const m = new WorktreeManager({ root, projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-diff-f', projectCwd: repo, baseBranch: 'main' });
+    writeFileSync(join(rec.worktreePath, 'a.txt'), 'y\n');
+    execFileSync('git', ['-C', rec.worktreePath, 'add', 'a.txt']);
+    execFileSync('git', ['-C', rec.worktreePath, 'commit', '-q', '-m', 'change']);
+
+    // baseBranch deliberately blanked — runGitDiff should still find `main` and diff.
+    const out = runGitDiff({ ...rec, baseBranch: '' }, 'branch');
+    expect(out).toContain('-x');
+    expect(out).toContain('+y');
+  });
+
+  it('rejects a tombstoned record (no worktreePath)', () => {
+    expect(() => runGitDiff({
+      sessionId: 's', projectCwd: '/repo', worktreePath: '', branch: 'outpost/s',
+      baseBranch: 'main', createdAt: 0,
+    }, 'worktree')).toThrow(/tombstoned/);
+  });
+
+  it('rejects an invalid branch shape (defense in depth)', () => {
+    expect(() => runGitDiff({
+      sessionId: 's', projectCwd: '/repo', worktreePath: '/wt', branch: '-flag',
+      baseBranch: 'main', createdAt: 0,
+    }, 'branch')).toThrow(/invalid branch/);
   });
 });
