@@ -4049,17 +4049,125 @@
     .confirm-actions .confirm-danger:active { background: var(--danger); color: var(--bg); }
     .confirm-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
-    /* Header indicator that the session is auto-accepting edits. Filled accent so the
-       state reads as "active mode" rather than a quiet decoration — the user should
-       always know they're in a higher-blast-radius mode. */
+    /* Header permission-mode badge. Always rendered when a session is open. Severity
+       is encoded by both fill and chroma:
+         ask          → ambient, line-quiet (no signal — this is the default)
+         plan         → outlined accent (safe but attentive: read-only)
+         accept-edits → filled accent (active autopilot)
+         bypass       → filled danger (high blast radius)
+       The badge is also the per-session mode picker — tap to open .mode-popover. */
     .header-mode-chip {
+      position: relative;
+      display: inline-flex; align-items: center; gap: 6px;
       font-family: var(--font-mono);
       font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
-      color: var(--bg);
-      background: var(--accent);
-      border: 1px solid var(--accent);
-      padding: 2px 7px;
+      padding: 3px 6px 3px 8px;
       align-self: center;
+      cursor: pointer;
+      transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+      /* base = ask: quiet outline */
+      background: transparent;
+      color: var(--text-mute);
+      border: 1px solid var(--line);
+    }
+    .header-mode-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .header-mode-chip[data-mode="plan"] {
+      background: transparent;
+      color: var(--accent-2);
+      border-color: var(--accent-2);
+    }
+    .header-mode-chip[data-mode="accept-edits"] {
+      background: var(--accent);
+      color: var(--bg);
+      border-color: var(--accent);
+    }
+    .header-mode-chip[data-mode="bypass"] {
+      background: var(--danger);
+      color: var(--bg);
+      border-color: var(--danger);
+    }
+    .header-mode-chip .chip-caret {
+      font-size: 8px; opacity: 0.75;
+      transform: translateY(-0.5px);
+      transition: transform 0.15s ease;
+    }
+    .header-mode-chip[aria-expanded="true"] .chip-caret { transform: rotate(180deg) translateY(0.5px); }
+
+    /* Per-session mode picker. Floats below the badge, anchored to the chip's left edge
+       so it opens down-and-right. width is clamped to the viewport so the menu can't
+       overflow on narrow mobile — translateX pulls it back left if it would otherwise
+       run past the right edge of the header. */
+    .mode-popover {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      width: min(320px, calc(100vw - 24px));
+      max-width: calc(100vw - 24px);
+      background: var(--bg);
+      border: 1px solid var(--line);
+      box-shadow: 0 16px 48px rgba(0,0,0,0.35);
+      z-index: 800;
+      padding: 4px;
+      display: none;
+    }
+    .mode-popover[data-open="true"] { display: block; }
+    .mode-popover-item {
+      display: grid;
+      grid-template-columns: 12px 1fr;
+      align-items: start;
+      column-gap: 12px;
+      width: 100%;
+      padding: 10px 12px;
+      background: transparent;
+      border: 0;
+      text-align: left;
+      cursor: pointer;
+      transition: background 0.1s ease;
+      border-left: 2px solid transparent;
+    }
+    .mode-popover-item:hover { background: var(--bg-elev-2); }
+    .mode-popover-item[aria-pressed="true"] {
+      border-left-color: var(--accent);
+      background: var(--bg-elev-2);
+    }
+    .mode-popover-item[data-mode="plan"][aria-pressed="true"] { border-left-color: var(--accent-2); }
+    .mode-popover-item[data-mode="bypass"][aria-pressed="true"] { border-left-color: var(--danger); }
+    .mode-popover-dot {
+      width: 8px; height: 8px;
+      margin-top: 6px;
+      border: 1px solid var(--line);
+      background: transparent;
+      align-self: start;
+    }
+    .mode-popover-item[data-mode="plan"] .mode-popover-dot { border-color: var(--accent-2); background: var(--accent-2); }
+    .mode-popover-item[data-mode="accept-edits"] .mode-popover-dot { border-color: var(--accent); background: var(--accent); }
+    .mode-popover-item[data-mode="bypass"] .mode-popover-dot { border-color: var(--danger); background: var(--danger); }
+    .mode-popover-name {
+      font-family: var(--font-mono);
+      font-size: 10px; letter-spacing: 0.18em; text-transform: uppercase;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+    .mode-popover-item[data-mode="bypass"] .mode-popover-name { color: var(--danger); }
+    .mode-popover-desc {
+      font-family: var(--font-body);
+      font-size: 12px; line-height: 1.45;
+      color: var(--text-mute);
+    }
+    .mode-popover-footer {
+      padding: 8px 14px 10px;
+      font-family: var(--font-body);
+      font-size: 11px; line-height: 1.4;
+      color: var(--text-mute);
+      border-top: 1px solid var(--line);
+      margin-top: 4px;
+    }
+    .mode-popover-footer code {
+      font-family: var(--font-mono);
+      font-size: 10px;
+      color: var(--text);
+      background: var(--bg-elev-2);
+      padding: 0 4px;
     }
 
     /* Scrollbar — invisible on touch, restrained on desktop */
@@ -4078,16 +4186,32 @@
       }
     }
 
-    /* ───── Header: "Review diff" button ─────────────────────────────── */
+    /* ───── Header: "Diff" button ─────────────────────────────────────
+       Sized to match .header-mode-chip — same mono scale, same vertical rhythm.
+       The trailing ↗ glyph mirrors .agents-strip-expand: it tells the user this is a
+       button that opens a panel (a borderless outlined chip alone reads as a label). */
     header .header-review-diff-btn {
-      font-family: var(--font-body); font-size: 12px;
-      letter-spacing: 0.06em; text-transform: uppercase;
+      display: inline-flex; align-items: center; gap: 6px;
+      font-family: var(--font-mono);
+      font-size: 9px; letter-spacing: 0.18em; text-transform: uppercase;
       background: transparent; color: var(--accent);
-      border: 1px solid var(--accent); border-radius: 2px;
-      padding: 4px 10px; cursor: pointer;
-      transition: background 0.12s ease;
+      border: 1px solid var(--accent);
+      padding: 3px 6px 3px 8px;
+      align-self: center;
+      cursor: pointer;
+      transition: background 0.12s ease, color 0.12s ease;
     }
     header .header-review-diff-btn:active { background: var(--accent-soft); }
+    header .header-review-diff-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+    .header-review-diff-arrow {
+      font-family: var(--font-mono);
+      font-size: 11px; line-height: 1;
+      transform: translateY(-0.5px);
+      transition: transform 0.18s cubic-bezier(0.32, 0.72, 0, 1);
+    }
+    header .header-review-diff-btn:active .header-review-diff-arrow {
+      transform: translate(1px, -2px);
+    }
 
     /* ───── Diff review overlay ──────────────────────────────────────── */
     #diff-overlay {
@@ -4540,18 +4664,18 @@
       <button data-mode="dark"><span class="glyph"></span>Dark</button>
     </div>
 
-    <div class="sheet-section-label">Permissions</div>
-    <div class="permission-modes" id="permission-modes" role="radiogroup" aria-label="Permission mode">
+    <div class="sheet-section-label">Default for new sessions</div>
+    <div class="permission-modes" id="permission-modes" role="radiogroup" aria-label="Default permission mode for new sessions">
       <button class="permission-mode" data-mode="ask" type="button" aria-pressed="true">Ask</button>
       <button class="permission-mode" data-mode="accept-edits" type="button" aria-pressed="false">Accept edits</button>
       <button class="permission-mode" data-mode="plan" type="button" aria-pressed="false">Plan</button>
       <button class="permission-mode" data-mode="bypass" type="button" aria-pressed="false">Bypass</button>
     </div>
     <div class="permission-desc" id="permission-desc">
-      <span data-for-mode="ask">Tool calls outside the allowlist require explicit approval.</span>
-      <span data-for-mode="accept-edits" hidden>Edit, Write, MultiEdit, and NotebookEdit auto-approve. Bash and side-effect tools still require approval.</span>
-      <span data-for-mode="plan" hidden>Read-only mode. Only Read, Glob, Grep, Web*, Task list/get, and MCP read tools run.</span>
-      <span data-for-mode="bypass" hidden>All tool calls auto-approve. Equivalent to <code>--dangerously-skip-permissions</code>.</span>
+      <span data-for-mode="ask">Tool calls outside the allowlist require explicit approval. Applied to sessions you start from here on; tap the badge in the session header to change a specific session.</span>
+      <span data-for-mode="accept-edits" hidden>Edit, Write, MultiEdit, and NotebookEdit auto-approve. Bash and side-effect tools still require approval. Applied to new sessions; tap the badge in the session header to override a specific session.</span>
+      <span data-for-mode="plan" hidden>Read-only mode. Only Read, Glob, Grep, Web*, Task list/get, and MCP read tools run. Applied to new sessions; tap the badge in the session header to override a specific session.</span>
+      <span data-for-mode="bypass" hidden>All tool calls auto-approve. Equivalent to <code>--dangerously-skip-permissions</code>. Applied to new sessions; tap the badge in the session header to override a specific session.</span>
     </div>
 
     <div class="sheet-section-label">Push notifications</div>

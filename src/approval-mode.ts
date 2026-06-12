@@ -1,9 +1,39 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+
 const APPROVAL_MODES = ['ask', 'accept-edits', 'plan', 'bypass'] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
 const VALID_MODES: ReadonlySet<ApprovalMode> = new Set(APPROVAL_MODES);
 
+// Atomic write — tmp file + rename, matching the pattern in project-registry.ts and
+// push-subscriptions.ts. Keeps the index consistent across crashes and concurrent reads.
+function atomicWrite(path: string, data: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, data, { mode: 0o600 });
+  renameSync(tmp, path);
+}
+
 export class ApprovalModeStore {
   private modes = new Map<string, ApprovalMode>();
+
+  // path is optional so tests can spin up an in-memory store. In the daemon we always
+  // pass a path so kickstart preserves each session's mode across restart — sessions
+  // already rehydrate their transcript and statusline from disk, so it'd be jarring if
+  // the permission mode silently reset to 'ask'.
+  constructor(private readonly path?: string) {
+    if (!path || !existsSync(path)) return;
+    try {
+      const parsed = JSON.parse(readFileSync(path, 'utf8')) as { modes?: Record<string, string> };
+      for (const [id, mode] of Object.entries(parsed.modes ?? {})) {
+        if (VALID_MODES.has(mode as ApprovalMode)) {
+          this.modes.set(id, mode as ApprovalMode);
+        }
+      }
+    } catch {
+      // Malformed file — start empty; next persist overwrites cleanly.
+    }
+  }
 
   get(sessionId: string): ApprovalMode {
     return this.modes.get(sessionId) ?? 'ask';
@@ -13,7 +43,14 @@ export class ApprovalModeStore {
     if (!VALID_MODES.has(mode)) {
       throw new Error(`invalid ApprovalMode: ${JSON.stringify(mode)}`);
     }
+    const prev = this.modes.get(sessionId);
     this.modes.set(sessionId, mode);
+    if (prev !== mode) this.persist();
+  }
+
+  private persist(): void {
+    if (!this.path) return;
+    atomicWrite(this.path, JSON.stringify({ modes: Object.fromEntries(this.modes) }, null, 2) + '\n');
   }
 }
 

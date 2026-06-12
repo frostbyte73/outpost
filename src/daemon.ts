@@ -74,7 +74,7 @@ async function main() {
   const projectAllowlistDir = join(RUNTIME_DIR, 'allowlists');
   const allowlist = new Allowlist(loadRuntimeAllowlist(ALLOWLIST_PATH), { projectAllowlistDir });
   const queue = new ApprovalQueue({ timeoutMs: APPROVAL_TIMEOUT_MS });
-  const modes = new ApprovalModeStore();
+  const modes = new ApprovalModeStore(join(RUNTIME_DIR, 'approval-modes.json'));
   const recurrence = new RecurrenceTracker();
 
   // Phase 4: VAPID + push subscriptions. Files live under runtimeDir by default

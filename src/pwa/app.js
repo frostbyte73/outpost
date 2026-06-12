@@ -106,11 +106,31 @@ const state = {
   // best-effort bind them by subagent_type ordering — works perfectly for unique types,
   // is a reasonable guess for parallel same-type spawns.
   unboundAgentInvocations: [],
-  // Accept-edits mode (mirrors the CLI's --permission-mode=acceptEdits). When on,
-  // file-edit tools (Edit / Write / NotebookEdit / MultiEdit) skip the approval card
-  // entirely and get auto-allowed the moment they're proposed. Toggled from the
-  // appearance sheet, persisted in localStorage so it survives reload.
-  acceptEdits: localStorage.getItem('cr:acceptEdits') === 'true',
+  // Mirror of the current session's mode (server-authoritative — see state.approvalMode).
+  // True iff the current session is in accept-edits mode; drives the EDIT_TOOLS auto-allow
+  // path. Not persisted — the server owns per-session mode; the per-client default lives
+  // on state.defaultApprovalMode below.
+  acceptEdits: false,
+  // Per-client default mode used to seed brand-new sessions. Settings sheet edits this;
+  // header-badge edits go to the current session only. Persisted; migrates the
+  // pre-default `cr:acceptEdits === 'true'` key from earlier builds.
+  defaultApprovalMode: (() => {
+    const v = localStorage.getItem('cr:defaultApprovalMode');
+    if (v === 'ask' || v === 'accept-edits' || v === 'plan' || v === 'bypass') return v;
+    if (localStorage.getItem('cr:acceptEdits') === 'true') {
+      localStorage.removeItem('cr:acceptEdits');
+      localStorage.setItem('cr:defaultApprovalMode', 'accept-edits');
+      return 'accept-edits';
+    }
+    return 'ask';
+  })(),
+  // Set in openSession when we just spawned a fresh session, consumed on the first
+  // approval_mode broadcast for it: if the default differs from the server-default 'ask',
+  // we push our default once. Resumed sessions never get this — their server-stored mode
+  // wins.
+  pendingDefaultPush: false,
+  // True while the header mode-picker popover is open.
+  modePopoverOpen: false,
   // "Thinking" tile telemetry. thinkingStartedAt is the wall-clock at which we started
   // waiting. thinkingOutputTokens is what's shown; it's the max of two sources, since
   // Anthropic's streaming only emits one authoritative `message_delta` per message
@@ -178,9 +198,6 @@ const state = {
   approvalMode: 'ask',
   // True when the bypass button has been tapped once — the second tap within 4 s commits.
   bypassConfirmPending: false,
-  // Guards against an infinite push-back loop: set to true when we push our local mode back
-  // to the server; cleared when the server's echo finally agrees, or on a new WS attach.
-  approvalModePushBackSent: false,
   // Last seen usage payload from an `assistant` stream-json message — drives the
   // context-window meter above the composer when no daemon_statusline payload has arrived
   // yet (e.g. brand-new session before claude's first statusLine fire). Reset per session
@@ -532,19 +549,10 @@ function setHeader(mode) {
     m.className = 'meta';
     m.textContent = state.currentSessionId ? state.currentSessionId.slice(0, 8) : '';
     header.appendChild(back);
-    // Surface accept-edits mode in the session header — small accent-bordered chip
-    // sits between the back link and the session-id meta. Easy to glance at while
-    // burning through approvals, and a constant reminder the mode is on.
-    if (state.acceptEdits) {
-      const chip = document.createElement('span');
-      chip.className = 'header-mode-chip';
-      // Counter ticks each time accept-edits silently approves an edit; lets the user
-      // audit unsupervised activity at a glance without opening the agents sheet.
-      chip.textContent = state.autoAllowedEdits > 0
-        ? `auto-edits · ${state.autoAllowedEdits}`
-        : 'auto-edits on';
-      header.appendChild(chip);
-    }
+    // Permission-mode badge — always rendered so the user never has to guess the active
+    // mode. Tap opens a per-session picker; settings sheet only sets the default for new
+    // sessions. Severity coloring is driven entirely by the [data-mode] CSS rules.
+    header.appendChild(buildHeaderModeChip());
     // "Review diff" button — shown for any non-archived session whose project (or
     // worktree) is a git repo. The endpoint handles both worktree-backed sessions and
     // sessions running directly in the user's repo.
@@ -553,12 +561,173 @@ function setHeader(mode) {
       btn.id = 'open-diff-review';
       btn.className = 'header-review-diff-btn';
       btn.type = 'button';
-      btn.textContent = 'Diff';
+      btn.setAttribute('aria-label', 'Open diff review');
+      btn.innerHTML = 'Diff <span class="header-review-diff-arrow" aria-hidden="true">↗</span>';
       btn.onclick = openDiffOverlay;
       header.appendChild(btn);
     }
     header.appendChild(m);
   }
+}
+
+// Human label for the header badge. Accept-edits hides a running counter of silently-
+// approved edits inside the badge so the user can audit unsupervised activity at a glance.
+function modeBadgeLabel(mode) {
+  if (mode === 'ask') return 'ASK';
+  if (mode === 'plan') return 'PLAN';
+  if (mode === 'bypass') return 'BYPASS';
+  // accept-edits: surface the counter once anything has been auto-allowed.
+  return state.autoAllowedEdits > 0 ? `AUTO-EDIT · ${state.autoAllowedEdits}` : 'AUTO-EDIT';
+}
+
+const MODE_DESCRIPTIONS = {
+  'ask': 'Tool calls outside the allowlist require explicit approval.',
+  'plan': 'Read-only. Only Read, Glob, Grep, Web*, Task list/get, and MCP read tools run.',
+  'accept-edits': 'Edit, Write, MultiEdit, and NotebookEdit auto-approve. Bash and side-effect tools still require approval.',
+  'bypass': 'All tool calls auto-approve. Equivalent to --dangerously-skip-permissions.',
+};
+
+// Builds the header chip + its popover. The popover sits inside the same wrapper so
+// `position: absolute; top: 100%` anchors directly to the chip without coordinate math.
+function buildHeaderModeChip() {
+  const mode = state.approvalMode ?? 'ask';
+  const wrap = document.createElement('span');
+  wrap.style.position = 'relative';
+  wrap.style.display = 'inline-flex';
+
+  const chip = document.createElement('button');
+  chip.type = 'button';
+  chip.className = 'header-mode-chip';
+  chip.id = 'header-mode-chip';
+  chip.setAttribute('data-mode', mode);
+  chip.setAttribute('aria-haspopup', 'true');
+  chip.setAttribute('aria-expanded', state.modePopoverOpen ? 'true' : 'false');
+  chip.setAttribute('aria-label', `Permission mode: ${modeBadgeLabel(mode)} — tap to change`);
+  chip.innerHTML = `<span class="chip-label">${escapeHtml(modeBadgeLabel(mode))}</span><span class="chip-caret" aria-hidden="true">▾</span>`;
+  chip.onclick = (e) => {
+    e.stopPropagation();
+    toggleModePopover();
+  };
+
+  const popover = document.createElement('div');
+  popover.className = 'mode-popover';
+  popover.id = 'mode-popover';
+  popover.setAttribute('role', 'menu');
+  popover.setAttribute('data-open', state.modePopoverOpen ? 'true' : 'false');
+  // Stop propagation so the document-level close handler doesn't fire on internal taps
+  // (e.g., scrolling a long description, accidentally hitting the divider).
+  popover.addEventListener('click', (e) => e.stopPropagation());
+  const items = ['ask', 'plan', 'accept-edits', 'bypass'].map((m) => {
+    const label = m === 'accept-edits' ? 'Accept edits'
+      : m === 'ask' ? 'Ask'
+      : m === 'plan' ? 'Plan'
+      : 'Bypass';
+    const showConfirm = m === 'bypass' && state.bypassConfirmPending;
+    const isCurrent = mode === m && !showConfirm;
+    return `
+      <button type="button" class="mode-popover-item" role="menuitemradio"
+        data-mode="${m}" aria-pressed="${isCurrent ? 'true' : 'false'}">
+        <span class="mode-popover-dot" aria-hidden="true"></span>
+        <span>
+          <span class="mode-popover-name">${showConfirm ? 'Tap again to confirm' : escapeHtml(label)}</span>
+          <span class="mode-popover-desc">${escapeHtml(MODE_DESCRIPTIONS[m])}</span>
+        </span>
+      </button>`;
+  }).join('');
+  popover.innerHTML = `${items}
+    <div class="mode-popover-footer">
+      Changes apply to this session only. Set the default for new sessions in
+      <strong>Settings → Default for new sessions</strong>.
+    </div>`;
+  popover.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-mode]');
+    if (!btn) return;
+    setSessionApprovalMode(btn.dataset.mode);
+  });
+
+  wrap.appendChild(chip);
+  wrap.appendChild(popover);
+  return wrap;
+}
+
+// Re-renders just the chip + popover in place. Used so toggling the popover and selecting
+// a mode don't have to redraw the whole session view.
+function refreshHeaderModeChip() {
+  const existing = document.getElementById('header-mode-chip')?.parentElement;
+  if (!existing) return;
+  existing.replaceWith(buildHeaderModeChip());
+}
+
+function toggleModePopover() {
+  state.modePopoverOpen = !state.modePopoverOpen;
+  refreshHeaderModeChip();
+  if (state.modePopoverOpen) positionModePopover();
+}
+
+// The chip lives at the left of the header, but the popover is wider than the chip and
+// would overflow the right edge of a narrow viewport with the natural `left: 0` anchor.
+// Measure the chip + popover and shift the popover left so it always stays 8px inside
+// the viewport's right edge. Idempotent — safe to re-run on resize, etc.
+function positionModePopover() {
+  const chip = document.getElementById('header-mode-chip');
+  const popover = document.getElementById('mode-popover');
+  if (!chip || !popover) return;
+  // Reset inline overrides so we read the natural width.
+  popover.style.left = '0px';
+  const chipRect = chip.getBoundingClientRect();
+  const popoverWidth = popover.offsetWidth;
+  const viewportRight = window.innerWidth - 8;
+  const naturalRight = chipRect.left + popoverWidth;
+  if (naturalRight > viewportRight) {
+    // Shift left by exactly the overflow amount.
+    popover.style.left = `${-(naturalRight - viewportRight)}px`;
+  }
+}
+
+function closeModePopover() {
+  if (!state.modePopoverOpen) return;
+  state.modePopoverOpen = false;
+  refreshHeaderModeChip();
+}
+
+// Document-level dismiss: any click that didn't land inside the popover or chip closes it.
+document.addEventListener('click', (e) => {
+  if (!state.modePopoverOpen) return;
+  if (e.target.closest('#mode-popover')) return;
+  if (e.target.closest('#header-mode-chip')) return;
+  closeModePopover();
+});
+
+// Per-session mode change from the header picker. Mirrors setApprovalMode's WS-roundtrip
+// pattern but is the explicit single-session path — the settings-sheet flow now writes
+// the default only and stays out of the active session's mode.
+function setSessionApprovalMode(mode) {
+  if (state.approvalMode === mode && !(mode === 'bypass' && state.bypassConfirmPending)) {
+    closeModePopover();
+    return;
+  }
+  if (mode === 'bypass' && state.approvalMode !== 'bypass' && !state.bypassConfirmPending) {
+    state.bypassConfirmPending = true;
+    refreshHeaderModeChip();
+    setTimeout(() => {
+      if (state.bypassConfirmPending) {
+        state.bypassConfirmPending = false;
+        refreshHeaderModeChip();
+      }
+    }, 4000);
+    return;
+  }
+  state.bypassConfirmPending = false;
+  if (state.ws?.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type: 'approval_mode_set', mode }));
+    // Optimistically reflect in UI; server echo confirms via the WS handler.
+    state.approvalMode = mode;
+    setAcceptEdits(mode === 'accept-edits');
+  } else {
+    state.approvalMode = mode;
+    setAcceptEdits(mode === 'accept-edits');
+  }
+  closeModePopover();
 }
 
 function currentSessionDiffable() {
@@ -1036,6 +1205,14 @@ async function openSession(id, opts) {
   state.transcript = [];
   state.seenBlockSigs = new Set();
   state.sessionWsHasConnected = false;
+  // Only brand-new sessions inherit the per-client default mode — resumed sessions keep
+  // whatever the server has stored.
+  state.pendingDefaultPush = isNew;
+  // Reset the optimistic accept-edits mirror; the first approval_mode broadcast for this
+  // session will rehydrate it.
+  state.approvalMode = 'ask';
+  state.acceptEdits = false;
+  state.modePopoverOpen = false;
   // Phase 3: fresh session view → server replays from earliest still in its log.
   state.lastSeenSeq = 0;
   // Per-session reset: todos, pendingCreates, and consumedTaskResults all belong to one
@@ -1295,7 +1472,6 @@ function connectWs(id, opts) {
   if (state.sessionWsTimer) { clearTimeout(state.sessionWsTimer); state.sessionWsTimer = null; }
   if (state.ws) state.ws.close();
   state.sessionWsReady = false;
-  state.approvalModePushBackSent = false;
   updateConnIndicator();
   const params = new URLSearchParams();
   if (opts?.cwd) params.set('cwd', opts.cwd);
@@ -1778,27 +1954,23 @@ function handleWsMessage(msg) {
     };
     updateMeterRegion();
   } else if (msg.type === 'approval_mode') {
-    // If the client had an optimistically-set non-default mode (chosen before the session
-    // opened and therefore never sent to the server), push it now so the server catches up.
-    // This handles the accept-edits test pattern: user enables accept-edits in settings
-    // BEFORE opening a session, then the server attach broadcasts 'ask' which would otherwise
-    // clobber the local preference.
-    // The approvalModePushBackSent sentinel prevents an infinite loop: if the server keeps
-    // broadcasting a mode we don't want, we only push back once per WS attach.
-    if (state.approvalMode !== 'ask' && state.approvalMode !== msg.mode
-        && state.ws?.readyState === WebSocket.OPEN
-        && !state.approvalModePushBackSent) {
-      state.approvalModePushBackSent = true;
-      state.ws.send(JSON.stringify({ type: 'approval_mode_set', mode: state.approvalMode }));
-      // Keep local state and wait for the server's echo from our approval_mode_set.
+    // New-session default push: if we just spawned this session and the per-client
+    // default differs from the server-default ('ask'), push it once. Resumed sessions
+    // keep whatever mode the server has stored for them.
+    if (state.pendingDefaultPush
+        && state.defaultApprovalMode !== 'ask'
+        && state.defaultApprovalMode !== msg.mode
+        && state.ws?.readyState === WebSocket.OPEN) {
+      state.pendingDefaultPush = false;
+      state.ws.send(JSON.stringify({ type: 'approval_mode_set', mode: state.defaultApprovalMode }));
+      // Wait for the server's echo to commit state.approvalMode below.
       return;
     }
+    state.pendingDefaultPush = false;
     state.approvalMode = msg.mode;
-    state.approvalModePushBackSent = false;
     state.bypassConfirmPending = false;
-    // Keep accept-edits client-side mirror in sync when the server says we're in that mode.
     setAcceptEdits(msg.mode === 'accept-edits');
-    renderApprovalModes();
+    refreshHeaderModeChip();
   }
 }
 
@@ -6088,16 +6260,13 @@ function refreshSheetSelection() {
   renderApprovalModes();
 }
 
-// Toggle accept-edits mode. Persisted to localStorage so the setting survives reload,
-// since the user typically picks this once at the start of a high-edit session and
-// doesn't want to retoggle after every refresh.
+// Mirror the current session's mode into state.acceptEdits — the boolean that drives the
+// EDIT_TOOLS auto-allow path. Server is the source of truth (per-session); no localStorage
+// here. Settings-sheet edits write to state.defaultApprovalMode instead.
 function setAcceptEdits(v) {
   state.acceptEdits = !!v;
-  if (state.acceptEdits) localStorage.setItem('cr:acceptEdits', 'true');
-  else localStorage.removeItem('cr:acceptEdits');
   refreshSheetSelection();
-  // Refresh the session view so the header chip appears/disappears immediately.
-  if (state.view === 'session') renderSession();
+  if (state.view === 'session') refreshHeaderModeChip();
 }
 
 function openSettings() {
@@ -6125,37 +6294,16 @@ document.getElementById('theme-grid').addEventListener('click', (e) => {
   const card = e.target.closest('.theme-card');
   if (card?.dataset.themeKey) applyTheme(card.dataset.themeKey);
 });
-// Wire up the segmented permission-mode control. The single source of truth for
-// the mode is the server (broadcast on attach via `approval_mode`); the PWA mirrors
-// that into state.approvalMode and reflects it in the UI. Clicking a mode sends
-// `approval_mode_set` and waits for the server's echo to update local state.
+// Settings-sheet segmented control: writes to state.defaultApprovalMode only. The active
+// session's mode is owned by the server and edited via the header badge picker
+// (setSessionApprovalMode). This split makes the model match the user's mental model —
+// "settings = defaults; in-session = override for that session".
 function setApprovalMode(mode) {
-  if (state.approvalMode === mode) return;
-  if (mode === 'bypass' && state.approvalMode !== 'bypass' && !state.bypassConfirmPending) {
-    state.bypassConfirmPending = true;
-    renderApprovalModes();
-    setTimeout(() => {
-      if (state.bypassConfirmPending) {
-        state.bypassConfirmPending = false;
-        renderApprovalModes();
-      }
-    }, 4000);
-    return;
-  }
-  state.bypassConfirmPending = false;
-  if (state.ws?.readyState === WebSocket.OPEN) {
-    // Connected: send to server and wait for the echo to commit state.approvalMode.
-    state.ws.send(JSON.stringify({ type: 'approval_mode_set', mode }));
-    // Online: defer state.approvalMode + setAcceptEdits to the server's echo (handled in the
-    // `approval_mode` WS message branch). Just send and wait.
-  } else {
-    // Offline (no session yet, or WS not connected): optimistically reflect the choice locally
-    // so the segmented control updates immediately. The push-back logic on next WS attach
-    // syncs this to the server.
-    state.approvalMode = mode;
-    setAcceptEdits(mode === 'accept-edits');
-    renderApprovalModes();
-  }
+  if (state.defaultApprovalMode === mode) return;
+  state.defaultApprovalMode = mode;
+  if (mode === 'ask') localStorage.removeItem('cr:defaultApprovalMode');
+  else localStorage.setItem('cr:defaultApprovalMode', mode);
+  renderApprovalModes();
 }
 
 document.getElementById('permission-modes')?.addEventListener('click', (e) => {
@@ -6164,16 +6312,9 @@ document.getElementById('permission-modes')?.addEventListener('click', (e) => {
 });
 
 function renderApprovalModes() {
-  const desired = state.approvalMode ?? 'ask';
-  const showBypassConfirm = state.bypassConfirmPending === true;
+  const desired = state.defaultApprovalMode ?? 'ask';
   for (const btn of document.querySelectorAll('.permission-mode')) {
-    const m = btn.dataset.mode;
-    btn.setAttribute('aria-pressed', m === desired && !showBypassConfirm ? 'true' : 'false');
-    if (m === 'bypass' && showBypassConfirm) {
-      btn.textContent = 'Tap again to confirm';
-    } else if (m === 'bypass') {
-      btn.textContent = 'Bypass';
-    }
+    btn.setAttribute('aria-pressed', btn.dataset.mode === desired ? 'true' : 'false');
   }
   for (const span of document.querySelectorAll('.permission-desc [data-for-mode]')) {
     span.hidden = span.dataset.forMode !== desired;
@@ -6505,6 +6646,7 @@ globalThis.__outpostWaitWsMsg = (predicate) => new Promise((resolve) => {
 globalThis.__outpostGetState = () => ({
   approvalMode: state.approvalMode,
   acceptEdits: state.acceptEdits,
+  defaultApprovalMode: state.defaultApprovalMode,
   connState: state.connState,
   currentSessionId: state.currentSessionId,
   lastSeenSeq: state.lastSeenSeq,
