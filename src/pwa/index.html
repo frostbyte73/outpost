@@ -2936,6 +2936,17 @@
     .msg.tool_use.approval-card.tool_use-expanded {
       border-left: 1px solid var(--accent);
     }
+    /* Phase 4: deep-link highlight when the user taps a push notification. */
+    .msg.tool_use.approval-card.approval-card-highlight {
+      animation: approval-card-pulse 0.8s ease-out 2;
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+    @keyframes approval-card-pulse {
+      0% { outline-color: var(--accent); }
+      50% { outline-color: transparent; }
+      100% { outline-color: var(--accent); }
+    }
     .approval-card .approval-banner {
       display: flex;
       align-items: baseline;
@@ -3623,6 +3634,36 @@
       padding: 4px 0 0;
     }
 
+    /* Phase 4: push notifications section in the Settings sheet. */
+    .push-section { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+    .push-ios-banner {
+      background: var(--accent-soft);
+      color: var(--accent);
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      font-size: 12px; line-height: 1.5;
+    }
+    .push-toggle {
+      display: flex; justify-content: space-between; align-items: center;
+      background: transparent; color: var(--text);
+      border: 1px solid var(--line);
+      padding: 12px 14px;
+      font-family: var(--font-body); font-size: 13px;
+      cursor: pointer; transition: background 0.15s ease;
+    }
+    .push-toggle[aria-pressed="true"] { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+    .push-toggle[disabled] { opacity: 0.5; cursor: not-allowed; }
+    .push-toggle-state { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; }
+    .push-test {
+      background: transparent; color: var(--text-mute);
+      border: 1px solid var(--line);
+      padding: 10px 14px;
+      font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+      cursor: pointer;
+    }
+    .push-test[disabled] { opacity: 0.4; cursor: not-allowed; }
+    .push-status { font-size: 12px; color: var(--text-mute); min-height: 1em; }
+
     /* Themed confirm sheet — replaces native confirm() for destructive actions so the
        dialog matches the rest of the PWA chrome and respects the active theme. Mirrors
        the .approval-card visual language: outline-danger Confirm button (matching Reject)
@@ -3804,6 +3845,20 @@
       <span data-for-mode="accept-edits" hidden>Edit, Write, MultiEdit, and NotebookEdit auto-approve. Bash and side-effect tools still require approval.</span>
       <span data-for-mode="plan" hidden>Read-only mode. Only Read, Glob, Grep, Web*, Task list/get, and MCP read tools run.</span>
       <span data-for-mode="bypass" hidden>All tool calls auto-approve. Equivalent to <code>--dangerously-skip-permissions</code>.</span>
+    </div>
+
+    <div class="sheet-section-label">Push notifications</div>
+    <div class="push-section" id="push-section">
+      <div class="push-ios-banner" id="push-ios-banner" hidden>
+        On iOS, push notifications require installing this app to your Home Screen first.
+        Tap the Share button in Safari, then "Add to Home Screen", then reopen Outpost from the icon.
+      </div>
+      <button class="push-toggle" id="push-toggle" type="button" aria-pressed="false">
+        <span class="push-toggle-label">Enable push notifications</span>
+        <span class="push-toggle-state" id="push-toggle-state">Off</span>
+      </button>
+      <button class="push-test" id="push-test" type="button" disabled>Send test push</button>
+      <div class="push-status" id="push-status" aria-live="polite"></div>
     </div>
   </aside>
 

@@ -24,16 +24,17 @@ const sessionId = flagValue('--session-id') ?? flagValue('--resume') ?? 'unknown
 const settingsPath = flagValue('--settings');
 
 let hookUrl = null;
+let stopHookUrl = null;
 let hookAuthHeader = null;
 let hookAuthValue = null;
 if (settingsPath) {
   try {
     const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    const entry = settings?.hooks?.PreToolUse?.[0]?.hooks?.[0];
-    if (entry?.type === 'http' && typeof entry.url === 'string') {
-      hookUrl = entry.url;
+    const preEntry = settings?.hooks?.PreToolUse?.[0]?.hooks?.[0];
+    if (preEntry?.type === 'http' && typeof preEntry.url === 'string') {
+      hookUrl = preEntry.url;
       // Headers can contain $VAR placeholders for env vars listed under allowedEnvVars.
-      const headers = entry.headers ?? {};
+      const headers = preEntry.headers ?? {};
       const headerName = Object.keys(headers)[0];
       if (headerName) {
         hookAuthHeader = headerName;
@@ -42,6 +43,10 @@ if (settingsPath) {
           ? process.env[raw.slice(1)] ?? ''
           : raw;
       }
+    }
+    const stopEntry = settings?.hooks?.Stop?.[0]?.hooks?.[0];
+    if (stopEntry?.type === 'http' && typeof stopEntry.url === 'string') {
+      stopHookUrl = stopEntry.url;
     }
   } catch {
     // settings missing or malformed — proceed without hook firing
@@ -95,6 +100,18 @@ async function firePreToolUseHook(toolUse) {
   }
 }
 
+async function fireStopHook() {
+  if (!stopHookUrl) return;
+  const headers = { 'content-type': 'application/json' };
+  if (hookAuthHeader && hookAuthValue) headers[hookAuthHeader] = hookAuthValue;
+  const body = JSON.stringify({ session_id: sessionId });
+  try {
+    await fetch(stopHookUrl, { method: 'POST', headers, body });
+  } catch (e) {
+    process.stderr.write(`[mock claude] stop hook fetch failed: ${e?.message ?? e}\n`);
+  }
+}
+
 // Synthesize a user-role message containing a deny tool_result. Mirrors what real claude
 // inserts into the conversation after a denied PreToolUse hook.
 function denyToolResult(toolUse, reason) {
@@ -118,6 +135,7 @@ async function main() {
     let parsed;
     try { parsed = JSON.parse(raw); } catch { continue; }
     if (parsed._marker === 'wait-for-input') { await readStdinLine(); continue; }
+    if (parsed._marker === 'stop-hook') { await fireStopHook(); continue; }
     if (parsed._marker === 'exit') { process.exit(0); }
     if (parsed.session_id === undefined && (parsed.type === 'system' || parsed.type === 'assistant' || parsed.type === 'user')) {
       parsed.session_id = sessionId;

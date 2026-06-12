@@ -4514,7 +4514,7 @@ function approvalCardHtml(a) {
     : '';
   const enqueuedAt = a.enqueuedAt || Date.now();
   return (
-    `<div class="${cls}"${idAttr} data-enqueued-at="${enqueuedAt}">` +
+    `<div class="${cls}"${idAttr} data-approval-id="${escapeHtml(a.approvalId)}" data-enqueued-at="${enqueuedAt}">` +
       `<div class="approval-banner">` +
         `<span class="approval-banner-label">Approval needed</span>` +
         `<span class="approval-banner-meta" data-countdown>${escapeHtml(formatApprovalCountdown(enqueuedAt))}</span>` +
@@ -5434,8 +5434,220 @@ document.addEventListener('visibilitychange', () => {
     window.addEventListener('resize', apply);
   }
 })();
+// ───── Phase 4: Web Push subscription flow ─────────────────────────────
+// Settings sheet section: iOS install banner, subscribe/unsubscribe toggle, test push.
+// The handler also listens for messages from the service worker so foreground pushes
+// (suppressed by the SW when a window is visible) and deep-link taps can route into
+// existing in-page surfaces.
+
+const PUSH = {
+  permission: typeof Notification !== 'undefined' ? Notification.permission : 'denied',
+  subscribed: false,
+  endpoint: null,
+};
+
+function isiOS() {
+  return /iPad|iPhone|iPod/.test(navigator.userAgent) && !window.MSStream;
+}
+
+function isStandalone() {
+  return window.matchMedia('(display-mode: standalone)').matches
+    || (navigator.standalone === true); // iOS Safari legacy
+}
+
+function urlBase64ToUint8Array(base64String) {
+  const padding = '='.repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = (base64String + padding).replace(/-/g, '+').replace(/_/g, '/');
+  const raw = atob(base64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+function setPushStatus(text) {
+  const el = document.getElementById('push-status');
+  if (el) el.textContent = text ?? '';
+}
+
+function refreshPushUI() {
+  const banner = document.getElementById('push-ios-banner');
+  const toggle = document.getElementById('push-toggle');
+  const toggleState = document.getElementById('push-toggle-state');
+  const test = document.getElementById('push-test');
+  if (!banner || !toggle || !toggleState || !test) return;
+  const needIosInstall = isiOS() && !isStandalone() && PUSH.permission !== 'granted';
+  banner.hidden = !needIosInstall;
+  toggle.setAttribute('aria-pressed', PUSH.subscribed ? 'true' : 'false');
+  toggleState.textContent = PUSH.subscribed ? 'On' : 'Off';
+  toggle.disabled = needIosInstall || typeof Notification === 'undefined';
+  test.disabled = !PUSH.subscribed;
+}
+
+async function subscribePush() {
+  if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+    setPushStatus('Push not supported in this browser.');
+    return;
+  }
+  try {
+    const perm = await Notification.requestPermission();
+    PUSH.permission = perm;
+    if (perm !== 'granted') {
+      setPushStatus('Permission not granted.');
+      refreshPushUI();
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const vapid = state.daemonInfo?.vapidPublicKey;
+    if (!vapid) {
+      setPushStatus('Daemon has no VAPID key yet — reload and try again.');
+      return;
+    }
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(vapid),
+      });
+    }
+    const subJson = sub.toJSON();
+    const r = await fetch('/api/push/subscribe', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ subscription: subJson, userAgent: navigator.userAgent }),
+    });
+    if (!r.ok) throw new Error(`subscribe POST ${r.status}`);
+    PUSH.subscribed = true;
+    PUSH.endpoint = subJson.endpoint;
+    setPushStatus('Subscribed.');
+  } catch (e) {
+    console.warn('subscribePush failed', e);
+    setPushStatus(`Subscribe failed: ${e?.message ?? e}`);
+  }
+  refreshPushUI();
+}
+
+async function unsubscribePush() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      const endpoint = sub.endpoint;
+      await sub.unsubscribe();
+      await fetch('/api/push/subscribe', {
+        method: 'DELETE',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ endpoint }),
+      });
+    }
+    PUSH.subscribed = false;
+    PUSH.endpoint = null;
+    setPushStatus('Unsubscribed.');
+  } catch (e) {
+    console.warn('unsubscribePush failed', e);
+    setPushStatus(`Unsubscribe failed: ${e?.message ?? e}`);
+  }
+  refreshPushUI();
+}
+
+async function sendTestPush() {
+  try {
+    setPushStatus('Sending…');
+    const r = await fetch('/api/push/test', { method: 'POST' });
+    if (!r.ok) throw new Error(`test POST ${r.status}`);
+    setPushStatus('Test push sent.');
+  } catch (e) {
+    setPushStatus(`Test failed: ${e?.message ?? e}`);
+  }
+}
+
+document.getElementById('push-toggle')?.addEventListener('click', () => {
+  if (PUSH.subscribed) unsubscribePush();
+  else subscribePush();
+});
+document.getElementById('push-test')?.addEventListener('click', sendTestPush);
+
+// Hydrate PUSH state on load so a reload shows "On" if the registration still has a sub.
+(async function hydratePush() {
+  try {
+    if (!('serviceWorker' in navigator) || !('PushManager' in window)) {
+      refreshPushUI();
+      return;
+    }
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    PUSH.subscribed = !!sub;
+    PUSH.endpoint = sub?.endpoint ?? null;
+  } catch { /* hydration is informational */ }
+  refreshPushUI();
+})();
+
+// SW → page bridge. The SW posts {type:'push',...} when foreground-suppressed; we don't
+// double-render here because the existing notifications WS already delivered the event.
+// {type:'deepLink',...} fires when the user taps a notification while a PWA window is
+// open — the SW focused us, now we apply the session+approval routing without nav.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.addEventListener('message', (event) => {
+    const msg = event.data;
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.type === 'deepLink') {
+      applyDeepLink({ sessionId: msg.sessionId, approvalId: msg.approvalId });
+    }
+  });
+}
+
+// ───── Phase 4: deep-link handling ─────────────────────────────────────
+// URL shape: /?session=<id>&approval=<id>. Used when the user taps a push notification
+// and the PWA either launches cold OR is already open (SW posts via 'deepLink' message).
+
+function readDeepLinkFromUrl() {
+  const params = new URLSearchParams(location.search);
+  const sessionId = params.get('session');
+  const approvalId = params.get('approval');
+  if (!sessionId) return null;
+  return { sessionId, approvalId };
+}
+
+function highlightApprovalCard(approvalId) {
+  const el = document.querySelector(`.approval-card[data-approval-id="${CSS.escape(approvalId)}"]`);
+  if (!el) return false;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.add('approval-card-highlight');
+  setTimeout(() => el.classList.remove('approval-card-highlight'), 2000);
+  return true;
+}
+
+function applyDeepLink(target) {
+  if (!target?.sessionId) return;
+  const go = () => {
+    if (state.currentSessionId !== target.sessionId) {
+      openSession(target.sessionId);
+    }
+    if (!target.approvalId) return;
+    // Approval card may not be in the DOM until openSession finishes hydrating. Retry
+    // briefly before giving up.
+    let tries = 0;
+    const tick = () => {
+      if (highlightApprovalCard(target.approvalId)) return;
+      if (++tries > 30) return;
+      setTimeout(tick, 100);
+    };
+    tick();
+  };
+  if (state.projects.length === 0) setTimeout(go, 0);
+  else go();
+}
+
+// Cold-start deep link: capture before stripping the URL so reload/forward/back doesn't
+// re-fire the highlight.
+const initialDeepLink = readDeepLinkFromUrl();
+if (initialDeepLink) {
+  history.replaceState(null, '', location.pathname + location.hash);
+}
+
 loadDaemonInfo();
-loadSessions();
+loadSessions().then(() => {
+  if (initialDeepLink) applyDeepLink(initialDeepLink);
+});
 connectNotificationWs();
 
 // Test instrumentation: expose helpers so Playwright tests can send raw WS messages

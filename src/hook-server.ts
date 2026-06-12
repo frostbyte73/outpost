@@ -1,13 +1,17 @@
-// Loopback-only HTTP listener for the PreToolUse hook callbacks from `claude`.
-// Claude Code's HTTP hooks have SSRF protection — they only accept loopback URLs (127.0.0.1, ::1).
-// The PWA + WSS surface remains on the Tailscale-bound HTTPS server in src/server.ts.
+// Loopback-only HTTP listener for the PreToolUse + Stop hook callbacks from `claude`.
+// Claude Code's HTTP hooks have SSRF protection — they only accept loopback URLs
+// (127.0.0.1, ::1). The PWA + WSS surface remains on the Tailscale-bound HTTPS server
+// in src/server.ts.
 
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 
 export interface HookServerOpts {
   port: number;
   daemonAuthSecret: string;
-  onHookCall: (body: string) => Promise<string>;
+  onPreToolHook: (body: string) => Promise<string>;
+  // Stop has no permission gate; a 204 is enough. Handler errors are logged but the
+  // listener still returns 204 so claude's Stop loop doesn't stall on transient issues.
+  onStopHook: (body: string) => Promise<void>;
 }
 
 export class HookServer {
@@ -24,7 +28,7 @@ export class HookServer {
   }
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    if (req.method !== 'POST' || req.url !== '/hook/pretool') {
+    if (req.method !== 'POST' || (req.url !== '/hook/pretool' && req.url !== '/hook/stop')) {
       res.statusCode = 404;
       res.end('not found');
       return;
@@ -35,18 +39,30 @@ export class HookServer {
       res.end('unauthorized');
       return;
     }
+    const url = req.url;
     let body = '';
     req.on('data', (c: Buffer) => (body += c.toString('utf8')));
     req.on('end', async () => {
       try {
-        const result = await this.opts.onHookCall(body);
-        res.statusCode = 200;
-        res.setHeader('content-type', 'application/json');
-        res.end(result);
+        if (url === '/hook/pretool') {
+          const result = await this.opts.onPreToolHook(body);
+          res.statusCode = 200;
+          res.setHeader('content-type', 'application/json');
+          res.end(result);
+        } else {
+          await this.opts.onStopHook(body);
+          res.statusCode = 204;
+          res.end();
+        }
       } catch (e) {
-        console.error('[hook-server] handler error:', (e as Error).stack);
-        res.statusCode = 500;
-        res.end('error');
+        console.error(`[hook-server] handler error (${url}):`, (e as Error).stack);
+        if (url === '/hook/stop') {
+          res.statusCode = 204;
+          res.end();
+        } else {
+          res.statusCode = 500;
+          res.end('error');
+        }
       }
     });
     req.on('error', () => {

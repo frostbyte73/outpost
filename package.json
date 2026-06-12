@@ -12,11 +12,13 @@
     "test:e2e": "playwright test"
   },
   "dependencies": {
+    "web-push": "^3.6.7",
     "ws": "^8.18.0"
   },
   "devDependencies": {
     "@playwright/test": "^1.60.0",
     "@types/node": "^22.0.0",
+    "@types/web-push": "^3.6.4",
     "@types/ws": "^8.5.13",
     "selfsigned": "^2.4.1",
     "tsx": "^4.19.0",

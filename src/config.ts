@@ -12,6 +12,10 @@ export interface DaemonConfig {
   keyPath: string | undefined;
   approvalTimeoutMs: number;
   allowlistPath: string | undefined;
+  vapidPath: string;
+  pushSubscriptionsPath: string;
+  stopHookThresholdMs: number;
+  pushTtlSeconds: number;
 }
 
 function readPort(envName: string, defaultValue: number): number {
@@ -34,9 +38,20 @@ function readMs(envName: string, defaultValue: number): number {
   return n;
 }
 
+function readPositiveInt(envName: string, defaultValue: number): number {
+  const raw = process.env[envName];
+  if (raw === undefined) return defaultValue;
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`${envName} must be a positive integer, got ${JSON.stringify(raw)}`);
+  }
+  return n;
+}
+
 export function loadConfig(): DaemonConfig {
+  const runtimeDir = process.env.OUTPOST_RUNTIME_DIR ?? join(homedir(), '.outpost');
   return {
-    runtimeDir: process.env.OUTPOST_RUNTIME_DIR ?? join(homedir(), '.outpost'),
+    runtimeDir,
     projectsRoot: process.env.OUTPOST_PROJECTS_ROOT ?? join(homedir(), '.claude', 'projects'),
     httpsPort: readPort('OUTPOST_HTTPS_PORT', 8443),
     hookPort: readPort('OUTPOST_HOOK_PORT', 8444),
@@ -46,5 +61,9 @@ export function loadConfig(): DaemonConfig {
     keyPath: process.env.OUTPOST_KEY_PATH,
     approvalTimeoutMs: readMs('OUTPOST_APPROVAL_TIMEOUT_MS', 10 * 60 * 1000),
     allowlistPath: process.env.OUTPOST_ALLOWLIST_PATH,
+    vapidPath: process.env.OUTPOST_VAPID_PATH ?? join(runtimeDir, 'vapid.json'),
+    pushSubscriptionsPath: process.env.OUTPOST_PUSH_SUBS_PATH ?? join(runtimeDir, 'push-subscriptions.json'),
+    stopHookThresholdMs: readMs('OUTPOST_STOP_THRESHOLD_MS', 30 * 1000),
+    pushTtlSeconds: readPositiveInt('OUTPOST_PUSH_TTL_SECONDS', 60),
   };
 }

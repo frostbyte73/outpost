@@ -47,6 +47,10 @@ export interface StartDaemonOpts {
   // Phase 3: shrink the per-session event log so tests can force replay_gap deterministically.
   eventLogMaxEvents?: number;
   eventLogMaxAgeMs?: number;
+  // Phase 4: extra env vars to pass into the daemon process. Used for
+  // OUTPOST_STOP_THRESHOLD_MS overrides + OUTPOST_PUSH_CA_PATH for push tests (web-push
+  // hardcodes HTTPS; our fake push server uses a self-signed cert pinned via the CA path).
+  extraEnv?: Record<string, string>;
 }
 
 export interface DaemonHandle {
@@ -155,12 +159,21 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
     ...(opts.eventLogMaxAgeMs !== undefined
       ? { OUTPOST_EVENT_LOG_MAX_AGE_MS: String(opts.eventLogMaxAgeMs) }
       : {}),
+    ...(opts.extraEnv ?? {}),
   };
 
   const proc = spawn('npx', ['tsx', 'src/daemon.ts'], { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });
   const stderrBuf = { value: '' };
   proc.stderr?.setEncoding('utf8');
-  proc.stderr?.on('data', (c: string) => { stderrBuf.value += c; });
+  proc.stderr?.on('data', (c: string) => {
+    stderrBuf.value += c;
+    if (process.env.OUTPOST_TEST_VERBOSE) process.stderr.write(`[daemon stderr] ${c}`);
+  });
+  if (process.env.OUTPOST_TEST_VERBOSE) {
+    proc.stdout?.on('data', (c: Buffer | string) => {
+      process.stderr.write(`[daemon stdout] ${c.toString()}`);
+    });
+  }
 
   try {
     await waitForListening(proc, stderrBuf);

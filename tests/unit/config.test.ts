@@ -95,3 +95,50 @@ describe('loadConfig', () => {
     expect(loadConfig().allowlistPath).toBe('/tmp/al.json');
   });
 });
+
+describe('loadConfig push knobs', () => {
+  beforeEach(() => {
+    delete process.env.OUTPOST_VAPID_PATH;
+    delete process.env.OUTPOST_PUSH_SUBS_PATH;
+    delete process.env.OUTPOST_STOP_THRESHOLD_MS;
+    delete process.env.OUTPOST_PUSH_TTL_SECONDS;
+    delete process.env.OUTPOST_RUNTIME_DIR;
+  });
+  afterEach(() => {
+    process.env = { ...ORIGINAL_ENV };
+  });
+
+  it('defaults vapidPath and pushSubscriptionsPath under runtimeDir', () => {
+    process.env.OUTPOST_RUNTIME_DIR = '/tmp/outpost-cfg-test';
+    const c = loadConfig();
+    expect(c.vapidPath).toBe('/tmp/outpost-cfg-test/vapid.json');
+    expect(c.pushSubscriptionsPath).toBe('/tmp/outpost-cfg-test/push-subscriptions.json');
+  });
+
+  it('honors OUTPOST_VAPID_PATH and OUTPOST_PUSH_SUBS_PATH overrides', () => {
+    process.env.OUTPOST_VAPID_PATH = '/var/lib/outpost/vapid.json';
+    process.env.OUTPOST_PUSH_SUBS_PATH = '/var/lib/outpost/subs.json';
+    const c = loadConfig();
+    expect(c.vapidPath).toBe('/var/lib/outpost/vapid.json');
+    expect(c.pushSubscriptionsPath).toBe('/var/lib/outpost/subs.json');
+  });
+
+  it('defaults stopHookThresholdMs to 30_000 and pushTtlSeconds to 60', () => {
+    const c = loadConfig();
+    expect(c.stopHookThresholdMs).toBe(30_000);
+    expect(c.pushTtlSeconds).toBe(60);
+  });
+
+  it('honors threshold + TTL overrides', () => {
+    process.env.OUTPOST_STOP_THRESHOLD_MS = '5000';
+    process.env.OUTPOST_PUSH_TTL_SECONDS = '120';
+    const c = loadConfig();
+    expect(c.stopHookThresholdMs).toBe(5_000);
+    expect(c.pushTtlSeconds).toBe(120);
+  });
+
+  it('rejects negative stopHookThresholdMs', () => {
+    process.env.OUTPOST_STOP_THRESHOLD_MS = '-1';
+    expect(() => loadConfig()).toThrow(/OUTPOST_STOP_THRESHOLD_MS/);
+  });
+});

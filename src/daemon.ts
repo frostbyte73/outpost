@@ -15,6 +15,10 @@ import { handleHook } from './hook-handler.js';
 import { type ApprovalMode, ApprovalModeStore } from './approval-mode.js';
 import { RecurrenceTracker } from './recurrence-tracker.js';
 import { WorktreeManager } from './worktree-manager.js';
+import { loadOrCreateVapid } from './push-keys.js';
+import { SubscriptionStore } from './push-subscriptions.js';
+import { PushSender } from './push-sender.js';
+import { StopHookTracker } from './stop-hook-tracker.js';
 import { loadConfig } from './config.js';
 import allowlistConfig from '../config/allowlist.json' with { type: 'json' };
 import pkg from '../package.json' with { type: 'json' };
@@ -57,6 +61,31 @@ async function main() {
   const modes = new ApprovalModeStore();
   const recurrence = new RecurrenceTracker();
 
+  // Phase 4: VAPID + push subscriptions. Files live under runtimeDir by default
+  // (~/.outpost/vapid.json and ~/.outpost/push-subscriptions.json). VAPID generates
+  // on first start and is never rotated — rotating would invalidate every device.
+  const vapid = loadOrCreateVapid(config.vapidPath);
+  const pushStore = new SubscriptionStore(config.pushSubscriptionsPath);
+  // Test-only: when OUTPOST_PUSH_CA_PATH is set, construct an HTTPS agent that trusts
+  // ONLY that CA. Lets e2e tests stand up a fake push service with a self-signed cert
+  // without disabling certificate verification globally. Unset in production → web-push
+  // uses Node's default trust store.
+  let pushAgent: import('node:https').Agent | undefined;
+  const pushCaPath = process.env.OUTPOST_PUSH_CA_PATH;
+  if (pushCaPath) {
+    const { Agent } = await import('node:https');
+    const { readFileSync } = await import('node:fs');
+    pushAgent = new Agent({ ca: readFileSync(pushCaPath) });
+    console.log(`[push] using pinned CA from ${pushCaPath}`);
+  }
+  const pushSender = new PushSender({
+    store: pushStore,
+    vapid,
+    ttlSeconds: config.pushTtlSeconds,
+    ...(pushAgent ? { agent: pushAgent } : {}),
+  });
+  console.log(`[daemon] push subscriptions: ${pushStore.list().length} loaded from ${config.pushSubscriptionsPath}`);
+
   // Outpost discovers projects under the standard claude code projects root. No per-daemon
   // cwd anymore — each session carries its own (recorded by claude in the JSONL).
   const projectsRoot = config.projectsRoot;
@@ -82,6 +111,10 @@ async function main() {
     ? Number(process.env.OUTPOST_EVENT_LOG_MAX_AGE_MS)
     : undefined;
 
+  // Phase 4: tracks per-session turn-start timestamps so the Stop hook handler can
+  // decide whether to fire a push notification (turn duration >= threshold).
+  const stopTracker = new StopHookTracker({ thresholdMs: config.stopHookThresholdMs });
+
   const manager = new SessionManager({
     settingsPath,
     daemonAuthSecret: secret,
@@ -90,6 +123,7 @@ async function main() {
     eventLogMaxEvents,
     eventLogMaxAgeMs,
     worktreeManager,
+    onTurnStart: (sessionId) => stopTracker.recordTurnStart(sessionId),
   });
 
   const server = new Server({
@@ -110,11 +144,32 @@ async function main() {
     return sessionStore.findSession(sessionId)?.cwd ?? manager.getCwd(sessionId);
   }
 
-  // PreToolUse hook endpoint (loopback-only — see hook-server.ts for why)
+  // PreToolUse + Stop hook endpoints (loopback-only — see hook-server.ts for why)
   const hookServer = new HookServer({
     port: HOOK_PORT,
     daemonAuthSecret: secret,
-    onHookCall: async (body) => {
+    onStopHook: async (body) => {
+      let payload: { session_id?: string };
+      try { payload = JSON.parse(body); } catch {
+        console.error('[hook] stop: invalid JSON body');
+        return;
+      }
+      const sessionId = payload.session_id;
+      if (!sessionId) return;
+      const { shouldNotify, turnDurationMs } = stopTracker.consume(sessionId);
+      console.log(`[hook] stop session=${sessionId.slice(0,8)} durationMs=${turnDurationMs ?? 'n/a'} push=${shouldNotify}`);
+      if (!shouldNotify) return;
+      const title = findSessionTitle(sessionId);
+      void pushSender.send({
+        title: title ? `Claude finished: ${title}` : 'Claude finished',
+        body: turnDurationMs
+          ? `Turn took ${(turnDurationMs / 1000).toFixed(0)}s. Tap to continue.`
+          : 'Tap to continue.',
+        tag: `stop-${sessionId}`,
+        data: { kind: 'stop', sessionId },
+      });
+    },
+    onPreToolHook: async (body) => {
       const hookInput = JSON.parse(body);
       console.log(`[hook] ${hookInput.tool_name} session=${hookInput.session_id?.slice(0,8)}${hookInput.agent_id ? ` agent=${hookInput.agent_type ?? '?'}/${hookInput.agent_id.slice(0,8)}` : ''} input=${JSON.stringify(hookInput.tool_input).slice(0, 200)}`);
       // Tool calls the allowlist auto-allows never reach the approval queue and
@@ -184,6 +239,16 @@ async function main() {
             sessionTitle,
             suggestion,
           });
+          // Phase 4: fan out a Web Push so devices ring even when the PWA is backgrounded
+          // or the screen is locked. Service worker decides client-side whether to render
+          // the OS banner (no visible window) or post into an already-open window. tag
+          // collapses repeated pushes for the same approval.
+          void pushSender.send({
+            title: sessionTitle ? `Approval: ${approval.toolName} (${sessionTitle})` : `Approval: ${approval.toolName}`,
+            body: summary,
+            tag: `approval-${approval.id}`,
+            data: { kind: 'approval', sessionId: approval.sessionId, approvalId: approval.id },
+          });
         },
       });
       console.log(`[hook] decision: ${result.hookSpecificOutput.permissionDecision} for ${hookInput.tool_name}`);
@@ -208,6 +273,9 @@ async function main() {
       // without baking a username into the client.
       home: homedir(),
       slashCommands,
+      // Phase 4: PWA passes this as applicationServerKey to pushManager.subscribe().
+      // Stable for the daemon's lifetime (never rotated).
+      vapidPublicKey: vapid.publicKey,
     }));
   });
 
@@ -435,6 +503,69 @@ async function main() {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ removed }));
+  });
+
+  // Phase 4: Register a device for Web Push notifications. Body shape:
+  //   { subscription: { endpoint: string, keys: { p256dh: string, auth: string } }, userAgent?: string }
+  // Endpoint is unique per (browser, device, origin) so re-POSTing the same endpoint is
+  // idempotent (the store overwrites). Returns the current subscription count.
+  server.route('POST', '/api/push/subscribe', async (req, res) => {
+    const body = await readBody(req);
+    let payload: { subscription?: { endpoint?: string; keys?: { p256dh?: string; auth?: string } }; userAgent?: string };
+    try { payload = JSON.parse(body); } catch {
+      res.statusCode = 400; res.end('invalid json'); return;
+    }
+    const sub = payload.subscription;
+    if (!sub || typeof sub.endpoint !== 'string' || !sub.keys
+        || typeof sub.keys.p256dh !== 'string' || typeof sub.keys.auth !== 'string') {
+      res.statusCode = 400; res.end('subscription.endpoint + subscription.keys.{p256dh,auth} required'); return;
+    }
+    if (!/^https?:\/\//.test(sub.endpoint)) {
+      res.statusCode = 400; res.end('subscription.endpoint must be http(s) URL'); return;
+    }
+    const now = Date.now();
+    pushStore.add({
+      endpoint: sub.endpoint,
+      keys: { p256dh: sub.keys.p256dh, auth: sub.keys.auth },
+      userAgent: typeof payload.userAgent === 'string' ? payload.userAgent.slice(0, 500) : undefined,
+      createdAt: now,
+      lastSeenAt: now,
+    });
+    console.log(`[push] subscribe ${sub.endpoint.slice(0, 60)}… (total ${pushStore.list().length})`);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ count: pushStore.list().length }));
+  });
+
+  // Unregister a device. Body: { endpoint: string }. 200 either way (no leaking presence).
+  server.route('DELETE', '/api/push/subscribe', async (req, res) => {
+    const body = await readBody(req);
+    let payload: { endpoint?: string };
+    try { payload = JSON.parse(body); } catch {
+      res.statusCode = 400; res.end('invalid json'); return;
+    }
+    if (typeof payload.endpoint !== 'string') {
+      res.statusCode = 400; res.end('endpoint required'); return;
+    }
+    pushStore.remove(payload.endpoint);
+    console.log(`[push] unsubscribe ${payload.endpoint.slice(0, 60)}… (total ${pushStore.list().length})`);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ count: pushStore.list().length }));
+  });
+
+  // Manual fire — used by the Settings "Send test push" button to confirm wiring
+  // without waiting for a real approval. Same payload shape as production pushes.
+  server.route('POST', '/api/push/test', async (_req, res) => {
+    await pushSender.send({
+      title: 'Outpost test push',
+      body: 'If you can see this, push is wired correctly.',
+      tag: 'outpost-test',
+      data: { kind: 'test' },
+    });
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ count: pushStore.list().length }));
   });
 
   // Global notification channel — every running client holds one of these open for the

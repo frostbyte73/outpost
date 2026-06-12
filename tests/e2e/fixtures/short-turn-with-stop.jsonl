@@ -1,0 +1,4 @@
+{"type":"system","subtype":"init","tools":["Read","Edit"]}
+{"_marker":"wait-for-input"}
+{"type":"assistant","message":{"id":"msg_short","role":"assistant","content":[{"type":"text","text":"done."}],"model":"claude-opus-4-7","usage":{"input_tokens":10,"output_tokens":3,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"_marker":"stop-hook"}

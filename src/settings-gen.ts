@@ -6,26 +6,27 @@ export interface DaemonSettingsOpts {
   hookPort: number;
 }
 
+// Loopback HTTP hook entry; claude refuses non-loopback URLs for SSRF safety.
+function loopbackHook(hookPort: number, route: string, timeout: number) {
+  return {
+    matcher: '',
+    hooks: [
+      {
+        type: 'http',
+        url: `http://127.0.0.1:${hookPort}${route}`,
+        timeout,
+        headers: { 'X-Daemon-Auth': '$DAEMON_AUTH' },
+        allowedEnvVars: ['DAEMON_AUTH'],
+      },
+    ],
+  };
+}
+
 export function writeDaemonSettings(opts: DaemonSettingsOpts): void {
   const cfg = {
     hooks: {
-      PreToolUse: [
-        {
-          // Empty matcher = match every tool (regex matchers are anchored against the tool name).
-          matcher: '',
-          hooks: [
-            {
-              // Loopback HTTP — claude's hook system refuses non-loopback URLs for SSRF safety,
-              // so the hook callback runs against a plain-HTTP listener on 127.0.0.1 only.
-              type: 'http',
-              url: `http://127.0.0.1:${opts.hookPort}/hook/pretool`,
-              timeout: 600,
-              headers: { 'X-Daemon-Auth': '$DAEMON_AUTH' },
-              allowedEnvVars: ['DAEMON_AUTH'],
-            },
-          ],
-        },
-      ],
+      PreToolUse: [loopbackHook(opts.hookPort, '/hook/pretool', 600)],
+      Stop: [loopbackHook(opts.hookPort, '/hook/stop', 30)],
     },
   };
   writeFileSync(opts.outPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });

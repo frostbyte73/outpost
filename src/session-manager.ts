@@ -34,6 +34,10 @@ export interface SessionManagerOpts {
   // shrink these to force replay_gap fallback paths without producing 5000 fixtures.
   eventLogMaxEvents?: number;
   eventLogMaxAgeMs?: number;
+  // Phase 4: fires when a user_message is forwarded to the subprocess — i.e. the start
+  // of a turn. Lets the daemon record turn-start timestamps so the Stop hook can decide
+  // whether the turn was long enough to warrant a push notification.
+  onTurnStart?: (sessionId: string) => void;
 }
 
 export class SessionManager {
@@ -171,6 +175,13 @@ export class SessionManager {
     const s = this.active.get(sessionId);
     if (!s) throw new Error(`session ${sessionId} not active`);
     s.lastActivity = Date.now();
+    // The daemon calls send() only for user_message envelopes today. Match that
+    // contract by checking type rather than firing on every send.
+    if (typeof message === 'object' && message !== null
+        && (message as { type?: string }).type === 'user'
+        && this.opts.onTurnStart) {
+      this.opts.onTurnStart(sessionId);
+    }
     s.proc.send(message);
   }
 

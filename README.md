@@ -120,7 +120,9 @@ https://<your-tailnet-hostname>.ts.net:8443/
 
 …using the hostname you saved in step 1d.
 
-On iPhone with Chrome, click the share button in the top right, then "View More", then "Add to Home Screen" to make it feel like a native app.
+**iPhone:** open the URL in **Safari** (not Chrome — the PWA install path only works in Safari on iOS). Tap the Share button, then "Add to Home Screen", then open Outpost from the new icon. **This is required for push notifications on iOS** — iOS only allows Web Push from PWAs installed to the Home Screen.
+
+On Android Chrome, Web Push works without installing — the Settings page's "Enable push notifications" toggle is all you need.
 
 If the page doesn't load, the usual culprit is Tailscale being toggled off on the phone — open the app and check that it's connected.
 
