@@ -17,6 +17,11 @@ interface ActiveSession {
   eventLog: EventLog;
   idleTimer?: NodeJS.Timeout;
   lastActivity: number;
+  // The actual directory claude was spawned in. Equals the project cwd for shared-cwd
+  // sessions and the worktree path for worktree sessions. Forwarded to clients via
+  // session_state so the PWA can anchor file paths in tool tiles before the next
+  // /api/sessions refresh folds the worktreePath into state.projects.
+  spawnCwd: string;
 }
 
 export interface SessionManagerOpts {
@@ -145,11 +150,14 @@ export class SessionManager {
     s.clients.add(ws);
     this.cancelIdleTimer(s);
 
-    // Protocol frame, no _seq — informs the client of the available seq window.
+    // Protocol frame, no _seq — informs the client of the available seq window and
+    // the actual spawn cwd (worktree path for worktree sessions, project cwd otherwise)
+    // so the PWA can render project-relative paths from the very first event.
     ws.send(JSON.stringify({
       type: 'session_state',
       latestSeq: s.eventLog.latestSeq(),
       earliestSeq: s.eventLog.earliestSeq(),
+      spawnCwd: s.spawnCwd,
     }));
 
     if (since > 0 && since < s.eventLog.earliestSeq() - 1) {
@@ -233,6 +241,7 @@ export class SessionManager {
       }),
       lastActivity: Date.now(),
       proc: null!,
+      spawnCwd: cwd,
     };
     // Existence is determined by SessionStore.findSession — the same source of truth used
     // for cwd resolution above. Avoids a separate "does this jsonl exist?" callback.

@@ -29,6 +29,11 @@ const state = {
   // (either from the picker for new sessions or by looking up the project for existing
   // ones). Drives projectRelativePath() so file paths in the transcript anchor correctly.
   currentSessionCwd: null,
+  // The directory claude was actually spawned in for the current session — equals
+  // currentSessionCwd for shared-cwd sessions, the worktree path for worktree sessions.
+  // Delivered via the WS session_state frame so projectRelativePath() can strip the
+  // worktree prefix even before /api/sessions refreshes state.projects.
+  currentSessionSpawnCwd: null,
   ws: null,
   // Long-lived WS to /ws/notifications, open for the entire app lifetime. Delivers every
   // approval event regardless of which view is active, so the list updates live and toasts
@@ -981,6 +986,10 @@ async function openSession(id, opts) {
   const isNew = id === null || !!opts?.cwd;
   if (id === null) id = crypto.randomUUID();
   state.currentSessionId = id;
+  // Seed spawnCwd from the known worktreePath on resume; the session_state frame
+  // overwrites it once the WS connects. New worktree sessions start null and get
+  // filled in by session_state — projectRelativePath tolerates the gap.
+  state.currentSessionSpawnCwd = null;
   // Resolve the cwd for this session so projectRelativePath() can anchor file paths to
   // the project root. For a new session, opts.cwd is the picker's choice. For an existing
   // session, walk the project list. Falls back to null and shortenPath() handles undefined.
@@ -992,9 +1001,11 @@ async function openSession(id, opts) {
     state.currentSessionCwd = null;
     state.projectContextWindow = null;
     for (const p of state.projects) {
-      if (p.sessions.some((s) => s.id === id)) {
+      const match = p.sessions.find((s) => s.id === id);
+      if (match) {
         state.currentSessionCwd = p.cwd;
         state.projectContextWindow = p.contextWindowSize ?? null;
+        if (match.worktreePath) state.currentSessionSpawnCwd = match.worktreePath;
         break;
       }
     }
@@ -1283,6 +1294,12 @@ function connectWs(id, opts) {
     }
     if (msg.type === 'session_state') {
       // Informational — replay (if any) follows immediately in subsequent messages.
+      // spawnCwd lands here for both new and resumed sessions; record it so the very
+      // first tool tile renders project-relative paths even before /api/sessions
+      // refreshes state.projects.
+      if (typeof msg.spawnCwd === 'string' && msg.spawnCwd.length > 0) {
+        state.currentSessionSpawnCwd = msg.spawnCwd;
+      }
       return;
     }
     if (msg.type === 'replay_gap') {
@@ -4541,8 +4558,11 @@ function shortenPath(path) {
 // Project-anchored path: when the file is under the current session's cwd, strip
 // everything up to (but not including) the project directory's basename. With cwd =
 // /Users/dc/frostbyte73/outpost, /Users/dc/frostbyte73/outpost/src/pwa/app.js becomes
-// "outpost/src/pwa/app.js". Falls back to shortenPath (just collapsing $HOME to ~) for
-// files outside cwd — outpost is multi-project now, so each session carries its own cwd.
+// "outpost/src/pwa/app.js". Worktree sessions get the same treatment — paths under
+// ~/.outpost/worktrees/<id>/ are rewritten to <projectName>/… so transcripts read the
+// same regardless of whether the session is spawned in the project cwd or a worktree.
+// Falls back to shortenPath (just collapsing $HOME to ~) for files outside both —
+// outpost is multi-project now, so each session carries its own cwd.
 function projectRelativePath(path) {
   if (!path) return '';
   const cwd = state.currentSessionCwd;
@@ -4553,8 +4573,35 @@ function projectRelativePath(path) {
     if (path.startsWith(projectRoot + '/')) {
       return `${projectName}/${path.slice(projectRoot.length + 1)}`;
     }
+    const wt = currentSessionWorktreePath();
+    if (wt) {
+      const wtRoot = wt.replace(/\/+$/, '');
+      if (path === wtRoot) return projectName;
+      if (path.startsWith(wtRoot + '/')) {
+        return `${projectName}/${path.slice(wtRoot.length + 1)}`;
+      }
+    }
   }
   return shortenPath(path);
+}
+
+// Spawn cwd for the current session. Prefers the WS-delivered value (set the moment
+// session_state lands, so brand-new worktree sessions render correctly from event one),
+// falling back to the worktreePath folded into state.projects for resumes that haven't
+// yet handshaken. Returns null for shared-cwd sessions where it equals currentSessionCwd
+// and projectRelativePath's primary branch already handles the path.
+function currentSessionWorktreePath() {
+  const live = state.currentSessionSpawnCwd;
+  if (live && live !== state.currentSessionCwd) return live;
+  const sid = state.currentSessionId;
+  if (sid) {
+    for (const p of state.projects || []) {
+      for (const s of p.sessions || []) {
+        if (s.id === sid && s.worktreePath) return s.worktreePath;
+      }
+    }
+  }
+  return null;
 }
 function shortenUrl(url) {
   const s = String(url ?? '');
@@ -4634,7 +4681,7 @@ const TOOL_FORMATTERS = {
     const range = inp.offset != null
       ? `lines ${inp.offset}–${inp.offset + (inp.limit ?? 0) || inp.offset}`
       : inp.pages ? `pages ${inp.pages}` : null;
-    return { label: 'Read', body: shortenPath(inp.file_path), bodyKind: 'code', detail: range };
+    return { label: 'Read', body: projectRelativePath(inp.file_path), bodyKind: 'code', detail: range };
   },
   Edit(inp) {
     // Collapsed: label + filename only. Expanded (renderEditDiff): the filename moves
