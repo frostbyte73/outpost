@@ -6116,6 +6116,25 @@ document.addEventListener('visibilitychange', () => {
     window.addEventListener('resize', apply);
   }
 })();
+
+// Toggle body.kb-open while the on-screen keyboard is up so the composer can drop its
+// safe-area-inset-bottom padding (the keyboard already separates the field from the
+// screen edge — see .composer rule in index.html). We use focus state rather than
+// visualViewport.resize because the resize event is unreliable on iOS Safari/Chrome —
+// it doesn't always fire, especially when the URL bar collapses simultaneously.
+// focusout runs through setTimeout so focus-hopping between inputs doesn't briefly
+// flash kb-open=false.
+(function trackKeyboard() {
+  const isTextInput = (el) => !!el && (
+    el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ||
+    (el.getAttribute && el.getAttribute('contenteditable') === 'true')
+  );
+  const apply = () => {
+    document.body.classList.toggle('kb-open', isTextInput(document.activeElement));
+  };
+  document.addEventListener('focusin', apply);
+  document.addEventListener('focusout', () => setTimeout(apply, 0));
+})();
 // ───── Phase 4: Web Push subscription flow ─────────────────────────────
 // Settings sheet section: iOS install banner, subscribe/unsubscribe toggle, test push.
 // The handler also listens for messages from the service worker so foreground pushes

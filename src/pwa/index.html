@@ -3013,7 +3013,7 @@
       gap: 10px;
     }
     .meter-cell {
-      display: flex; flex-direction: column; gap: 3px;
+      display: flex; flex-direction: column; gap: 2px;
       min-width: 0;
     }
     .meter-cell-head {
@@ -3028,9 +3028,9 @@
     }
     .meter-cell[data-empty="true"] .meter-cell-pct { color: var(--text-dim); }
     .meter-cell-bar {
-      height: 3px;
+      height: 2px;
       background: var(--bg-elev-2);
-      border-radius: 1.5px;
+      border-radius: 1px;
       overflow: hidden;
     }
     .meter-cell-fill {
@@ -3190,6 +3190,10 @@
       padding: 10px 18px max(10px, env(safe-area-inset-bottom));
       display: flex; align-items: flex-end; gap: 12px;
     }
+    /* Keyboard up → the keyboard itself separates the field from the screen edge, so the
+       home-indicator clearance is wasted space. body.kb-open is set by trackKeyboard in
+       app.js via the visualViewport API. */
+    body.kb-open .composer { padding-bottom: 10px; }
     .composer .field {
       flex: 1; min-width: 0;
       font-family: var(--font-body);
@@ -3238,17 +3242,27 @@
       border-color: var(--line);
     }
     .composer .send:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-    /* Stop variant — same button slot, danger fill, square glyph. Replaces the armed
-       state's accent fill while the assistant is generating; tap to SIGINT the proc. */
+    /* Stop variant — same 44×44 slot, outlined treatment. Hairline danger border
+       around a precise 10×10 inner square (CSS-drawn for crisp edges across themes
+       and fonts). The `■` textContent the JS sets is hidden via font-size:0; the
+       ::before square IS the icon. Subtle danger-soft tint on press for feedback. */
     .composer .send.is-stop {
-      background: var(--danger);
-      color: var(--bg);
+      background: transparent;
+      color: transparent;
       border-color: var(--danger);
-      font-family: var(--font-mono);
-      font-style: normal;
-      font-size: 14px;
+      font-size: 0;
+      position: relative;
     }
-    .composer .send.is-stop:active { filter: brightness(0.9); }
+    .composer .send.is-stop::before {
+      content: "";
+      width: 10px;
+      height: 10px;
+      background: var(--danger);
+    }
+    .composer .send.is-stop:active {
+      background: var(--danger-soft);
+      filter: none;
+    }
     .approval-card .approval-actions button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
     .sheet .sheet-close:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
@@ -3412,7 +3426,7 @@
     }
     .thinking-strip-label {
       font-family: var(--font-display); font-style: italic;
-      font-size: 14px;
+      font-size: 13px;
       color: var(--accent);
       letter-spacing: 0.005em;
     }
