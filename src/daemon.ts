@@ -21,6 +21,7 @@ import { PushSender } from './push-sender.js';
 import { StopHookTracker } from './stop-hook-tracker.js';
 import { UsagePoller, type AccountUsageSnapshot } from './usage-poller.js';
 import { loadConfig } from './config.js';
+import { readProjectContextWindow } from './claude-config.js';
 import allowlistDefault from '../config/allowlist.default.json' with { type: 'json' };
 import pkg from '../package.json' with { type: 'json' };
 
@@ -359,6 +360,13 @@ async function main() {
 
   server.route('GET', '/api/sessions', (_req, res) => {
     const projects = sessionStore.listProjects();
+    // Decorate each project with its preferred context-window size (1M iff the user has
+    // ever run the [1m] Opus variant there, per ~/.claude.json). PWA uses this to pick
+    // 1M over the 200k default in the meter when no statusLine payload exists.
+    for (const p of projects) {
+      const cw = readProjectContextWindow(p.cwd);
+      if (cw) p.contextWindowSize = cw;
+    }
     // Title index across every project's sessions so the pending payload can show
     // "Approval on <title>" toasts cross-project the same as it does today.
     const titleById = new Map<string, string>();

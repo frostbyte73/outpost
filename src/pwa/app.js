@@ -183,6 +183,13 @@ const state = {
   // occupy the context window even though they bill differently, so the meter sums all four.
   lastUsage: null, // { inputTokens, outputTokens, cacheCreate, cacheRead, model }
   contextWindow: 200_000,
+  // Project-level override for the context-window size, resolved at openSession from
+  // /api/sessions' `contextWindowSize` field (which the daemon derives from claude code's
+  // own ~/.claude.json `lastModelUsage` keys — the only place the [1m] suffix is recorded
+  // outside the running process, since the streaming API strips it from response model
+  // ids). Takes precedence over the per-model CONTEXT_WINDOWS lookup so the meter picks
+  // 1M on the 1M Opus build without waiting for usage to actually exceed 200k.
+  projectContextWindow: null,
   // Last seen statusLine payload from the daemon. Source of truth for the meter when
   // present — supplies the real context_window_size (200k vs 1M), claude-side
   // used_percentage, session cost, and rate-limit %s. Reset per session.
@@ -979,10 +986,17 @@ async function openSession(id, opts) {
   // session, walk the project list. Falls back to null and shortenPath() handles undefined.
   if (opts?.cwd) {
     state.currentSessionCwd = opts.cwd;
+    const proj = state.projects.find((p) => p.cwd === opts.cwd);
+    state.projectContextWindow = proj?.contextWindowSize ?? null;
   } else {
     state.currentSessionCwd = null;
+    state.projectContextWindow = null;
     for (const p of state.projects) {
-      if (p.sessions.some((s) => s.id === id)) { state.currentSessionCwd = p.cwd; break; }
+      if (p.sessions.some((s) => s.id === id)) {
+        state.currentSessionCwd = p.cwd;
+        state.projectContextWindow = p.contextWindowSize ?? null;
+        break;
+      }
     }
   }
   state.view = 'session';
@@ -1531,7 +1545,15 @@ function handleWsMessage(msg) {
     // max_tokens / stop_sequence / refusal all mean "done." Unknown future reasons fall
     // through to stopping (safer than thinking-forever).
     const reason = msg.message?.stop_reason;
-    if (reason && reason !== 'tool_use') stopThinking();
+    if (reason && reason !== 'tool_use') {
+      stopThinking();
+    } else if (!state.thinking) {
+      // Reattaching to a session that's mid-turn (the user left, claude kept working):
+      // openSession's stopThinking() cleared the strip, and nothing else turns it back
+      // on until the next sendMessage. A non-terminal assistant envelope (null or
+      // tool_use stop_reason) means claude is still producing — bring the strip back.
+      startThinking();
+    }
     renderSession();
   } else if (msg.type === 'stream_event') {
     // Claude's --include-partial-messages stream emits Anthropic streaming events
@@ -1548,6 +1570,14 @@ function handleWsMessage(msg) {
     const deltaReason = ev?.delta?.stop_reason;
     if (deltaReason && deltaReason !== 'tool_use') {
       stopThinking();
+      renderSession();
+    }
+    // Same reattach case as the assistant handler: live stream events for an in-progress
+    // turn (message_start, content_block_*) prove claude is still generating, so bring
+    // the strip back if openSession's reset killed it. message_stop is excluded because
+    // it also fires after tool-using turns whose response continues.
+    if (!state.thinking && ev?.type && ev.type !== 'message_stop' && ev.type !== 'message_delta') {
+      startThinking();
       renderSession();
     }
     if (!state.thinking) return;
@@ -2121,7 +2151,12 @@ function recordUsage(usage, model) {
     cacheRead: usage.cache_read_input_tokens ?? 0,
     model: realModel ?? state.lastUsage?.model ?? null,
   };
-  if (realModel) state.contextWindow = lookupContextWindow(realModel);
+  if (realModel) {
+    // Project-level override (from claude code's own ~/.claude.json) wins over the
+    // per-model lookup, since the API response strips the [1m] suffix and we can't
+    // otherwise tell a 1M Opus from a 200k one.
+    state.contextWindow = state.projectContextWindow ?? lookupContextWindow(realModel);
+  }
 }
 
 // Render the context-window + rate-limit meter strip above the composer. Three side-by-
@@ -2176,7 +2211,13 @@ function updateMeterRegion() {
     ctxPct = Math.min(100, Math.max(0, (ctxUsed / ctxTotal) * 100));
     breakdownTokens = { input: u.inputTokens, output: u.outputTokens, cacheCreate: u.cacheCreate, cacheRead: u.cacheRead };
     modelLabel = u.model ?? null;
-    modelDisplay = prettyModelName(modelLabel);
+    // When the project is flagged as 1M (via ~/.claude.json) but the API response model
+    // id has the [1m] suffix stripped, retag it so prettyModelName surfaces "(1M)".
+    const labelForDisplay = (state.projectContextWindow === 1_000_000
+      && typeof modelLabel === 'string' && !modelLabel.endsWith('[1m]'))
+      ? `${modelLabel}[1m]`
+      : modelLabel;
+    modelDisplay = prettyModelName(labelForDisplay);
     ctxKnown = true;
   } else {
     ctxUsed = 0;

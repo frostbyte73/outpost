@@ -25,6 +25,10 @@ export interface ProjectInfo {
   sessions: SessionInfo[];
   isGitRepo: boolean;
   source: 'claude' | 'registry' | 'both';
+  // Per-project context-window override resolved from ~/.claude.json. Populated only
+  // when the user has run a `[1m]` model variant in this project — the PWA uses it to
+  // pick 1M over the 200k default in the meter when no statusLine payload exists.
+  contextWindowSize?: number;
 }
 
 export interface SubagentCompletion {
@@ -400,6 +404,47 @@ function firstTextOfToolResult(content: unknown): string | undefined {
   return undefined;
 }
 
+// Find the timestamp (in ms) of the most recent user/assistant entry in the JSONL.
+// We use this for the session-list sort order so that merely opening a session — which
+// causes claude --resume to append a non-content line like `{"type":"mode",...}` to the
+// JSONL and bump its mtime — doesn't reorder the list. Only real conversation activity
+// (user messages or assistant replies, both of which carry an ISO `timestamp` field)
+// should move a session to the top.
+//
+// Reads the tail of the file (up to TAIL_BYTES) and scans newest-first; falls back to
+// null if no qualifying entry is found within that window, in which case the caller uses
+// the file mtime instead.
+function lastMessageTimestampMs(path: string, size: number): number | null {
+  const TAIL_BYTES = 64 * 1024;
+  const start = Math.max(0, size - TAIL_BYTES);
+  const len = size - start;
+  if (len <= 0) return null;
+  const fd = openSync(path, 'r');
+  try {
+    const buf = Buffer.alloc(len);
+    readSync(fd, buf, 0, len, start);
+    const text = buf.toString('utf8');
+    // Drop the first fragment if we started mid-line; the leading partial record can't
+    // be parsed and would just waste a try/catch.
+    const firstNl = start === 0 ? -1 : text.indexOf('\n');
+    const usable = firstNl === -1 ? text : text.slice(firstNl + 1);
+    const lines = usable.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i];
+      if (!line) continue;
+      let obj: unknown;
+      try { obj = JSON.parse(line); } catch { continue; }
+      const o = obj as { type?: string; timestamp?: string };
+      if ((o.type !== 'user' && o.type !== 'assistant') || typeof o.timestamp !== 'string') continue;
+      const ms = Date.parse(o.timestamp);
+      if (Number.isFinite(ms)) return ms;
+    }
+    return null;
+  } finally {
+    closeSync(fd);
+  }
+}
+
 function firstCwdInJsonl(path: string): string | null {
   const fd = openSync(path, 'r');
   try {
@@ -440,6 +485,9 @@ export class SessionStore {
   private readonly registry: ProjectRegistry | undefined;
   private readonly worktreeManager: WorktreeManager | undefined;
   private cwdCache = new Map<string, { cwd: string; mtime: number }>();
+  // Cache of per-JSONL last-message-timestamp keyed by file size. The JSONL is
+  // append-only, so size unchanged ⇒ no new lines ⇒ cached value still valid.
+  private lastMsgTsCache = new Map<string, { size: number; ts: number | null }>();
   // Per-cwd cache of isGitRepo. Computed on first listProjects() that sees the cwd;
   // never invalidated within a daemon lifetime — restart picks up new git inits.
   private gitRepoCache = new Map<string, boolean>();
@@ -797,6 +845,7 @@ export class SessionStore {
     try {
       const stat = statSync(path);
       const id = path.split('/').pop()!.replace(/\.jsonl$/, '');
+      const lastModified = this.lastActivityMs(path, stat.size, stat.mtimeMs);
       // Cached title sidecar — once a session's title has been computed from a real
       // source (summary or first-user-message) we persist it, so future reads use the
       // cached value and titles don't shift as new content streams in. Delete the
@@ -804,7 +853,7 @@ export class SessionStore {
       const titlePath = path.replace(/\.jsonl$/, '.title');
       let cached: string | undefined;
       try { cached = readFileSync(titlePath, 'utf8').trim(); } catch { /* no sidecar */ }
-      if (cached) return { id, title: cached, lastModified: stat.mtimeMs, path };
+      if (cached) return { id, title: cached, lastModified, path };
 
       const { summary, firstUserMsg } = scanTitleSources(path);
       const rawTitle = summary ?? firstUserMsg;
@@ -814,9 +863,22 @@ export class SessionStore {
       if (rawTitle) {
         try { writeFileSync(titlePath, title); } catch { /* best-effort cache */ }
       }
-      return { id, title, lastModified: stat.mtimeMs, path };
+      return { id, title, lastModified, path };
     } catch {
       return null;
     }
+  }
+
+  // Returns the timestamp of the last user/assistant entry in the JSONL — what we
+  // sort the session list by. Falling back to file mtime when no qualifying entry
+  // exists (e.g. a session that's only ever had system-level lines written, like a
+  // brand-new spawn that hasn't received a user turn yet) keeps freshly-created
+  // sessions visible at the top until their first real message lands.
+  private lastActivityMs(path: string, size: number, mtimeMs: number): number {
+    const cached = this.lastMsgTsCache.get(path);
+    if (cached && cached.size === size) return cached.ts ?? mtimeMs;
+    const ts = lastMessageTimestampMs(path, size);
+    this.lastMsgTsCache.set(path, { size, ts });
+    return ts ?? mtimeMs;
   }
 }
