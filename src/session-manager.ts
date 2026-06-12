@@ -1,16 +1,20 @@
 import { statSync } from 'node:fs';
 import { ClaudeProc } from './claude-proc.js';
+import { EventLog } from './event-log.js';
 import type { WebSocket } from 'ws';
 import type { WorktreeManager } from './worktree-manager.js';
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
-const BUFFER_REPLAY_MS = 30 * 1000;
+// 10 min wall-clock OR 5000 events, whichever caps first. Generous enough to survive
+// iOS backgrounding the PWA. Override at construction time for tests.
+const DEFAULT_EVENT_LOG_MAX_AGE_MS = 10 * 60 * 1000;
+const DEFAULT_EVENT_LOG_MAX_EVENTS = 5000;
 
 interface ActiveSession {
   id: string;
   proc: ClaudeProc;
   clients: Set<WebSocket>;
-  recentMessages: { at: number; msg: unknown }[];
+  eventLog: EventLog;
   idleTimer?: NodeJS.Timeout;
   lastActivity: number;
 }
@@ -26,6 +30,10 @@ export interface SessionManagerOpts {
   // the manager and spawning claude at the resulting worktreePath. Phase 2b plumbing.
   worktreeManager?: WorktreeManager;
   onProcMessage?: (sessionId: string, msg: unknown) => void;
+  // Phase 3: per-session event-log caps. Defaults are 5000 events / 10 minutes; tests
+  // shrink these to force replay_gap fallback paths without producing 5000 fixtures.
+  eventLogMaxEvents?: number;
+  eventLogMaxAgeMs?: number;
 }
 
 export class SessionManager {
@@ -44,24 +52,25 @@ export class SessionManager {
   // and spawns claude there. Requires `baseBranch`. On worktree-creation failure (e.g.
   // not a git repo, dirty index, branch conflict) the daemon emits `daemon_error` and
   // closes the WS — no silent fallback to shared mode.
-  attach(sessionId: string, ws: WebSocket, opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string } = {}): void {
+  attach(sessionId: string, ws: WebSocket, opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string; since?: number } = {}): void {
+    const since = opts.since ?? 0;
     let s = this.active.get(sessionId);
     if (s) {
-      this.attachClient(s, ws);
+      this.attachClient(s, ws, since);
       return;
     }
     // Resume path: an existing worktree session re-attaches to its recorded worktreePath.
     const existingWt = this.opts.worktreeManager?.get(sessionId);
     if (existingWt && !existingWt.archivedAt && existingWt.worktreePath) {
       s = this.spawn(sessionId, existingWt.worktreePath);
-      this.attachClient(s, ws);
+      this.attachClient(s, ws, since);
       return;
     }
     // Resume path for a known shared-cwd session: use SessionStore's recorded cwd.
     const known = this.opts.sessionStore.findSession(sessionId);
     if (known) {
       s = this.spawn(sessionId, known.cwd);
-      this.attachClient(s, ws);
+      this.attachClient(s, ws, since);
       return;
     }
     // New session path: validate the supplied cwd, then either spawn straight at it
@@ -116,22 +125,42 @@ export class SessionManager {
           return;
         }
         const session = this.spawn(sessionId, worktreePath);
-        this.attachClient(session, ws);
+        this.attachClient(session, ws, since);
       })();
       return;
     }
     // Default: shared cwd (Phase 2a behavior).
     s = this.spawn(sessionId, opts.cwd);
-    this.attachClient(s, ws);
+    this.attachClient(s, ws, since);
   }
 
-  private attachClient(s: ActiveSession, ws: WebSocket): void {
+  // Adds a client to an existing session, sends the seq-window snapshot, and replays
+  // missed events from `since` onwards. If `since` predates the log's earliestSeq the
+  // client is told to recover via the HTTP transcript endpoint instead (replay_gap).
+  private attachClient(s: ActiveSession, ws: WebSocket, since: number): void {
     s.clients.add(ws);
     this.cancelIdleTimer(s);
-    const cutoff = Date.now() - BUFFER_REPLAY_MS;
-    for (const m of s.recentMessages) {
-      if (m.at >= cutoff) ws.send(JSON.stringify(m.msg));
+
+    // Protocol frame, no _seq — informs the client of the available seq window.
+    ws.send(JSON.stringify({
+      type: 'session_state',
+      latestSeq: s.eventLog.latestSeq(),
+      earliestSeq: s.eventLog.earliestSeq(),
+    }));
+
+    if (since > 0 && since < s.eventLog.earliestSeq() - 1) {
+      // Client's last-seen seq is older than what we kept. Bail out to HTTP recovery.
+      ws.send(JSON.stringify({
+        type: 'replay_gap',
+        from: since,
+        earliest: s.eventLog.earliestSeq(),
+      }));
+    } else {
+      for (const evt of s.eventLog.replayFrom(since)) {
+        ws.send(JSON.stringify({ ...(evt.message as object), _seq: evt.seq }));
+      }
     }
+
     ws.on('close', () => {
       s.clients.delete(ws);
       if (s.clients.size === 0) this.startIdleTimer(s);
@@ -146,11 +175,15 @@ export class SessionManager {
   }
 
   // Broadcast a daemon-originated message (not from the subprocess) to all attached WS clients
-  // for the given session. Used to surface session-scoped events that didn't come from claude.
+  // for the given session. Routed through the eventLog so reconnects replay it like any
+  // other event — important for things like approval_mode changes that a reconnecting
+  // device needs to learn about.
   broadcast(sessionId: string, message: unknown): void {
     const s = this.active.get(sessionId);
     if (!s) return;
-    for (const ws of s.clients) ws.send(JSON.stringify(message));
+    const evt = s.eventLog.push(message);
+    const payload = JSON.stringify({ ...(message as object), _seq: evt.seq });
+    for (const ws of s.clients) ws.send(payload);
   }
 
   // Interrupt the in-flight generation. Sends SIGINT to the claude subprocess; the
@@ -183,7 +216,10 @@ export class SessionManager {
     const s: ActiveSession = {
       id: sessionId,
       clients: new Set(),
-      recentMessages: [],
+      eventLog: new EventLog({
+        maxEvents: this.opts.eventLogMaxEvents ?? DEFAULT_EVENT_LOG_MAX_EVENTS,
+        maxAgeMs: this.opts.eventLogMaxAgeMs ?? DEFAULT_EVENT_LOG_MAX_AGE_MS,
+      }),
       lastActivity: Date.now(),
       proc: null!,
     };
@@ -198,12 +234,9 @@ export class SessionManager {
       env: { DAEMON_AUTH: this.opts.daemonAuthSecret, DAEMON_HOST: this.opts.daemonHost },
       onMessage: (msg) => {
         s.lastActivity = Date.now();
-        s.recentMessages.push({ at: Date.now(), msg });
-        const cutoff = Date.now() - BUFFER_REPLAY_MS;
-        while (s.recentMessages.length > 0 && s.recentMessages[0]!.at < cutoff) {
-          s.recentMessages.shift();
-        }
-        for (const ws of s.clients) ws.send(JSON.stringify(msg));
+        const evt = s.eventLog.push(msg);
+        const payload = JSON.stringify({ ...(msg as object), _seq: evt.seq });
+        for (const ws of s.clients) ws.send(payload);
         this.opts.onProcMessage?.(sessionId, msg);
       },
       onError: (errMsg) => {

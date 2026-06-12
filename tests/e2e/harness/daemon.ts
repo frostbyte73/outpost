@@ -44,6 +44,9 @@ export interface StartDaemonOpts {
   // Optional: pre-seed worktree records so UI tests can target archive/delete flows
   // against rows that look like they were spawned via the worktree path.
   initialWorktrees?: SeedWorktreeRecord[];
+  // Phase 3: shrink the per-session event log so tests can force replay_gap deterministically.
+  eventLogMaxEvents?: number;
+  eventLogMaxAgeMs?: number;
 }
 
 export interface DaemonHandle {
@@ -146,6 +149,12 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
     // POSTs don't mutate the repo's checked-in config/allowlist.json. The in-memory allowlist
     // still starts from the repo's config (which is imported at compile time).
     OUTPOST_ALLOWLIST_PATH: join(runtimeDir, 'allowlist.json'),
+    ...(opts.eventLogMaxEvents !== undefined
+      ? { OUTPOST_EVENT_LOG_MAX_EVENTS: String(opts.eventLogMaxEvents) }
+      : {}),
+    ...(opts.eventLogMaxAgeMs !== undefined
+      ? { OUTPOST_EVENT_LOG_MAX_AGE_MS: String(opts.eventLogMaxAgeMs) }
+      : {}),
   };
 
   const proc = spawn('npx', ['tsx', 'src/daemon.ts'], { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] });

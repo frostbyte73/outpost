@@ -73,11 +73,22 @@ async function main() {
     return undefined;
   }
 
+  // Phase 3: optional event-log overrides for tests. Production defaults (5000 / 10 min)
+  // are set inside SessionManager when these are omitted.
+  const eventLogMaxEvents = process.env.OUTPOST_EVENT_LOG_MAX_EVENTS
+    ? Number(process.env.OUTPOST_EVENT_LOG_MAX_EVENTS)
+    : undefined;
+  const eventLogMaxAgeMs = process.env.OUTPOST_EVENT_LOG_MAX_AGE_MS
+    ? Number(process.env.OUTPOST_EVENT_LOG_MAX_AGE_MS)
+    : undefined;
+
   const manager = new SessionManager({
     settingsPath,
     daemonAuthSecret: secret,
     daemonHost: config.host ?? tsEnv.hostname,
     sessionStore,
+    eventLogMaxEvents,
+    eventLogMaxAgeMs,
     worktreeManager,
   });
 
@@ -517,9 +528,12 @@ async function main() {
     // brand-new session id; SessionManager.attach validates it and emits a daemon_error + closes
     // the WS on failure.
     // Phase 2b: also accept &spawn=worktree|shared and &base=<branch> for worktree-mode spawns.
+    // Phase 3: also accept &since=<seq> for replay-on-reconnect. SessionManager decides
+    // whether the value is replayable from the in-memory log or triggers a replay_gap.
     let cwd: string | undefined;
     let spawnMode: 'shared' | 'worktree' | undefined;
     let baseBranch: string | undefined;
+    let since: number | undefined;
     const queryIdx = url.indexOf('?');
     if (queryIdx >= 0) {
       const params = new URLSearchParams(url.slice(queryIdx + 1));
@@ -529,8 +543,15 @@ async function main() {
       if (rawSpawn === 'worktree' || rawSpawn === 'shared') spawnMode = rawSpawn;
       const rawBase = params.get('base');
       if (rawBase) baseBranch = rawBase;
+      const rawSince = params.get('since');
+      if (rawSince !== null) {
+        const n = Number(rawSince);
+        // Ignore garbage (NaN, negatives). undefined → SessionManager defaults to 0 →
+        // "send me everything you've got from the earliest still in the log".
+        if (Number.isFinite(n) && n >= 0) since = Math.floor(n);
+      }
     }
-    manager.attach(sessionId, ws, { cwd, spawnMode, baseBranch });
+    manager.attach(sessionId, ws, { cwd, spawnMode, baseBranch, since });
     // Broadcast the current mode to this WS so the PWA can render the segmented control
     // in sync with server state. Cheap; one message per WS connect.
     ws.send(JSON.stringify({ type: 'approval_mode', sessionId, mode: modes.get(sessionId) }));

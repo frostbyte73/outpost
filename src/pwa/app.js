@@ -42,6 +42,11 @@ const state = {
   //   text blocks     → keyed by `${msgId}|${text}` so the same text under different
   //                     msg_ids is allowed but the WS replay buffer can't double-push
   seenBlockSigs: new Set(),
+  // Phase 3: highest _seq seen on the current session WS. Sent back as ?since=N on every
+  // reconnect so the server replays only what we missed. Reset to 0 on every openSession
+  // since seq is per-server-session-lifetime; daemon restart resets the server counter,
+  // and a replay_gap handler bumps us forward when the gap exceeds the log window.
+  lastSeenSeq: 0,
   // Live state for the Task* tools — rendered as a pinned todo panel instead of as raw
   // tool_use entries in the transcript. Rebuilt from disk on session load, then mutated
   // in place as new tool_use / tool_result blocks arrive over the WS.
@@ -907,6 +912,8 @@ async function openSession(id, opts) {
   state.transcript = [];
   state.seenBlockSigs = new Set();
   state.sessionWsHasConnected = false;
+  // Phase 3: fresh session view → server replays from earliest still in its log.
+  state.lastSeenSeq = 0;
   // Per-session reset: todos, pendingCreates, and consumedTaskResults all belong to one
   // session's task list. Resetting here keeps the panel from leaking between sessions.
   state.todos = new Map();
@@ -1169,12 +1176,34 @@ function connectWs(id, opts) {
   if (opts?.cwd) params.set('cwd', opts.cwd);
   if (opts?.spawn) params.set('spawn', opts.spawn);
   if (opts?.base) params.set('base', opts.base);
+  // Phase 3: always send since=N so the server replays only what we missed.
+  params.set('since', String(state.lastSeenSeq | 0));
   const query = params.toString();
   const ws = new WebSocket(`wss://${location.host}/ws/sessions/${id}${query ? `?${query}` : ''}`);
   state.ws = ws;
   ws.onmessage = (e) => {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
+    // Stamp lastSeenSeq off any event the server tagged. Non-event protocol frames
+    // (session_state, replay_gap, daemon_error, daemon_proc_exit) carry no _seq.
+    if (typeof msg._seq === 'number' && msg._seq > state.lastSeenSeq) {
+      state.lastSeenSeq = msg._seq;
+    }
+    if (msg.type === 'session_state') {
+      // Informational — replay (if any) follows immediately in subsequent messages.
+      return;
+    }
+    if (msg.type === 'replay_gap') {
+      // Server's log evicted everything past our last-seen. The existing HTTP-fallback
+      // catchUpFromDisk handles the gap — its seenBlockSigs dedup makes calling it here
+      // safe whether or not the live WS has delivered anything since.
+      state.replayGapCount = (state.replayGapCount ?? 0) + 1;
+      catchUpFromDisk(id);
+      // Bump lastSeenSeq to just below earliest so the next reconnect doesn't trigger
+      // another replay_gap for events that have since been GC'd again.
+      state.lastSeenSeq = Math.max(state.lastSeenSeq, (msg.earliest ?? 1) - 1);
+      return;
+    }
     handleWsMessage(msg);
   };
   ws.onopen = () => {
@@ -5449,7 +5478,20 @@ globalThis.__outpostGetState = () => ({
   acceptEdits: state.acceptEdits,
   connState: state.connState,
   currentSessionId: state.currentSessionId,
+  lastSeenSeq: state.lastSeenSeq,
+  replayGapCount: state.replayGapCount ?? 0,
 });
+// __outpostForceCloseSessionWs(): close the session WS to drive the reconnect path.
+// @ts-expect-error — intentional globalThis assignment for test infrastructure only
+globalThis.__outpostForceCloseSessionWs = () => {
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) state.ws.close();
+};
+// __outpostSessionWsReadyState(): expose the live readyState so tests can wait for reconnect.
+// @ts-expect-error — intentional globalThis assignment for test infrastructure only
+globalThis.__outpostSessionWsReadyState = () => state.ws?.readyState ?? -1;
+// __outpostSetLastSeenSeq(n): rewind lastSeenSeq to force a stale ?since= on next connect.
+// @ts-expect-error — intentional globalThis assignment for test infrastructure only
+globalThis.__outpostSetLastSeenSeq = (n) => { state.lastSeenSeq = n; };
 // __outpostOpenSession({id, cwd, spawn?, base?}): synthesize a session WS open with the
 // given query params. Used by Phase 2b e2e tests that need to spawn a worktree session
 // without going through the in-row click (which the PWA UI work in T8 wires up).
