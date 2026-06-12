@@ -6523,10 +6523,12 @@ function renderInline(text) {
 
   // Bare URLs: linkify http(s)://… so URLs Claude prints inline (e.g. a `gh run` link)
   // are tappable. Trim trailing sentence punctuation back out of the href so "see
-  // https://example.com." doesn't include the period.
+  // https://example.com." doesn't include the period. `*` and `_` are trimmed too so a
+  // bold-wrapped URL like `**https://…**` sheds its emphasis markers back into the text,
+  // letting the bold/italic pass below match around the link placeholder.
   s = s.replace(/\bhttps?:\/\/[^\s<]+/g, (url) => {
     let trail = '';
-    while (url.length && /[.,;:!?)\]}'"]/.test(url.slice(-1))) {
+    while (url.length && /[.,;:!?)\]}'"*_]/.test(url.slice(-1))) {
       trail = url.slice(-1) + trail;
       url = url.slice(0, -1);
     }
