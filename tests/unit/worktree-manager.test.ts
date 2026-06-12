@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, statSync, existsSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, statSync, existsSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -181,6 +181,52 @@ describe('WorktreeManager — git operations', () => {
     await m.remove('sessid');
     await m.remove('sessid'); // no throw
     expect(m.get('sessid')).toBeUndefined();
+  });
+
+  it('create() copies allowlisted gitignored files (CLAUDE.md, .claude/, docs/, .env*)', async () => {
+    const root = newRoot();
+    const repo = makeGitRepo();
+    // Pin a gitignore so the repo's ignore rules are deterministic across machines.
+    writeFileSync(join(repo, '.gitignore'), [
+      'CLAUDE.md',
+      'CLAUDE.local.md',
+      '.claude/',
+      'docs/private/',
+      '.env',
+      '.env.local',
+      'node_modules/',
+      'secret.txt',
+    ].join('\n') + '\n');
+    execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+    execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'gitignore']);
+
+    // Allowlisted ignored content.
+    writeFileSync(join(repo, 'CLAUDE.md'), '# local claude\n');
+    writeFileSync(join(repo, 'CLAUDE.local.md'), '# local local\n');
+    mkdirSync(join(repo, '.claude', 'commands'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'commands', 'foo.md'), 'foo\n');
+    mkdirSync(join(repo, 'docs', 'private'), { recursive: true });
+    writeFileSync(join(repo, 'docs', 'private', 'notes.md'), 'notes\n');
+    writeFileSync(join(repo, '.env'), 'SECRET=x\n');
+    writeFileSync(join(repo, '.env.local'), 'SECRET=y\n');
+
+    // NOT allowlisted — should be skipped.
+    mkdirSync(join(repo, 'node_modules', 'foo'), { recursive: true });
+    writeFileSync(join(repo, 'node_modules', 'foo', 'index.js'), '// skip me\n');
+    writeFileSync(join(repo, 'secret.txt'), 'do not copy\n');
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-copy', projectCwd: repo, baseBranch: 'main' });
+
+    expect(readFileSync(join(rec.worktreePath, 'CLAUDE.md'), 'utf8')).toBe('# local claude\n');
+    expect(readFileSync(join(rec.worktreePath, 'CLAUDE.local.md'), 'utf8')).toBe('# local local\n');
+    expect(readFileSync(join(rec.worktreePath, '.claude', 'commands', 'foo.md'), 'utf8')).toBe('foo\n');
+    expect(readFileSync(join(rec.worktreePath, 'docs', 'private', 'notes.md'), 'utf8')).toBe('notes\n');
+    expect(readFileSync(join(rec.worktreePath, '.env'), 'utf8')).toBe('SECRET=x\n');
+    expect(readFileSync(join(rec.worktreePath, '.env.local'), 'utf8')).toBe('SECRET=y\n');
+
+    expect(existsSync(join(rec.worktreePath, 'node_modules'))).toBe(false);
+    expect(existsSync(join(rec.worktreePath, 'secret.txt'))).toBe(false);
   });
 
   it('create() rejects malformed sessionId (path traversal / argv injection)', async () => {

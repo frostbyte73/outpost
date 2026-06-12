@@ -1855,11 +1855,25 @@
       display: inline-block;
       font-size: 10px; letter-spacing: 0.22em; text-transform: uppercase;
       color: var(--text-mute);
-      margin-bottom: 6px; padding-right: 10px;
+      padding-right: 10px;
       border-right: 1px solid var(--line);
       margin-right: 10px;
+      /* Lift the badge above the body-text baseline so the optical center of "YOU"
+         lines up with the first text line. position: relative keeps it out of the
+         line-box height calculation — every line in the message gets the same
+         line-height (no taller first line from inline-block margin). */
+      position: relative;
+      top: -2px;
     }
-    .msg.user { color: var(--text); }
+    .msg.user {
+      color: var(--text);
+      /* Extra breathing room around the user's own turn — sets it off from the
+         dense run of read/grep/bash tiles above and the assistant's reply below.
+         Vertical margin-collapse means the actual gap is max(22, neighbor); a
+         user message sandwiched between tool tiles (8px) gets 22px above + 22px
+         below, while back-to-back tool tiles still cluster at 8px. */
+      margin: 22px 0;
+    }
     .msg.user .role { color: var(--accent); }
     .msg.assistant { color: var(--text); }
     /* Tool-use entries — overridden from the default .msg layout. The role label is

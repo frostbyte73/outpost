@@ -1,5 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 export interface WorktreeRecord {
   sessionId: string;
@@ -107,7 +108,6 @@ export class WorktreeManager {
     // Ensure the root exists before invoking git — fresh runtimeDirs (per-test temp
     // dirs in particular) may not have <root>/ created until the first worktree lands.
     mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    const { execFileSync } = await import('node:child_process');
     // `--` separator: anything past it is treated as a positional, not a flag. Even
     // if the validation above missed something, git won't interpret a path or branch
     // starting with `-` as an option.
@@ -116,6 +116,7 @@ export class WorktreeManager {
       ['-C', opts.projectCwd, 'worktree', 'add', '-b', branch, '--', worktreePath, opts.baseBranch],
       { stdio: 'pipe' },
     );
+    copyAllowlistedIgnored(opts.projectCwd, worktreePath);
     const rec: WorktreeRecord = {
       sessionId: opts.sessionId,
       projectCwd: opts.projectCwd,
@@ -201,7 +202,6 @@ export class WorktreeManager {
   // branch, swallowing errors so a missing worktree-on-disk doesn't poison the call.
   private async tearDown(rec: WorktreeRecord): Promise<void> {
     if (!rec.worktreePath) return; // already torn down (tombstone)
-    const { execFileSync } = await import('node:child_process');
     try {
       execFileSync(
         'git',
@@ -222,6 +222,47 @@ export class WorktreeManager {
         { stdio: 'pipe' },
       );
     } catch { /* branch may already be gone */ }
+  }
+}
+
+// `git worktree add` only checks out tracked files. CLAUDE.md, project-local `.claude/`,
+// `.env*`, and ignored docs live outside the tree — copy them into the worktree so a
+// fresh session has the same local context the user sees in the parent checkout.
+// Explicit allowlist (not deny-list) to avoid dragging in node_modules/build dirs.
+function isAllowlisted(rel: string): boolean {
+  if (rel === 'CLAUDE.md' || rel === 'CLAUDE.local.md') return true;
+  if (rel === '.claude' || rel.startsWith('.claude/')) return true;
+  if (rel === 'docs' || rel.startsWith('docs/')) return true;
+  // Root-level .env, .env.local, .env.production, etc. — but not nested .env files
+  // inside ignored build dirs we don't want.
+  if (/^\.env(\.[^/]+)?$/.test(rel)) return true;
+  return false;
+}
+
+function copyAllowlistedIgnored(projectCwd: string, worktreePath: string): void {
+  let output: string;
+  try {
+    output = execFileSync(
+      'git',
+      ['-C', projectCwd, 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+  } catch {
+    return;
+  }
+  for (const raw of output.split('\0')) {
+    if (!raw) continue;
+    // `--directory` appends a trailing slash for entirely-ignored dirs; strip it for the
+    // allowlist check, then let cpSync handle the dir recursively.
+    const rel = raw.endsWith('/') ? raw.slice(0, -1) : raw;
+    if (!isAllowlisted(rel)) continue;
+    const src = join(projectCwd, rel);
+    const dst = join(worktreePath, rel);
+    if (!existsSync(src)) continue;
+    try {
+      mkdirSync(dirname(dst), { recursive: true });
+      cpSync(src, dst, { recursive: true, force: true, verbatimSymlinks: true });
+    } catch { /* best-effort — a missing file or perm error shouldn't fail worktree creation */ }
   }
 }
 
