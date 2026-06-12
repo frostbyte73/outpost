@@ -19,6 +19,7 @@ import { loadOrCreateVapid } from './push-keys.js';
 import { SubscriptionStore } from './push-subscriptions.js';
 import { PushSender } from './push-sender.js';
 import { StopHookTracker } from './stop-hook-tracker.js';
+import { UsagePoller, type AccountUsageSnapshot } from './usage-poller.js';
 import { loadConfig } from './config.js';
 import allowlistConfig from '../config/allowlist.json' with { type: 'json' };
 import pkg from '../package.json' with { type: 'json' };
@@ -144,6 +145,14 @@ async function main() {
     return sessionStore.findSession(sessionId)?.cwd ?? manager.getCwd(sessionId);
   }
 
+  // Most recent daemon_statusline payload per session. The event log inside SessionManager
+  // already replays statusline events to clients that reconnect during a session's active
+  // lifetime, but the log dies with the claude subprocess — so on the first reattach after
+  // an idle exit / daemon restart, the meter would be blank until claude's next statusLine
+  // fire. We cache the last payload here and replay it on session-WS attach. Memory-only;
+  // a daemon restart loses the cache (acceptable: one statusLine-fire of latency).
+  const latestStatuslineBySession = new Map<string, object>();
+
   // PreToolUse + Stop + StatusLine hook endpoints (loopback-only — see hook-server.ts for why)
   const hookServer = new HookServer({
     port: HOOK_PORT,
@@ -191,7 +200,7 @@ async function main() {
       }
       const sessionId = payload.session_id;
       if (!sessionId) return;
-      manager.broadcast(sessionId, {
+      const msg = {
         type: 'daemon_statusline',
         sessionId,
         model: payload.model,
@@ -200,7 +209,9 @@ async function main() {
         rateLimits: payload.rate_limits,
         effort: payload.effort,
         exceeds200k: payload.exceeds_200k_tokens,
-      });
+      };
+      latestStatuslineBySession.set(sessionId, msg);
+      manager.broadcast(sessionId, msg);
     },
     onStopHook: async (body) => {
       let payload: { session_id?: string };
@@ -441,6 +452,7 @@ async function main() {
     await manager.close(id);
     const removed = sessionStore.delete(id);
     await worktreeManager.remove(id);
+    latestStatuslineBySession.delete(id);
     console.log(`[api] delete session ${id.slice(0,8)} subprocess=killed file=${removed ? 'removed' : 'not-found'}`);
     res.statusCode = 204;
     res.end();
@@ -455,6 +467,7 @@ async function main() {
     const id = m[1]!;
     await manager.close(id);
     await worktreeManager.archive(id);
+    latestStatuslineBySession.delete(id);
     console.log(`[api] archive session ${id.slice(0,8)} (worktree removed, JSONL kept)`);
     res.statusCode = 204;
     res.end();
@@ -632,6 +645,20 @@ async function main() {
     for (const ws of notificationClients) ws.send(payload);
   }
 
+  // Account-wide rate-limit usage (5h / 7d) lives in claude.ai's OAuth endpoint, not the
+  // statusLine JSON — claude.ai surfaces it on the settings page, claude CLI doesn't relay
+  // it in headless mode. UsagePoller hits that endpoint with the OAuth token from the
+  // keychain on a usage-adaptive cadence (5min idle → 30s near 90%) and broadcasts to the
+  // notifications WS. Latest snapshot is cached so reconnecting clients see it instantly.
+  let latestAccountUsage: AccountUsageSnapshot | null = null;
+  const usagePoller = new UsagePoller({
+    onSnapshot: (snap) => {
+      latestAccountUsage = snap;
+      notifyAll({ type: 'daemon_account_usage', rateLimits: snap });
+    },
+  });
+  usagePoller.start();
+
   // Push every approval resolution out to clients so the PWA can render a "Timed out"
   // tile rather than the card silently disappearing — and so a second device viewing
   // the same session sees the same decision the first device made.
@@ -667,6 +694,9 @@ async function main() {
       // can populate state without firing toasts for stale items.
       const titleById = new Map<string, string>();
       for (const p of sessionStore.listProjects()) for (const s of p.sessions) titleById.set(s.id, s.title);
+      if (latestAccountUsage) {
+        ws.send(JSON.stringify({ type: 'daemon_account_usage', rateLimits: latestAccountUsage }));
+      }
       ws.send(JSON.stringify({
         type: 'notifications_snapshot',
         approvals: queue.listPending().map((a) => {
@@ -740,6 +770,12 @@ async function main() {
     // Broadcast the current mode to this WS so the PWA can render the segmented control
     // in sync with server state. Cheap; one message per WS connect.
     ws.send(JSON.stringify({ type: 'approval_mode', sessionId, mode: modes.get(sessionId) }));
+    // Replay the last-known statusline (CTX/cost/model) so the meter renders immediately
+    // on re-attach instead of waiting for claude's next statusLine fire. If the session
+    // was active continuously and the event log already had it, the client just receives
+    // a duplicate — the PWA handler is idempotent.
+    const cachedSl = latestStatuslineBySession.get(sessionId);
+    if (cachedSl) ws.send(JSON.stringify(cachedSl));
     ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
       let msg: { type?: string };
       try {

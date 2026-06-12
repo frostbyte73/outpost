@@ -189,6 +189,13 @@ const state = {
   //     effort: { level },
   //     exceeds200k: bool }
   statusline: null,
+  // Account-wide 5h/7d rate-limit usage from the daemon's UsagePoller (which hits
+  // claude.ai's /api/oauth/usage on the user's behalf). claude's per-session statusLine
+  // only includes rate_limits for Pro/Max accounts, and even then the data is account-
+  // wide, so this lives on the global state (not per-session) and outranks
+  // state.statusline?.rateLimits when both are present.
+  // Shape: { five_hour: {used_percentage, resets_at}, seven_day: {used_percentage, resets_at} }
+  accountUsage: null,
   // Whether the meter breakdown popup is open. Toggled by tapping the bar.
   meterBreakdownOpen: false,
   // Slash-command palette — populated once from /api/info, opened by typing `/` at the
@@ -694,6 +701,10 @@ function projectSectionHtml(p, isMostRecent, pendingBySession) {
 function projectSectionBodyHtml(p, pendingBySession) {
   const branchPicker = p.isGitRepo
     ? `<div class="project-branch-picker" data-cwd="${escapeHtml(p.cwd)}">
+         <label class="project-worktree-toggle">
+           <input type="checkbox" class="project-worktree-checkbox" checked>
+           <span>Worktree</span>
+         </label>
          <span class="project-branch-label">Branch</span>
          <select class="project-branch-select"><option value="">loading…</option></select>
        </div>`
@@ -728,7 +739,16 @@ async function loadBranchesForCwd(cwd) {
 async function populateBranchPicker(pickerEl) {
   const cwd = pickerEl.dataset.cwd;
   const select = pickerEl.querySelector('.project-branch-select');
+  const checkbox = pickerEl.querySelector('.project-worktree-checkbox');
   if (!cwd || !select) return;
+  if (checkbox) {
+    const sync = () => {
+      select.disabled = !checkbox.checked;
+      pickerEl.classList.toggle('project-branch-picker-off', !checkbox.checked);
+    };
+    sync();
+    checkbox.onchange = sync;
+  }
   const data = await loadBranchesForCwd(cwd);
   if (!data || data.branches.length === 0) {
     select.innerHTML = `<option value="">unavailable</option>`;
@@ -780,11 +800,16 @@ function bindProjectNewSessionHandlers() {
       const isGit = btn.dataset.isGit === 'yes';
       if (!cwd) return;
       if (isGit) {
-        // Default: spawn worktree on the picker-selected branch.
         const section = btn.closest('.project-section');
-        const picker = section?.querySelector('.project-branch-picker .project-branch-select');
-        const branch = (picker && picker.value) || 'main';
-        commitNewSessionCwd(cwd, { spawnMode: 'worktree', baseBranch: branch });
+        const checkbox = section?.querySelector('.project-worktree-checkbox');
+        const useWorktree = checkbox ? checkbox.checked : true;
+        if (useWorktree) {
+          const picker = section?.querySelector('.project-branch-picker .project-branch-select');
+          const branch = (picker && picker.value) || 'main';
+          commitNewSessionCwd(cwd, { spawnMode: 'worktree', baseBranch: branch });
+        } else {
+          commitNewSessionCwd(cwd, { spawnMode: 'shared' });
+        }
       } else {
         commitNewSessionCwd(cwd);
       }
@@ -1671,6 +1696,11 @@ function handleWsMessage(msg) {
 }
 
 function handleNotificationMessage(msg) {
+  if (msg.type === 'daemon_account_usage') {
+    state.accountUsage = msg.rateLimits ?? null;
+    if (state.view === 'session') updateMeterRegion();
+    return;
+  }
   if (msg.type === 'notifications_snapshot') {
     state.pendingApprovals = Array.isArray(msg.approvals) ? msg.approvals : [];
     // Snapshot fires on cold start + reconnect. Re-apply the auto-expand for high-detail
@@ -2042,14 +2072,18 @@ function renderSession() {
 // message_start delivery seeds the values, later deltas refine the output_tokens count).
 function recordUsage(usage, model) {
   if (!usage) return;
+  // claude emits synthetic assistant messages (e.g. rate-limit notices) with model
+  // "<synthetic>". Don't let that overwrite the real model on lastUsage — keep the
+  // previous value so the meter keeps showing "Opus 4.7" instead of "<synthetic>".
+  const realModel = (typeof model === 'string' && !model.startsWith('<')) ? model : null;
   state.lastUsage = {
     inputTokens: usage.input_tokens ?? 0,
     outputTokens: usage.output_tokens ?? 0,
     cacheCreate: usage.cache_creation_input_tokens ?? 0,
     cacheRead: usage.cache_read_input_tokens ?? 0,
-    model: model ?? state.lastUsage?.model ?? null,
+    model: realModel ?? state.lastUsage?.model ?? null,
   };
-  if (model) state.contextWindow = lookupContextWindow(model);
+  if (realModel) state.contextWindow = lookupContextWindow(realModel);
 }
 
 // Render the context-window + rate-limit meter strip above the composer. Three side-by-
@@ -2076,7 +2110,11 @@ function updateMeterRegion() {
   const slCur = slCtx?.current_usage;
 
   // ── CTX: prefer statusline, fall back to per-message usage ──
+  // Both sources may be absent on a fresh session-click — render with unknown CTX
+  // so the 5H/7D cells (driven by accountUsage, which arrives on notifications-WS
+  // attach) stay visible instead of the whole bar disappearing.
   let ctxUsed, ctxTotal, ctxPct, breakdownTokens, modelLabel, modelDisplay;
+  let ctxKnown = false;
   if (slCtx && typeof slCtx.context_window_size === 'number') {
     ctxTotal = slCtx.context_window_size;
     const inp = slCur?.input_tokens ?? 0;
@@ -2092,79 +2130,105 @@ function updateMeterRegion() {
     breakdownTokens = { input: inp, output: out, cacheCreate: cc, cacheRead: cr };
     modelDisplay = sl.model?.display_name ?? null;
     modelLabel = sl.model?.id ?? sl.model?.display_name ?? null;
-  } else {
+    ctxKnown = true;
+  } else if (state.lastUsage) {
     const u = state.lastUsage;
-    if (!u) { region.innerHTML = ''; return; }
     ctxUsed = u.inputTokens + u.outputTokens + u.cacheCreate + u.cacheRead;
     ctxTotal = state.contextWindow || CONTEXT_WINDOWS._default;
     ctxPct = Math.min(100, Math.max(0, (ctxUsed / ctxTotal) * 100));
     breakdownTokens = { input: u.inputTokens, output: u.outputTokens, cacheCreate: u.cacheCreate, cacheRead: u.cacheRead };
-    modelDisplay = null;
     modelLabel = u.model ?? null;
+    modelDisplay = prettyModelName(modelLabel);
+    ctxKnown = true;
+  } else {
+    ctxUsed = 0;
+    ctxTotal = state.contextWindow || CONTEXT_WINDOWS._default;
+    ctxPct = 0;
+    breakdownTokens = { input: 0, output: 0, cacheCreate: 0, cacheRead: 0 };
+    modelLabel = null;
+    modelDisplay = null;
   }
 
-  const r5 = sl?.rateLimits?.five_hour?.used_percentage;
-  const r5Reset = sl?.rateLimits?.five_hour?.resets_at;
-  const r7 = sl?.rateLimits?.seven_day?.used_percentage;
-  const r7Reset = sl?.rateLimits?.seven_day?.resets_at;
+  // Prefer the daemon's account-usage poll (live, account-wide, works for Team/Max as well
+  // as Pro) over claude's per-session statusLine rate_limits (Pro/Max-only and absent until
+  // the first API response). Fall back to statusline if accountUsage hasn't arrived yet.
+  const au = state.accountUsage;
+  const r5 = au?.five_hour?.used_percentage ?? sl?.rateLimits?.five_hour?.used_percentage;
+  const r5Reset = au?.five_hour?.resets_at ?? sl?.rateLimits?.five_hour?.resets_at;
+  const r7 = au?.seven_day?.used_percentage ?? sl?.rateLimits?.seven_day?.used_percentage;
+  const r7Reset = au?.seven_day?.resets_at ?? sl?.rateLimits?.seven_day?.resets_at;
   const cost = sl?.cost?.total_cost_usd;
   const effort = sl?.effort?.level;
 
   const cells = [
-    cellMarkup('CTX', ctxPct, true, `Context window: ${fmtNumber(ctxUsed)} of ${fmtNumber(ctxTotal)} tokens (${Math.round(ctxPct)}%)`),
+    cellMarkup('CTX', ctxPct, ctxKnown, ctxKnown
+      ? `Context window: ${fmtNumber(ctxUsed)} of ${fmtNumber(ctxTotal)} tokens (${Math.round(ctxPct)}%)`
+      : 'No context-window data yet'),
     cellMarkup('5H', r5, typeof r5 === 'number', typeof r5 === 'number' ? `5-hour rate limit: ${Math.round(r5)}%` : 'No 5-hour rate-limit data yet'),
     cellMarkup('7D', r7, typeof r7 === 'number', typeof r7 === 'number' ? `7-day rate limit: ${Math.round(r7)}%` : 'No 7-day rate-limit data yet'),
   ].join('');
 
   const tagText = modelDisplay
-    ? `<span class="meter-tag-model">${escapeHtml(modelDisplay)}</span> · <span class="meter-tag-size">${fmtCtxSize(ctxTotal)}</span>`
-    : `<span class="meter-tag-size">${fmtCtxSize(ctxTotal)}</span>`;
+    ? `<span class="meter-tag-model">${escapeHtml(modelDisplay)}</span>`
+    : '';
 
   const ariaSummary = [
-    `Context ${Math.round(ctxPct)} percent of ${fmtCtxSize(ctxTotal)}`,
+    ctxKnown ? `Context ${Math.round(ctxPct)} percent of ${fmtCtxSize(ctxTotal)}` : null,
     typeof r5 === 'number' ? `5-hour limit ${Math.round(r5)} percent` : null,
     typeof r7 === 'number' ? `7-day limit ${Math.round(r7)} percent` : null,
   ].filter(Boolean).join(', ');
 
-  const breakdown = state.meterBreakdownOpen
-    ? `<div class="meter-breakdown">
-        <div class="meter-breakdown-section">
-          <div class="meter-breakdown-head">Context</div>
-          <div class="meter-breakdown-row"><span>Total</span><span>${fmtNumber(ctxUsed)} / ${fmtCtxSize(ctxTotal)}</span></div>
-          <div class="meter-breakdown-row meter-row-indent"><span>Input</span><span>${fmtNumber(breakdownTokens.input)}</span></div>
-          <div class="meter-breakdown-row meter-row-indent"><span>Cache read</span><span>${fmtNumber(breakdownTokens.cacheRead)}</span></div>
-          <div class="meter-breakdown-row meter-row-indent"><span>Cache create</span><span>${fmtNumber(breakdownTokens.cacheCreate)}</span></div>
-          <div class="meter-breakdown-row meter-row-indent"><span>Output</span><span>${fmtNumber(breakdownTokens.output)}</span></div>
-        </div>
-        ${(typeof r5 === 'number' || typeof r7 === 'number') ? `
-        <div class="meter-breakdown-section">
-          <div class="meter-breakdown-head">Limits</div>
-          ${typeof r5 === 'number' ? `<div class="meter-breakdown-row"><span>5-hour</span><span>${Math.round(r5)}% · resets ${fmtResetAt(r5Reset)}</span></div>` : ''}
-          ${typeof r7 === 'number' ? `<div class="meter-breakdown-row"><span>7-day</span><span>${Math.round(r7)}% · resets ${fmtResetAt(r7Reset)}</span></div>` : ''}
-        </div>` : ''}
-        ${(typeof cost === 'number' || effort || modelLabel) ? `
-        <div class="meter-breakdown-section">
-          <div class="meter-breakdown-head">Session</div>
-          ${typeof cost === 'number' ? `<div class="meter-breakdown-row"><span>Cost</span><span>$${cost.toFixed(2)}</span></div>` : ''}
-          ${effort ? `<div class="meter-breakdown-row"><span>Effort</span><span>${escapeHtml(effort)}</span></div>` : ''}
-          ${modelLabel ? `<div class="meter-breakdown-row meter-model"><span>Model</span><span>${escapeHtml(modelLabel)}</span></div>` : ''}
-        </div>` : ''}
-      </div>`
-    : '';
+  // Breakdown content is always in the DOM so the open/close transition runs against an
+  // already-laid-out subtree. The wrapper toggles `meter-breakdown-open` to drive the
+  // grid-template-rows animation (0fr → 1fr) defined in CSS.
+  const breakdownContent = `
+    <div class="meter-breakdown-section">
+      <div class="meter-breakdown-head">Context</div>
+      <div class="meter-breakdown-row"><span>Total</span><span>${fmtNumber(ctxUsed)} / ${fmtCtxSize(ctxTotal)}</span></div>
+      <div class="meter-breakdown-row meter-row-indent"><span>Input</span><span>${fmtNumber(breakdownTokens.input)}</span></div>
+      <div class="meter-breakdown-row meter-row-indent"><span>Cache read</span><span>${fmtNumber(breakdownTokens.cacheRead)}</span></div>
+      <div class="meter-breakdown-row meter-row-indent"><span>Cache create</span><span>${fmtNumber(breakdownTokens.cacheCreate)}</span></div>
+      <div class="meter-breakdown-row meter-row-indent"><span>Output</span><span>${fmtNumber(breakdownTokens.output)}</span></div>
+    </div>
+    ${(typeof r5 === 'number' || typeof r7 === 'number') ? `
+    <div class="meter-breakdown-section">
+      <div class="meter-breakdown-head">Limits</div>
+      ${typeof r5 === 'number' ? `<div class="meter-breakdown-row"><span>5-hour</span><span>${Math.round(r5)}% · resets ${fmtResetAt(r5Reset)}</span></div>` : ''}
+      ${typeof r7 === 'number' ? `<div class="meter-breakdown-row"><span>7-day</span><span>${Math.round(r7)}% · resets ${fmtResetAt(r7Reset)}</span></div>` : ''}
+    </div>` : ''}
+    ${(typeof cost === 'number' || effort || modelLabel) ? `
+    <div class="meter-breakdown-section">
+      <div class="meter-breakdown-head">Session</div>
+      ${typeof cost === 'number' ? `<div class="meter-breakdown-row"><span>Cost</span><span>$${cost.toFixed(2)}</span></div>` : ''}
+      ${effort ? `<div class="meter-breakdown-row"><span>Effort</span><span>${escapeHtml(effort)}</span></div>` : ''}
+      ${modelLabel ? `<div class="meter-breakdown-row meter-model"><span>Model</span><span>${escapeHtml(modelLabel)}</span></div>` : ''}
+    </div>` : ''}
+  `;
 
+  const openCls = state.meterBreakdownOpen ? ' meter-breakdown-open' : '';
   region.innerHTML = `
     <button class="meter" id="meter" aria-expanded="${state.meterBreakdownOpen ? 'true' : 'false'}"
             aria-label="${escapeHtml(ariaSummary)}. Tap to expand.">
+      ${tagText ? `<div class="meter-tag">${tagText}</div>` : ''}
       <div class="meter-cells">${cells}</div>
-      <div class="meter-tag">${tagText}</div>
     </button>
-    ${breakdown}
+    <div class="meter-breakdown${openCls}" id="meter-breakdown" aria-hidden="${state.meterBreakdownOpen ? 'false' : 'true'}">
+      <div class="meter-breakdown-inner">${breakdownContent}</div>
+    </div>
   `;
   const btn = document.getElementById('meter');
-  if (btn) btn.onclick = () => {
-    state.meterBreakdownOpen = !state.meterBreakdownOpen;
-    updateMeterRegion();
+  const bd = document.getElementById('meter-breakdown');
+  const setOpen = (open) => {
+    state.meterBreakdownOpen = open;
+    if (btn) btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (bd) {
+      bd.classList.toggle('meter-breakdown-open', open);
+      bd.setAttribute('aria-hidden', open ? 'false' : 'true');
+    }
   };
+  if (btn) btn.onclick = (e) => { e.stopPropagation(); setOpen(!state.meterBreakdownOpen); };
+  // Tap anywhere inside the expanded breakdown collapses it.
+  if (bd) bd.onclick = () => setOpen(false);
 }
 
 // Render a single CTX/5H/7D cell. `pct` may be null/undefined when the source hasn't
@@ -2185,6 +2249,20 @@ function cellMarkup(label, pct, hasValue, ariaLabel) {
     <div class="meter-cell-head"><span class="meter-cell-label">${label}</span><span class="meter-cell-pct">${Math.round(clamped)}%</span></div>
     <div class="meter-cell-bar"><span class="meter-cell-fill" style="width:${clamped}%"></span></div>
   </div>`;
+}
+
+// Pretty-print a raw model id like `claude-opus-4-7[1m]` → "Opus 4.7 (1M)".
+// claude's own statusLine supplies a display_name, but that hook doesn't fire in
+// headless/--print mode (how the daemon spawns), so we derive a display name from the
+// model id that arrives on message_start. Unknown shapes fall back to the raw id so the
+// label slot never goes silent.
+function prettyModelName(id) {
+  if (typeof id !== 'string' || !id) return null;
+  const m = id.match(/^claude-(opus|sonnet|haiku)-(\d+)-(\d+)(?:-\d+)?(\[1m\])?$/i);
+  if (!m) return id;
+  const family = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
+  const suffix = m[4] ? ' (1M)' : '';
+  return `${family} ${m[2]}.${m[3]}${suffix}`;
 }
 
 // Compact rendering of a context-window size: 1,000,000 → "1M", 200,000 → "200K".
@@ -3755,10 +3833,25 @@ function msgHtml(m, isLast) {
   if (m.role === 'tool_use') return toolUseHtml(m);
   if (m.role === 'ask') return askMsgHtml(m);
   const labels = { user: 'You', assistant: 'Assistant', error: 'Error' };
+  // claude's TUI wraps unresolved-slash-command output in <local-command-stdout>/<-stderr>
+  // and wraps invocations with <command-name>/<command-message>/<command-args>. The TUI
+  // hides them; the JSONL stores them literally — strip on render. If the whole bubble is
+  // command-scaffolding, omit it entirely.
+  let text = m.text;
+  if (m.role === 'user' && typeof text === 'string') {
+    text = text
+      .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>\s*/g, '')
+      .replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>\s*/g, '')
+      .replace(/<command-name>[\s\S]*?<\/command-name>\s*/g, '')
+      .replace(/<command-message>[\s\S]*?<\/command-message>\s*/g, '')
+      .replace(/<command-args>[\s\S]*?<\/command-args>\s*/g, '')
+      .trim();
+    if (!text) return '';
+  }
   // Assistant messages get full markdown rendering. Everything else is plain text — user
   // messages shouldn't be parsed (they're as the user typed them), and error messages are
   // unstructured logs.
-  const body = m.role === 'assistant' ? renderMarkdown(m.text) : escapeHtml(m.text);
+  const body = m.role === 'assistant' ? renderMarkdown(m.text) : escapeHtml(text);
   // Error messages can carry an inline action (currently only 'reopen' for the daemon
   // subprocess exit). The handler is wired by renderSession after the HTML is in the DOM.
   const action = m.action === 'reopen'

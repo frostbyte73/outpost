@@ -131,10 +131,29 @@ export class WorktreeManager {
 
   async remove(sessionId: string): Promise<void> {
     const rec = this.records.get(sessionId);
-    if (!rec) return; // idempotent
-    await this.tearDown(rec);
-    this.records.delete(sessionId);
-    this.persist();
+    if (rec) {
+      await this.tearDown(rec);
+      this.records.delete(sessionId);
+      this.persist();
+      return;
+    }
+    // No in-memory record. Most often idempotent, but can also be the dual-daemon
+    // case: another instance created the worktree, this instance never saw the index
+    // update, and now a delete arrived here. Probe disk so the branch + worktree dir
+    // don't leak — derive the parent repo from the worktree's .git pointer file.
+    if (!SESSION_ID_RE.test(sessionId)) return;
+    const orphanPath = join(this.root, sessionId);
+    const projectCwd = readParentRepoFromGitFile(orphanPath);
+    if (!projectCwd) return;
+    const shortId = sessionId.replace(/-/g, '').slice(0, 8);
+    await this.tearDown({
+      sessionId,
+      projectCwd,
+      worktreePath: orphanPath,
+      branch: `outpost/${shortId}`,
+      baseBranch: '',
+      createdAt: 0,
+    });
   }
 
   async archive(sessionId: string): Promise<void> {
@@ -190,6 +209,12 @@ export class WorktreeManager {
         { stdio: 'pipe' },
       );
     } catch { /* path may already be gone */ }
+    // Prune any stale .git/worktrees/<id> entry left by a previous failed/partial
+    // removal — otherwise the next branch -D fails with "branch is checked out at …"
+    // and we silently leak the branch.
+    try {
+      execFileSync('git', ['-C', rec.projectCwd, 'worktree', 'prune'], { stdio: 'pipe' });
+    } catch { /* best-effort */ }
     try {
       execFileSync(
         'git',
@@ -198,4 +223,15 @@ export class WorktreeManager {
       );
     } catch { /* branch may already be gone */ }
   }
+}
+
+// Read a worktree's `.git` pointer file ("gitdir: /repo/.git/worktrees/<id>") and
+// derive the parent repo's working directory. Returns null if the file is missing
+// or doesn't look like a worktree pointer — caller treats that as "nothing to clean."
+function readParentRepoFromGitFile(worktreePath: string): string | null {
+  try {
+    const contents = readFileSync(join(worktreePath, '.git'), 'utf8').trim();
+    const m = contents.match(/^gitdir:\s*(.+?)\/\.git\/worktrees\/[^/]+\/?$/);
+    return m ? m[1]! : null;
+  } catch { return null; }
 }

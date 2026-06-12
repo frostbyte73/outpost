@@ -659,6 +659,49 @@
       font-family: var(--font-mono); font-size: 12px;
       letter-spacing: 0; text-transform: none;
     }
+    .project-branch-picker-off .project-branch-label { color: var(--text-dim); }
+    .project-branch-select:disabled {
+      color: var(--text-dim);
+      border-color: var(--line-soft);
+      cursor: not-allowed;
+    }
+    /* Worktree toggle: styled to read as a sibling of the "BRANCH" label, not a
+       browser-default form control. Native chrome stripped via appearance:none. */
+    .project-worktree-toggle {
+      flex: 0 0 auto;
+      display: inline-flex; align-items: center; gap: 7px;
+      cursor: pointer;
+      user-select: none;
+      color: var(--text-mute);
+      transition: color 0.12s ease;
+    }
+    .project-worktree-toggle:hover { color: var(--text); }
+    .project-worktree-checkbox {
+      appearance: none; -webkit-appearance: none;
+      margin: 0;
+      width: 11px; height: 11px;
+      border: 1px solid var(--line);
+      background: transparent;
+      display: inline-block;
+      position: relative;
+      cursor: pointer;
+      transition: border-color 0.12s ease, background 0.12s ease;
+    }
+    .project-worktree-checkbox:hover { border-color: var(--text-mute); }
+    .project-worktree-checkbox:checked {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .project-worktree-checkbox:checked::after {
+      content: '';
+      position: absolute;
+      inset: 2px;
+      background: var(--accent);
+    }
+    .project-worktree-checkbox:focus-visible {
+      outline: 1px solid var(--accent);
+      outline-offset: 1px;
+    }
 
     /* Phase 2b: worktree badge on session rows (⌥ branch-name). */
     .worktree-badge {
@@ -2799,14 +2842,32 @@
     .meter-tag-size { color: var(--text-mute); }
     /* Breakdown panel: grouped sections (CONTEXT / LIMITS / SESSION) with two-column
        label-value rows. Section headers are dimmer + slightly tracked, matching the
-       uppercase mono treatment of the strip above. */
+       uppercase mono treatment of the strip above.
+
+       The wrapper animates open/close via grid-template-rows: 0fr → 1fr, which
+       transitions to the inner's natural content height without measuring it in JS.
+       The inner carries the actual visual styling (padding, border, background) and
+       lives inside the grid track so overflow:hidden clips it cleanly when collapsed. */
     .meter-breakdown {
-      padding: 8px 18px 10px;
+      display: grid;
+      grid-template-rows: 0fr;
+      transition: grid-template-rows 0.22s ease;
+    }
+    .meter-breakdown-open { grid-template-rows: 1fr; }
+    .meter-breakdown-inner {
+      min-height: 0;
+      overflow: hidden;
+      padding: 0 18px;
       border-top: 1px solid var(--line-soft);
       background: var(--bg-elev);
       font-family: var(--font-mono);
       font-size: 11px;
       color: var(--text-mute);
+      cursor: pointer;
+      transition: padding 0.22s ease;
+    }
+    .meter-breakdown-open .meter-breakdown-inner {
+      padding: 8px 18px 10px;
     }
     .meter-breakdown-section {
       display: grid;
