@@ -1,0 +1,3 @@
+{"type":"system","subtype":"init","tools":["Bash"]}
+{"_marker":"wait-for-input"}
+{"type":"assistant","message":{"id":"msg_b1","role":"assistant","content":[{"type":"tool_use","id":"toolu_b1","name":"Bash","input":{"command":"rm -rf /tmp/whatever"}}],"model":"claude-opus-4-7","usage":{"input_tokens":3,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}

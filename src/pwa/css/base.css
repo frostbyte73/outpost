@@ -1,0 +1,784 @@
+    /* ───── Theme tokens ────────────────────────────────────────────
+       Each theme provides a full set of token values for its dark and light
+       variants. The pre-render script in <head> applies data-theme + data-mode
+       on <html>; defaults to halcyon/dark.
+
+       Token families:
+         --bg, --bg-elev, --bg-elev-2     surfaces (deepest → most elevated)
+         --line, --line-soft              dividers
+         --text, --text-mute, --text-dim  text levels (brightest → dimmest)
+         --accent, --accent-soft          brand / selection / pending
+         --accent-2, --accent-2-soft      secondary brand accent
+         --ok, --ok-soft                  success / done
+         --warn, --warn-soft              caution / needs-attention
+         --danger, --danger-soft          destructive / errors
+         --font-display                   italic / display flourishes
+         --font-body                      everything else
+         --font-mono                      explicit code & terminal-caret
+    */
+
+    /* Halcyon — vivid cyan-on-graphite, sans throughout. Default. */
+    [data-theme="halcyon"][data-mode="dark"] {
+      --bg: #070707;
+      --bg-elev: #131313;
+      --bg-elev-2: #1f1f1f;
+      --line: #2a2a2a;
+      --line-soft: #1a1a1a;
+      --text: #ffffff;
+      --text-mute: #999999;
+      --text-dim: #555555;
+      --accent: #1fd5f9;
+      --accent-soft: rgba(31, 213, 249, 0.14);
+      /* Greyed-down lavender. The original #b8a8f0 lived at ~0.46 luminance vs cyan's
+         ~0.66 — only a 1.4× gap, so the two accents felt like co-stars. Pulling
+         saturation out and dropping luminance to ~0.30 (2.2× gap) restores hierarchy
+         without losing the lavender hue identity. */
+      --accent-2: #8a8ab8;
+      --accent-2-soft: rgba(138, 138, 184, 0.14);
+      --danger: #fa4c39;
+      --danger-soft: rgba(250, 76, 57, 0.14);
+      --ok: #5dd39e;
+      --ok-soft: rgba(93, 211, 158, 0.14);
+      --warn: #f2b84c;
+      --warn-soft: rgba(242, 184, 76, 0.14);
+      --font-display: 'Public Sans', system-ui, sans-serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="halcyon"][data-mode="light"] {
+      --bg: #fdfdfc;
+      --bg-elev: #ffffff;
+      --bg-elev-2: #efefec;
+      --line: #dbdbd8;
+      --line-soft: #ececea;
+      --text: #000000;
+      --text-mute: #636363;
+      --text-dim: #b5b5b0;
+      --accent: #0a259f;
+      --accent-soft: rgba(10, 37, 159, 0.10);
+      --accent-2: #5a5680;
+      --accent-2-soft: rgba(90, 86, 128, 0.10);
+      --danger: #b32909;
+      --danger-soft: rgba(179, 41, 9, 0.10);
+      --ok: #166534;
+      --ok-soft: rgba(22, 101, 52, 0.10);
+      --warn: #92650a;
+      --warn-soft: rgba(146, 101, 10, 0.10);
+      --font-display: 'Public Sans', system-ui, sans-serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Almanac — editorial italic serif + tracked mono, amber signal.
+       Feels like a Penguin paperback in light mode, like a private library
+       reading lamp in dark mode. */
+    [data-theme="almanac"][data-mode="dark"] {
+      --bg: #0a0a0a;
+      --bg-elev: #131313;
+      --bg-elev-2: #1a1a1a;
+      --line: #262626;
+      --line-soft: #1d1d1d;
+      --text: #e9e6dd;
+      --text-mute: #807a6d;
+      --text-dim: #4a463e;
+      --accent: #f4b91a;
+      --accent-soft: rgba(244, 185, 26, 0.12);
+      --accent-2: #4d9494;
+      --accent-2-soft: rgba(77, 148, 148, 0.12);
+      --danger: #e83a3a;
+      --danger-soft: rgba(232, 58, 58, 0.12);
+      --ok: #94b358;
+      --ok-soft: rgba(148, 179, 88, 0.14);
+      /* Accent already occupies bright gold, so warn leans burnt-orange to stay
+         distinguishable while keeping the amber family. */
+      --warn: #d9891f;
+      --warn-soft: rgba(217, 137, 31, 0.14);
+      --font-display: 'Instrument Serif', 'Times New Roman', serif;
+      --font-body: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="almanac"][data-mode="light"] {
+      --bg: #faf7ef;
+      --bg-elev: #ffffff;
+      --bg-elev-2: #f2ede0;
+      --line: #d4cfc0;
+      --line-soft: #e8e3d3;
+      --text: #1c1814;
+      --text-mute: #6b6553;
+      --text-dim: #b3ac96;
+      --accent: #9a6300;
+      --accent-soft: rgba(154, 99, 0, 0.10);
+      --accent-2: #2f6b6b;
+      --accent-2-soft: rgba(47, 107, 107, 0.10);
+      --danger: #a31f1f;
+      --danger-soft: rgba(163, 31, 31, 0.10);
+      --ok: #4d6b1f;
+      --ok-soft: rgba(77, 107, 31, 0.10);
+      --warn: #8a5215;
+      --warn-soft: rgba(138, 82, 21, 0.10);
+      --font-display: 'Instrument Serif', 'Times New Roman', serif;
+      --font-body: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Terminal — brutalist achromatic body (black/white/grey, mono everywhere)
+       lit by a single CRT-phosphor green accent. Same structural posture as
+       Halcyon and Almanac, just with #00ff41 in place of cyan/amber. */
+    [data-theme="terminal"][data-mode="dark"] {
+      --bg: #000000;
+      --bg-elev: #0a0a0a;
+      --bg-elev-2: #161616;
+      --line: #2a2a2a;
+      --line-soft: #181818;
+      --text: #f0f0f0;
+      --text-mute: #808080;
+      --text-dim: #3a3a3a;
+      --accent: #00ff41;
+      --accent-soft: rgba(0, 255, 65, 0.14);
+      /* Slate grey-blue. Pink phosphor read as candy next to neon green — both at
+         high luminance + saturation, ~1.7× gap, no clear hierarchy. Slate sits at
+         ~0.24 luminance vs green's ~0.79 (3.3× gap) and is fully desaturated, so
+         the green stays the unambiguous live signal. Maps to "monochrome monitor
+         chrome" — a thematically-coherent achromatic support color. */
+      --accent-2: #708090;
+      --accent-2-soft: rgba(112, 128, 144, 0.14);
+      --danger: #ff3050;
+      --danger-soft: rgba(255, 48, 80, 0.12);
+      /* Ok shifts teal-green (not the accent's pure phosphor green) so a
+         success state doesn't read as "the same signal" as the primary accent.
+         Warn is classic amber CRT phosphor. */
+      --ok: #00e676;
+      --ok-soft: rgba(0, 230, 118, 0.14);
+      --warn: #ffb000;
+      --warn-soft: rgba(255, 176, 0, 0.14);
+      --font-display: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-body: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="terminal"][data-mode="light"] {
+      --bg: #ffffff;
+      --bg-elev: #fafafa;
+      --bg-elev-2: #f0f0f0;
+      --line: #d4d4d4;
+      --line-soft: #e8e8e8;
+      --text: #000000;
+      --text-mute: #707070;
+      --text-dim: #c0c0c0;
+      --accent: #009633;
+      --accent-soft: rgba(0, 150, 51, 0.10);
+      --accent-2: #5a6878;
+      --accent-2-soft: rgba(90, 104, 120, 0.10);
+      --danger: #a01f1f;
+      --danger-soft: rgba(160, 31, 31, 0.10);
+      --ok: #007a3d;
+      --ok-soft: rgba(0, 122, 61, 0.10);
+      --warn: #a15c00;
+      --warn-soft: rgba(161, 92, 0, 0.10);
+      --font-display: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-body: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Nordic — pale aurora blues + heather purple, Scandinavian calm. Sans throughout. */
+    [data-theme="nordic"][data-mode="dark"] {
+      --bg: #0e1923;
+      --bg-elev: #182433;
+      --bg-elev-2: #213044;
+      --line: #2c3a4d;
+      --line-soft: #1a2535;
+      --text: #e8edf3;
+      --text-mute: #8b95a3;
+      --text-dim: #4a5667;
+      /* Brighter aurora cyan — was sitting at ~0.50 luminance, easy to miss against
+         the deep navy bg. #88dfff pushes to ~0.69 (vivid arctic glow). The secondary
+         comes down to a dustier heather to keep the brightness gap honest. */
+      --accent: #88dfff;
+      --accent-soft: rgba(136, 223, 255, 0.16);
+      --accent-2: #9b7a99;
+      --accent-2-soft: rgba(155, 122, 153, 0.12);
+      --danger: #bf616a;
+      --danger-soft: rgba(191, 97, 106, 0.12);
+      --ok: #a3be8c;
+      --ok-soft: rgba(163, 190, 140, 0.14);
+      --warn: #ebcb8b;
+      --warn-soft: rgba(235, 203, 139, 0.14);
+      --font-display: 'Public Sans', system-ui, sans-serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="nordic"][data-mode="light"] {
+      --bg: #f4f1ed;
+      --bg-elev: #ffffff;
+      --bg-elev-2: #e8e2da;
+      --line: #d4cec3;
+      --line-soft: #e8e2da;
+      --text: #2e3440;
+      --text-mute: #5e676f;
+      --text-dim: #b0b7c1;
+      --accent: #2a5a85;
+      --accent-soft: rgba(42, 90, 133, 0.10);
+      --accent-2: #5a4565;
+      --accent-2-soft: rgba(90, 69, 101, 0.10);
+      --danger: #a13a3a;
+      --danger-soft: rgba(161, 58, 58, 0.10);
+      --ok: #4f7942;
+      --ok-soft: rgba(79, 121, 66, 0.10);
+      --warn: #86691b;
+      --warn-soft: rgba(134, 105, 27, 0.10);
+      --font-display: 'Public Sans', system-ui, sans-serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Ink — black, rice paper, vermillion seal + indigo dye. East Asian calligraphy. */
+    [data-theme="ink"][data-mode="dark"] {
+      --bg: #0c0a08;
+      --bg-elev: #161310;
+      --bg-elev-2: #211c17;
+      --line: #2d2620;
+      --line-soft: #1c1814;
+      --text: #f0eae0;
+      --text-mute: #8a7f72;
+      --text-dim: #4a4339;
+      --accent: #d72638;
+      --accent-soft: rgba(215, 38, 56, 0.14);
+      --accent-2: #6b7faa;
+      --accent-2-soft: rgba(107, 127, 170, 0.12);
+      --danger: #c12830;
+      --danger-soft: rgba(193, 40, 48, 0.12);
+      --ok: #5a8a6b;
+      --ok-soft: rgba(90, 138, 107, 0.12);
+      --warn: #c8963e;
+      --warn-soft: rgba(200, 150, 62, 0.12);
+      --font-display: 'Instrument Serif', 'Times New Roman', serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="ink"][data-mode="light"] {
+      --bg: #f5efe2;
+      --bg-elev: #fdf8eb;
+      --bg-elev-2: #ebe2cb;
+      --line: #d3c9ad;
+      --line-soft: #e3d9bd;
+      --text: #1a1612;
+      --text-mute: #5a4f42;
+      --text-dim: #a89878;
+      --accent: #b51d2e;
+      --accent-soft: rgba(181, 29, 46, 0.10);
+      --accent-2: #4a6088;
+      --accent-2-soft: rgba(74, 96, 136, 0.10);
+      --danger: #8a1018;
+      --danger-soft: rgba(138, 16, 24, 0.10);
+      --ok: #3d6b4a;
+      --ok-soft: rgba(61, 107, 74, 0.10);
+      --warn: #8a6218;
+      --warn-soft: rgba(138, 98, 24, 0.10);
+      --font-display: 'Instrument Serif', 'Times New Roman', serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Botanical — moss + terracotta clay, Fraunces serif warmth, garden mood. */
+    [data-theme="botanical"][data-mode="dark"] {
+      --bg: #1a1814;
+      --bg-elev: #232019;
+      --bg-elev-2: #2d2920;
+      --line: #383428;
+      --line-soft: #25221b;
+      --text: #ede5d3;
+      --text-mute: #8a8270;
+      --text-dim: #524a3c;
+      /* Brighter moss sage — #6fa885 (~0.36 luminance) was actually below terracotta
+         (~0.36 too), so the wrong color was winning the eye. Pushing sage to #88cea0
+         (~0.55) and dialing terracotta down to a burnt #c47245 (~0.27) restores the
+         sage-leads / clay-supports hierarchy this theme always wanted. */
+      --accent: #88cea0;
+      --accent-soft: rgba(136, 206, 160, 0.16);
+      --accent-2: #c47245;
+      --accent-2-soft: rgba(196, 114, 69, 0.14);
+      --danger: #c14a3a;
+      --danger-soft: rgba(193, 74, 58, 0.12);
+      /* Accent already occupies sage green, so ok shifts cooler toward pine to
+         stay distinguishable; warn is a marigold gold for the garden mood. */
+      --ok: #5a9b6f;
+      --ok-soft: rgba(90, 155, 111, 0.14);
+      --warn: #d4a017;
+      --warn-soft: rgba(212, 160, 23, 0.14);
+      --font-display: 'Fraunces', 'Instrument Serif', serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="botanical"][data-mode="light"] {
+      --bg: #f5efde;
+      --bg-elev: #fffaec;
+      --bg-elev-2: #ece4ca;
+      --line: #d4cba9;
+      --line-soft: #e6dec0;
+      --text: #2c2818;
+      --text-mute: #6b6450;
+      --text-dim: #a89e7e;
+      --accent: #2d6a4f;
+      --accent-soft: rgba(45, 106, 79, 0.10);
+      --accent-2: #a64f24;
+      --accent-2-soft: rgba(166, 79, 36, 0.10);
+      --danger: #8a2c1c;
+      --danger-soft: rgba(138, 44, 28, 0.10);
+      --ok: #3f6b4a;
+      --ok-soft: rgba(63, 107, 74, 0.10);
+      --warn: #8a6215;
+      --warn-soft: rgba(138, 98, 21, 0.10);
+      --font-display: 'Fraunces', 'Instrument Serif', serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Plasma — cyberpunk neon: hot magenta + electric violet on blackcurrant. */
+    [data-theme="plasma"][data-mode="dark"] {
+      --bg: #0a0610;
+      --bg-elev: #14091e;
+      --bg-elev-2: #1e0e2c;
+      --line: #2e1942;
+      --line-soft: #1a0d28;
+      --text: #f0e0ff;
+      --text-mute: #8a7090;
+      --text-dim: #50405a;
+      --accent: #ff2e88;
+      --accent-soft: rgba(255, 46, 136, 0.16);
+      /* Deeper, greyer violet. The original #9b6dff sat ~0.41 luminance vs magenta's
+         ~0.47 — only 1.15×, basically co-equal. Dropping to #6e5a8a (~0.27) gives a
+         1.7× gap and reads as a calmer companion to the hot pink primary. */
+      --accent-2: #6e5a8a;
+      --accent-2-soft: rgba(110, 90, 138, 0.14);
+      --danger: #ff3050;
+      --danger-soft: rgba(255, 48, 80, 0.14);
+      --ok: #00ff9f;
+      --ok-soft: rgba(0, 255, 159, 0.16);
+      --warn: #ffea00;
+      --warn-soft: rgba(255, 234, 0, 0.16);
+      --font-display: 'Public Sans', system-ui, sans-serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="plasma"][data-mode="light"] {
+      --bg: #fcf2fa;
+      --bg-elev: #ffffff;
+      --bg-elev-2: #f0dff0;
+      --line: #d4c0d8;
+      --line-soft: #e8d8ec;
+      --text: #1c0a24;
+      --text-mute: #5c4a64;
+      --text-dim: #ad9ab0;
+      --accent: #c81e6c;
+      --accent-soft: rgba(200, 30, 108, 0.10);
+      --accent-2: #6537d4;
+      --accent-2-soft: rgba(101, 55, 212, 0.10);
+      --danger: #b32850;
+      --danger-soft: rgba(179, 40, 80, 0.10);
+      --ok: #0d8a5f;
+      --ok-soft: rgba(13, 138, 95, 0.10);
+      --warn: #8d6900;
+      --warn-soft: rgba(141, 105, 0, 0.10);
+      --font-display: 'Public Sans', system-ui, sans-serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Atlas — National Geographic editorial: NG yellow + oceanic teal on parchment/ocean. */
+    [data-theme="atlas"][data-mode="dark"] {
+      --bg: #0a161c;
+      --bg-elev: #122029;
+      --bg-elev-2: #1a2c37;
+      --line: #243845;
+      --line-soft: #15242e;
+      --text: #f0e8d0;
+      --text-mute: #807a68;
+      --text-dim: #48443a;
+      --accent: #ffd200;
+      --accent-soft: rgba(255, 210, 0, 0.14);
+      --accent-2: #4a9bb0;
+      --accent-2-soft: rgba(74, 155, 176, 0.14);
+      --danger: #d4503a;
+      --danger-soft: rgba(212, 80, 58, 0.12);
+      --ok: #6fae4a;
+      --ok-soft: rgba(111, 174, 74, 0.14);
+      /* Accent already occupies NG yellow, so warn leans orange to stay
+         distinguishable while keeping the editorial gold family. */
+      --warn: #ff9e2c;
+      --warn-soft: rgba(255, 158, 44, 0.14);
+      --font-display: 'Fraunces', 'Instrument Serif', serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="atlas"][data-mode="light"] {
+      --bg: #faf4e6;
+      --bg-elev: #ffffff;
+      --bg-elev-2: #efe7d0;
+      --line: #d4c8a8;
+      --line-soft: #e6dec5;
+      --text: #1c1810;
+      --text-mute: #6b6450;
+      --text-dim: #b0a888;
+      --accent: #c89500;
+      --accent-soft: rgba(200, 149, 0, 0.12);
+      --accent-2: #2b6878;
+      --accent-2-soft: rgba(43, 104, 120, 0.10);
+      --danger: #a4382e;
+      --danger-soft: rgba(164, 56, 46, 0.10);
+      --ok: #3f7a28;
+      --ok-soft: rgba(63, 122, 40, 0.10);
+      --warn: #a55c1a;
+      --warn-soft: rgba(165, 92, 26, 0.10);
+      --font-display: 'Fraunces', 'Instrument Serif', serif;
+      --font-body: 'Public Sans', system-ui, sans-serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    /* Library — dusty sage + oxblood burgundy on walnut/parchment. Full-serif, old book. */
+    [data-theme="library"][data-mode="dark"] {
+      --bg: #181410;
+      --bg-elev: #221d18;
+      --bg-elev-2: #2d2620;
+      --line: #38302a;
+      --line-soft: #251f1a;
+      --text: #ecdfca;
+      --text-mute: #847b6b;
+      --text-dim: #4e4639;
+      /* Brighter dusty sage; #94a87a was sitting under the (formerly pinker) burgundy
+         visually. #a8bd8a lifts to ~0.50 luminance and the burgundy drops to a proper
+         oxblood-ink #8a3838 (~0.19) — the sage now clearly leads and the burgundy
+         reads as ink, not as the rebound color. */
+      --accent: #a8bd8a;
+      --accent-soft: rgba(168, 189, 138, 0.14);
+      --accent-2: #8a3838;
+      --accent-2-soft: rgba(138, 56, 56, 0.14);
+      --danger: #8a3030;
+      --danger-soft: rgba(138, 48, 48, 0.12);
+      /* Accent already occupies dusty sage, so ok shifts teal-green to stay
+         distinguishable; warn is an aged gold leaf for the old-book mood. */
+      --ok: #5a9b7a;
+      --ok-soft: rgba(90, 155, 122, 0.14);
+      --warn: #c9973f;
+      --warn-soft: rgba(201, 151, 63, 0.14);
+      --font-display: 'Instrument Serif', 'Times New Roman', serif;
+      --font-body: 'Instrument Serif', 'Times New Roman', serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+    [data-theme="library"][data-mode="light"] {
+      --bg: #f0e6d2;
+      --bg-elev: #faf2dc;
+      --bg-elev-2: #e2d6b6;
+      --line: #c8bb98;
+      --line-soft: #d8cca8;
+      --text: #2c1f12;
+      --text-mute: #6e5e48;
+      --text-dim: #a89678;
+      --accent: #5c724a;
+      --accent-soft: rgba(92, 114, 74, 0.10);
+      --accent-2: #6e2c2c;
+      --accent-2-soft: rgba(110, 44, 44, 0.10);
+      --danger: #5a1c1c;
+      --danger-soft: rgba(90, 28, 28, 0.10);
+      --ok: #3d6b52;
+      --ok-soft: rgba(61, 107, 82, 0.10);
+      --warn: #8a6420;
+      --warn-soft: rgba(138, 100, 32, 0.10);
+      --font-display: 'Instrument Serif', 'Times New Roman', serif;
+      --font-body: 'Instrument Serif', 'Times New Roman', serif;
+      --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { margin: 0; padding: 0; height: 100%; background: var(--bg); color: var(--text); }
+    body {
+      font-family: var(--font-body);
+      font-size: 14px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      -webkit-tap-highlight-color: transparent;
+      overscroll-behavior: none;
+    }
+
+    a { color: var(--accent); text-decoration: none; }
+    button { font-family: inherit; font-size: inherit; }
+
+
+/* -- row-density ramp --------------------------------------------------
+   Backs the Settings "Row density" control (compact/default/roomy) — consumed
+   by primitives.css's .o-row/.o-list-hdr/.o-list-filterbar and the sess-tab/
+   sched-tab strip heights so the control actually changes row height and
+   list spacing, not just these definitions. */
+:root {
+  --row-h:  32px;
+  --tab-h:  30px;
+  --gap-1:  4px;
+  --gap-2:  8px;
+  --gap-3:  12px;
+  --gap-4:  16px;
+  /* Fixed structural steps (DESIGN.md §4.1) — page-level layout that must NOT
+     flex with the density ramp above. */
+  --gap-6:  24px;
+  --gap-8:  32px;
+  --gap-12: 48px;
+
+  --detail-pad-x: 24px;
+  --detail-pad-bottom: 48px;
+
+  /* Radius scale (DESIGN.md §5): controls/chips 4px, containers 8px, status
+     pills fully round. --r-pill-sm is a migration alias for --r-control. */
+  --r-control:   4px;
+  --r-container: 8px;
+  --r-pill:      999px;
+  --r-pill-sm:   var(--r-control);
+
+  /* Depth (DESIGN.md §6): exactly one float shadow, for overlays only. */
+  --shadow-pop: 0 12px 32px -12px rgba(0, 0, 0, 0.5);
+
+  /* The one modal/overlay backdrop scrim — replaces the four ad-hoc
+     rgba(0,0,0,.45|.55)/color-mix recipes that were scattered per-surface. */
+  --scrim: rgba(0, 0, 0, 0.55);
+
+  /* Motion (DESIGN.md §8). */
+  --ease:  cubic-bezier(0.2, 0, 0, 1);
+  --dur-1: 120ms;
+  --dur-2: 180ms;
+  --pulse: 1.6s;
+}
+
+html[data-density="compact"] {
+  --row-h: 28px; --tab-h: 26px; --gap-2: 6px; --gap-3: 10px;
+}
+html[data-density="roomy"] {
+  --row-h: 40px; --tab-h: 34px; --gap-2: 10px; --gap-3: 14px;
+}
+
+/* ───── Inline session (job view step-card) ─────────────────────────
+   A live tail into the running Claude session, nested inside a step-card.
+   Chrome kept low so it reads as a signal, not a boxed sub-card: no full
+   border, just a 2px status rail on the left (via inset box-shadow so it
+   stays inside the border-radius). The rail's colour tracks the step's
+   terminal state via :has() — accent-2 by default (idle/streaming), ok /
+   danger / line for finished / failed / cancelled respectively.
+
+   Layout order: transcript feed on top (order:1), thinking indicator
+   pinned at the bottom (order:2) as a darker inset pill so the "what's
+   happening now" line lives closest to the composer edge. */
+.step-inline-session {
+  position: relative;
+  margin: 8px 6px 4px;
+  padding: 10px 82px 10px 16px;
+  background: var(--bg);
+  border-radius: var(--r-container);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-family: var(--font-body);
+  box-shadow: inset 2px 0 0 var(--accent-2);
+}
+.step-inline-session:has(.inline-session-chip[data-variant="finished"])  { box-shadow: inset 2px 0 0 var(--ok, var(--accent-2)); }
+.step-inline-session:has(.inline-session-chip[data-variant="failed"])    { box-shadow: inset 2px 0 0 var(--danger); }
+.step-inline-session:has(.inline-session-chip[data-variant="cancelled"]) { box-shadow: inset 2px 0 0 var(--line); }
+
+/* Live rail — a pulsing accent-coloured bar that sits precisely over the
+   static rail while the thinking strip is present. Confined to the
+   container (no vertical translation), so nothing bleeds past the feed. */
+.step-inline-session:has(.inline-session-thinking .thinking-strip)::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 2px;
+  background: var(--accent);
+  animation: inline-session-rail-pulse var(--pulse) ease-in-out infinite;
+  pointer-events: none;
+}
+@keyframes inline-session-rail-pulse {
+  0%, 100% { opacity: 0.25; }
+  50%      { opacity: 1; }
+}
+
+/* Open pill pinned to the top-right corner, riding the same row as the
+   first line of the feed. Container reserves 66px of right padding so
+   feed text never underlaps the button. Bordered pill treatment gives it
+   a real hit area and clear affordance without the weight of a full row. */
+.inline-session-header {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+}
+.inline-session-spacer { display: none; }
+.inline-session-open {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--text-mute);
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  padding: 3px 8px;
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), background-color var(--dur-1) var(--ease);
+}
+.inline-session-open:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+/* Thinking indicator — pinned below the feed. The container already sits on
+   the darker --bg surface, so no separate fill/border here; just a footer
+   line-height with the accent-italic label + dots + timer. */
+.inline-session-thinking:empty { display: none; }
+.inline-session-thinking {
+  order: 2;
+  align-self: flex-start;
+  margin-top: 2px;
+  max-width: 100%;
+}
+.inline-session-thinking .thinking-strip {
+  border-top: 0;
+  background: transparent;
+  padding: 0;
+  width: auto;
+  gap: 8px;
+}
+.inline-session-thinking .thinking-strip-label { font-size: 12px; }
+.inline-session-thinking .thinking-strip-meta  { font-size: 10px; flex: none; }
+
+/* Feed lines — role-tinted so the eye picks up who's speaking without
+   reading the prefix (→, », ?, !, plain). Mono only for tool_use, everything
+   else uses body font for tighter rhythm. */
+.inline-session-body { order: 1; display: flex; flex-direction: column; gap: 3px; }
+.inline-session-body:empty { display: none; }
+.inline-line {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-mute);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.inline-line[data-role="assistant"] { color: var(--text); }
+.inline-line[data-role="error"]     { color: var(--danger); }
+.inline-line[data-role="ask"]       { color: var(--accent); font-style: italic; }
+.inline-line[data-role="user"]      { color: var(--text-mute); }
+.inline-line[data-role="tool_use"]  {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  letter-spacing: 0.01em;
+}
+
+/* Shell / read tiles reused from the main feed need to be squashed for the
+   inline preview: strip the tile's own margins so they align with the 3px feed
+   gap, drop the font-size a step to match .inline-line, and force each tile to
+   a single ellipsized row. The main-feed CSS uses pre-wrap + break-word so
+   multi-line commands wrap; here we intentionally clip to keep the tail budget
+   at 2 rows. Description/aside/flag rows are suppressed for the same reason —
+   the command itself is the signal, the extras are card chrome. */
+.inline-session-body .msg.msg-shell,
+.inline-session-body .msg.msg-read {
+  margin: 0;
+  padding: 0;
+}
+.inline-session-body .msg.msg-shell .shell-body { font-size: 11px; line-height: 1.5; }
+.inline-session-body .msg.msg-shell .shell-line { align-items: baseline; }
+.inline-session-body .msg.msg-shell .shell-cmd {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.inline-session-body .msg.msg-shell .shell-line-comment,
+.inline-session-body .msg.msg-shell .shell-aside,
+.inline-session-body .msg.msg-shell .shell-flags { display: none; }
+.inline-session-body .msg.msg-read {
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 0;
+}
+.inline-session-body .msg.msg-read .read-target {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+/* Terminal chip becomes a flush-left status line — no floating pill, no
+   border. Colour carries the state; the glyph (✓ ✗ ⊘) from the JS keeps
+   its shape without needing an outlined container. */
+.inline-session-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  font-size: 12px;
+  font-family: var(--font-body);
+  letter-spacing: 0.02em;
+  color: var(--text-mute);
+  width: max-content;
+}
+.inline-session-chip-text { font-variant-numeric: tabular-nums; }
+.inline-session-chip[data-variant="finished"]  { color: var(--ok, var(--accent-2)); }
+.inline-session-chip[data-variant="failed"]    { color: var(--danger); }
+.inline-session-chip[data-variant="cancelled"] { color: var(--text-dim); }
+
+.approval-reject-form {
+  display: none;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 6px;
+}
+.approval-reject-form[data-open="true"] { display: flex; }
+.approval-actions[data-open="false"] { display: none; }
+.approval-reject-reason {
+  font: inherit;
+  font-size: 12px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  padding: 6px 8px;
+  resize: vertical;
+  min-height: 44px;
+}
+.approval-reject-actions { display: flex; gap: 6px; justify-content: flex-end; }
+.approval-reject-cancel,
+.approval-reject-send {
+  font: inherit;
+  font-size: 12px;
+  padding: 4px 10px;
+  border-radius: var(--r-control);
+  cursor: pointer;
+  border: 1px solid var(--line);
+  background: var(--bg);
+  color: var(--text-mute);
+}
+.approval-reject-send {
+  color: var(--danger);
+  border-color: var(--danger-soft);
+  background: var(--danger-soft);
+}
+
+/* ───── Global chrome ────────────────────────────────────────────────────
+   Page-wide rules that aren't surface-specific. */
+
+/* Scrollbar — invisible on touch, restrained on desktop. */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-thumb { background: var(--line); }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* Honor reduced-motion (§8): hold pulses steady and cut transitions/reveals.
+   The pending-approval pulse keeps its *color* — only the animation stops — so
+   the signal stays visible without motion. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

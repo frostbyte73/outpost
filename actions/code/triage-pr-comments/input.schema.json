@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.triage-pr-comments input",
+  "type": "object",
+  "required": ["jobId", "stepId", "workspace", "typePayload"],
+  "properties": {
+    "jobId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "workspace": {
+      "type": "object",
+      "required": ["repoCwd", "branch"],
+      "properties": {
+        "repoCwd": { "type": "string" },
+        "branch": { "type": "string" }
+      }
+    },
+    "goal": { "type": "string" },
+    "approach": { "type": "string" },
+    "risks": { "type": "string" },
+    "previousSteps": {
+      "type": "array",
+      "items": { "type": "object" }
+    },
+    "typePayload": {
+      "type": "object",
+      "required": ["round"],
+      "properties": {
+        "round": {
+          "type": "object",
+          "required": ["kind", "comments"],
+          "properties": {
+            "kind": { "const": "pr-comments" },
+            "comments": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "author", "body"],
+                "properties": {
+                  "id": { "type": "string" },
+                  "author": { "type": "string" },
+                  "body": { "type": "string" },
+                  "createdAt": { "type": "string", "format": "date-time" },
+                  "file": { "type": "string" },
+                  "line": { "type": "integer" },
+                  "diffHunk": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "job": { "type": "object" },
+    "recentLessons": { "type": "array", "items": { "type": "object" } }
+  }
+}

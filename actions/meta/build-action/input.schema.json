@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.build-action input",
+  "type": "object",
+  "required": ["mode"],
+  "properties": {
+    "mode": {
+      "enum": ["new", "edit"],
+      "description": "\"new\" scaffolds a fresh action; \"edit\" revises an existing one."
+    },
+    "actionName": {
+      "type": ["string", "null"],
+      "description": "The existing action's name (edit mode). null for new mode."
+    },
+    "proposedName": {
+      "type": "string",
+      "description": "New mode only — the user's chosen name. Honor it unless invalid."
+    },
+    "actionDir": {
+      "type": "string",
+      "description": "Absolute path to the action's directory (edit mode)."
+    },
+    "actionsDir": {
+      "type": "string",
+      "description": "Absolute path to the parent actions directory (new mode)."
+    },
+    "skillMdBefore": {
+      "type": "string",
+      "description": "Current SKILL.md text (edit mode). Empty for new mode."
+    },
+    "currentAllowlist": {
+      "type": "object",
+      "description": "Current allowlist (edit mode).",
+      "properties": {
+        "alwaysAllow": { "type": "array", "items": { "type": "string" } },
+        "alwaysAllowBashPatterns": { "type": "array", "items": { "type": "string" } },
+        "alwaysAllowMcpPatterns": { "type": "array", "items": { "type": "string" } },
+        "alwaysAllowPathPatterns": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "userFeedback": {
+      "type": "string",
+      "description": "The user's free-text feedback. Treat as the spec."
+    }
+  }
+}

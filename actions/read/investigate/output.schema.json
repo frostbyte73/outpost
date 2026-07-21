@@ -1,0 +1,56 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "read.investigate output",
+  "type": "object",
+  "required": ["findings"],
+  "properties": {
+    "findings": {
+      "type": "string",
+      "description": "Primary human-readable markdown writeup. Specific, cited, calibrated."
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["kind", "summary"],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "What kind of evidence — 'datadog-logs', 'repo-file', 'linear-comment', 'slack-thread', 'runbook', 'web-fetch', 'incident-io', 'github-pr', etc."
+          },
+          "source": {
+            "type": "string",
+            "description": "Where the evidence came from — URL, file:line, log query, ticket ID."
+          },
+          "summary": {
+            "type": "string",
+            "description": "One-line summary of what the evidence shows."
+          },
+          "excerpt": {
+            "type": "string",
+            "description": "Optional verbatim quote from the source."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "verdict": {
+      "type": "object",
+      "description": "Populated when expect === 'incident' or the investigation reached a classification. Omit for general fact-finding.",
+      "required": ["kind", "confidence"],
+      "properties": {
+        "kind": { "enum": ["service-bug", "outage", "client-side", "external", "unknown"] },
+        "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+        "responsible_team": { "type": "string", "description": "Linear team key (required when kind === 'service-bug')." },
+        "suggested_title": { "type": "string" },
+        "writeup": { "type": "string", "description": "Markdown body for the eventual bug ticket." },
+        "customer_summary": { "type": "string", "description": "Markdown for the eventual customer-facing comment back on the original ticket." }
+      }
+    },
+    "caveats": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "What couldn't be verified or what data was missing. Be explicit."
+    }
+  }
+}

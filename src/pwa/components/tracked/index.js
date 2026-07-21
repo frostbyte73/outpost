@@ -1,0 +1,37 @@
+// Tracked surface (list-detail-context layout). Wired into shell/surfaces.js's
+// registry — surfaces.js imports renderList/renderDetail/renderContext from
+// this file only, so everything P2 needed lives here: list.js (grouped list
+// column), detail.js (the one-scroll-story drill-in), focus-rail.js (right
+// column). This file is just the three thin entry points surfaces.js expects.
+
+import { work } from '../../state/work.js';
+import { mountFilterableList } from '../shell/list-filter.js';
+import { emptyState } from '../shell/placeholder.js';
+import { renderTrackedList } from './list.js';
+import { renderTrackedDetail } from './detail.js';
+import { renderContext as renderFocusRail } from './focus-rail.js';
+import { teardownAllExcept } from './session-mounts.js';
+
+export function renderList(mount) {
+  return mountFilterableList(mount, renderTrackedList);
+}
+
+export function renderDetail(mount, deps) {
+  const { selection } = deps ?? {};
+  if (!selection) {
+    teardownAllExcept(null); // nothing is selected — close any lingering inline session mounts
+    emptyState(mount, 'Select a tracked job to view its timeline.');
+    return undefined;
+  }
+  const paint = () => renderTrackedDetail(mount, selection);
+  paint();
+  const unsub = work.subscribe(paint);
+  return () => {
+    unsub();
+    teardownAllExcept(null);
+  };
+}
+
+export function renderContext(mount) {
+  return renderFocusRail(mount);
+}

@@ -1,0 +1,245 @@
+/* Sessions surface — list column (sessions-list.html) and right rail
+   (session-rail.html). The list rows are built on primitives.css's `.o-row`
+   grammar (icon · content · time, grouped hairlines, --r-container corners);
+   this file only adds the sessions-specific content inside those columns.
+   session-view/index.js's own chrome (header, composer model chip) is styled
+   in css/session-view.css, not here — this file is scoped to what mounts
+   inside sessions-surface's own list/context columns. */
+
+/* ── List column ──────────────────────────────────────────────────────── */
+.sess-list { display: flex; flex-direction: column; min-height: 0; }
+.sess-list-hdr { flex: none; display: flex; align-items: baseline; gap: 8px; padding: 14px 14px 8px; }
+.sess-list-hdr h2 { margin: 0; font-family: var(--font-display); font-weight: 500; font-size: 18px; color: var(--text); }
+.sess-list-count { margin-left: auto; font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.sess-list-searchbar { margin: 0 12px 8px; }
+
+.sess-list-tabs {
+  flex: none;
+  display: flex; gap: 4px;
+  margin: 0 12px 8px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+  padding: 4px;
+}
+/* height derives from --tab-h (base.css's density ramp) so the Settings
+   "Row density" control changes tab-strip height too. */
+.sess-tab {
+  flex: 1;
+  height: var(--tab-h, 30px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--text-mute);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-control);
+  cursor: pointer;
+  font: inherit;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.sess-tab.active { background: var(--bg-elev-2); color: var(--text); font-weight: 500; }
+
+.sess-list-body { flex: 1 1 auto; overflow-y: auto; padding: 0 12px 10px; }
+
+/* .o-microhead (primitives.css) carries the 11px/600/uppercase/0.08em
+   micro-label spec; this just adds the group's own top/side inset. */
+.sess-group-label { padding: 10px 4px 4px; }
+
+/* Rows use primitives.css's `.o-row` for chrome (bg-elev, hairline, hover,
+   grid columns) — `.sess-card` only carries content-specific layout and the
+   selected state (§2.2/§7.3: accent border + accent-soft fill). */
+.sess-card { width: 100%; text-align: left; font: inherit; color: inherit; }
+.sess-card.active { border-color: var(--accent); background: var(--accent-soft); }
+
+.sess-card-body { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+
+.sess-hdr { display: flex; align-items: center; gap: 8px; }
+/* Skill/session identity is machine truth (a skill name), not a live signal —
+   the code/ref chip treatment (mono, --bg-elev-2, --text-mute) applies. */
+.sess-skill { font-size: 10px; }
+
+.sess-last {
+  line-height: 1.4;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.sess-foot { font-family: var(--font-mono); font-size: 11px; }
+.sess-foot .cwd { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.sess-new-btn {
+  display: block;
+  width: 100%;
+  background: none;
+  border: 1px dashed var(--line);
+  color: var(--text-mute);
+  border-radius: var(--r-control);
+  padding: 12px;
+  text-align: center;
+  font-size: 12px;
+  font: inherit;
+  cursor: pointer;
+  margin-top: 8px;
+  transition: border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.sess-new-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* ── Right rail ───────────────────────────────────────────────────────── */
+/* Mounts directly onto .o-frame-context (shell-desktop.css already supplies
+   its 16px padding + overflow-y:auto) — this just adds the section rhythm. */
+.sess-rail { display: flex; flex-direction: column; gap: 20px; }
+
+/* Section headers reuse primitives.css's `.o-group-hdr`/`.o-group-count`/
+   `.o-group-rule` (same micro-label spec, spacing, and flex layout as
+   everywhere else) — the `rail-*` classes are now bare hooks with no CSS
+   of their own, kept only so JS doesn't need touching beyond the header
+   markup itself. */
+
+.rail-info-card {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px 12px;
+  font-size: 12px;
+  padding: 12px;
+}
+.rail-info-card .k { color: var(--text-dim); }
+.rail-info-card .v { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rail-info-card .v.mono { font-family: var(--font-mono); }
+.rail-mode { font-weight: 500; }
+.rail-mode-plan { color: var(--accent-2); }
+.rail-mode-accept-edits { color: var(--accent); }
+.rail-mode-bypass { color: var(--danger); }
+.rail-mode-ask { color: var(--warn); }
+
+.rail-todos { display: flex; flex-direction: column; gap: 4px; }
+.rail-todo {
+  display: grid;
+  grid-template-columns: 18px 1fr;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: var(--r-container);
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  align-items: start;
+  line-height: 1.4;
+}
+.rail-todo-box { font-family: var(--font-mono); color: var(--text-dim); text-align: center; font-size: 13px; }
+.rail-todo-done { color: var(--text-dim); }
+.rail-todo-done .rail-todo-box { color: var(--ok); }
+.rail-todo-done .rail-todo-text { text-decoration: line-through; }
+.rail-todo-doing { border-color: var(--accent); border-left: 3px solid var(--accent); padding-left: 10px; }
+.rail-todo-doing .rail-todo-box { color: var(--accent); animation: sess-pulse var(--pulse) ease-in-out infinite; }
+.rail-todo-text { color: inherit; }
+.rail-todo-meta { font-size: 10px; color: var(--text-dim); margin-top: 4px; font-family: var(--font-mono); }
+
+.rail-subagents { display: flex; flex-direction: column; gap: 8px; }
+.rail-subagent {
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+  padding: 12px;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease);
+}
+.rail-subagent:hover { border-color: var(--accent); }
+.rail-subagent.is-done { opacity: 0.7; }
+.rail-subagent.is-done:hover { opacity: 1; }
+.rail-subagent-hdr { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.rail-subagent-type {
+  font-family: var(--font-mono);
+  background: var(--bg-elev-2);
+  padding: 1px 6px;
+  border-radius: var(--r-control);
+  font-size: 11px;
+  color: var(--text);
+}
+.rail-subagent-type-explore { color: var(--accent); background: var(--accent-soft); }
+.rail-subagent-type-review { color: var(--warn); background: var(--warn-soft); }
+.rail-subagent-type-general { color: var(--text-mute); }
+.rail-subagent-status {
+  font-size: 11px;
+  color: var(--text-dim);
+  display: flex; align-items: center; gap: 4px;
+  margin-left: auto;
+  white-space: nowrap;
+}
+.rail-subagent-goal { font-size: 12px; color: var(--text); line-height: 1.5; margin-bottom: 8px; }
+.rail-subagent-live {
+  background: var(--bg-elev);
+  border-top: 1px solid var(--line-soft);
+  margin: 8px -12px -12px;
+  padding: 8px 12px;
+  border-radius: 0 0 var(--r-container) var(--r-container);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  line-height: 1.5;
+  /* Newest line pinned to the bottom, oldest lines overflow and clip past the
+     top — so the feed reads like a bottom-anchored tail (Nth crisp at bottom,
+     older lines fading up) instead of showing the top of the buffer. min-height
+     keeps the newest line below the top fade band even when only a line or two
+     exist (fresh/just-completed agents), so it never renders greyed. */
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  min-height: 60px;
+  max-height: 84px;
+  overflow: hidden;
+  position: relative;
+}
+.rail-subagent-live::after {
+  content: '';
+  position: absolute; top: 0; left: 0; right: 0; height: 40px;
+  background: linear-gradient(to bottom, var(--bg-elev), transparent);
+}
+.rail-subagent-thinking { margin-top: 8px; }
+.rail-subagent-expand {
+  font-size: 11px; color: var(--accent); margin-left: auto;
+  display: flex; align-items: center; gap: 4px;
+  white-space: nowrap;
+}
+
+/* Status dot in the icon column: pulse only while genuinely live (§8). */
+.sess-card .o-row-icon.busy { animation: sess-pulse var(--pulse) ease-in-out infinite; }
+@keyframes sess-pulse { 50% { opacity: 0.4; } }
+@media (prefers-reduced-motion: reduce) {
+  .rail-todo-doing .rail-todo-box,
+  .sess-card .o-row-icon.busy { animation: none; }
+}
+
+/* ── Mobile ───────────────────────────────────────────────────────────── */
+/* The shell's list-tab header (mobile-shell/index.js's paintSessionsHeader)
+   already shows "Sessions" + "N running" — this surface's own in-body
+   .sess-list-hdr would just repeat the title. */
+html[data-layout="mobile"] .sess-list-hdr { display: none; }
+html[data-layout="mobile"] .sess-list-searchbar { margin-top: 4px; }
+/* No keyboard on touch — drop the ⌘F / "· ⌘K" chord hints. */
+html[data-layout="mobile"] .sess-filter-kbd,
+html[data-layout="mobile"] .sess-new-kbd { display: none; }
+
+/* Brief: "the All/Active/Skill/Free-form tabs collapse into a horizontal
+   filter-chip row" — same DOM/classnames, geometry-only: chips size to
+   content and the row scrolls instead of every tab sharing equal width. */
+html[data-layout="mobile"] .sess-list-tabs {
+  display: flex;
+  overflow-x: auto;
+  gap: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  -webkit-overflow-scrolling: touch;
+}
+html[data-layout="mobile"] .sess-tab {
+  flex: none;
+  padding: 8px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+}
+html[data-layout="mobile"] .sess-tab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }

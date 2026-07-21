@@ -1,0 +1,38 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "read.investigate input",
+  "type": "object",
+  "required": ["subject"],
+  "properties": {
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "description": "What to investigate. Free-form — ticket ID, alert URL, bug description, service name, claim from a prior step."
+    },
+    "context": {
+      "type": "string",
+      "description": "Optional additional prose hints from the orchestrator or user."
+    },
+    "workspace": {
+      "type": "object",
+      "properties": {
+        "repoCwd": { "type": "string", "description": "Absolute repo path for code-reading. Omit to stay external-only." }
+      },
+      "additionalProperties": false
+    },
+    "time_range": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string", "description": "ISO-8601 or relative (e.g. now-2h)." },
+        "to": { "type": "string", "description": "ISO-8601 or 'now'." }
+      },
+      "additionalProperties": false
+    },
+    "expect": {
+      "enum": ["incident", "bug", "claim", "general"],
+      "description": "Shape hint: 'incident' triggers the verdict block; 'claim' returns supporting/refuting evidence; 'general' returns findings + evidence only."
+    }
+  },
+  "additionalProperties": false
+}

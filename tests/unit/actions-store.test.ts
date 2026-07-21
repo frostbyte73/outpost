@@ -1,0 +1,56 @@
+import { describe, it, expect } from 'vitest';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { ActionsStore } from '../../src/storage/actions-store.js';
+
+function tmpPath(): string {
+  return join(mkdtempSync(join(tmpdir(), 'act-store-')), 'actions.json');
+}
+
+describe('ActionsStore', () => {
+  it('returns defaults for unknown action', () => {
+    const s = new ActionsStore(tmpPath());
+    expect(s.get('foo')).toEqual({
+      allowlist: { alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [] },
+    });
+  });
+
+  it('persists allowlist rules across instances', () => {
+    const path = tmpPath();
+    const s1 = new ActionsStore(path);
+    expect(s1.addRule('meta.orchestrate', 'tool', 'Edit')).toBe(true);
+    expect(s1.addRule('meta.orchestrate', 'tool', 'Edit')).toBe(false);
+
+    const s2 = new ActionsStore(path);
+    const w = s2.get('meta.orchestrate');
+    expect(w.allowlist.alwaysAllow).toContain('Edit');
+  });
+
+  it('persists path rules across instances', () => {
+    const path = tmpPath();
+    const s1 = new ActionsStore(path);
+    expect(s1.addRule('meta.orchestrate', 'path', 'Write:^/tmp/')).toBe(true);
+
+    const s2 = new ActionsStore(path);
+    expect(s2.get('meta.orchestrate').allowlist.alwaysAllowPathPatterns).toContain('Write:^/tmp/');
+  });
+
+  it('starts empty on malformed json', () => {
+    const path = tmpPath();
+    writeFileSync(path, '{not json');
+    const s = new ActionsStore(path);
+    expect(s.list()).toEqual({});
+    s.addRule('x', 'tool', 'Read');
+    const reloaded = JSON.parse(readFileSync(path, 'utf8'));
+    expect(reloaded.actions.x.allowlist.alwaysAllow).toContain('Read');
+  });
+
+  it('deleteAction removes the entry', () => {
+    const s = new ActionsStore(tmpPath());
+    s.addRule('foo', 'tool', 'Read');
+    expect(s.deleteAction('foo')).toBe(true);
+    expect(s.deleteAction('foo')).toBe(false);
+    expect(s.get('foo').allowlist.alwaysAllow).toEqual([]);
+  });
+});

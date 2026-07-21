@@ -1,0 +1,5 @@
+{"type":"system","subtype":"init","tools":["Bash"]}
+{"_marker":"wait-for-input"}
+{"type":"assistant","message":{"id":"msg_l1","role":"assistant","content":[{"type":"text","text":"working on it"}],"model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}
+{"_marker":"wait-for-input"}
+{"type":"assistant","message":{"id":"msg_l2","role":"assistant","content":[{"type":"text","text":"done!"}],"model":"claude-opus-4-7","usage":{"input_tokens":1,"output_tokens":1,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}

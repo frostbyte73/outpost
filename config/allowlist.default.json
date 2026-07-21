@@ -1,0 +1,34 @@
+{
+  "alwaysAllow": [
+    "Read",
+    "Glob",
+    "Grep",
+    "WebFetch",
+    "WebSearch",
+    "TaskList",
+    "TaskGet",
+    "TaskCreate",
+    "TaskUpdate",
+    "ToolSearch",
+    "ListMcpResourcesTool",
+    "ReadMcpResourceTool"
+  ],
+  "alwaysAllowBashPatterns": [
+    "^(ls|cat|head|tail|file|wc|stat|du|pwd|whoami|date|env|which|type)(\\s|$)",
+    "^kubectl (get|describe|logs|top|version|api-resources|api-versions)(\\s|$)",
+    "^kubectl config view(\\s|$)",
+    "^gh (pr view|pr list|run view|run list|api|repo view|issue view|issue list|search)(\\s|$)",
+    "^git (status|log|diff|show|blame|branch)(\\s|$)",
+    "^git remote -v$",
+    "^git config --get ",
+    "^rg(\\s|$)",
+    "^find(\\s|$)"
+  ],
+  "alwaysAllowMcpPatterns": [
+    "^mcp__incident-io__(incident_show|incident_list|incident_update_list|alert_list|alert_show|escalation_show|escalation_list|escalation_path_list|escalation_path_show|schedule_list|schedule_show|team_list|team_show|user_list|catalog_entry_list|catalog_type_list|catalog_entry_show|investigation_sync|ask|ask_incident|ask_telemetry|follow_up_list|incident_stats|alert_stats|follow_up_stats|resource_list|resource_show|alert_source_list)$",
+    "^mcp__notion__notion-(fetch|search|get-comments|get-users|get-teams|query-data-sources)$",
+    "^mcp__claude_ai_DataDog_MCP__",
+    "^mcp__claude_ai_Slack__slack_(read_channel|read_thread|read_canvas|read_user_profile|search_channels|search_public|search_public_and_private|search_users)$",
+    "^mcp__github__(get|list|search|pull_request_read|issue_read)"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "write.linear-issue output",
+  "type": "object",
+  "required": ["id", "url"],
+  "properties": {
+    "id": { "type": "string", "description": "Linear human identifier, e.g. CORE-1234." },
+    "url": { "type": "string", "format": "uri" }
+  }
+}

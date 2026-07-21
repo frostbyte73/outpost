@@ -1,0 +1,92 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import type { AllowlistConfig } from '../permissions/allowlist.js';
+
+export interface ActionConfig {
+  allowlist: AllowlistConfig;
+}
+
+function emptyAllowlist(): AllowlistConfig {
+  return { alwaysAllow: [], alwaysAllowBashPatterns: [], alwaysAllowMcpPatterns: [], alwaysAllowPathPatterns: [] };
+}
+
+function defaultConfig(): ActionConfig {
+  return { allowlist: emptyAllowlist() };
+}
+
+interface Persisted {
+  actions?: Record<string, Partial<ActionConfig>>;
+}
+
+function atomicWrite(path: string, data: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  const tmp = `${path}.tmp`;
+  writeFileSync(tmp, data, { mode: 0o600 });
+  renameSync(tmp, path);
+}
+
+export class ActionsStore {
+  private byName = new Map<string, ActionConfig>();
+
+  constructor(private readonly path: string) {
+    if (!existsSync(path)) return;
+    let parsed: Persisted;
+    try { parsed = JSON.parse(readFileSync(path, 'utf8')) as Persisted; }
+    catch { return; }
+    for (const [name, raw] of Object.entries(parsed.actions ?? {})) {
+      const al = (raw.allowlist ?? {}) as Partial<AllowlistConfig>;
+      this.byName.set(name, {
+        allowlist: {
+          alwaysAllow: Array.isArray(al.alwaysAllow) ? [...al.alwaysAllow] : [],
+          alwaysAllowBashPatterns: Array.isArray(al.alwaysAllowBashPatterns) ? [...al.alwaysAllowBashPatterns] : [],
+          alwaysAllowMcpPatterns: Array.isArray(al.alwaysAllowMcpPatterns) ? [...al.alwaysAllowMcpPatterns] : [],
+          alwaysAllowPathPatterns: Array.isArray(al.alwaysAllowPathPatterns) ? [...al.alwaysAllowPathPatterns] : [],
+        },
+      });
+    }
+  }
+
+  get(name: string): ActionConfig {
+    const v = this.byName.get(name);
+    return v ?? defaultConfig();
+  }
+
+  list(): Record<string, ActionConfig> {
+    return Object.fromEntries(this.byName);
+  }
+
+  addRule(name: string, kind: 'tool' | 'bash' | 'mcp' | 'path', value: string): boolean {
+    const cur = this.byName.get(name) ?? defaultConfig();
+    const al = cur.allowlist;
+    const key = kind === 'tool' ? 'alwaysAllow'
+      : kind === 'bash' ? 'alwaysAllowBashPatterns'
+      : kind === 'mcp' ? 'alwaysAllowMcpPatterns'
+      : 'alwaysAllowPathPatterns';
+    const list = (al[key] ?? []) as string[];
+    if (list.includes(value)) return false;
+    if (kind === 'bash' || kind === 'mcp') new RegExp(value);
+    if (kind === 'path') {
+      const idx = value.indexOf(':');
+      if (idx <= 0 || idx === value.length - 1) throw new Error('path rule must be "<ToolName>:<regex>"');
+      new RegExp(value.slice(idx + 1));
+    }
+    const next: ActionConfig = {
+      allowlist: { ...al, [key]: [...list, value] },
+    };
+    this.byName.set(name, next);
+    this.persist();
+    return true;
+  }
+
+  deleteAction(name: string): boolean {
+    if (!this.byName.has(name)) return false;
+    this.byName.delete(name);
+    this.persist();
+    return true;
+  }
+
+  private persist(): void {
+    const out: Persisted = { actions: Object.fromEntries(this.byName) };
+    atomicWrite(this.path, JSON.stringify(out, null, 2) + '\n');
+  }
+}

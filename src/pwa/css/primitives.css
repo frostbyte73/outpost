@@ -1,0 +1,401 @@
+/* ───── Shared visual language ──────────────────────────────────────────
+   Primitives used by BOTH desktop and mobile surfaces (D2/D3 of the UX
+   redesign). Every class here is prefixed "o-" to keep the shared primitive
+   namespace distinct from per-surface class names.
+
+   Geometry is desktop-first; `html[data-layout="mobile"]` overrides at the
+   bottom apply the denser mobile deltas to the SAME class names — one
+   source of truth per primitive, per D3.
+
+   Token vocabulary is intentionally narrow: --bg, --bg-elev, --bg-elev-2,
+   --line, --line-soft, --text, --text-mute, --text-dim, --accent, --ok,
+   --danger, --warn (+ -soft variants), --font-display, --font-mono. No
+   hardcoded hex, no hardcoded font names.
+*/
+
+/* ── Row primitive: icon · content · time ────────────────────────────── */
+/* Vertical padding derives from --gap-3 (base.css's density ramp:
+   compact/default/roomy — default gap-3 is 12px, matching the padding this
+   rule always had) so the Settings "Row density" control changes row height
+   here instead of being a no-op. */
+.o-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  align-items: start;
+  gap: 14px;
+  padding: var(--gap-3, 12px) 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  cursor: pointer;
+}
+.o-row:hover { background: var(--bg-elev-2); }
+.o-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+/* Grouped list: consecutive .o-row children of .o-row-group collapse their
+   shared hairline into one outline, first/last carrying the section radius. */
+.o-row-group .o-row { border-bottom: none; }
+.o-row-group .o-row:last-child { border-bottom: 1px solid var(--line); }
+.o-row-group .o-row:first-child { border-radius: var(--r-container) var(--r-container) 0 0; }
+.o-row-group .o-row:last-child { border-radius: 0 0 var(--r-container) var(--r-container); }
+.o-row-group .o-row:only-child { border-radius: var(--r-container); }
+
+/* ── Shared list-column chrome (header · filter bar · body) ─────────────
+   Used by both layouts — sessions-surface/list.js and shell/list-filter.js
+   render this markup whether mobile-shell or the desktop frame mounts it —
+   so it lives here rather than a layout-scoped stylesheet. */
+.o-list-hdr { flex: none; display: flex; align-items: baseline; gap: 8px; padding: 14px 14px 8px; }
+.o-list-hdr h2 { margin: 0; font-family: var(--font-display); font-weight: 500; font-size: 18px; color: var(--text); }
+.o-list-count { margin-left: auto; font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.o-list-filterbar {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px; border-bottom: 1px solid var(--line-soft); flex: none;
+}
+.o-list-filter {
+  flex: 1 1 auto; width: 100%; box-sizing: border-box; min-width: 0;
+  padding: 6px 10px; background: var(--bg); border: 1px solid var(--line);
+  border-radius: var(--r-control); color: var(--text); font: inherit; font-size: 13px;
+  appearance: none; -webkit-appearance: none;
+}
+.o-list-filter:focus { outline: none; border-color: var(--accent); }
+.o-list-body {
+  flex: 1 1 auto; overflow-y: auto; padding: 10px 12px;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+}
+
+.o-row-icon {
+  font-size: 14px;
+  line-height: 1.4;
+  text-align: center;
+  color: var(--text-dim);
+}
+.o-row-icon.hot   { color: var(--danger); }
+.o-row-icon.warn  { color: var(--warn); }
+.o-row-icon.ok    { color: var(--ok); }
+.o-row-icon.busy  { color: var(--accent); }
+.o-row-icon.idle  { color: var(--text-dim); }
+
+.o-row-title {
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--text);
+  min-width: 0;
+}
+.o-ref {
+  font-family: var(--font-mono);
+  font-size: 0.86em;
+  color: var(--text-dim);
+  margin-right: 6px;
+}
+.o-row-sub {
+  margin-top: 3px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.o-row-time {
+  align-self: start;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* ── Section / card containers ───────────────────────────────────────── */
+.o-section {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+}
+.o-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-container);
+}
+
+/* ── Pills / badges / kbd ────────────────────────────────────────────── */
+.o-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  font-size: 11px;
+  line-height: 1.6;
+  background: var(--bg-elev-2);
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.o-pill.review,
+.o-pill.warn         { background: var(--warn-soft);   color: var(--warn); }
+.o-pill.investigate  { background: var(--accent-soft); color: var(--accent); }
+.o-pill.pr,
+.o-pill.ok           { background: var(--ok-soft);     color: var(--ok); }
+.o-pill.danger       { background: var(--danger-soft); color: var(--danger); }
+/* Code/ref chip is a control-shaped chip, not a round status pill (§7.2). */
+.o-pill.code         { font-family: var(--font-mono); border-radius: var(--r-control); background: var(--bg-elev-2); color: var(--text-mute); }
+
+.o-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  padding: 1px 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+.o-badge.hot {
+  background: var(--warn);
+  color: var(--bg);
+  border-radius: var(--r-pill);
+  font-weight: 500;
+  padding: 1px 6px;
+}
+
+.o-kbd {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  background: var(--bg-elev-2);
+  color: var(--text-mute);
+  padding: 2px 6px;
+  border-radius: var(--r-control);
+  white-space: nowrap;
+}
+
+/* ── Group headers ───────────────────────────────────────────────────── */
+.o-group-hdr {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.o-group-hdr h2,
+.o-group-hdr h3,
+.o-group-hdr .o-group-title {
+  margin: 0;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+.o-group-hdr .o-group-count { font-size: 11px; color: var(--text-dim); }
+.o-group-hdr .o-group-rule { flex: 1; height: 1px; background: var(--line); }
+
+/* Bare micro-heading utility — same spec as .o-group-hdr h2/h3 (11px/0.08em/
+   600/uppercase/--text-dim) for callers that just need the text treatment
+   without the flex/rule wrapper. This is the one canonical uppercase-label
+   spec for the redesign surfaces; several already hand-matched it with a
+   comment ("Micro-heading spec matches .o-group-hdr") — point those at this
+   class over time instead of re-declaring the five properties. */
+.o-microhead {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+
+/* ── Left-border state coding ────────────────────────────────────────── */
+.o-edge-warn    { border-left: 3px solid var(--warn); }
+.o-edge-accent  { border-left: 3px solid var(--accent); }
+.o-edge-danger  { border-left: 3px solid var(--danger); }
+
+/* ── Focus card (warning-bordered) ───────────────────────────────────── */
+.o-focus-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--warn);
+  border-radius: var(--r-container);
+  padding: 14px 16px;
+}
+/* Micro-label spec (§3.2: 11px/600/uppercase/0.08em) tinted --warn because the
+   focus card is the "your move" surface. */
+.o-focus-label {
+  margin-bottom: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--warn);
+}
+.o-focus-title {
+  margin-bottom: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+}
+.o-focus-desc {
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-mute);
+}
+.o-focus-cta {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: var(--accent);
+  color: var(--bg);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  text-align: center;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+
+/* ── Button system (DESIGN.md §7.1) ───────────────────────────────────────
+   One system, colored by role. Body font, sentence case, NO letter-spacing,
+   NO text-transform, --r-control (4px). The per-surface lookalikes
+   (.sched-btn/.lib-btn/.dr-btn) share this base shape and are being migrated
+   to the `.o-btn .o-btn--<variant>` classes below; the selector list keeps
+   existing markup working during that migration. Color transitions only
+   (--dur-1) — no scale/lift on hover or press. */
+.o-btn,
+.sched-btn,
+.lib-btn,
+.dr-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  border-radius: var(--r-control);
+  padding: 6px 12px;
+  font: inherit;
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.4;
+  cursor: pointer;
+  text-decoration: none;
+  text-transform: none;
+  letter-spacing: 0;
+  transition: background var(--dur-1) var(--ease),
+              border-color var(--dur-1) var(--ease),
+              color var(--dur-1) var(--ease);
+}
+/* Size modifier — default (md) is the base rule above. */
+.o-btn.sm { padding: 4px 10px; font-size: 12px; }
+
+/* Role variants — and only four. Only --primary uses a solid accent fill,
+   reinforcing the one-signal-per-view budget (§2.2). */
+.o-btn--primary { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.o-btn--primary:hover { background: var(--accent); }
+.o-btn--default { background: var(--bg-elev); border-color: var(--line); color: var(--text-mute); }
+.o-btn--default:hover { color: var(--text); border-color: var(--line); background: var(--bg-elev-2); }
+.o-btn--ghost { background: transparent; border-color: transparent; color: var(--text-mute); }
+.o-btn--ghost:hover { background: var(--bg-elev-2); color: var(--text); }
+.o-btn--danger { background: var(--danger-soft); border-color: var(--danger-soft); color: var(--danger); }
+.o-btn--danger:hover { border-color: var(--danger); }
+
+/* ── Overflow menu (⋯) ───────────────────────────────────────────────────
+   Desktop: `.o-menu`/`.o-menu-body` are `display: contents` so their
+   children flow inline with whatever row they're in, and `.o-menu-toggle`
+   stays hidden — i.e. desktop sees the exact same flat button row it always
+   did. Mobile flips this into a real dropdown (see the gated block below).
+   One shared wiring helper (utils/overflow-menu.js) drives the interaction;
+   this is just the shape. */
+.o-menu { display: contents; }
+.o-menu-toggle { display: none; }
+.o-menu-body { display: contents; }
+
+/* ── Account-usage popover content ───────────────────────────────────────
+   Rendered by utils/usage-bar.js (usagePopoverHtml) into BOTH the desktop
+   sidebar-foot popover (.o-usage-popover, shell-desktop.css) and the mobile bottom
+   sheet (.m-usage-sheet-body, shell-mobile.css) — so these are layout-agnostic
+   and live here rather than in either shell sheet. */
+.o-usage-pop-hdr h4 {
+  margin: 0 0 8px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+}
+.o-usage-pop-block { padding: 10px 0; border-bottom: 1px solid var(--line-soft); }
+.o-usage-pop-block:last-child { border-bottom: none; padding-bottom: 0; }
+.o-usage-pop-row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
+.o-usage-pop-k { font-size: 12px; color: var(--text); font-weight: 500; }
+.o-usage-pop-v { font-size: 11px; color: var(--text-mute); font-variant-numeric: tabular-nums; text-align: right; }
+.o-usage-pop-bar { height: 7px; background: var(--bg-elev-2); border-radius: var(--r-pill); overflow: hidden; margin-bottom: 6px; }
+.o-usage-pop-fill { display: block; height: 100%; background: var(--accent); border-radius: var(--r-pill); }
+.o-usage-pop-fill.warn { background: var(--warn); }
+.o-usage-pop-fill.hot  { background: var(--danger); }
+.o-usage-pop-meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-dim); }
+.o-usage-pop-breakdown {
+  display: grid; grid-template-columns: 1fr auto; gap: 4px 12px;
+  font-size: 12px; color: var(--text-mute); margin-top: 6px;
+}
+.o-usage-pop-breakdown .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
+
+/* ───── Mobile geometry deltas ───────────────────────────────────────────
+   Denser spacing per mobile-cockpit-tracked.html: rows stack as discrete
+   rounded cards (no border-collapse — each carries its own radius + a
+   6px gutter) rather than desktop's single collapsed-border group. */
+html[data-layout="mobile"] .o-row {
+  grid-template-columns: 20px 1fr auto;
+  gap: 12px;
+  border-radius: var(--r-container);
+  margin-bottom: 6px;
+}
+html[data-layout="mobile"] .o-row-group .o-row {
+  border-bottom: 1px solid var(--line);
+  border-radius: var(--r-container);
+}
+html[data-layout="mobile"] .o-row-icon { font-size: 14px; margin-top: 2px; }
+html[data-layout="mobile"] .o-row-title { font-size: 13px; margin-bottom: 4px; }
+html[data-layout="mobile"] .o-row-sub { font-size: 12px; }
+html[data-layout="mobile"] .o-pill { font-size: 11px; }
+html[data-layout="mobile"] .o-row-time { font-size: 11px; }
+
+html[data-layout="mobile"] .o-group-hdr {
+  margin-bottom: 8px;
+  padding: 0 4px;
+}
+
+html[data-layout="mobile"] .o-focus-card { margin-bottom: 20px; }
+
+/* Overflow menu becomes a real dropdown on mobile (see the shared shape
+   above) — anchored to the toggle button, closed by default via [hidden]. */
+html[data-layout="mobile"] .o-menu { display: inline-flex; flex: 0 0 auto; position: relative; }
+html[data-layout="mobile"] .o-menu-toggle {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  min-width: 0;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--text-mute);
+  font-size: 16px;
+  cursor: pointer;
+}
+html[data-layout="mobile"] .o-menu-toggle:active { background: var(--bg-elev-2); }
+html[data-layout="mobile"] .o-menu-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 10;
+  min-width: 170px;
+  padding: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+  box-shadow: var(--shadow-pop);
+}
+html[data-layout="mobile"] .o-menu-body[hidden] { display: none; }
+html[data-layout="mobile"] .o-menu-body > * { width: 100%; text-align: left; }

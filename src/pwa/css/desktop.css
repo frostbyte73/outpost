@@ -1,0 +1,54 @@
+/* Desktop layout stylesheet — active only when html[data-layout="desktop"].
+   Every rule MUST be scoped under html[data-layout="desktop"] so the mobile
+   path (mobile.css) remains authoritative below the breakpoint.
+
+   The activity-rail/list-rail/workspace/pane/tab/quick-open/usage-strip/
+   context-menu system this file used to style (D0-era desktop shell) was
+   replaced by the sidebar+list/detail/context frame in shell-desktop.css
+   (D1) and P2's surfaces; those components and their rules were deleted in
+   P4. What's left here is the generic desktop-only remainder that isn't
+   scoped to any one shell generation.
+*/
+
+html[data-layout="desktop"] body {
+  overflow: hidden;
+}
+
+/* -- sheet-pattern as centered modal on desktop ----------------------------
+   Any `.sheet`/`.sheet-backdrop` pair (todos, cwd-picker, agents, ...) gets
+   centered-modal treatment here instead of mobile's bottom-sheet slide-up.
+   Scoped to .sheet.open so mobile's transform-based hide (translateY(100%))
+   is preserved when the sheet is closed. */
+html[data-layout="desktop"] .sheet-backdrop.open {
+  background: var(--scrim);
+  backdrop-filter: blur(2px);
+}
+html[data-layout="desktop"] .sheet.open {
+  position: fixed;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  right: auto; bottom: auto;
+  width: min(560px, 92vw);
+  max-height: 80vh; overflow: auto;
+  border-radius: var(--r-container); border: 1px solid var(--line);
+  box-shadow: var(--shadow-pop);
+}
+html[data-layout="desktop"] .sheet:not(.open) {
+  transform: translateY(120vh);
+  pointer-events: none;
+}
+html[data-layout="desktop"] .sheet .grabber { display: none; }
+
+/* Agents sheet needs to breathe: it's not a settings dialog, it's a full transcript
+   viewer with approval cards that expose tool inputs (Bash commands, file paths,
+   diff previews). The 560px generic sheet width crops those cards awkwardly. Also,
+   pinSheetBelowHeader({fillVertical:true}) sets an inline `top: <headerBottom>px`
+   which combines with the generic desktop `translate(-50%, -50%)` to shift the
+   sheet up by half its height — so we drop the vertical centering and pin the
+   bottom edge instead, giving the feed the full header-to-viewport-bottom band. */
+html[data-layout="desktop"] .agents-sheet.open {
+  bottom: 20px;
+  transform: translateX(-50%);
+  width: min(1100px, 92vw);
+  max-height: none;
+}

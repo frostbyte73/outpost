@@ -1,0 +1,33 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.orchestrate input",
+  "type": "object",
+  "required": ["mode", "jobId", "job"],
+  "properties": {
+    "mode": { "enum": ["initial", "replan", "step-review"] },
+    "jobId": { "type": "string" },
+    "completedStepId": { "type": "string" },
+    "job": {
+      "type": "object",
+      "required": ["source", "title"],
+      "properties": {
+        "source": { "enum": ["linear", "manual"] },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "externalRef": {
+          "type": "object",
+          "properties": {
+            "url": { "type": "string", "format": "uri" },
+            "issueIdentifier": { "type": "string" },
+            "linearUuid": { "type": "string" }
+          }
+        }
+      }
+    },
+    "stepTypeCatalog": { "type": "array", "items": { "type": "object" } },
+    "currentSteps": { "type": "array", "items": { "type": "object" } },
+    "userFeedback": { "type": "string" },
+    "rejectedIterations": { "type": "array", "items": { "type": "object" } },
+    "recentLessons": { "type": "array", "items": { "type": "object" } }
+  }
+}

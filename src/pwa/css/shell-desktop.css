@@ -1,0 +1,225 @@
+/* Desktop shell v2 — sidebar + list/detail/context frame (D1/P1 of the UX
+   redesign; the persistent topbar was later removed — ⌘K opens the palette,
+   the running count lives on the sidebar). Every rule is scoped to
+   html[data-layout="desktop"] per
+   D3. Supersedes desktop.css's .app grid (that file's rail/list-rail/
+   workspace/usage-strip rules simply go unused now that shell/index.js no
+   longer mounts those elements — see CLAUDE.md's cleanup-phase note).
+   Loaded after desktop.css so this stylesheet's `.app` declaration wins. */
+
+html[data-layout="desktop"] .app {
+  display: grid;
+  grid-template-rows: 1fr;
+  height: 100vh;
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+/* ── Account-usage widget (sidebar foot) ─────────────────────────────────
+   Shared markup: the same .o-usage* rules render into the sidebar-foot trigger
+   here and the mobile header's compact widget (utils/usage-bar.js). */
+html[data-layout="desktop"] .o-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--bg);
+  cursor: pointer;
+  min-width: 190px;
+  font: inherit;
+}
+html[data-layout="desktop"] .o-usage:hover { border-color: var(--accent); }
+html[data-layout="desktop"] .o-usage-row {
+  display: grid;
+  grid-template-columns: 46px 1fr 34px;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+}
+/* Nano machine tag (§3.2): mono/500/uppercase, 0.1-0.14em, dim. Column is sized for
+   the reset-countdown label (e.g. "2D 14H"), not just the "5H"/"7D" fallback. */
+html[data-layout="desktop"] .o-usage-label {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  font-weight: 500;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+html[data-layout="desktop"] .o-usage-bar {
+  display: block; height: 6px; background: var(--bg-elev-2); border-radius: var(--r-pill); overflow: hidden; position: relative;
+}
+html[data-layout="desktop"] .o-usage-fill {
+  display: block; height: 100%; width: 0%; background: var(--accent); border-radius: var(--r-pill);
+}
+html[data-layout="desktop"] .o-usage-fill.warn { background: var(--warn); }
+html[data-layout="desktop"] .o-usage-fill.hot  { background: var(--danger); }
+html[data-layout="desktop"] .o-usage-pct { text-align: right; font-weight: 500; color: var(--text); }
+
+/* Anchored to the bottom-left of .o-shell-body (which is position:relative),
+   opening upward from the sidebar-foot usage trigger. */
+html[data-layout="desktop"] .o-usage-popover {
+  position: absolute;
+  left: 12px; bottom: 12px;
+  width: 320px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+  box-shadow: var(--shadow-pop);
+  padding: 14px 16px;
+  z-index: 30;
+}
+/* .o-usage-pop-* content rules live unscoped in primitives.css — the same
+   markup (utils/usage-bar.js → usagePopoverHtml) renders into this desktop
+   popover AND the mobile bottom sheet, so it can't be layout-scoped. */
+
+/* ── Shell body: sidebar + frame ─────────────────────────────────────── */
+html[data-layout="desktop"] .o-shell-body {
+  grid-row: 1;
+  display: flex;
+  min-height: 0;
+  /* Grid item → default min-width:auto, so without this it refuses to shrink
+     below its content's min-content and (having no overflow of its own) blows
+     past .app, dragging .o-frame wide and pushing the fixed-width focus rail off
+     the viewport. min-width:0 lets it hold the track width; overflow-x:clip is a
+     backstop so any residual wide descendant scrolls inside .o-frame-detail
+     rather than widening the shell. */
+  min-width: 0;
+  overflow-x: clip;
+  /* Positioning context for the sidebar-foot usage popover (the sidebar itself
+     scrolls/clips, so the popover mounts here instead). */
+  position: relative;
+}
+
+/* ── Sidebar ──────────────────────────────────────────────────────────── */
+html[data-layout="desktop"] .o-sidebar {
+  flex: 0 0 216px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 14px 10px;
+  background: var(--bg-elev);
+  border-right: 1px solid var(--line-soft);
+  overflow-y: auto;
+  transition: flex-basis var(--dur-2) var(--ease);
+}
+html[data-layout="desktop"] .o-sidebar.is-collapsed { flex-basis: 56px; }
+html[data-layout="desktop"] .o-sidebar.is-collapsed .o-sidebar-word,
+html[data-layout="desktop"] .o-sidebar.is-collapsed .o-sidebar-label,
+html[data-layout="desktop"] .o-sidebar.is-collapsed .o-sidebar-count,
+html[data-layout="desktop"] .o-sidebar.is-collapsed .o-sidebar-section {
+  display: none;
+}
+html[data-layout="desktop"] .o-sidebar-brand {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px 14px;
+  font-family: var(--font-display);
+  font-weight: 600; font-size: 17px;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+html[data-layout="desktop"] .o-sidebar-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2, var(--accent)));
+  flex: none;
+}
+html[data-layout="desktop"] .o-sidebar-top,
+html[data-layout="desktop"] .o-sidebar-lib {
+  display: flex; flex-direction: column; gap: 2px;
+}
+/* .o-microhead spec (§3.2), sized down to 10px to fit the sidebar's denser
+   rhythm — everything else (600/uppercase/0.08em/dim) matches. */
+html[data-layout="desktop"] .o-sidebar-section {
+  font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim); padding: 10px 10px 4px;
+}
+html[data-layout="desktop"] .o-sidebar-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 10px; border-radius: var(--r-control); cursor: pointer;
+  background: transparent; border: 0; width: 100%; text-align: left;
+  color: var(--text-mute); font: inherit; font-size: 13px;
+}
+html[data-layout="desktop"] .o-sidebar-item:hover { background: var(--bg-elev-2); color: var(--text); }
+html[data-layout="desktop"] .o-sidebar-item.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+html[data-layout="desktop"] .o-sidebar-icon { flex: none; width: 16px; display: flex; align-items: center; justify-content: center; opacity: 0.85; }
+html[data-layout="desktop"] .o-sidebar-label { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* .o-sidebar-count reuses primitives.css's .o-badge/.o-badge.hot (sidebar.js
+   stamps both classes) — no per-surface count-badge lookalike needed. */
+html[data-layout="desktop"] .o-sidebar-foot { margin-top: auto; padding-top: 8px; border-top: 1px solid var(--line-soft); }
+/* Usage widget stretches to the sidebar width; the collapsed rail has no room
+   for the bars, so it hides with the labels. */
+html[data-layout="desktop"] .o-sidebar-foot .o-usage {
+  width: 100%;
+  min-width: 0;
+  margin-top: 8px;
+}
+html[data-layout="desktop"] .o-sidebar.is-collapsed .o-usage { display: none; }
+
+/* ── Frame: list · detail · context ──────────────────────────────────── */
+html[data-layout="desktop"] .o-frame {
+  flex: 1 1 auto;
+  display: flex;
+  min-width: 0;
+  overflow: hidden;
+  /* anchors .o-frame-list-resize, which lives on the frame root (surfaces'
+     renderList wipes the list mount's children, so the handle can't live there) */
+  position: relative;
+}
+html[data-layout="desktop"] .o-frame-list {
+  flex: 0 0 clamp(220px, var(--nav-list-w, 280px), 560px);
+  position: relative;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--line-soft);
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+html[data-layout="desktop"] .o-frame-list-resize {
+  /* same clamp() as .o-frame-list's flex-basis, so the handle tracks the
+     list/detail boundary */
+  position: absolute; top: 0; bottom: 0; width: 6px;
+  left: calc(clamp(220px, var(--nav-list-w, 280px), 560px) - 3px);
+  cursor: col-resize; z-index: 5;
+}
+html[data-layout="desktop"] .o-frame-detail {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  background: var(--bg);
+}
+html[data-layout="desktop"] .o-frame-context {
+  flex: 0 0 320px;
+  min-width: 0;
+  border-left: 1px solid var(--line-soft);
+  background: var(--bg-elev);
+  overflow-y: auto;
+  padding: 16px;
+}
+html[data-layout="desktop"] .o-frame.context-collapsed .o-frame-context { display: none; }
+
+html[data-layout="desktop"] .o-frame-empty {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; padding: 40px; text-align: center;
+  color: var(--text-dim); font-family: var(--font-display); font-style: italic;
+}
+
+html[data-layout="desktop"] .o-surface-placeholder { margin: 20px; padding: 20px; }
+/* Text spec lives on .o-microhead (placeholder.js stamps it alongside this
+   class) — only the layout-specific margin stays here. */
+html[data-layout="desktop"] .o-surface-placeholder-eyebrow { margin-bottom: 8px; }
+html[data-layout="desktop"] .o-surface-placeholder-body { color: var(--text-mute); font-size: 13px; line-height: 1.6; max-width: 52ch; }
+
+/* Shared list-column chrome (.o-list-hdr/.o-list-count/.o-list-filterbar/
+   .o-list-filter/.o-list-body) moved to primitives.css — it was never gated
+   to data-layout="desktop" (sessions-surface/list.js and shell/list-filter.js
+   render it on both layouts), so primitives.css is the right long-term home. */

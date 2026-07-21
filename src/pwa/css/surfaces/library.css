@@ -1,0 +1,322 @@
+/* Skills library surface — list-detail layout. Row/section/pill primitives
+   themselves live in primitives.css; this file adds the search+chip list
+   chrome and skill-detail-specific layout (header actions, SKILL.md body,
+   Permissions/Recent-runs two-column grid).
+
+   Mockup token translation (D3): --bg-primary→--bg, --bg-secondary→--bg-elev,
+   --bg-tertiary→--bg-elev-2, --border→--line/--line-soft, --text-primary→
+   --text, --text-secondary→--text-mute, --text-tertiary→--text-dim,
+   --success→--ok, --error→--danger, --warning→--warn. */
+
+/* ── List column ─────────────────────────────────────────────────────── */
+.lib-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  overflow: hidden;
+  min-height: 0;
+}
+
+.lib-list-hdr { flex: none; display: flex; align-items: baseline; gap: 8px; padding: 2px 2px 0; }
+.lib-list-hdr h2 { margin: 0; font-family: var(--font-display); font-weight: 500; font-size: 18px; color: var(--text); }
+.lib-list-count { margin-left: auto; font-size: 12px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+
+.lib-search {
+  flex: none;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  padding: 2px 10px;
+}
+/* Desktop: the input carries .o-list-filter (⌘F target), whose shell rule
+   already draws the box — drop the wrapper's own border so it isn't doubled. */
+html[data-layout="desktop"] .lib-search { background: transparent; border: 0; padding: 0; }
+.lib-search-input {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  padding: 6px 0;
+}
+.lib-search-input:focus { outline: none; }
+.lib-search-input::placeholder { color: var(--text-dim); }
+
+/* Actions⇄Skills toggle — mirrors the sessions list tab strip
+   (.sess-list-tabs / .sess-tab) so the two columns read as one system. */
+.lib-tabs {
+  flex: none;
+  display: flex; gap: 4px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+  padding: 4px;
+}
+.lib-tab {
+  flex: 1;
+  height: var(--tab-h, 30px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 0 8px;
+  font-size: 12px;
+  color: var(--text-mute);
+  background: transparent;
+  border: none;
+  border-radius: var(--r-control);
+  cursor: pointer;
+  font: inherit;
+  transition: background var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.lib-tab.active { background: var(--bg-elev-2); color: var(--text); font-weight: 500; }
+
+.lib-kind-note { flex: none; font-size: 11px; color: var(--text-dim); padding: 0 2px; }
+
+.lib-rows { display: flex; flex-direction: column; flex: 1 1 auto; overflow-y: auto; min-height: 0; }
+/* Matches the sess-card/sched-card selected-row recipe: accent border + rail
+   + accent-tinted fill (§7.3 "accent border + accent-tinted fill when open"). */
+.lib-skill-row.active {
+  border-color: var(--accent);
+  border-left: 3px solid var(--accent);
+  padding-left: 11px;
+  background: var(--accent-soft);
+}
+.lib-skill-row-pending { opacity: 0.85; }
+.lib-skill-hdr { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.lib-skill-name { font-family: var(--font-mono); font-size: 13px; font-weight: 500; color: var(--text); }
+
+/* Pinned new-action/skill footer, matching the sessions column's dashed CTA. */
+.lib-new-row { flex: none; display: flex; gap: 6px; }
+.lib-new-btn {
+  flex: 1;
+  background: transparent;
+  border: 1px dashed var(--line);
+  color: var(--text-mute);
+  border-radius: var(--r-control);
+  padding: 10px;
+  text-align: center;
+  font-size: 12px;
+  font: inherit;
+  cursor: pointer;
+}
+.lib-new-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+/* Category color coding — shared between list-row pills/dots and the detail
+   header badge. Distinct from primitives.css's o-pill tones (those are
+   status/verdict semantics; these are a fixed category taxonomy). */
+.lib-cat-dot.lib-cat-read,  .lib-cat-pill.lib-cat-read  { color: var(--accent); }
+.lib-cat-pill.lib-cat-read  { background: var(--accent-soft); }
+.lib-cat-dot.lib-cat-write, .lib-cat-pill.lib-cat-write { color: var(--warn); }
+.lib-cat-pill.lib-cat-write { background: var(--warn-soft); }
+.lib-cat-dot.lib-cat-code,  .lib-cat-pill.lib-cat-code  { color: var(--accent-2); }
+.lib-cat-pill.lib-cat-code  { background: var(--accent-2-soft); }
+.lib-cat-dot.lib-cat-human, .lib-cat-pill.lib-cat-human { color: var(--ok); }
+.lib-cat-pill.lib-cat-human { background: var(--ok-soft); }
+.lib-cat-dot.lib-cat-meta,  .lib-cat-pill.lib-cat-meta  { color: var(--text-mute); }
+.lib-cat-pill.lib-cat-meta  { background: var(--bg-elev-2); }
+.lib-cat-dot.lib-cat-custom,.lib-cat-pill.lib-cat-custom{ color: var(--text-dim); }
+.lib-cat-pill.lib-cat-custom{ background: var(--bg-elev-2); }
+.lib-cat-pill { font-family: var(--font-mono); }
+
+/* ── Detail pane ──────────────────────────────────────────────────────── */
+.lib-detail {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px var(--detail-pad-x) var(--detail-pad-bottom);
+}
+
+.lib-detail-hdr {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+.lib-detail-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.lib-detail-name {
+  font-family: var(--font-mono);
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.lib-detail-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.lib-readonly-note { font-size: 12px; color: var(--text-dim); }
+
+/* Actions now use primitives.css's .o-btn + role variants directly (§7.1) —
+   this surface's disabled treatment is the one thing .o-btn itself doesn't
+   define, scoped to this surface's action containers only. */
+.lib-detail-actions .o-btn:disabled,
+.lib-edit-actions .o-btn:disabled,
+.lib-denial-row .o-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ── Pending edit / proposal review card ─────────────────────────────── */
+.lib-edit-card { padding: 14px 16px; margin-bottom: 16px; border-left: 3px solid var(--accent); }
+.lib-edit-status { font-size: 13px; color: var(--text-mute); }
+.lib-edit-summary { font-size: 13px; color: var(--text); margin-bottom: 10px; }
+.lib-edit-diff { margin-bottom: 10px; }
+.lib-edit-diff summary { font-size: 12px; color: var(--accent); cursor: pointer; }
+.lib-edit-md {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-control);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-mute);
+  max-height: 320px;
+  overflow: auto;
+  white-space: pre-wrap;
+}
+.lib-edit-rules { font-size: 12px; color: var(--text-mute); margin-bottom: 10px; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.lib-edit-feedback {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  padding: 8px 10px;
+  resize: vertical;
+  margin-bottom: 10px;
+}
+.lib-edit-actions { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.lib-edit-error { color: var(--danger); font-size: 12px; margin-top: 8px; }
+
+/* ── Blocked-call (denial) suggestions ───────────────────────────────── */
+.lib-denials { padding: 14px 16px; margin-bottom: 16px; border-left: 3px solid var(--warn); }
+.lib-denials-note { font-size: 12px; color: var(--text-dim); margin-bottom: 10px; }
+.lib-denial-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; border-top: 1px solid var(--line-soft); }
+.lib-denial-desc { flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lib-denial-tool { font-family: var(--font-mono); font-size: 12px; color: var(--text); }
+.lib-denial-count { font-size: 11px; color: var(--text-dim); }
+
+.lib-detail-desc {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-mute);
+  margin: 0 0 16px;
+}
+
+.lib-skillmd {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-mute);
+  padding-bottom: 20px;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--line);
+}
+.lib-skillmd :is(.md-p, .md-list, .md-quote):first-child { margin-top: 0; }
+
+.lib-sections {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 720px) {
+  .lib-sections { grid-template-columns: 1fr; }
+}
+
+.lib-section { padding: 14px 16px; }
+/* Text spec (11px/600/uppercase/0.08em) now comes from .o-microhead, added
+   alongside this class in the markup — this rule is layout-only. */
+.lib-section-hdr {
+  margin: 0 0 10px;
+}
+.lib-empty-note { font-size: 12px; color: var(--text-dim); }
+
+.lib-perm-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.lib-perm-row:last-of-type { margin-bottom: 0; }
+.lib-perm-pill { flex: none; }
+.lib-perm-desc { color: var(--text-mute); }
+.lib-perm-extra {
+  margin-top: 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.lib-runs-list { display: flex; flex-direction: column; gap: 2px; }
+.lib-run-item {
+  display: grid;
+  grid-template-columns: 20px 1fr auto;
+  gap: 10px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: var(--r-control);
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.lib-run-item:hover { background: var(--bg-elev-2); }
+.lib-run-item:disabled { cursor: default; }
+.lib-run-item-static { cursor: default; }
+.lib-run-item-static:hover { background: transparent; }
+/* primitives.css's .o-row-icon ships hot/warn/ok/busy/idle tones; 'info'
+   (verdictTone's fourth bucket, used here for in-progress journal entries)
+   isn't one of them. */
+.o-row-icon.info { color: var(--accent); }
+.lib-run-outcome { display: block; font-size: 12px; color: var(--text); }
+.lib-run-lesson {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lib-run-when {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.lib-view-all {
+  align-self: flex-start;
+  margin-top: 4px;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+/* ── Mobile ───────────────────────────────────────────────────────────── */
+/* The shell's list-tab header already shows "Skills" — hide the in-body
+   duplicate (same treatment as Sessions/Schedules). Mobile scrolls the whole
+   .m-screen-root, so the rows don't own an inner scrollbox there. */
+html[data-layout="mobile"] .lib-list-hdr { display: none; }
+html[data-layout="mobile"] .lib-list { overflow: visible; }
+html[data-layout="mobile"] .lib-rows { flex: none; overflow: visible; }
+
+/* Drill-in header already shows the skill name (mobile-shell/index.js);
+   the in-body name would just repeat it — category/runner pills stay as
+   the secondary metadata row. */
+html[data-layout="mobile"] .lib-detail { padding: 4px 0 32px; }
+html[data-layout="mobile"] .lib-detail-name { display: none; }

@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+  <title>Outpost</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icon-512.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="theme-color" content="#070707">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,400;0,500;0,600;0,700;1,400;1,500&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&family=Public+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400;1,500&display=swap" rel="stylesheet">
+
+  <!-- Apply persisted theme + resolve desktop/mobile layout before first paint so
+       neither CSS file gets a chance to paint an unstyled frame. -->
+  <script>
+    (function () {
+      var validThemes = ['halcyon', 'almanac', 'terminal', 'nordic', 'ink', 'botanical', 'plasma', 'atlas', 'library'];
+      var validModes = ['light', 'dark'];
+      var theme = localStorage.getItem('cr:theme');
+      var mode = localStorage.getItem('cr:mode');
+      if (validThemes.indexOf(theme) === -1) theme = 'halcyon';
+      if (validModes.indexOf(mode) === -1) mode = 'dark';
+      document.documentElement.setAttribute('data-theme', theme);
+      document.documentElement.setAttribute('data-mode', mode);
+
+      // 1024px chosen as the desktop threshold — narrower and the three-column
+      // shell (rail + list + at least one usable workspace pane) can't breathe.
+      var mql = window.matchMedia('(min-width: 1024px)');
+      function applyLayout() {
+        document.documentElement.setAttribute('data-layout', mql.matches ? 'desktop' : 'mobile');
+      }
+      applyLayout();
+      // Debounce crossings so a slow drag through the boundary doesn't thrash
+      // the two stylesheets against each other.
+      var t = null;
+      var onChange = function () { clearTimeout(t); t = setTimeout(applyLayout, 200); };
+      if (mql.addEventListener) mql.addEventListener('change', onChange);
+      else mql.addListener(onChange);
+    })();
+  </script>
+
+  <link rel="stylesheet" href="/css/base.css">
+  <link rel="stylesheet" href="/css/primitives.css">
+  <link rel="stylesheet" href="/css/desktop.css">
+  <link rel="stylesheet" href="/css/shell-desktop.css">
+  <link rel="stylesheet" href="/css/shell-mobile.css">
+  <link rel="stylesheet" href="/css/palette.css">
+  <link rel="stylesheet" href="/css/surfaces/cockpit.css">
+  <link rel="stylesheet" href="/css/surfaces/tracked.css">
+  <link rel="stylesheet" href="/css/surfaces/sessions.css">
+  <link rel="stylesheet" href="/css/surfaces/schedules.css">
+  <link rel="stylesheet" href="/css/surfaces/library.css">
+  <link rel="stylesheet" href="/css/surfaces/settings.css">
+  <link rel="stylesheet" href="/css/surfaces/runs.css">
+  <link rel="stylesheet" href="/css/surfaces/diff.css">
+  <link rel="stylesheet" href="/css/overlays.css">
+  <link rel="stylesheet" href="/css/app-shell.css">
+  <link rel="stylesheet" href="/css/session-view.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <header id="header">
+      <span class="brand">Outpost</span>
+    </header>
+    <!-- Initial shell rendered server-side so first paint is immediate; JS replaces
+         the list contents once /api/sessions resolves. -->
+    <div id="root">
+      <div class="session-list">
+        <button class="add-project" id="add-project-initial">
+          <span>Add project</span>
+          <span class="plus">+</span>
+        </button>
+        <div class="list-label">Recent</div>
+        <div class="empty-state" id="sessions-loading">Loading…</div>
+      </div>
+    </div>
+  </div>
+  <!-- Diff review overlay mount. Built/torn down entirely by
+       components/diff-overlay/index.js on openDiffOverlay()/closeDiffOverlay() —
+       no static internal markup here (mount-parameterized component, D2). -->
+  <div id="diff-overlay-root"></div>
+
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "write.linear-issue input",
+  "type": "object",
+  "required": ["team", "title", "body"],
+  "properties": {
+    "team": { "type": "string", "description": "Team key (e.g. CORE, CSCU)." },
+    "title": { "type": "string", "minLength": 1 },
+    "body": { "type": "string" },
+    "labels": { "type": "array", "items": { "type": "string" } },
+    "parent_ref": { "type": "string" }
+  },
+  "additionalProperties": false
+}

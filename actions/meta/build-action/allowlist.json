@@ -1,0 +1,16 @@
+{
+  "alwaysAllow": ["Read", "Glob", "Grep"],
+  "alwaysAllowBashPatterns": [
+    "^cat ",
+    "^jq "
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": [
+    "Write:^/Users/[^/]+/\\.outpost/actions/",
+    "Edit:^/Users/[^/]+/\\.outpost/actions/",
+    "MultiEdit:^/Users/[^/]+/\\.outpost/actions/",
+    "Write:^/tmp/",
+    "Edit:^/tmp/",
+    "MultiEdit:^/tmp/"
+  ]
+}

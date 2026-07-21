@@ -1,0 +1,32 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.resolve-conflicts input",
+  "type": "object",
+  "required": ["jobId", "stepId", "workspace", "typePayload"],
+  "properties": {
+    "jobId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "goal": { "type": "string" },
+    "approach": { "type": "string" },
+    "workspace": {
+      "type": "object",
+      "required": ["repoCwd", "branch"],
+      "properties": {
+        "repoCwd": { "type": "string" },
+        "branch": { "type": "string" }
+      }
+    },
+    "typePayload": {
+      "type": "object",
+      "required": ["round"],
+      "properties": {
+        "round": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": { "kind": { "const": "conflict" } }
+        }
+      }
+    },
+    "recentLessons": { "type": "array", "items": { "type": "object" } }
+  }
+}

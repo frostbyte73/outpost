@@ -1,0 +1,207 @@
+import { work } from '../../state/work.js';
+import { actions } from '../../state/actions.js';
+
+function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
+
+const TYPE_LABELS = {
+  'open-pr': 'open-pr  (implement + open PR)',
+  'action':  'action  (run a named action for one-shot work)',
+};
+
+function actionOptions(selected) {
+  const list = actions.get()?.actions ?? [];
+  const names = list.map((a) => a.name).filter(Boolean).sort();
+  const withSelected = selected && !names.includes(selected) ? [selected, ...names] : names;
+  if (!withSelected.length) return `<option value="${escapeHtml(selected ?? 'claude')}">${escapeHtml(selected ?? 'claude')}</option>`;
+  return withSelected.map((n) => `<option value="${escapeHtml(n)}"${n === selected ? ' selected' : ''}>${escapeHtml(n)}</option>`).join('');
+}
+
+// `editStep` is the current step when editing; its workspace fields render read-only
+// since the plan editor's PATCH endpoint doesn't allow moving a step to another
+// repo/branch/action-target — only the content fields it's already running against.
+function renderFields(type, editStep) {
+  const s = editStep && editStep.type === type ? editStep : null;
+  switch (type) {
+    case 'open-pr':
+      return `
+        <div>
+          <div class="field-label">Repo cwd ${s ? '<span class="field-hint">not editable</span>' : ''}</div>
+          <input id="as-repo" class="field-input" type="text" placeholder="~/code/your-project" value="${escapeHtml(s?.workspace?.repoCwd ?? '')}" ${s ? 'disabled' : ''} />
+        </div>
+        <div>
+          <div class="field-label">Branch ${s ? '<span class="field-hint">not editable</span>' : ''}</div>
+          <input id="as-branch" class="field-input" type="text" placeholder="fix/dropping-rpc" value="${escapeHtml(s?.workspace?.branch ?? '')}" ${s ? 'disabled' : ''} />
+        </div>
+        <div>
+          <div class="field-label">Goal</div>
+          <textarea id="as-goal" class="field-textarea" placeholder="What outcome does this PR deliver?">${escapeHtml(s?.goal ?? '')}</textarea>
+        </div>
+        <div>
+          <div class="field-label">Approach</div>
+          <textarea id="as-approach" class="field-textarea" placeholder="Files / modules / functions to touch">${escapeHtml(s?.approach ?? '')}</textarea>
+        </div>
+        <div>
+          <div class="field-label">Risks <span class="field-hint">optional</span></div>
+          <textarea id="as-risks" class="field-textarea" placeholder="What could go wrong?">${escapeHtml(s?.risks ?? '')}</textarea>
+        </div>
+      `;
+    case 'action':
+    default:
+      return `
+        <div>
+          <div class="field-label">Action</div>
+          <select id="as-action" class="field-input">
+            ${actionOptions(s?.action)}
+          </select>
+        </div>
+        <div>
+          <div class="field-label">Goal</div>
+          <textarea id="as-goal" class="field-textarea" placeholder="What should this action do? Findings / outcome expected.">${escapeHtml(s?.goal ?? '')}</textarea>
+        </div>
+        ${s ? `
+        <div>
+          <div class="field-label">Inputs <span class="field-hint">JSON, optional</span></div>
+          <textarea id="as-inputs" class="field-textarea" placeholder="{}">${escapeHtml(JSON.stringify(s.inputs ?? {}, null, 2))}</textarea>
+        </div>
+        ` : `
+        <div>
+          <div class="field-label">Repo cwd <span class="field-hint">optional</span></div>
+          <input id="as-repo" class="field-input" type="text" placeholder="~/code/your-project" />
+        </div>
+        <div>
+          <label class="field-check">
+            <input id="as-forward" type="checkbox" checked />
+            <span>Forward output to later steps</span>
+          </label>
+        </div>
+        `}
+      `;
+  }
+}
+
+// `opts.editStep` switches the dialog into edit mode for that step: prefilled fields,
+// type locked to the step's own type, and submit calls work.editStep instead of
+// work.addStep. Same dialog either way — the plan editor's edit tool (✎) opens this
+// with editStep set; "+ Add step" / insert flows open it without.
+export function openAddStepDialog(jobId, opts = {}) {
+  if (document.getElementById('add-step-dialog')) return;
+  void actions.load();
+  const editStep = opts.editStep ?? null;
+  const isEdit = !!editStep;
+
+  const wrap = document.createElement('div');
+  wrap.id = 'add-step-dialog';
+  wrap.className = 'modal-backdrop';
+  wrap.innerHTML = `
+    <div class="modal" role="dialog" aria-label="${isEdit ? 'Edit step' : 'Add step'}">
+      <div class="modal-head">
+        <span class="glyph">${isEdit ? '✎' : '+'}</span>
+        <span class="label">${isEdit ? 'Edit step' : 'Add step'}</span>
+        <span class="spacer"></span>
+        <button class="close" type="button" aria-label="Close">esc</button>
+      </div>
+      <div class="modal-body">
+        <div>
+          <div class="field-label">Step type</div>
+          <select id="as-type" class="field-input" ${isEdit ? 'disabled' : ''}>
+            ${Object.entries(TYPE_LABELS).map(([v, label]) => `<option value="${v}"${isEdit && editStep.type === v ? ' selected' : ''}>${escapeHtml(label)}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <div class="field-label">Title</div>
+          <input id="as-title" class="field-input" type="text" placeholder="Short, scannable title" value="${escapeHtml(editStep?.title ?? '')}" />
+        </div>
+        <div>
+          <div class="field-label">Description <span class="field-hint">optional</span></div>
+          <textarea id="as-desc" class="field-textarea" placeholder="1-2 sentences for the UI">${escapeHtml(editStep?.description ?? '')}</textarea>
+        </div>
+        <div id="as-fields"></div>
+        <div id="as-error" class="work-error" style="display:none"></div>
+      </div>
+      <div class="modal-foot">
+        <button class="secondary" type="button" data-action="cancel">Cancel</button>
+        <button class="primary" type="button" data-action="add">${isEdit ? 'Save' : 'Add step'}</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+
+  const close = () => { unsub?.(); wrap.remove(); };
+  const typeEl = wrap.querySelector('#as-type');
+  const fieldsHost = wrap.querySelector('#as-fields');
+  const refreshFields = () => { fieldsHost.innerHTML = renderFields(typeEl.value, editStep); };
+  typeEl.addEventListener('change', refreshFields);
+  refreshFields();
+  // Re-render action options once the action list finishes loading.
+  const unsub = actions.subscribe(() => {
+    if (typeEl.value === 'action') refreshFields();
+  });
+
+  const showError = (msg) => {
+    const err = wrap.querySelector('#as-error');
+    err.style.display = 'block';
+    err.innerHTML = `<span>${escapeHtml(msg)}</span>`;
+  };
+
+  const submit = async () => {
+    const type = typeEl.value;
+    const title = wrap.querySelector('#as-title').value.trim();
+    if (!title) return showError('Title required');
+    const description = wrap.querySelector('#as-desc').value;
+
+    const step = { type, title, description };
+    if (type === 'open-pr') {
+      const goal     = wrap.querySelector('#as-goal')?.value.trim();
+      const approach = wrap.querySelector('#as-approach')?.value.trim();
+      const risks    = wrap.querySelector('#as-risks')?.value.trim();
+      step.goal = goal ?? '';
+      step.approach = approach ?? '';
+      step.risks = risks ?? '';
+      if (!isEdit) {
+        const repoCwd = wrap.querySelector('#as-repo')?.value.trim();
+        const branch  = wrap.querySelector('#as-branch')?.value.trim();
+        if (!repoCwd || !branch) return showError('Repo cwd and branch required for open-pr');
+        step.workspace = { kind: 'writable', repoCwd, branch };
+      }
+    } else {
+      const action = wrap.querySelector('#as-action')?.value.trim();
+      if (!action) return showError('Action required');
+      const goal = wrap.querySelector('#as-goal')?.value.trim();
+      if (!goal) return showError('Goal required');
+      step.action = action;
+      step.goal = goal;
+      if (isEdit) {
+        const rawInputs = wrap.querySelector('#as-inputs')?.value.trim();
+        if (rawInputs) {
+          try { step.inputs = JSON.parse(rawInputs); }
+          catch (e) { return showError(`Inputs isn't valid JSON: ${e.message}`); }
+        } else {
+          step.inputs = {};
+        }
+      } else {
+        const repoCwd = wrap.querySelector('#as-repo')?.value.trim();
+        const forward = !!wrap.querySelector('#as-forward')?.checked;
+        step.workspace = repoCwd ? { kind: 'readonly', repoCwd } : { kind: 'none' };
+        step.forwardOutput = forward;
+      }
+    }
+
+    try {
+      if (isEdit) await work.editStep(jobId, editStep.id, step);
+      else await work.addStep(jobId, step);
+      close();
+    } catch (e) {
+      showError(e.message);
+    }
+  };
+
+  wrap.querySelector('.close').addEventListener('click', close);
+  wrap.querySelector('[data-action="cancel"]').addEventListener('click', close);
+  wrap.querySelector('[data-action="add"]').addEventListener('click', submit);
+  wrap.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    if (e.key === 'Enter' && e.metaKey) { e.preventDefault(); submit(); }
+  });
+  wrap.addEventListener('click', (e) => { if (e.target === wrap) close(); });
+  wrap.querySelector('#as-title').focus();
+}

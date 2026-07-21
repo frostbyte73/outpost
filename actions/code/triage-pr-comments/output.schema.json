@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.triage-pr-comments output",
+  "type": "object",
+  "required": ["jobId", "stepId", "drafts"],
+  "properties": {
+    "jobId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "drafts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["commentId", "recommendation", "rationale"],
+        "properties": {
+          "commentId": { "type": "string" },
+          "recommendation": { "enum": ["reply", "edit", "ignore"] },
+          "rationale": { "type": "string", "maxLength": 240 },
+          "draftReply": { "type": "string" },
+          "confidence": { "enum": ["high", "medium", "low"] }
+        }
+      }
+    }
+  }
+}

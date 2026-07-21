@@ -1,0 +1,22 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "write.linear-comment input",
+  "type": "object",
+  "required": ["issue_ref", "body"],
+  "properties": {
+    "issue_ref": { "type": "string", "description": "Linear issue ID (e.g. CSCU-432) or URL." },
+    "body": { "type": "string", "minLength": 1 },
+    "links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "url"],
+        "properties": {
+          "label": { "type": "string" },
+          "url": { "type": "string", "format": "uri" }
+        }
+      }
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,53 @@
+import type { ActionStep, JobRecord } from '../work/work-types.js';
+import { writeEnvelope } from '../work/envelope.js';
+import type { StepHandler } from './types.js';
+
+function previousOutputs(job: JobRecord, selfId: string) {
+  return job.steps
+    .filter((st) => st.id !== selfId && st.type === 'action' && st.forwardOutput !== false && st.output)
+    .map((st) => ({
+      id: st.id,
+      title: st.title,
+      action: (st as ActionStep).action,
+      output: (st as ActionStep).output,
+    }));
+}
+
+export const actionHandler: StepHandler<ActionStep> = {
+  type: 'action',
+  initialState: 'running',
+
+  isResolved(s) { return s.state === 'resolved'; },
+
+  decide(s, job, ctx) {
+    if (s.cancelled || s.failure) return null;
+    if (s.state !== 'running') return null;
+    if (s.sessionId) return null;
+    const envelope = actionHandler.buildEnvelope(s, job, ctx);
+    const path = writeEnvelope(ctx.jobsDir, job.id, s.id, envelope);
+    return { kind: 'spawn-session', jobId: job.id, stepId: s.id, envelopePath: path };
+  },
+
+  buildEnvelope(s, job) {
+    return {
+      kind: 'step',
+      jobId: job.id,
+      stepId: s.id,
+      type: 'action',
+      action: s.action,
+      title: s.title,
+      description: s.description,
+      goal: s.goal,
+      inputs: s.inputs ?? {},
+      job: {
+        source: job.source,
+        title: job.title,
+        description: job.description,
+        externalRef: job.externalRef,
+      },
+      previousSteps: previousOutputs(job, s.id),
+      workspace: s.workspace,
+      typePayload: {},
+    };
+  },
+};

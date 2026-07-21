@@ -1,0 +1,217 @@
+/* Runs history surface — main-only (rail · main, no list column). Cross-
+   category chronological table: sessions, tracked-job steps, scheduled runs.
+   See css/surfaces/library.css's header comment for the mockup token
+   translation table (same rules apply here). */
+
+.runs-view {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px var(--detail-pad-x) var(--detail-pad-bottom);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.runs-hdr {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.runs-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+}
+.runs-lede { color: var(--text-dim); font-size: 13px; }
+.runs-hdr-actions { margin-left: auto; display: flex; gap: 6px; }
+
+/* Menu items are .o-btn.o-btn--ghost (§7.6); only the toggle-state modifier
+   for the "Group by day" item lives here. */
+.runs-groupday.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+.runs-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+.runs-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  background: var(--bg-elev);
+}
+.runs-filter-select {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text-mute);
+  font: inherit;
+  font-size: 12px;
+  padding: 5px 24px 5px 10px;
+  border-radius: var(--r-pill);
+  cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 12px) 55%, calc(100% - 8px) 55%;
+  background-size: 4px 4px, 4px 4px;
+  background-repeat: no-repeat;
+}
+.runs-filter-select:focus { outline: none; }
+.runs-filter-select option { color: var(--text); background: var(--bg-elev); }
+.runs-tally {
+  margin-left: auto;
+  font-size: 12px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.runs-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+}
+.runs-table { min-width: 760px; }
+
+.runs-table-hdr,
+.runs-row {
+  display: grid;
+  grid-template-columns: 92px 1fr 200px 150px 84px 84px 64px;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 16px;
+}
+/* Text spec (11px/600/uppercase/0.08em) comes from .o-microhead, added
+   alongside this class in the markup — this rule is layout-only. */
+.runs-table-hdr {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--bg-elev-2);
+  border-bottom: 1px solid var(--line);
+}
+.runs-row {
+  border-bottom: 1px solid var(--line-soft);
+  cursor: pointer;
+  font-size: 13px;
+}
+.runs-row:last-child { border-bottom: none; }
+.runs-row:hover { background: var(--bg-elev-2); }
+
+.r-align-right { text-align: right; }
+.r-align-center { text-align: center; }
+
+.r-when { color: var(--text-dim); font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 12px; }
+.r-what-title { color: var(--text); font-weight: 500; }
+.r-what-sub { color: var(--text-dim); font-size: 11px; margin-top: 1px; font-family: var(--font-mono); }
+.r-where {
+  color: var(--text-mute);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.r-verdict { font-size: 12px; }
+.r-verdict.ok    { color: var(--ok); }
+.r-verdict.warn  { color: var(--warn); }
+.r-verdict.hot   { color: var(--danger); }
+.r-verdict.info  { color: var(--accent); }
+.r-dur  { color: var(--text-dim); font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 12px; }
+.r-cost { color: var(--text-dim); font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-size: 12px; text-align: right; }
+.r-kind { text-align: center; }
+
+.kind-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  padding: 1px 6px;
+  border-radius: var(--r-control);
+  background: var(--bg-elev-2);
+  color: var(--text-mute);
+}
+.kind-badge.kind-track { background: var(--accent-soft);   color: var(--accent); }
+.kind-badge.kind-sess  { background: var(--accent-2-soft); color: var(--accent-2); }
+.kind-badge.kind-sched { background: var(--warn-soft);     color: var(--warn); }
+
+/* Text spec (11px/600/uppercase/0.08em) comes from .o-microhead, added
+   alongside this class in the markup — this rule is layout-only. */
+.runs-day-hdr {
+  padding: 8px 16px 4px;
+  background: var(--bg-elev);
+}
+
+.runs-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ── Mobile ───────────────────────────────────────────────────────────── */
+/* The wide table collapses to an o-row-style stacked list (brief: "verdict-
+   tone icon, What as title, sub-line = skill · duration · cost · kind
+   badge, relative time right") using the SAME DOM the desktop table body
+   already renders — grid-template-areas just re-flows the existing
+   .r-when/.r-what/.r-verdict/.r-dur/.r-cost/.r-kind children into two visual
+   rows instead of one wide one, so this is geometry-only (D2). */
+html[data-layout="mobile"] .runs-view { padding: 4px 0 32px; gap: 12px; }
+/* Title/lede duplicate the drill-in header's "Runs history" title — hide
+   them but keep .runs-hdr-actions (now just the ⋯ overflow toggle). */
+html[data-layout="mobile"] .runs-title,
+html[data-layout="mobile"] .runs-lede { display: none; }
+html[data-layout="mobile"] .runs-hdr { justify-content: flex-end; min-height: 40px; }
+html[data-layout="mobile"] .runs-hdr-actions { margin-left: 0; }
+html[data-layout="mobile"] .runs-filters {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 10px;
+}
+html[data-layout="mobile"] .runs-filter-chip,
+html[data-layout="mobile"] .runs-tally { flex: none; }
+html[data-layout="mobile"] .runs-tally { margin-left: 12px; }
+
+html[data-layout="mobile"] .runs-table-wrap { overflow-x: hidden; border-radius: var(--r-container); }
+html[data-layout="mobile"] .runs-table { min-width: 0; }
+html[data-layout="mobile"] .runs-table-hdr { display: none; }
+
+html[data-layout="mobile"] .runs-row {
+  grid-template-columns: 10px 1fr auto auto;
+  grid-template-areas:
+    "verdict what what when"
+    "verdict dur  cost kind";
+  gap: 3px 10px;
+  padding: 12px 14px;
+}
+html[data-layout="mobile"] .r-where { display: none; }
+html[data-layout="mobile"] .r-verdict {
+  grid-area: verdict;
+  align-self: center;
+  justify-self: center;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  font-size: 0;
+  background: var(--text-dim);
+}
+html[data-layout="mobile"] .r-verdict.ok   { background: var(--ok); }
+html[data-layout="mobile"] .r-verdict.warn { background: var(--warn); }
+html[data-layout="mobile"] .r-verdict.hot  { background: var(--danger); }
+html[data-layout="mobile"] .r-verdict.info { background: var(--accent); }
+html[data-layout="mobile"] .r-what { grid-area: what; min-width: 0; }
+html[data-layout="mobile"] .r-when { grid-area: when; text-align: right; }
+html[data-layout="mobile"] .r-dur  { grid-area: dur; text-align: left; }
+html[data-layout="mobile"] .r-cost { grid-area: cost; text-align: left; }
+html[data-layout="mobile"] .r-kind { grid-area: kind; text-align: left; }

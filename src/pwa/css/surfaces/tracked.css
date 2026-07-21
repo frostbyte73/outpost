@@ -1,0 +1,1531 @@
+/* Tracked surface — list column, drill-in timeline, focus rail. Row/card/pill
+   primitives come from primitives.css; this file covers what's genuinely
+   specific to Tracked: the list-row body layout, the drill-in shell/header/
+   timeline, the inline PR block, and the focus rail's sections. Loaded on
+   both layouts (D3); the mobile arrangement is the data-layout="mobile"
+   block at the end of this file. */
+
+/* ── List column ──────────────────────────────────────────────────────── */
+.tracked-row-body { min-width: 0; }
+.lr-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* .lr-row is applied purely for list-filter.js's filter contract (its ⌘F
+   handler queries `.lr-row`) and the shared is-open selected-state look —
+   not a layout class of its own. desktop.css used to carry a same-named
+   pane-era rail-row rule (display:block, padding:6px 14px, border:0) whose
+   specificity beat primitives.css's bare .o-row and collapsed the row back
+   to a block layout; that rule was deleted in P4 along with the rest of the
+   pane/rail system, but the higher-specificity grid re-assertion below is
+   still harmless (and now redundant-safe) so it's kept rather than risking
+   an untested behavior change. */
+html[data-layout="desktop"] .o-frame-list .o-row.lr-row {
+  display: grid;
+  grid-template-columns: 22px 1fr auto;
+  gap: 14px;
+  width: 100%;
+  padding: 12px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  text-align: left;
+}
+html[data-layout="desktop"] .o-frame-list .o-row.lr-row:hover { background: var(--bg-elev-2); }
+html[data-layout="desktop"] .o-frame-list .o-row-group .o-row.lr-row { border-bottom: none; }
+html[data-layout="desktop"] .o-frame-list .o-row-group .o-row.lr-row:last-child { border-bottom: 1px solid var(--line); }
+html[data-layout="desktop"] .o-frame-list .o-row-group .o-row.lr-row:first-child { border-radius: var(--r-container) var(--r-container) 0 0; }
+html[data-layout="desktop"] .o-frame-list .o-row-group .o-row.lr-row:last-child { border-radius: 0 0 var(--r-container) var(--r-container); }
+html[data-layout="desktop"] .o-frame-list .o-row-group .o-row.lr-row:only-child { border-radius: var(--r-container); }
+html[data-layout="desktop"] .o-frame-list .o-row.lr-row.is-open {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+/* list-filter.js's ⌘F filter sets [hidden] on non-matching rows — author
+   `display: grid` above otherwise beats the UA [hidden]{display:none} rule
+   regardless of specificity, since author-normal always wins over UA-normal. */
+html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none; }
+
+/* ── Drill-in shell ───────────────────────────────────────────────────── */
+.tk-shell { min-width: 0; }
+
+.tk-hdr {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 18px 28px 14px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
+}
+.tk-breadcrumb {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.tk-title-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.tk-title {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 22px;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+.tk-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+}
+.tk-menu { position: relative; }
+.tk-menu-body {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 10;
+  min-width: 190px;
+  display: flex;
+  flex-direction: column;
+  padding: 6px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+  box-shadow: var(--shadow-pop);
+}
+.tk-menu-body[hidden] { display: none; }
+.tk-menu-item {
+  padding: 7px 10px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: transparent;
+  color: var(--text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+.tk-menu-item:hover { background: var(--bg-elev-2); }
+.tk-menu-item.danger { color: var(--danger); }
+
+.tk-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.tk-meta-item a { color: var(--accent); text-decoration: none; }
+.tk-meta-item a:hover { text-decoration: underline; }
+
+.tk-body {
+  padding: var(--gap-6) var(--detail-pad-x) var(--detail-pad-bottom);
+  min-width: 0;
+}
+/* .plan-heading (defined in this file) is a mid-page section-divider spec —
+   28px top margin/padding + a border-top rule. plan-section.js reuses it as
+   the single Plan section's header, which is the FIRST element in .tk-body, so
+   it opens with a stray rule sitting right under the sticky header's own
+   border-bottom. Reset the spacing here rather than in the shared rule,
+   since this is the only place .plan-heading renders visibly (activity-
+   stream.js's copy is always display:none via .focus-activity-full below). */
+.tk-body .plan-section > .plan-heading {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+
+/* ── Plan card: compact step index ────────────────────────────────────────
+   One line per step (index / type chip / title) — the full step cards render
+   only in the timeline below. */
+.plan-index { padding: 4px 0; }
+.plan-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 16px;
+  min-width: 0;
+}
+.plan-row + .plan-row { border-top: 1px solid var(--line-soft); }
+.plan-row-idx {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  flex: none;
+}
+.plan-row-title {
+  font-size: 13px;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Steps timeline ───────────────────────────────────────────────────── */
+.tl-rail { display: flex; flex-direction: column; }
+
+.tl-step {
+  position: relative;
+  display: flex;
+  gap: 14px;
+  padding: 0 0 22px 4px;
+  margin-left: 8px;
+  border-left: 2px solid var(--line);
+}
+.tl-step:last-child { border-left-color: transparent; padding-bottom: 0; }
+.tl-step[data-cancelled="true"] { opacity: 0.55; }
+.tl-step[data-cancelled="true"] .tl-name { text-decoration: line-through; }
+.tl-step[data-group-pos="mid"],
+.tl-step[data-group-pos="open"] { padding-bottom: 12px; }
+
+/* Parallel groups: a second accent rail brackets open→close, and the opening
+   row carries a "parallel" chip — without this the grouping the orchestrator
+   and plan editor treat as meaningful is invisible. */
+.tl-step[data-group-pos] .tl-content {
+  border-left: 2px solid var(--accent-soft);
+  padding-left: 16px;
+}
+.tl-step[data-group-pos="open"] .tl-content::before {
+  content: '∥ parallel';
+  display: block;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 6px;
+}
+
+/* Failure reason — the timeline must say WHY before asking for a Retry. */
+.tl-failure {
+  margin: 2px 0 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--danger-soft);
+  border-left: 2px solid var(--danger);
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  overflow-wrap: anywhere;
+}
+
+.tl-dot {
+  position: absolute;
+  left: -11px;
+  top: 0;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  line-height: 1;
+  background: var(--bg);
+  border: 2px solid var(--line);
+  color: var(--text-dim);
+  flex: none;
+}
+.tl-dot[data-tone="done"]   { background: var(--ok);     border-color: var(--ok);     color: var(--bg); }
+.tl-dot[data-tone="busy"]   { background: var(--accent); border-color: var(--accent); color: var(--bg); animation: tl-pulse var(--pulse) ease-in-out infinite; }
+.tl-dot[data-tone="hot"]    { background: var(--warn);   border-color: var(--warn);   color: var(--bg); }
+.tl-dot[data-tone="danger"] { background: var(--danger);  border-color: var(--danger); color: var(--bg); }
+.tl-dot[data-tone="pending"] { background: var(--bg);     border-color: var(--line); }
+.tl-dot[data-tone="mute"]   { background: var(--bg-elev-2); border-color: var(--line); opacity: 0.6; }
+@keyframes tl-pulse { 50% { opacity: 0.55; } }
+
+.tl-content {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-left: 18px;
+}
+.tl-hdr {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+/* Edit-plan mode injects .step-edit-tools (defined in this file) as a sibling
+   of .tl-content inside .tl-step — its hover/focus reveal and hit area target
+   the retired .step-row, which no longer wraps anything here. .tl-step is the
+   positioned ancestor now, and .tl-hdr needs room reserved so the ▲▼✎× toolbar
+   doesn't sit on top of .tl-time. */
+.tl-step:hover .step-edit-tools,
+.tl-step:focus-within .step-edit-tools { opacity: 1; }
+.tl-step:has(.step-edit-tools) .tl-hdr { padding-right: 110px; }
+.tl-name {
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--text);
+}
+.tl-skill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--accent);
+  background: var(--accent-soft);
+  padding: 1px 6px;
+  border-radius: var(--r-control);
+}
+.tl-time {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.tl-summary {
+  font-size: 13px;
+  color: var(--text-mute);
+  line-height: 1.5;
+  margin: 2px 0 8px;
+}
+.tl-refs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  margin-top: 6px;
+  font-size: 12px;
+}
+.tl-ref {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  font: inherit;
+  text-decoration: none;
+}
+.tl-ref:hover { text-decoration: underline; }
+
+.tl-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-mute);
+  letter-spacing: 0.02em;
+  margin: 2px 0 8px;
+}
+.tl-meta .branch     { color: var(--accent); }
+.tl-meta .ci-ok       { color: var(--ok); }
+.tl-meta .ci-fail     { color: var(--danger); }
+.tl-meta .review-ok   { color: var(--ok); }
+.tl-meta .unresolved  { color: var(--accent); }
+.tl-meta .muted       { color: var(--text-dim); word-break: break-all; }
+
+/* ── Inline PR block ──────────────────────────────────────────────────── */
+.pr-block {
+  margin: 4px 0 0;
+  padding: 14px 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+}
+.pr-hdr {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+.pr-num {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  text-decoration: none;
+}
+a.pr-num {
+  color: var(--accent);
+  font-weight: 500;
+}
+a.pr-num:hover { text-decoration: underline; }
+.prb-title {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pr-badges {
+  margin-left: auto;
+  display: flex;
+  gap: 5px;
+  flex: none;
+}
+.pr-stats {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-mute);
+  margin-bottom: 8px;
+}
+.prb-branch {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent-2);
+}
+.pr-merged {
+  color: var(--ok);
+  font-weight: 500;
+}
+
+.pr-review-cta {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 4px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  border-radius: var(--r-container);
+}
+.pr-review-cta-label { font-size: 12px; color: var(--text); }
+.pr-review-cta-actions { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+.pr-conflict-cta--warn { background: var(--warn-soft); border-color: var(--warn); }
+.pr-conflict-busy,
+.pr-conflict-warn { margin: 0 0 4px; }
+/* primitives doesn't define an :disabled treatment (see diff.css) — local override. */
+.pr-conflict-busy .o-btn:disabled { opacity: 0.6; cursor: default; }
+.pr-conflict-spin {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: tl-pulse var(--pulse) ease-in-out infinite;
+}
+
+.threads { margin: 10px 0 0; }
+
+/* ── Thread confidence indicator (D4's DraftedReply.confidence) — sits next
+   to thread-card.js's existing recPill(); loads unscoped so the same markup
+   is styled identically on both layouts. */
+.thread-confidence {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-left: 6px;
+}
+.thread-confidence-high   { color: var(--ok); }
+.thread-confidence-medium { color: var(--warn); }
+.thread-confidence-low    { color: var(--danger); }
+
+/* ── Focus rail ───────────────────────────────────────────────────────── */
+.focus-section { margin: 0 0 20px; }
+.focus-section:last-child { margin-bottom: 0; }
+.focus-section-hdr { margin-bottom: 8px; }
+.focus-list { display: flex; flex-direction: column; gap: 6px; }
+.focus-list-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  font-size: 12px;
+  color: var(--text-mute);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color var(--dur-1) var(--ease);
+}
+.focus-list-item:hover { border-color: var(--text-dim); }
+.fli-dot {
+  width: 6px; height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--text-dim);
+  flex: none;
+}
+.fli-dot.busy { background: var(--accent); animation: tl-pulse var(--pulse) ease-in-out infinite; }
+.fli-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+}
+.focus-empty { margin: 0; font-size: 12px; color: var(--text-dim); }
+
+.focus-kv {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 12px;
+  font-size: 12px;
+}
+.focus-kv .k { color: var(--text-dim); }
+.focus-kv .v { color: var(--text); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.focus-kv .v a { color: var(--accent); text-decoration: none; }
+.focus-kv .v a:hover { text-decoration: underline; }
+
+.focus-activity-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 0;
+  font-size: 12px;
+}
+.focus-activity-item .at { flex: none; color: var(--text-dim); font-size: 11px; }
+.focus-activity-item .body { color: var(--text-mute); min-width: 0; }
+.focus-activity-full { margin-top: 4px; }
+/* renderActivityStream() renders its own "Activity" plan-heading — redundant
+   next to this section's own "Recent activity" header, so hide it here. */
+.focus-activity-full .plan-heading { display: none; }
+.focus-audit-link {
+  margin-top: 8px;
+  background: none;
+  border: 0;
+  padding: 0;
+  font-size: 12px;
+  color: var(--accent);
+  cursor: pointer;
+}
+.focus-audit-link:hover { text-decoration: underline; }
+
+/* ── Mobile: drill-in header collapses to a secondary metadata row ──────
+   The app-level shell header (mobile-shell/index.js's paintTrackedHeader)
+   already shows the ref/title as the drill-in title+sub — renderHeader()'s
+   own breadcrumb + <h1> would just repeat that, so they're hidden here;
+   the state pill + sync/⋯ actions stay (they have no other home on mobile)
+   and .tk-meta becomes the mockup's m-ticket-hdr-style secondary row. */
+html[data-layout="mobile"] .tk-hdr {
+  position: static;
+  padding: 10px 0 12px;
+  background: transparent;
+  border-bottom: 0;
+}
+html[data-layout="mobile"] .tk-breadcrumb,
+html[data-layout="mobile"] .tk-title,
+html[data-layout="mobile"] .tk-title-row .o-ref { display: none; }
+html[data-layout="mobile"] .tk-title-row { margin-bottom: 8px; }
+html[data-layout="mobile"] .tk-meta {
+  padding: 10px 14px;
+  gap: 8px 14px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+}
+html[data-layout="mobile"] .tk-body { padding: 0; }
+
+/* tk-actions (sync + ⋯ job menu) is the only place these controls have on
+   mobile — no separate header slot — so bump them to a real touch target. */
+html[data-layout="mobile"] .tk-actions .work-sync-btn,
+html[data-layout="mobile"] .tk-actions .o-btn {
+  min-width: 40px;
+  min-height: 40px;
+}
+html[data-layout="mobile"] .tk-menu-item { padding: 11px 12px; }
+
+/* Focus rail's non-mocked sections (sessions-on-job/at-a-glance/activity)
+   only ever mount on desktop's right rail (mobile-shell mounts just the
+   focus card via renderFocusCard) — no gating needed here, but the section
+   rhythm still applies if a future mobile treatment reuses renderContext. */
+
+.plan-findings { margin: 0 0 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-container); background: var(--bg); min-width: 0; overflow-wrap: anywhere; }
+/* In the step timeline the findings box follows the inline session feed / refs
+   directly — give it top breathing room the plan-card usage (first child, must
+   hug the card edge) doesn't want. */
+.tl-content > .plan-findings { margin-top: 12px; }
+.plan-findings-label { margin-bottom: 6px; }
+.plan-findings .finding-verdict { margin-top: 8px; font-size: 12px; color: var(--text-mute); }
+.plan-findings .finding-evidence,
+.plan-findings .finding-caveats { margin: 8px 0 0; padding-left: 16px; font-size: 12px; color: var(--text-mute); }
+.plan-findings .finding-evidence-kind { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
+.plan-findings .finding-evidence-src { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); }
+/* Excerpts are raw log/code lines — pre-wrap keeps their newlines, but a long
+   unbroken line (log payload, path, JSON) must still break, or it establishes a
+   huge min-content width that overflows the detail pane. overflow-wrap:anywhere
+   is the fallback break; matches .tl-failure's guard. */
+.plan-findings .finding-evidence-excerpt { margin-top: 3px; padding-left: 8px; border-left: 2px solid var(--line); font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+
+
+/* ────────── Work UI ────────── */
+
+.work-sync-btn {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-mute);
+  border-radius: var(--r-control);
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 13px;
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.work-sync-btn:hover:not([disabled]) { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+.work-sync-btn[disabled] { opacity: 0.5; cursor: progress; }
+
+.work-empty { color: var(--text-mute); padding: 24px 12px; text-align: center; font-style: italic; }
+.work-error { color: var(--danger); background: var(--danger-soft); padding: 12px; border-radius: var(--r-control); margin-bottom: 12px; display: flex; gap: 8px; justify-content: space-between; align-items: center; }
+
+
+/* ───── Activity stream (audit log) ─────────────────────────
+   .work-section/-static/-body/-activity is the only surviving shape from a
+   larger "chapter" system that used to wrap plan/gate/PR content — those
+   wrappers are gone (renderPlanSection, renderPrBlockHtml etc. own their own
+   markup now); this is the one remaining consumer, activity-stream.js's
+   read-only audit-log panel. It keeps the signature left-edge rail (§6). */
+
+.work-section {
+  position: relative;
+  background: transparent;
+  border: 0;
+  padding: 0 0 0 var(--gap-6);
+  margin: 0 0 28px;
+}
+.work-section::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 22px; bottom: 10px;
+  width: 2px;
+  background: var(--line);
+  transition: background var(--dur-2) var(--ease);
+}
+.work-section-static::before { background: var(--accent-2); }
+.work-section-body {
+  padding: 18px 0 6px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+
+.work-section-activity::before {
+  background: linear-gradient(to bottom, var(--accent-2), var(--line) 60%, transparent);
+  opacity: 0.85;
+}
+.work-activity-list {
+  list-style: none; margin: 0; padding: 0;
+  border-left: 0;
+}
+.work-activity-item {
+  display: grid;
+  grid-template-columns: 96px auto 1fr auto;
+  align-items: baseline;
+  column-gap: 14px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line-soft);
+  font-size: 13px;
+}
+.work-activity-item:first-child { border-top: 0; }
+.work-evt-who {
+  font-size: 11px;
+  margin: 0;
+}
+.work-evt-kind {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text);
+  font-weight: 400;
+  margin: 0;
+}
+.work-evt-body {
+  font-size: 13px;
+  color: var(--text-mute);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  min-width: 0;
+}
+.work-evt-when {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+  text-align: right;
+}
+.work-evt-orch .work-evt-who { color: var(--accent); }
+.work-evt-user .work-evt-who { color: var(--accent-2); }
+.work-evt-claude .work-evt-who { color: var(--accent); }
+.work-evt-system .work-evt-who { color: var(--text-dim); }
+
+
+/* ───── PR disclosures (checks + resolved comments) ───────── */
+
+/* Shared chevron-labelled summary line: "▸ CHECKS · 4 passing, 1 failed". */
+.pr-disclosure {
+  margin: 12px 0 4px;
+  min-width: 0;
+  max-width: 100%;
+}
+.pr-disclosure > summary {
+  cursor: pointer; user-select: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 0;
+  list-style: none;
+}
+.pr-disclosure > summary::-webkit-details-marker { display: none; }
+.pr-disclosure > summary::before {
+  content: '▸';
+  display: inline-block;
+  flex: none;
+  color: var(--text-dim);
+  transition: transform var(--dur-1) var(--ease);
+}
+.pr-disclosure[open] > summary::before { transform: rotate(90deg); }
+.pr-disclosure-sep { color: var(--text-dim); }
+.pr-disclosure-count {
+  font-size: 12px;
+  color: var(--text-mute);
+  font-variant-numeric: tabular-nums;
+  transition: color var(--dur-1) var(--ease);
+}
+.pr-disclosure > summary:hover .pr-disclosure-count { color: var(--text); }
+
+.pr-check-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.pr-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  padding: 2px 0;
+  font-size: 12px;
+}
+.pr-check-dot {
+  flex: none;
+  width: 12px;
+  text-align: center;
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+}
+.pr-check--success .pr-check-dot { color: var(--ok); }
+.pr-check--failure .pr-check-dot { color: var(--danger); }
+.pr-check--pending .pr-check-dot { color: var(--accent); }
+.pr-check-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  color: var(--text-mute);
+}
+.pr-check--failure .pr-check-name { color: var(--text); }
+.pr-check-link {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-dim);
+  text-decoration: none;
+  transition: color var(--dur-1) var(--ease);
+}
+.pr-check-link:hover { color: var(--accent); }
+
+.pr-threads-resolved .threads {
+  min-width: 0;
+  max-width: 100%;
+  border-top: 0;
+}
+
+.thread :where(header), .thread-draft :where(header) {
+  padding: 0; border: none; background: transparent;
+}
+.thread {
+  position: relative;
+  list-style: none;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--line-soft);
+  padding: 18px 0 18px var(--gap-6);
+  margin: 0;
+  overflow: visible;
+  min-width: 0;
+  max-width: 100%;
+}
+/* Cascade clamps so a long `<pre>` doesn't balloon past the viewport. */
+.thread > .thread-card,
+.thread > .thread-card > * {
+  min-width: 0;
+  max-width: 100%;
+}
+.thread::before {
+  content: '';
+  position: absolute;
+  left: 0; top: 22px; bottom: 22px;
+  width: 2px;
+  background: var(--line);
+  transition: background var(--dur-2) var(--ease);
+}
+.thread.thread-has-reply::before { background: var(--accent); }
+.thread.thread-has-edit::before { background: var(--accent-2); }
+.thread.thread-has-ignore::before { background: var(--text-dim); }
+.thread.thread-has-pending::before {
+  background: linear-gradient(to bottom, var(--accent-soft), var(--line) 80%);
+}
+.thread-card { background: transparent; }
+
+/* Thread header — file location is the headline; author + recommendation chip on a second row. */
+.thread-header {
+  display: flex; flex-wrap: wrap; align-items: baseline;
+  column-gap: 12px; row-gap: 6px;
+  margin-bottom: 10px;
+  padding: 0;
+  border: 0; background: transparent;
+}
+.thread-header .thread-loc {
+  font-family: var(--font-mono);
+  font-size: 12px; letter-spacing: 0.02em;
+  color: var(--accent-2);
+  flex: 1 1 100%;
+  overflow-wrap: anywhere;
+}
+.thread-header .thread-author {
+  font-size: 12px;
+  color: var(--text-mute);
+  flex: 0 0 auto;
+  max-width: 60%;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.thread-time {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+/* Recommendation chip — a status pill (§7.2): fully round, sentence case,
+   tint fill in the matching state family. */
+.thread-rec {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  margin-left: auto;
+  flex: none;
+}
+.thread-rec-reply {
+  color: var(--accent);
+  background: var(--accent-soft);
+}
+.thread-rec-edit {
+  color: var(--accent-2);
+  background: var(--accent-2-soft);
+}
+.thread-rec-ignore {
+  color: var(--text-dim);
+}
+
+/* Diff hunk — quoted block, no rounded corners. */
+.thread-hunk {
+  margin: 4px 0 14px;
+  padding: 10px 14px;
+  background: var(--bg);
+  border: 0;
+  border-left: 2px solid var(--line);
+  font-family: var(--font-mono);
+  font-size: 12px; line-height: 1.55;
+  overflow-x: auto;
+  white-space: pre;
+  width: 100%;
+  max-width: 100%;
+}
+.thread-hunk span { display: block; }
+.thread-hunk .hunk-add { background: var(--ok-soft); color: var(--ok); }
+.thread-hunk .hunk-del { background: var(--danger-soft); color: var(--danger); }
+.thread-hunk .hunk-hdr { color: var(--text-dim); }
+.thread-hunk .hunk-ctx { color: var(--text-mute); }
+
+/* Conversation messages within a thread. */
+.thread-msg {
+  padding: 12px 0 6px;
+  border-top: 1px solid var(--line-soft);
+  min-width: 0;
+}
+.thread-msg:first-of-type {
+  border-top: 0;
+  padding-top: 4px;
+}
+.thread-msg + .thread-msg { border-top: 1px solid var(--line-soft); }
+.thread-msg-head {
+  display: flex; align-items: center; gap: 10px;
+  margin-bottom: 8px;
+  min-width: 0;
+}
+.thread-avatar {
+  flex: none;
+  width: 24px; height: 24px;
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono);
+  font-size: 9px; font-weight: 700;
+  letter-spacing: 0.02em;
+  background: var(--bg-elev-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-pill);
+  color: var(--text-mute);
+}
+.thread-msg-head .thread-author {
+  font-family: var(--font-body);
+  font-size: 13px; font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--text);
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  max-width: none;
+}
+.thread-msg-meta {
+  font-size: 11px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: none;
+}
+.thread-msg-body {
+  font-family: var(--font-body);
+  font-size: 14px; line-height: 1.6;
+  color: var(--text);
+  overflow-wrap: anywhere; min-width: 0;
+}
+.thread-msg-body > :first-child { margin-top: 0; }
+.thread-msg-body > :last-child { margin-bottom: 0; }
+.thread-msg-body .md-p { margin: 0 0 8px; }
+.thread-msg-body .md-pre { margin: 8px 0; }
+.thread-msg-body .md-h { margin: 12px 0 6px; }
+
+/* Reactions row. */
+.thread-reactions {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 0;
+  border: 0; background: transparent;
+  position: relative;
+  min-width: 0;
+}
+.thread-reaction-chips { display: flex; gap: 6px; flex-wrap: wrap; }
+.thread-reaction-chip {
+  display: inline-flex; align-items: center;
+  padding: 0; border: 0; background: transparent;
+  font-size: 15px; line-height: 1;
+}
+.thread-reaction-add {
+  background: transparent;
+  border: 1px solid var(--line);
+  color: var(--text-mute);
+  border-radius: var(--r-control);
+  padding: 0;
+  width: 22px; height: 22px;
+  font-size: 13px; line-height: 1;
+  cursor: pointer;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.thread-reaction-add:hover,
+.thread-reaction-add:active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: transparent;
+}
+.thread-reaction-picker {
+  display: inline-flex; gap: 4px; flex-wrap: wrap;
+  padding: 6px 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+  box-shadow: var(--shadow-pop);
+  flex-basis: auto;
+}
+.thread-reaction-picker[hidden] { display: none; }
+.thread-reaction-pick {
+  background: transparent;
+  border: 0;
+  border-radius: var(--r-control);
+  padding: 4px;
+  font-size: 16px; line-height: 1;
+  cursor: pointer;
+  transition: background var(--dur-1) var(--ease);
+}
+.thread-reaction-pick:hover { background: var(--accent-soft); }
+.thread-reaction-pick:disabled { opacity: 0.5; cursor: default; }
+
+/* Agent rationale and status banners. */
+.thread-rationale {
+  margin: 12px 0 0;
+  padding: 10px 0 0;
+  border-top: 1px dashed var(--line-soft);
+  font-size: 13px; line-height: 1.5;
+  color: var(--text-mute);
+  background: transparent;
+  overflow-wrap: anywhere;
+}
+.thread-rationale-pending {
+  color: var(--text-dim);
+  font-style: italic;
+}
+.thread-banner {
+  margin: 12px 0 0;
+  padding: 8px 12px;
+  font-size: 12px; line-height: 1.5;
+  background: transparent;
+  border-left: 2px solid;
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  overflow-wrap: anywhere;
+}
+.thread-banner-reopened {
+  color: var(--accent);
+  border-left-color: var(--accent);
+  background: var(--accent-soft);
+}
+.thread-banner-locked {
+  color: var(--accent-2);
+  border-left-color: var(--accent-2);
+  background: var(--accent-2-soft);
+}
+
+/* Action row + composers. Reply/Edit/Ignore/⋯ are .o-btn (§7.1) — sized to
+   share the row evenly instead of the default inline width. */
+.thread-actions {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  padding: 0;
+  margin: 14px 0 0;
+  border: 0; background: transparent;
+}
+.thread-actions .o-btn {
+  flex: 1 1 0;
+  min-width: 100px;
+  justify-content: center;
+}
+.thread-composer {
+  margin-top: 12px;
+  padding: 12px 0 0;
+  border-top: 1px dashed var(--line-soft);
+  display: flex; flex-direction: column; gap: 10px;
+  background: transparent;
+}
+.thread-composer[hidden] { display: none; }
+.thread-composer-status {
+  flex-direction: row; align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+.thread-compose-input {
+  width: 100%; box-sizing: border-box;
+  padding: 10px 12px;
+  font-size: 14px; line-height: 1.55;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  resize: vertical;
+  min-height: 76px;
+  transition: border-color var(--dur-1) var(--ease);
+}
+.thread-compose-input:focus { outline: none; border-color: var(--accent); }
+.thread-composer-row { display: flex; justify-content: flex-end; }
+.thread-ignore-note {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-mute);
+}
+.thread-edit-status {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 12px;
+  color: var(--accent);
+}
+.thread-edit-status::before {
+  content: '';
+  width: 6px; height: 6px;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  animation: tl-pulse var(--pulse) ease-in-out infinite;
+}
+.thread-edit-failure {
+  font-size: 13px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+/* Empty state inside chapter bodies. */
+.work-section-body > .work-empty {
+  padding: 8px 0 0;
+  text-align: left;
+  font-size: 14px;
+  color: var(--text-mute);
+}
+
+/* step-dot is composed by work/ticket-row.js's stepDots() into tracked/list.js's
+   .o-row-sub — the .job-row/.job-eyebrow/.job-title/.job-active card shape
+   that used to wrap it (a pre-tracked/ "new pipeline" list item) is gone. */
+.step-dot { width: 8px; height: 8px; border: 1px solid var(--line); border-radius: var(--r-pill); display: inline-block; }
+.step-dot[data-state="ok"]     { background: var(--ok);       border-color: var(--ok); }
+.step-dot[data-state="active"] { background: var(--accent-2); border-color: var(--accent-2); animation: tl-pulse var(--pulse) ease-in-out infinite; }
+.step-dot[data-state="todo"]   { background: var(--bg-elev-2); border-color: var(--line); }
+.step-dot[data-state="failed"] { background: var(--danger);   border-color: var(--danger); }
+.step-dot[data-state="gate"]   { background: transparent;     border-color: var(--accent); box-shadow: inset 0 0 0 2px var(--accent-soft); }
+/* Legacy aliases — won't be emitted by current code but kept for back-compat. */
+.step-dot[data-state="running"]  { background: var(--accent-2); border-color: var(--accent-2); animation: tl-pulse var(--pulse) ease-in-out infinite; }
+.step-dot[data-state="resolved"] { background: var(--ok);       border-color: var(--ok); }
+.step-dot[data-state="queued"]   { background: var(--bg-elev-2); border-color: var(--line); }
+
+/* Job state pill — a status pill (§7.2): fully round, sentence case, tint fill. */
+.job-state-pill {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: var(--r-pill);
+  color: var(--text-mute);
+  background: var(--bg-elev-2);
+}
+.job-state-pill[data-tone="gate"]    { color: var(--accent);   background: var(--accent-soft); }
+.job-state-pill[data-tone="accent"]  { color: var(--accent);   background: var(--accent-soft); }
+.job-state-pill[data-tone="active"]  { color: var(--accent-2); background: var(--accent-2-soft); }
+.job-state-pill[data-tone="ok"]      { color: var(--ok);       background: var(--ok-soft); }
+.job-state-pill[data-tone="accent2"] { color: var(--accent-2); background: var(--accent-2-soft); }
+.job-state-pill[data-tone="danger"]  { color: var(--danger);   background: var(--danger-soft); }
+
+/* Plan card + step list */
+.plan-card { border: 1px solid var(--line); background: var(--bg-elev); border-radius: var(--r-container); margin-top: 18px; }
+
+.step-list { padding: 4px 0; }
+
+/* Type chip — a nano machine tag (§3.2): mono, may be uppercase 0.1–0.14em.
+   Type identity is conveyed by the label text — colors are reserved for *status*. */
+.type-mono {
+  height: 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 0 8px;
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.12em;
+  color: var(--text-mute);
+  background: var(--bg);
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.step-title {
+  font-size: 14px; font-weight: 500; color: var(--text); line-height: 1.4; cursor: pointer;
+}
+
+.step-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.step-actions .o-btn { flex: 1; min-width: 0; justify-content: center; }
+
+/* Reconciliation diff */
+.plan-card.is-reconciling { border-color: var(--accent); }
+.recon-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 12px 18px;
+  background: var(--accent-soft);
+  border-bottom: 1px solid var(--accent);
+}
+.recon-banner .label { color: var(--accent); }
+.recon-banner .feedback { font-size: 13px; color: var(--text); font-style: italic; }
+.recon-banner .spacer  { flex: 1; }
+.diff-glyph { width: 56px; text-align: center; font-family: var(--font-mono); font-size: 14px; }
+.diff-glyph[data-kind="keep"]   { color: var(--text-dim); }
+.diff-glyph[data-kind="patch"]  { color: var(--accent); }
+.diff-glyph[data-kind="add"]    { color: var(--accent-2); }
+.diff-glyph[data-kind="cancel"] { color: var(--danger); }
+.is-reconciling .diff-row {
+  display: grid; grid-template-columns: 56px 36px 1fr; gap: 14px;
+  padding: 12px 18px; border-top: 1px solid var(--line-soft); align-items: center;
+}
+.is-reconciling .diff-row .delta { margin-top: 6px; font-size: 12px; color: var(--text-mute); }
+.is-reconciling .diff-row .delta .key { font-family: var(--font-mono); color: var(--text-dim); }
+
+/* ── Modal (add-step / edit-step / action-picker dialogs) ──
+   A floating overlay (§6/§7.6): --r-container + --shadow-pop.
+   Consumers: components/work/{add-step,action-picker}-dialog.js. */
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 200;
+  /* No token exists for the page scrim itself (base.css's palette only covers
+     component color, not page dimmers) — this matches the raw value the rest
+     of the app's modal scrims already use. */
+  background: var(--scrim);
+  display: flex; align-items: center; justify-content: center;
+  padding: var(--gap-6);
+}
+.modal {
+  width: min(520px, 100%);
+  /* Caps height on short desktop windows too, not just phones — shell-mobile.css
+     layers a viewport-safe-area-aware variant of this on top for mobile. */
+  max-height: calc(100dvh - 48px);
+  border: 1px solid var(--line); background: var(--bg-elev);
+  border-radius: var(--r-container);
+  box-shadow: var(--shadow-pop);
+  display: flex; flex-direction: column;
+}
+.modal-head {
+  padding: 14px 18px; border-bottom: 1px solid var(--line-soft);
+  display: flex; align-items: baseline; gap: 12px;
+}
+.modal-head .label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); }
+.modal-head .glyph { color: var(--accent); }
+.modal-head .spacer { flex: 1; }
+.modal-head .close {
+  background: transparent; color: var(--text-mute);
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  padding: 3px 8px;
+  cursor: pointer; font-size: 11px;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.modal-head .close:hover { color: var(--text); background: var(--bg-elev-2); }
+.modal-body { padding: 18px; display: flex; flex-direction: column; gap: 14px; min-height: 0; overflow-y: auto; }
+.field-label { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; color: var(--text-dim); }
+.field-input, .field-textarea {
+  font: inherit; font-size: 13px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  padding: 10px 12px;
+  width: 100%;
+}
+.field-input:focus, .field-textarea:focus { outline: none; border-color: var(--accent); }
+.field-textarea { min-height: 96px; line-height: 1.5; resize: vertical; }
+.field-hint { font-size: 11px; color: var(--text-dim); }
+.field-check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text); cursor: pointer; }
+.modal-foot {
+  padding: 14px 18px; border-top: 1px solid var(--line-soft);
+  display: flex; justify-content: flex-end; gap: 10px;
+}
+/* .secondary/.primary keep their names (not .o-btn) — the work add-step and
+   action-picker dialogs share this exact markup. */
+.modal-foot .secondary, .modal-foot .primary {
+  font: inherit; font-size: 13px; font-weight: 500;
+  padding: 6px 12px; border-radius: var(--r-control);
+  border: 1px solid var(--line); background: var(--bg-elev); color: var(--text-mute); cursor: pointer;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), color var(--dur-1) var(--ease);
+}
+.modal-foot .secondary:hover { color: var(--text); background: var(--bg-elev-2); }
+.modal-foot .primary { color: var(--bg); border-color: var(--accent); background: var(--accent); }
+
+.step-title .strike { text-decoration: line-through; text-decoration-color: var(--text-dim); color: var(--text-dim); }
+
+/* Plan section heading — sits above the plan card. */
+.plan-heading {
+  display: flex; align-items: baseline; gap: 12px;
+  margin: 28px 0 12px;
+  padding-top: 28px;
+  border-top: 1px solid var(--line);
+  font-weight: 400;
+}
+.plan-heading-label {
+  font-family: var(--font-display);
+  font-size: 18px; font-weight: 500;
+  color: var(--text);
+}
+.plan-heading-count {
+  font-family: var(--font-mono);
+  font-size: 10px; letter-spacing: 0.12em;
+  color: var(--text-dim);
+}
+.plan-heading-approved { font-size: 12px; color: var(--ok); }
+
+/* Plan card footer — sits inside the card, below the step list. */
+.plan-card-foot {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 12px 16px;
+  border-top: 1px solid var(--line-soft);
+}
+.plan-card-foot .o-btn { flex: 1; min-width: 0; justify-content: center; }
+
+/* Inline replan composer — collapses by default, animates to full height on open. */
+.replan-composer {
+  border-top: 1px solid var(--line-soft);
+  overflow: hidden;
+  max-height: 0;
+  opacity: 0;
+  transition: max-height var(--dur-2) var(--ease), opacity var(--dur-1) var(--ease), padding var(--dur-1) var(--ease);
+  padding: 0 16px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+.replan-composer[data-open="true"] {
+  max-height: 320px;
+  opacity: 1;
+  padding: 14px 16px;
+}
+.replan-composer .replan-textarea {
+  min-height: 110px;
+  resize: vertical;
+  width: 100%;
+}
+.replan-composer-actions {
+  display: flex; gap: 8px;
+}
+.replan-composer-actions .o-btn { flex: 1; justify-content: center; }
+
+/* One "Plan" section — no longer a whole-section collapse (that moved down to
+   each step's findings; see .tl-findings). The header is always visible; the
+   body is either the review card (.plan-section--review, boxed compact index)
+   or the live timeline (.plan-section--live, unboxed under the header). */
+.plan-section { display: block; margin: 0; }
+.plan-heading-spacer { flex: 1; }
+
+/* Live layout: Plan header sits directly atop the timeline; foot + composer
+   trail it, unboxed. The foot's card-era border/padding become a plain divider
+   flush to the rail rather than an inset card footer. */
+.plan-section--live .plan-heading { margin-bottom: 16px; }
+.plan-section--live > .plan-findings,
+.plan-section--live > .orchestrator-inline-session-mount { margin-bottom: 16px; }
+.plan-section--live .plan-card-foot {
+  padding: 14px 0 0;
+  margin-top: 20px;
+}
+.plan-section--live .plan-card-foot .o-btn { flex: 0 0 auto; }
+.plan-section--live .replan-composer { padding-left: 0; padding-right: 0; }
+.plan-section--live .replan-composer[data-open="true"] { padding-left: 0; padding-right: 0; }
+
+/* Per-step findings collapse — the findings box (.plan-findings) is a <details>
+   in the timeline (.tl-findings). Collapsed, only the "Findings ▾" summary shows,
+   so the step reads as name + description + inline feed; expanded reveals the
+   output. Native disclosure; open state persists via detail.js's snapshotUi. */
+.tl-findings > summary {
+  list-style: none; cursor: pointer; user-select: none;
+  display: flex; align-items: center; gap: 8px;
+}
+.tl-findings > summary::-webkit-details-marker { display: none; }
+.tl-findings > summary .plan-findings-label { margin-bottom: 0; }
+.tl-findings-caret {
+  margin-left: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  transition: transform var(--dur-1) var(--ease);
+}
+.tl-findings[open] > summary .tl-findings-caret { transform: rotate(180deg); }
+.tl-findings[open] .step-findings { margin-top: 8px; }
+
+/* Findings / notes — rendered markdown produced by the session. */
+.step-findings {
+  background: var(--bg);
+  border-left: 2px solid var(--accent-2);
+  padding: 10px 14px;
+  font-size: 13px;
+  color: var(--text);
+  line-height: 1.55;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.step-findings p:first-child { margin-top: 0; }
+.step-findings p:last-child  { margin-bottom: 0; }
+.step-findings pre,
+.step-findings code { font-family: var(--font-mono); font-size: 12px; }
+.step-findings pre {
+  background: var(--bg-elev);
+  padding: 8px 10px;
+  overflow-x: auto;
+}
+
+
+/* ───── Plan editor — inline reorder/cancel/insert controls ────────
+   Surfaces on the existing .plan-card when isEditingPlan(jobId) === true.
+   Tone uses --accent for the section accent, --danger for cancel.
+   Layout sits inside each .tl-step via injection in renderStepsTimeline —
+   the hover/focus reveal and .tl-hdr overlap fix live in
+   css/surfaces/tracked.css since .tl-step is where this actually mounts now. */
+
+/* Row-end toolbar: ▲ ▼ ✎ ×. Stays out of the way until the row is hovered or
+   focused so the read-mode silhouette of the step list isn't cluttered. */
+.step-edit-tools {
+  position: absolute; top: 8px; right: 8px;
+  display: flex; gap: 4px;
+  opacity: 0.4;
+  transition: opacity var(--dur-1) var(--ease);
+}
+.step-edit-tool {
+  width: 22px; height: 22px;
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-elev); color: var(--text-mute);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-control);
+  font-size: 11px; line-height: 1;
+  cursor: pointer; padding: 0;
+  transition: color var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease), background var(--dur-1) var(--ease);
+}
+.step-edit-tool:hover:not([disabled]) {
+  color: var(--text); border-color: var(--text-mute);
+}
+.step-edit-tool.danger:hover:not([disabled]) {
+  color: var(--danger); border-color: var(--danger); background: var(--danger-soft);
+}
+.step-edit-tool[disabled] { opacity: 0.3; cursor: not-allowed; }
+
+/* Between-row insert affordance — a thin line with a centered label that grows
+   on hover. Buttons sit between step-rows in the list. */
+.plan-insert {
+  display: flex; align-items: center; gap: 10px;
+  width: 100%; padding: 6px 12px;
+  background: transparent; border: 0; cursor: pointer;
+  color: var(--text-dim);
+  font-size: 11px;
+  transition: color var(--dur-1) var(--ease);
+}
+.plan-insert-line { flex: 1; height: 1px; background: var(--line-soft); transition: background var(--dur-1) var(--ease); }
+.plan-insert-label { padding: 2px 6px; }
+.plan-insert:hover { color: var(--accent); }
+.plan-insert:hover .plan-insert-line { background: var(--accent-soft); }
+
+
+/* ───── Action picker dialog ────────────────────────────────────
+   Reuses .modal chrome; widens for the two-pane list/detail layout. */
+
+.modal.modal-wide { width: min(880px, 100%); }
+
+.action-picker-body {
+  /* Override modal-body padding-then-gap; we manage our own spacing inside the panes. */
+  padding: 0;
+  gap: 0;
+}
+.action-picker-search {
+  padding: 14px 18px 0;
+}
+
+.action-picker-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0;
+  border-top: 1px solid var(--line-soft);
+  margin-top: 14px;
+  min-height: 360px;
+  max-height: 60vh;
+}
+.action-picker-list,
+.action-picker-detail {
+  overflow-y: auto;
+  padding: 14px 18px;
+}
+.action-picker-list { border-right: 1px solid var(--line-soft); }
+.action-picker-list .empty,
+.action-picker-detail .empty {
+  font-size: 12px; color: var(--text-dim);
+  padding: 24px 0; text-align: center;
+}
+
+.ap-cat { margin-bottom: 18px; }
+.ap-cat-head {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em;
+  color: var(--text-dim);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--line-soft);
+  margin-bottom: 6px;
+}
+.ap-row {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: auto auto;
+  grid-column-gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 10px 12px;
+  background: transparent; border: 1px solid transparent;
+  border-radius: var(--r-control);
+  text-align: left; cursor: pointer;
+  margin-bottom: 2px;
+  transition: background var(--dur-1) var(--ease), border-color var(--dur-1) var(--ease);
+}
+.ap-row:hover {
+  background: var(--bg-elev);
+  border-color: var(--line-soft);
+}
+.ap-row.is-selected {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+.ap-row-icon {
+  grid-row: 1; grid-column: 1;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 16px;
+  color: var(--text-mute);
+}
+.ap-row-icon svg { width: 16px; height: 16px; display: block; }
+.ap-row:hover .ap-row-icon,
+.ap-row.is-selected .ap-row-icon { color: var(--text); }
+.ap-row-name {
+  font-family: var(--font-mono); font-size: 12px; color: var(--text);
+  grid-row: 1; grid-column: 2;
+}
+.ap-row-meta {
+  grid-row: 1; grid-column: 3;
+  display: inline-flex; gap: 4px; align-items: center;
+}
+.ap-row-desc {
+  grid-row: 2; grid-column: 2 / -1;
+  font-family: var(--font-body); font-size: 12px; color: var(--text-mute);
+  line-height: 1.4;
+  margin-top: 2px;
+}
+
+.ap-chip {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase;
+  padding: 2px 6px;
+  border-radius: var(--r-control);
+  border: 1px solid var(--line);
+  color: var(--text-mute);
+  background: var(--bg-elev);
+  white-space: nowrap;
+}
+.ap-chip-runner { color: var(--text-mute); }
+.ap-chip-sideeff-none           { color: var(--text-dim);  border-color: var(--line); }
+.ap-chip-sideeff-worktree-edit  { color: var(--accent-2);  border-color: var(--accent-2); background: var(--accent-2-soft); }
+.ap-chip-sideeff-gated-write    { color: var(--accent);    border-color: var(--accent);   background: var(--accent-soft); }
+.ap-chip-sideeff-external-write { color: var(--danger);    border-color: var(--danger);   background: var(--danger-soft); }
+.ap-chip-gate { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+
+.ap-detail-head {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 6px;
+}
+.ap-detail-icon {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px;
+  color: var(--accent);
+  flex-shrink: 0;
+}
+.ap-detail-icon svg { width: 22px; height: 22px; display: block; }
+.ap-detail-names { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ap-detail-name {
+  font-family: var(--font-display); font-size: 18px; font-weight: 500;
+  color: var(--text);
+  line-height: 1.1;
+}
+.ap-detail-fullname {
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.04em;
+  color: var(--text-dim);
+}
+.ap-detail-meta { display: inline-flex; gap: 4px; align-items: center; margin-left: auto; }
+.ap-detail-desc {
+  font-family: var(--font-body); font-size: 13px; color: var(--text-mute);
+  line-height: 1.5;
+  margin-bottom: 14px;
+}
+
+.ap-field { display: flex; flex-direction: column; gap: 6px; }
+.ap-fields { display: flex; flex-direction: column; gap: 12px; }
+.ap-section-label.o-microhead {
+  margin-top: 8px; margin-bottom: 4px;
+}
+
+.ap-schema { margin-top: 14px; border-top: 1px solid var(--line-soft); padding-top: 10px; }
+.ap-schema summary.o-microhead { cursor: pointer; }
+.ap-schema-body {
+  margin: 8px 0 0; padding: 10px 12px;
+  background: var(--bg-elev); border: 1px solid var(--line-soft);
+  border-radius: var(--r-control);
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-mute);
+  white-space: pre-wrap; word-break: break-all;
+  max-height: 200px; overflow: auto;
+}
+
+/* Narrow layout: stack list above detail. */
+@media (max-width: 720px) {
+  .action-picker-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(140px, 240px) 1fr;
+  }
+  .action-picker-list { border-right: 0; border-bottom: 1px solid var(--line-soft); }
+}
+
+.o-group-collapse > summary { cursor: pointer; list-style: none; }
+.o-group-collapse > summary::-webkit-details-marker { display: none; }
+

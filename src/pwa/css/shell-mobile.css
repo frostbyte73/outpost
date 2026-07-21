@@ -1,0 +1,273 @@
+/* Mobile shell (D6/P3): bottom tab bar, 3 header shapes, FAB, screen stack.
+   Every rule here is scoped to html[data-layout="mobile"] (D3) — content
+   markup (rows, cards, pills, focus card) comes from primitives.css and the
+   per-surface css/surfaces/*.css files, shared with desktop; this file is
+   chrome only. */
+
+html[data-layout="mobile"] .m-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  /* Containing block for the FAB — without this it resolves against the
+     initial containing block, which drifts from the shell in a browser tab
+     with a collapsing URL bar. */
+  position: relative;
+}
+
+/* ── Screen stack ─────────────────────────────────────────────────────── */
+html[data-layout="mobile"] .m-body {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+}
+html[data-layout="mobile"] .m-screen-root {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 14px 14px calc(90px + env(safe-area-inset-bottom));
+}
+html[data-layout="mobile"] .m-screen-root.m-screen-hidden { display: none; }
+
+/* List/detail pair sharing one screen-root: both are plain blocks inside the
+   .m-screen-root scroll box (only one visible at a time — no slide animation,
+   D6 asks for "simple, no heavy animation" transitions). The root keeps its own
+   position:absolute/overflow-y:auto box so the whole surface scrolls there and
+   the bottom tab bar stays pinned — do NOT collapse it with display:contents,
+   which dissolves that scroll box and lets the page scroll the footer away. */
+html[data-layout="mobile"] .m-screen.m-screen-hidden { display: none; }
+
+/* Cockpit's own .cockpit-view carries max-width/padding sized for the desktop
+   main column — on top of .m-screen-root's own padding that's doubled
+   whitespace on a phone, not a layout break, but tight enough to reset here
+   (chrome-level geometry, not a content-markup fork). */
+html[data-layout="mobile"] .cockpit-view {
+  max-width: none;
+  padding: 0;
+}
+
+/* ── Tracked drill-in: focus card above the shared tk-shell body ────────── */
+html[data-layout="mobile"] .m-focus-mount { margin-bottom: 4px; }
+html[data-layout="mobile"] .m-focus-mount:empty { display: none; }
+
+/* ── Header ───────────────────────────────────────────────────────────── */
+html[data-layout="mobile"] #header {
+  align-items: center;
+}
+html[data-layout="mobile"] #header .title-block {
+  flex: 1;
+  min-width: 0;
+}
+html[data-layout="mobile"] #header .m-greet {
+  font-family: var(--font-display);
+  font-weight: 500;
+  font-size: 18px;
+  line-height: 1.2;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+html[data-layout="mobile"] #header .m-greet-compact { font-size: 15px; }
+html[data-layout="mobile"] #header .m-sub {
+  margin-top: 1px;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+html[data-layout="mobile"] #header .h-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+html[data-layout="mobile"] #header .h-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--r-control);
+  border: 0;
+  background: transparent;
+  color: var(--text-mute);
+  font-size: 15px;
+}
+html[data-layout="mobile"] #header .h-icon:active { background: var(--bg-elev-2); }
+html[data-layout="mobile"] #header .m-back {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 22px;
+  line-height: 1;
+}
+
+/* Compact usage widget (Cockpit's list-root shape only). */
+html[data-layout="mobile"] .m-usage {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 8px;
+  min-width: 68px;
+  border: 0;
+  border-radius: var(--r-control);
+  background: var(--bg-elev);
+  cursor: pointer;
+}
+html[data-layout="mobile"] .m-usage-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  color: var(--text-mute);
+}
+/* Nano machine tag (§3.2): mono/500/uppercase, 0.1-0.14em, dim. */
+html[data-layout="mobile"] .m-usage-lbl {
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  font-weight: 500;
+  font-size: 10px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+html[data-layout="mobile"] .m-usage-bar {
+  width: 32px;
+  height: 4px;
+  border-radius: var(--r-pill);
+  background: var(--bg-elev-2);
+  overflow: hidden;
+  position: relative;
+}
+html[data-layout="mobile"] .m-usage-fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+html[data-layout="mobile"] .m-usage-fill.warn { background: var(--warn); }
+html[data-layout="mobile"] .m-usage-fill.hot  { background: var(--danger); }
+html[data-layout="mobile"] .m-usage-pct {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text);
+  font-weight: 500;
+}
+html[data-layout="mobile"] .m-usage-sheet-body { padding: 4px 18px 18px; }
+
+/* ── FAB ──────────────────────────────────────────────────────────────── */
+html[data-layout="mobile"] .m-fab {
+  position: absolute;
+  right: 20px;
+  bottom: calc(86px + env(safe-area-inset-bottom));
+  width: 52px;
+  height: 52px;
+  border: 0;
+  padding: 0;
+  font-family: inherit;
+  border-radius: var(--r-pill);
+  background: var(--accent);
+  color: var(--bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 24px;
+  font-weight: 300;
+  box-shadow: var(--shadow-pop);
+  z-index: 3;
+  cursor: pointer;
+}
+html[data-layout="mobile"] .m-fab[hidden] { display: none; }
+
+/* ── List filter (⌘F target on desktop; plain filter input here) ───────── */
+html[data-layout="mobile"] .o-list-filterbar {
+  padding: 0 0 12px;
+  flex: none;
+}
+html[data-layout="mobile"] .o-list-filter {
+  width: 100%; box-sizing: border-box;
+  padding: 10px 12px;
+  background: var(--bg-elev); border: 1px solid var(--line);
+  border-radius: var(--r-control); color: var(--text);
+  font: inherit; font-size: 14px;
+}
+html[data-layout="mobile"] .o-list-filter::placeholder { color: var(--text-dim); }
+html[data-layout="mobile"] .o-list-filter:focus { outline: none; border-color: var(--accent); }
+
+/* Chord hints are a desktop-keyboard affordance — touch has no keyboard to
+   chord on. Global so tracked/cockpit/diff surfaces don't each need their
+   own copy of this (previously only the list filterbar's copy hid it). */
+html[data-layout="mobile"] .o-kbd { display: none; }
+
+/* .o-frame-empty (sessions/schedules/skills list columns, and tracked's
+   loading state) is styled only under data-layout="desktop" in
+   shell-desktop.css — give it the same treatment here so it doesn't render
+   as unstyled flush-left text on mobile. */
+html[data-layout="mobile"] .o-frame-empty {
+  padding: 24px 16px;
+  text-align: center;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+/* ── Modals on phone viewports ───────────────────────────────────────────
+   The shared .modal (surfaces/tracked.css) has no max-height/scroll (desktop-era) —
+   cap it to the small viewport here so long forms scroll inside the card
+   instead of pushing the footer off screen. */
+html[data-layout="mobile"] .modal {
+  max-height: calc(100dvh - 48px - env(safe-area-inset-bottom) - env(safe-area-inset-top));
+}
+html[data-layout="mobile"] .modal-body {
+  min-height: 0;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* ── Bottom tab bar ───────────────────────────────────────────────────── */
+html[data-layout="mobile"] .m-tabs {
+  flex: none;
+  background: var(--bg-elev);
+  border-top: 1px solid var(--line);
+  padding: 8px 8px calc(10px + env(safe-area-inset-bottom));
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  z-index: 4;
+}
+html[data-layout="mobile"] .m-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 10px;
+  position: relative;
+}
+html[data-layout="mobile"] .m-tab .icon { font-size: 20px; }
+html[data-layout="mobile"] .m-tab.active { color: var(--accent); }
+html[data-layout="mobile"] .m-tab .badge {
+  position: absolute;
+  top: -2px;
+  right: calc(50% - 20px);
+  min-width: 14px;
+  height: 14px;
+  padding: 0 4px;
+  background: var(--warn);
+  color: var(--bg);
+  border-radius: var(--r-pill);
+  font-size: 9px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+html[data-layout="mobile"] .m-tab .badge[hidden] { display: none; }
