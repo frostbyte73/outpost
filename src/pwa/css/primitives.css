@@ -23,10 +23,15 @@
   grid-template-columns: 22px 1fr auto;
   align-items: start;
   gap: 14px;
+  width: 100%;
   padding: var(--gap-3, 12px) 14px;
   background: var(--bg-elev);
   border: 1px solid var(--line);
   cursor: pointer;
+  /* Button-based rows (tracked/sessions) default to fit-content width +
+     centered text; force the fill/left the div-based rows already get so a
+     row is a full-width card on every layout, not a shrink-wrapped pill. */
+  text-align: left;
 }
 .o-row:hover { background: var(--bg-elev-2); }
 .o-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
