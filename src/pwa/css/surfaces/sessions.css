@@ -213,6 +213,18 @@
 }
 
 /* ── Mobile ───────────────────────────────────────────────────────────── */
+/* Unlike Tracked/Schedules (mounted into a child .m-screen), the sessions list
+   renders straight onto .m-screen-root (mobile has no inline drill-in — a row
+   tap routes to the full-screen session view). That means .sess-list's flex
+   column lands on the absolutely-positioned, full-height scroll root, so the
+   desktop `.sess-list-body { flex: 1 }` stretches to fill the whole screen and
+   strands a tall gap below a short list. Drop back to block flow here and let
+   .m-screen-root own the scroll — the body sizes to its content. */
+html[data-layout="mobile"] .sess-list { display: block; }
+html[data-layout="mobile"] .sess-list-body { overflow-y: visible; }
+/* The bottom FAB already opens the palette (new session/project) — the in-list
+   dashed "+ New session" button is a desktop-only affordance here. */
+html[data-layout="mobile"] .sess-new-btn { display: none; }
 /* The shell's list-tab header (mobile-shell/index.js's paintSessionsHeader)
    already shows "Sessions" + "N running" — this surface's own in-body
    .sess-list-hdr would just repeat the title. */
