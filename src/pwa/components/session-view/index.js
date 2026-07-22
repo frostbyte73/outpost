@@ -58,7 +58,7 @@ function buildSkeleton(mount) {
       <span class="sv-header-meta"></span>
       <div class="sv-header-actions">
         <button class="sv-header-promote" type="button">Promote to tracked <span class="o-kbd">⌘⇧P</span></button>
-        <button class="sv-header-archive" type="button" hidden>Archive <span class="o-kbd">⌘⇧A</span></button>
+        <button class="sv-header-archive" type="button" hidden>Archive <span class="o-kbd">⌘⇧E</span></button>
         <div class="sv-header-menu-wrap">
           <button class="sv-header-menu-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋯</button>
           <div class="sv-header-menu" hidden role="menu"></div>
@@ -685,12 +685,14 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   // ⌘⇧P (mockup's header shortcut) — scoped to this mount rather than the
   // global shell keymap (shell/keyboard.js is out of this surface's ownership,
   // and a document listener per mount is the same self-contained pattern the
-  // mode-popover/palette overlays already use).
+  // mode-popover/palette overlays already use). Archive is ⌘⇧E, not the more
+  // obvious ⌘⇧A, because Chrome reserves ⌘⇧A for "Search tabs" at the
+  // accelerator level — it never reaches the page for us to preventDefault.
   const onHeaderKeydown = (e) => {
     if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
       e.preventDefault();
       promoteSessionToJob(sessionId);
-    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'a') {
+    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'e') {
       // Skip when already archived — archiveSession would 404 the second time
       // and the visible button is hidden in that state anyway.
       if (computeGitInfo(sessionId).archived) return;
