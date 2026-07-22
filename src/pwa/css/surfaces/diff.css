@@ -477,9 +477,12 @@ html[data-layout="desktop"] .dr-files {
 html[data-layout="desktop"] .dr-log { flex: 1; }
 
 /* ── Mobile: full-screen (dr-scrim/dr-overlay's un-scoped base rules
-   already fill the viewport — only the collapsible file strip, sticky
-   commit-bar termination row, and touch targets are mobile-specific). ── */
-html[data-layout="mobile"] .dr-overlay { padding-bottom: env(safe-area-inset-bottom); }
+   already fill the viewport — only the collapsible file strip, the slim
+   footer bar + slide-up commit sheet, and touch targets are mobile-specific). ── */
+html[data-layout="mobile"] .dr-overlay {
+  padding-top: env(safe-area-inset-top);
+  padding-bottom: env(safe-area-inset-bottom);
+}
 
 .dr-files-hdr { display: flex; align-items: center; justify-content: space-between; }
 .dr-files-caret { display: none; }
@@ -504,28 +507,36 @@ html[data-layout="mobile"] .dr-files.dr-files-open {
   display: flex;
 }
 
-/* Discard-all (header) duplicates into the sticky footer's term row on
-   mobile — hide the header copy there so it isn't shown twice. */
+/* Discard-all lives in the commit sheet on mobile — hide the header copy so
+   it isn't shown twice. */
 html[data-layout="mobile"] .dr-hdr-actions [data-act="discard-all"] { display: none; }
 
-.dr-term-row { display: none; }
-html[data-layout="mobile"] .dr-term-row {
+/* Commit sheet: reuses .sheet chrome (overlays.css) but opens over the diff
+   scrim (z-index 1200), so lift its stacking context above it. Height is
+   capped to clear the overlay header + notch instead of pinSheetBelowHeader
+   (which keys off #header, absent inside this overlay). */
+.dr-commit-sheet-backdrop { z-index: 1300; }
+.dr-commit-sheet {
+  z-index: 1301;
+  max-height: calc(100dvh - env(safe-area-inset-top) - 56px);
+}
+.dr-commit-sheet .dr-commit-dialog { padding: 0; }
+.dr-sheet-feedback { margin: 0 0 12px; }
+.dr-commit-sheet .dr-sheet-actions {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
-  padding: 8px 16px 0;
+  margin-top: 14px;
 }
-html[data-layout="mobile"] .dr-term-row .dr-btn {
-  flex: 1;
-  min-height: 40px;
-}
-/* Request-changes flips from default to warn ("your move") once a comment
-   is drafted — dr-term-discard needs no override, .o-btn--danger (set in
-   markup) already owns its color. */
-html[data-layout="mobile"] .dr-term-request:not(:disabled) {
-  background: var(--warn-soft);
-  color: var(--warn);
-  border-color: transparent;
-}
+.dr-commit-sheet .dr-sheet-actions .dr-primary { margin-left: auto; min-height: 44px; }
+.dr-commit-sheet .dr-sheet-actions .dr-btn { min-height: 40px; }
+/* The themed discard confirm (confirmInSheet) opens on top of the commit
+   sheet, so it must out-stack it too — but only while the commit sheet is up,
+   hence the body-class scope (elsewhere the confirm sheet keeps its default
+   z-index from overlays.css). */
+body.dr-commit-sheet-open .confirm-sheet-backdrop { z-index: 1310; }
+body.dr-commit-sheet-open .confirm-sheet { z-index: 1311; }
 
 /* ── Mobile touch targets: bump ≥40px ─────────────────────────────────── */
 html[data-layout="mobile"] .dr-close { width: 40px; height: 40px; }

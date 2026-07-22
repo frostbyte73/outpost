@@ -35,6 +35,7 @@ import {
   isDiffReviewMessage,
   parseDiffReviewMessage,
 } from '../diff-review-format.js';
+import { makeSheetDismissible, noteSheetOpen, noteSheetClose, confirmInSheet } from '../sheet-utils.js';
 
 let _deps = {
   renderSession: () => {},
@@ -205,6 +206,7 @@ function currentSessionBranchHint(sessionId) {
 }
 
 function closeDiffOverlay() {
+  closeCommitSheet();
   unregisterDiffBack?.();
   unregisterDiffBack = null;
   const m = getMount();
@@ -340,7 +342,10 @@ async function discardAll() {
     setSourceFeedback('err', 'Discard is only available for worktree sessions — it would wipe uncommitted changes in your primary checkout.');
     return;
   }
-  if (!confirm('Discard ALL uncommitted changes on this branch? This cannot be undone.')) return;
+  const ok = isDesktop()
+    ? confirm('Discard ALL uncommitted changes on this branch? This cannot be undone.')
+    : await confirmInSheet({ title: 'Discard all changes?', body: 'This wipes every uncommitted change on this branch and cannot be undone.', confirmLabel: 'Discard all', danger: true });
+  if (!ok) return;
   await runSourceAction('discard', 'git/discard', { body: JSON.stringify({}) }, { success: 'Changes discarded.', failure: 'Discard failed.' });
 }
 
@@ -918,7 +923,9 @@ function sourceFormatRelative(ms) {
 }
 
 function setSourceFeedback(kind, title, detail) {
-  const el = getMount()?.querySelector('#dr-feedback');
+  // While the mobile commit sheet is open it covers the overlay's #dr-feedback
+  // banner, so route feedback into the sheet's own slot instead.
+  const el = commitSheetEl?.querySelector('#dr-sheet-feedback') ?? getMount()?.querySelector('#dr-feedback');
   if (!el) return;
   if (!title) { el.hidden = true; el.textContent = ''; el.removeAttribute('data-kind'); return; }
   el.hidden = false;
@@ -960,6 +967,88 @@ function computePrimaryLabel({ ignoreReview = false } = {}) {
   return commit.openPr ? 'Squash, push & open PR' : 'Commit & push';
 }
 
+// The commit dialog markup (message + merge mode + branch target + push/PR
+// checkboxes) — shared by desktop's inline footer and mobile's commit sheet, so
+// both hosts render the identical controls (D2). Reads the live commit draft +
+// git status; produces no listeners (see wireCommitDialogEvents).
+function buildCommitDialogHtml() {
+  const s = sourceCtl.status;
+  const busy = getGitBusy(diffState.ctx?.sessionId);
+  const commit = diffState.commit;
+  const isWorktree = Boolean(s?.worktree);
+  // Non-worktree (primary checkout): the branch is an editable input, not a
+  // static pill — typing a new name and pressing Enter moves the work onto a
+  // fresh branch (git checkout -b), the escape hatch from committing straight
+  // onto the default branch.
+  const branchChip = isWorktree
+    ? (commit.mergeMode === 'squash-to-branch'
+      ? `<input class="dr-branch-input" id="dr-new-branch" value="${escapeHtml(commit.newBranch)}" placeholder="fix/new-branch" spellcheck="false" autocomplete="off">`
+      : `<span class="o-pill code">${escapeHtml(s?.worktree?.baseBranch ?? s?.defaultBranch ?? 'main')}</span>`)
+    : `<input class="dr-branch-input" id="dr-switch-branch" value="${escapeHtml(s?.branch ?? '')}" placeholder="branch-name"
+        spellcheck="false" autocomplete="off" ${busy ? 'disabled' : ''}
+        title="Type a new name and press Enter to move your work onto a new branch">`;
+  const mergeToggle = isWorktree ? `
+    <div class="dr-segmented" role="tablist" aria-label="Merge mode">
+      <button type="button" data-merge="squash-to-branch" class="${commit.mergeMode === 'squash-to-branch' ? 'is-active' : ''}">Squash to branch</button>
+      <button type="button" data-merge="merge-to-base" class="${commit.mergeMode === 'merge-to-base' ? 'is-active' : ''}">Merge to base</button>
+    </div>` : '';
+  // On the default branch there's nothing to PR (main → main is a no-op), so
+  // hide the checkbox until the user switches to a feature branch above.
+  const onDefaultBranch = Boolean(s?.branch && s?.defaultBranch && s.branch === s.defaultBranch);
+  const openPrRow = (!isWorktree || commit.mergeMode === 'squash-to-branch') && diffState.ctx.mode !== 'pr-comment-edit'
+    && !(!isWorktree && onDefaultBranch)
+    ? `<label class="dr-checkbox"><input type="checkbox" id="dr-openpr" ${commit.openPr ? 'checked' : ''} ${s?.prUrl ? 'disabled' : ''}>Open PR to main</label>`
+    : '';
+  return `
+    <div class="dr-commit-msg">
+      <div class="dr-commit-label o-microhead">
+        Commit message
+        ${commit.autoFilled ? '<span class="dr-auto">◐ drafted</span>' : ''}
+        <span class="dr-commit-hint">⌘E edit · ⌘R regenerate</span>
+      </div>
+      <textarea class="dr-commit-textarea" id="dr-commit-textarea" maxlength="5000"
+        placeholder="Describe the change…">${escapeHtml(commit.message)}</textarea>
+    </div>
+    <div class="dr-commit-actions">
+      ${mergeToggle}
+      <div class="dr-commit-target">→ ${branchChip}</div>
+      <label class="dr-checkbox"><input type="checkbox" id="dr-push" ${commit.push ? 'checked' : ''}>Push after commit</label>
+      ${openPrRow}
+    </div>`;
+}
+
+// Wire the commit-dialog inputs within `root` (the footer on desktop, the sheet
+// on mobile). `onCommit.rerender` repaints the host in place when a toggle
+// changes state — renderFooter for desktop, renderCommitSheet for the sheet.
+function wireCommitDialogEvents(root, { onCommit }) {
+  const ta = root.querySelector('#dr-commit-textarea');
+  ta?.addEventListener('input', (e) => {
+    diffState.commit.message = e.target.value;
+    diffState.commit.autoFilled = false;
+    root.querySelector('.dr-commit-label .dr-auto')?.remove();
+    const primary = root.querySelector('.dr-primary');
+    if (primary) primary.textContent = computePrimaryLabel({ ignoreReview: !isDesktop() });
+  });
+  root.querySelector('#dr-push')?.addEventListener('change', (e) => { diffState.commit.push = e.target.checked; onCommit.rerender(); });
+  root.querySelector('#dr-openpr')?.addEventListener('change', (e) => { diffState.commit.openPr = e.target.checked; onCommit.rerender(); });
+  root.querySelector('#dr-new-branch')?.addEventListener('input', (e) => { diffState.commit.newBranch = e.target.value; });
+  // Non-worktree branch switch: fires on Enter/blur (change), not per-keystroke,
+  // so create-branch runs once with the final name. A no-op name just repaints
+  // (restoring the current branch); runSourceAction re-fetches status + re-renders,
+  // which reveals the now-relevant "Open PR to main" checkbox.
+  root.querySelector('#dr-switch-branch')?.addEventListener('change', (e) => {
+    const name = e.target.value.trim();
+    const current = sourceCtl.status?.branch ?? '';
+    if (!name || name === current) { onCommit.rerender(); return; }
+    void runSourceAction('create-branch', 'git/create-branch',
+      { body: JSON.stringify({ newBranch: name }) },
+      { success: `Now on branch ${name}.`, failure: 'Branch switch failed.' });
+  });
+  for (const btn of root.querySelectorAll('[data-merge]')) {
+    btn.addEventListener('click', () => { diffState.commit.mergeMode = btn.dataset.merge; onCommit.rerender(); });
+  }
+}
+
 function renderFooter() {
   const foot = getMount()?.querySelector('#dr-foot');
   if (!foot) return;
@@ -975,71 +1064,36 @@ function renderFooter() {
   const pushBtn = `<button class="dr-glyph-btn" id="dr-push-btn" type="button" ${s?.detached || busy ? 'disabled' : ''}
       title="Push to upstream" aria-label="Push to upstream">↑<span class="dr-sync-count">${s?.ahead > 0 ? s.ahead : (s?.upstream ? '' : '+')}</span></button>`;
 
+  // Mobile: the footer is just a slim bar (status + sync glyphs + one primary).
+  // Commit controls live in a slide-up sheet (openCommitSheet) so the diff owns
+  // the screen. The primary folds like desktop's: Request-changes while comments
+  // are drafted, otherwise Commit… (opens the sheet).
+  if (mobile) {
+    const commentCount = activeCommentCount();
+    const label = commentCount > 0 ? `Request changes · ${commentCount}` : 'Commit…';
+    foot.innerHTML = `
+      <div class="dr-foot-bar">
+        <span class="dr-foot-status">${footStatusText(s)}</span>
+        <div class="dr-foot-glyphs">${pullBtn}${pushBtn}</div>
+        <button class="o-btn o-btn--primary dr-primary" id="dr-primary-btn" type="button" ${busy ? 'disabled' : ''}>
+          ${busy ? 'Working…' : label}
+        </button>
+      </div>`;
+    wireFooterEvents(foot, true);
+    return;
+  }
+
   const label = computePrimaryLabel({ ignoreReview: mobile });
 
   const baseLabel = s?.worktree?.baseBranch ?? s?.defaultBranch ?? 'main';
   const squashBtn = isWorktree ? `<button class="o-btn o-btn--default dr-btn" id="dr-squash-base-btn" type="button" ${busy ? 'disabled' : ''}
       title="Squash this branch's commits onto ${baseLabel} locally and complete the step">Squash to ${baseLabel}</button>` : '';
 
-  // Mobile sticky-bar termination row: Discard (same action as the header's
-  // Discard-all, which is hidden from the header on mobile via CSS so it isn't
-  // shown twice) + Request changes (submitReview — disabled until at least
-  // one inline comment is drafted). "Commit primary" is the existing
-  // #dr-primary-btn below, completing the spec's three termination modes.
-  const commentCount = activeCommentCount();
-  const termRow = mobile ? `
-    <div class="dr-term-row">
-      <button class="o-btn o-btn--danger dr-btn dr-term-discard" type="button" title="Discard all uncommitted changes in this worktree">Discard</button>
-      <button class="o-btn o-btn--default dr-btn dr-term-request" type="button" id="dr-request-changes-btn" ${commentCount === 0 ? 'disabled' : ''}
-        title="${commentCount === 0 ? 'Draft at least one inline comment (tap a diff line) to request changes.' : `Send ${commentCount} drafted comment${commentCount === 1 ? '' : 's'} back to the session.`}">
-        Request changes${commentCount > 0 ? ` · ${commentCount}` : ''}
-      </button>
-    </div>` : '';
-
   let dialogHtml = '';
   if (reviewMode) {
     dialogHtml = `<div class="dr-foot-status">${activeCommentCount()} drafted comment${activeCommentCount() === 1 ? '' : 's'} — sends back to the session, worktree preserved.</div>`;
   } else if (diffState.ctx) {
-    // Non-worktree (primary checkout): the branch is an editable input, not a
-    // static pill — typing a new name and pressing Enter moves the work onto a
-    // fresh branch (git checkout -b). Restores the pre-Signal branch-switch
-    // affordance the redesign dropped, and is the escape hatch from committing
-    // straight onto the default branch.
-    const branchChip = isWorktree
-      ? (commit.mergeMode === 'squash-to-branch'
-        ? `<input class="dr-branch-input" id="dr-new-branch" value="${escapeHtml(commit.newBranch)}" placeholder="fix/new-branch" spellcheck="false" autocomplete="off">`
-        : `<span class="o-pill code">${escapeHtml(s?.worktree?.baseBranch ?? s?.defaultBranch ?? 'main')}</span>`)
-      : `<input class="dr-branch-input" id="dr-switch-branch" value="${escapeHtml(s?.branch ?? '')}" placeholder="branch-name"
-          spellcheck="false" autocomplete="off" ${busy ? 'disabled' : ''}
-          title="Type a new name and press Enter to move your work onto a new branch">`;
-    const mergeToggle = isWorktree ? `
-      <div class="dr-segmented" role="tablist" aria-label="Merge mode">
-        <button type="button" data-merge="squash-to-branch" class="${commit.mergeMode === 'squash-to-branch' ? 'is-active' : ''}">Squash to branch</button>
-        <button type="button" data-merge="merge-to-base" class="${commit.mergeMode === 'merge-to-base' ? 'is-active' : ''}">Merge to base</button>
-      </div>` : '';
-    // On the default branch there's nothing to PR (main → main is a no-op), so
-    // hide the checkbox until the user switches to a feature branch above.
-    const onDefaultBranch = Boolean(s?.branch && s?.defaultBranch && s.branch === s.defaultBranch);
-    const openPrRow = (!isWorktree || commit.mergeMode === 'squash-to-branch') && diffState.ctx.mode !== 'pr-comment-edit'
-      && !(!isWorktree && onDefaultBranch)
-      ? `<label class="dr-checkbox"><input type="checkbox" id="dr-openpr" ${commit.openPr ? 'checked' : ''} ${s?.prUrl ? 'disabled' : ''}>Open PR to main</label>`
-      : '';
-    dialogHtml = `
-      <div class="dr-commit-msg">
-        <div class="dr-commit-label o-microhead">
-          Commit message
-          ${commit.autoFilled ? '<span class="dr-auto">◐ drafted</span>' : ''}
-          <span class="dr-commit-hint">⌘E edit · ⌘R regenerate</span>
-        </div>
-        <textarea class="dr-commit-textarea" id="dr-commit-textarea" maxlength="5000"
-          placeholder="Describe the change…">${escapeHtml(commit.message)}</textarea>
-      </div>
-      <div class="dr-commit-actions">
-        ${mergeToggle}
-        <div class="dr-commit-target">→ ${branchChip}</div>
-        <label class="dr-checkbox"><input type="checkbox" id="dr-push" ${commit.push ? 'checked' : ''}>Push after commit</label>
-        ${openPrRow}
-      </div>`;
+    dialogHtml = buildCommitDialogHtml();
   } else {
     dialogHtml = `<div class="dr-foot-status" id="dr-footer-status">—</div>`;
   }
@@ -1053,7 +1107,6 @@ function renderFooter() {
         ${busy ? 'Working…' : label}
       </button>
     </div>
-    ${termRow}
     <div class="dr-commit-dialog">${dialogHtml}</div>`;
 
   wireFooterEvents(foot, mobile);
@@ -1076,40 +1129,96 @@ function footStatusText(s) {
 function wireFooterEvents(foot, mobile) {
   foot.querySelector('#dr-pull-btn')?.addEventListener('click', () => runSourceAction('pull', 'git/pull', {}, { success: 'Pull complete.', failure: 'Pull failed (fast-forward only).' }));
   foot.querySelector('#dr-push-btn')?.addEventListener('click', () => runSourceAction('push', 'git/push', {}, { success: 'Push complete.', failure: 'Push failed.' }));
-  // Mobile shows Request-changes as its own sticky-bar button (below), so its
-  // primary button always means "commit" — desktop keeps the single-button
-  // fold where the primary redirects to submitReview() while comments exist.
-  foot.querySelector('#dr-primary-btn')?.addEventListener('click', mobile ? runCommitAction : runPrimaryAction);
+  // Mobile's primary opens the commit sheet, except while inline comments are
+  // drafted — then it submits the review, matching desktop's single-button fold
+  // (which redirects the primary to submitReview() when comments exist).
+  foot.querySelector('#dr-primary-btn')?.addEventListener('click',
+    mobile
+      ? () => { if (activeCommentCount() > 0) void submitReview(); else openCommitSheet(); }
+      : runPrimaryAction);
   foot.querySelector('#dr-squash-base-btn')?.addEventListener('click', () => { void doSquashToBase(diffState.ctx?.sessionId); });
-  foot.querySelector('.dr-term-discard')?.addEventListener('click', () => { void discardAll(); });
-  foot.querySelector('#dr-request-changes-btn')?.addEventListener('click', () => { void submitReview(); });
-  const ta = foot.querySelector('#dr-commit-textarea');
-  ta?.addEventListener('input', (e) => {
-    diffState.commit.message = e.target.value;
-    diffState.commit.autoFilled = false;
-    const label = foot.querySelector('.dr-commit-label .dr-auto');
-    if (label) label.remove();
-    const primary = foot.querySelector('#dr-primary-btn');
-    if (primary) primary.textContent = computePrimaryLabel({ ignoreReview: mobile });
-  });
-  foot.querySelector('#dr-push')?.addEventListener('change', (e) => { diffState.commit.push = e.target.checked; renderFooter(); });
-  foot.querySelector('#dr-openpr')?.addEventListener('change', (e) => { diffState.commit.openPr = e.target.checked; renderFooter(); });
-  foot.querySelector('#dr-new-branch')?.addEventListener('input', (e) => { diffState.commit.newBranch = e.target.value; });
-  // Non-worktree branch switch: fires on Enter/blur (change), not per-keystroke,
-  // so create-branch runs once with the final name. A no-op name just repaints
-  // (restoring the current branch); runSourceAction re-fetches status + re-renders,
-  // which reveals the now-relevant "Open PR to main" checkbox.
-  foot.querySelector('#dr-switch-branch')?.addEventListener('change', (e) => {
-    const name = e.target.value.trim();
-    const current = sourceCtl.status?.branch ?? '';
-    if (!name || name === current) { renderFooter(); return; }
-    void runSourceAction('create-branch', 'git/create-branch',
-      { body: JSON.stringify({ newBranch: name }) },
-      { success: `Now on branch ${name}.`, failure: 'Branch switch failed.' });
-  });
-  for (const btn of foot.querySelectorAll('[data-merge]')) {
-    btn.addEventListener('click', () => { diffState.commit.mergeMode = btn.dataset.merge; renderFooter(); });
-  }
+  if (!mobile) wireCommitDialogEvents(foot, { onCommit: { rerender: renderFooter } });
+}
+
+// ── Mobile commit sheet ───────────────────────────────────────────────────
+// The commit/finalize controls live in a slide-up sheet on mobile so the diff
+// owns the screen. Reuses the shared .sheet chrome + sheet-utils helpers, but
+// with a raised stacking context (it opens over the diff scrim, z-index 1200)
+// and a height cap in CSS instead of pinSheetBelowHeader (no #header here).
+let commitSheetEl = null;
+let commitSheetBackdrop = null;
+
+function openCommitSheet() {
+  if (commitSheetEl) return;
+  const mount = getMount();
+  if (!mount) return;
+  setSourceFeedback(); // clear any stale overlay banner before it moves into the sheet
+  const backdrop = document.createElement('div');
+  backdrop.className = 'sheet-backdrop dr-commit-sheet-backdrop';
+  const sheet = document.createElement('aside');
+  sheet.className = 'sheet dr-commit-sheet';
+  sheet.setAttribute('role', 'dialog');
+  sheet.setAttribute('aria-modal', 'true');
+  sheet.setAttribute('aria-label', 'Commit changes');
+  mount.appendChild(backdrop);
+  mount.appendChild(sheet);
+  commitSheetEl = sheet;
+  commitSheetBackdrop = backdrop;
+  document.body.classList.add('dr-commit-sheet-open');
+  renderCommitSheet();
+  requestAnimationFrame(() => { backdrop.classList.add('open'); sheet.classList.add('open'); });
+  noteSheetOpen(closeCommitSheet);
+  backdrop.addEventListener('click', closeCommitSheet);
+}
+
+function closeCommitSheet() {
+  if (!commitSheetEl) return;
+  const sheet = commitSheetEl;
+  const backdrop = commitSheetBackdrop;
+  commitSheetEl = null;
+  commitSheetBackdrop = null;
+  document.body.classList.remove('dr-commit-sheet-open');
+  sheet.classList.remove('open');
+  backdrop?.classList.remove('open');
+  noteSheetClose();
+  setTimeout(() => { sheet.remove(); backdrop?.remove(); }, 380);
+}
+
+function renderCommitSheet() {
+  const sheet = commitSheetEl;
+  if (!sheet) return;
+  const s = sourceCtl.status;
+  const busy = getGitBusy(diffState.ctx?.sessionId);
+  const isWorktree = Boolean(s?.worktree);
+  const baseLabel = s?.worktree?.baseBranch ?? s?.defaultBranch ?? 'main';
+  const squashBtn = isWorktree
+    ? `<button class="o-btn o-btn--default dr-btn" id="dr-squash-base-btn" type="button" ${busy ? 'disabled' : ''}
+        title="Squash this branch's commits onto ${baseLabel} locally and complete the step">Squash to ${baseLabel}</button>`
+    : '';
+  const label = computePrimaryLabel({ ignoreReview: true });
+  sheet.innerHTML = `
+    <div class="grabber"></div>
+    <div class="header-row">
+      <span class="sheet-title">Commit changes</span>
+      <button class="sheet-close" type="button" id="dr-sheet-close" aria-label="Close">✕</button>
+    </div>
+    <div class="dr-feedback dr-sheet-feedback" id="dr-sheet-feedback" hidden></div>
+    <div class="dr-commit-dialog">${buildCommitDialogHtml()}</div>
+    <div class="dr-sheet-actions">
+      <button class="o-btn o-btn--danger dr-btn" id="dr-sheet-discard" type="button">Discard all</button>
+      ${squashBtn}
+      <button class="o-btn o-btn--primary dr-primary" id="dr-sheet-commit-btn" type="button" ${busy ? 'disabled' : ''}>
+        ${busy ? 'Working…' : label}
+      </button>
+    </div>`;
+  wireCommitDialogEvents(sheet, { onCommit: { rerender: renderCommitSheet } });
+  sheet.querySelector('#dr-sheet-close')?.addEventListener('click', closeCommitSheet);
+  sheet.querySelector('#dr-sheet-commit-btn')?.addEventListener('click', () => { void runCommitAction(); });
+  sheet.querySelector('#dr-squash-base-btn')?.addEventListener('click', () => { void doSquashToBase(diffState.ctx?.sessionId); });
+  sheet.querySelector('#dr-sheet-discard')?.addEventListener('click', () => { void discardAll(); });
+  // innerHTML rebuild replaces the grabber/header-row handles, so rebind the
+  // drag-to-dismiss gesture each render (makeSheetDismissible is idempotent).
+  makeSheetDismissible(sheet, closeCommitSheet);
 }
 
 async function runSourceAction(kind, path, fetchOpts, msgs) {
@@ -1157,6 +1266,7 @@ async function runSourceAction(kind, path, fetchOpts, msgs) {
     setGitBusy(sessionId, null);
     if (diffState.ctx?.sessionId === sessionId) {
       renderFooter();
+      if (commitSheetEl) renderCommitSheet();
       renderHeaderStats();
       if (diffState.mode === 'log') renderSourceLog();
       const sv = sessions.get();
