@@ -76,6 +76,17 @@ function openUsageSheet() {
   usageSheetTeardown = close;
 }
 
+// Fill a #m-usage-slot with the compact usage widget, keep it live off the
+// usage store, and open the usage sheet on tap. Returns the store teardown so
+// setHeader() can unsubscribe on the next repaint. Shared by list-root
+// (Cockpit) and list (the other primary tabs) so usage rides every main header.
+function mountUsageSlot(slot) {
+  const paintUsage = () => { slot.innerHTML = usageWidgetHtml(usage.get().accountUsage); };
+  paintUsage();
+  slot.addEventListener('click', (e) => { if (e.target.closest('#m-usage-trigger')) openUsageSheet(); });
+  return usage.subscribe(paintUsage);
+}
+
 // ── list-root: Cockpit's home shape ─────────────────────────────────────
 export function renderListRoot(header, { greeting, sub }) {
   header.innerHTML = `
@@ -85,11 +96,7 @@ export function renderListRoot(header, { greeting, sub }) {
     </div>
     <div class="h-actions" id="m-usage-slot"></div>
   `;
-  const slot = header.querySelector('#m-usage-slot');
-  const paintUsage = () => { slot.innerHTML = usageWidgetHtml(usage.get().accountUsage); };
-  paintUsage();
-  slot.addEventListener('click', (e) => { if (e.target.closest('#m-usage-trigger')) openUsageSheet(); });
-  return usage.subscribe(paintUsage);
+  return mountUsageSlot(header.querySelector('#m-usage-slot'));
 }
 
 // ── list: Tracked / Sessions / Schedules / More-root / library screens ─────
@@ -103,10 +110,11 @@ export function renderList(header, { title, sub, onSearch, onSettings }) {
       <div class="m-greet">${escapeHtml(title)}</div>
       ${sub ? `<div class="m-sub">${escapeHtml(sub)}</div>` : ''}
     </div>
-    <div class="h-actions">${icons}</div>
+    <div class="h-actions">${icons}<div id="m-usage-slot"></div></div>
   `;
   header.querySelector('[data-action="search"]')?.addEventListener('click', () => onSearch?.());
   header.querySelector('[data-action="settings"]')?.addEventListener('click', () => onSettings?.());
+  return mountUsageSlot(header.querySelector('#m-usage-slot'));
 }
 
 // ── session: live transcript screen ────────────────────────────────────────

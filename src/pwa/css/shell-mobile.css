@@ -130,8 +130,12 @@ html[data-layout="mobile"] .m-usage-row {
   font-size: 10px;
   color: var(--text-mute);
 }
-/* Nano machine tag (§3.2): mono/500/uppercase, 0.1-0.14em, dim. */
+/* Nano machine tag (§3.2): mono/500/uppercase, 0.1-0.14em, dim. Grows to fill
+   the row and right-aligns its text so the bar + pct columns stay aligned
+   across rows even when the remaining-duration labels differ in length. */
 html[data-layout="mobile"] .m-usage-lbl {
+  flex: 1;
+  text-align: right;
   font-family: var(--font-mono);
   text-transform: uppercase;
   letter-spacing: 0.1em;
@@ -153,6 +157,8 @@ html[data-layout="mobile"] .m-usage-fill { position: absolute; inset: 0 auto 0 0
 html[data-layout="mobile"] .m-usage-fill.warn { background: var(--warn); }
 html[data-layout="mobile"] .m-usage-fill.hot  { background: var(--danger); }
 html[data-layout="mobile"] .m-usage-pct {
+  min-width: 1.8em;
+  text-align: right;
   font-variant-numeric: tabular-nums;
   font-family: var(--font-mono);
   font-size: 10px;

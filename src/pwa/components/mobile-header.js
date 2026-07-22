@@ -72,7 +72,7 @@ export function setHeader(mode, opts) {
   if (headerTeardown) { try { headerTeardown(); } catch { /* ignore */ } headerTeardown = null; }
 
   if (mode === 'list-root') { header.innerHTML = ''; headerTeardown = renderListRoot(header, opts) ?? null; return; }
-  if (mode === 'list-tab')  { header.innerHTML = ''; renderListShape(header, opts); return; }
+  if (mode === 'list-tab')  { header.innerHTML = ''; headerTeardown = renderListShape(header, opts) ?? null; return; }
   if (mode === 'drill-in')  { header.innerHTML = ''; renderDrillIn(header, opts); return; }
 
   header.innerHTML = '';
