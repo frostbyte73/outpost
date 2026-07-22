@@ -60,3 +60,28 @@ test('re-opening a session on mobile preserves its permission mode', async ({ da
     { timeout: 4_000 },
   ).toBe('accept-edits');
 });
+
+test('bypass-confirm refresh keeps the mode popover on-screen', async ({ daemon, outpostPage }) => {
+  await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
+
+  const composer = outpostPage.locator('#composer');
+  await expect(composer).toBeVisible({ timeout: 10_000 });
+
+  await outpostPage.locator('#header-mode-chip').click();
+  const popover = outpostPage.locator('#mode-popover');
+  await expect(popover).toBeVisible();
+
+  // Tapping Bypass rebuilds the popover into its "Tap again to confirm" state.
+  // The rebuilt popover must retain its off-screen correction — before the fix
+  // it snapped to `left: 0` and hung half off the right edge.
+  await outpostPage.locator('.mode-popover-item[data-mode="bypass"]').click();
+  await expect(
+    popover.locator('.mode-popover-item[data-mode="bypass"] .mode-popover-name'),
+  ).toHaveText(/Tap again to confirm/);
+
+  const overflow = await popover.evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return { right: r.right, viewport: window.innerWidth };
+  });
+  expect(overflow.right).toBeLessThanOrEqual(overflow.viewport);
+});

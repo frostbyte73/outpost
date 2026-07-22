@@ -221,6 +221,11 @@ export function refreshHeaderModeChip() {
   const existing = document.getElementById('header-mode-chip')?.parentElement;
   if (!existing) return;
   existing.replaceWith(buildHeaderModeChip());
+  // The rebuilt popover has no inline `left`, so it reverts to its CSS default
+  // (`left: 0`, overflowing off the right edge). Re-apply the off-screen
+  // correction, else a refresh-while-open (e.g. the bypass-confirm state) snaps
+  // the popover half off-screen.
+  if (settings.get().modePopoverOpen) positionModePopover();
 }
 
 function toggleModePopover() {
