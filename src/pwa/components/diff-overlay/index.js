@@ -19,6 +19,7 @@ import { sendUserMessage as tabSendUserMessage } from '../session-view/session-w
 import { sessions } from '../../state/sessions.js';
 import { work } from '../../state/work.js';
 import { isDesktop } from '../../layout/index.js';
+import { keymap } from '../../state/keymap.js';
 import { installAppBridge } from '../../app-bridge.js';
 import { registerBackHandler } from '../mobile-shell/history.js';
 import {
@@ -308,17 +309,17 @@ function onGlobalKeydown(e) {
   if (!getMount()?.firstElementChild) return; // overlay not open
   const typing = e.target.closest('input, textarea, [contenteditable="true"]');
   if (e.key === 'Escape' && !typing) { closeDiffOverlay(); return; }
-  if (e.key === 'c' && !typing && diffState.hoveredRowKey && !diffState.openDraftKey) {
+  if (keymap.matches(e, 'diff.comment') && !typing && diffState.hoveredRowKey && !diffState.openDraftKey) {
     e.preventDefault();
     const row = getMount().querySelector(`.dr-row[data-key="${cssEscape(diffState.hoveredRowKey)}"]`);
     if (row) openCommentFromRow(row);
     return;
   }
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'enter') {
+  if (keymap.matches(e, 'diff.primaryAction')) {
     const foot = getMount().querySelector('#dr-foot');
     if (foot && !typing) { e.preventDefault(); runPrimaryAction(); }
   }
-  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'r' && diffState.ctx?.step) {
+  if (keymap.matches(e, 'diff.regenerate') && diffState.ctx?.step) {
     e.preventDefault();
     diffState.commit.variant += 1;
     diffState.commit.message = draftCommitMessage(diffState.ctx, diffState.commit.variant);

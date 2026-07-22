@@ -30,6 +30,7 @@ import {
 import { approvals } from './state/approvals.js';
 import { settings, VALID_THEMES, VALID_MODES } from './state/settings.js';
 import { hydrate as hydratePreferences } from './state/preferences.js';
+import './state/keymap.js'; // registers the `hotkeys` prefs key on import
 import {
   subagents,
   applyTaskUse,

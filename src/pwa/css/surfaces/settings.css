@@ -492,3 +492,24 @@ html[data-layout="mobile"] .settings-detail-lede { margin-top: 2px; }
     }
     .push-test[disabled] { opacity: 0.4; cursor: not-allowed; }
     .push-status { font-size: 12px; color: var(--text-mute); min-height: 1em; }
+
+/* ── Hotkeys section ──────────────────────────────────────────────────── */
+/* Groups reuse .settings-block (o-section + gap-4 padding + heading margin);
+   only inter-group spacing and the row grid are surface-local. */
+.hk-toolbar { display: flex; justify-content: flex-end; margin-bottom: var(--gap-3); }
+.hk-group + .hk-group { margin-top: var(--gap-4); }
+.hk-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--gap-3) var(--gap-4);
+  padding: var(--gap-2) 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+.hk-row:last-child { border-bottom: none; }
+.hk-row-label { font-weight: 500; }
+.hk-row-desc { color: var(--text-mute); font-size: 12px; margin-top: 2px; }
+.hk-row-controls { display: flex; align-items: center; gap: var(--gap-2); }
+.hk-chip { min-width: 3.5em; text-align: center; }
+.hk-reset:disabled { opacity: 0.5; cursor: not-allowed; }
+.hk-row-error { grid-column: 1 / -1; color: var(--danger); font-size: 12px; margin-top: 2px; }

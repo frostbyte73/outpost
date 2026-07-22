@@ -20,6 +20,7 @@ import { settingsSections, permissionGroupRows, allowlistRuleRows, mcpServerRows
 import { renderThemeGrid, renderModeToggle } from '../theme-picker.js';
 import { mountPushSection } from '../push/index.js';
 import { emptyState } from '../shell/placeholder.js';
+import { renderHotkeys } from './hotkeys.js';
 
 const MODEL_LABELS = { default: 'Daemon default', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
 const APPROVAL_MODES = [
@@ -37,7 +38,7 @@ export function renderList(mount) {
   function paint() {
     const sel = nav.get().selectionBySurface.settings ?? null;
     const warnFlags = { mcp: mcpHasWarning(grantsStore.get()) };
-    const groups = settingsSections(warnFlags);
+    const groups = settingsSections(warnFlags, isDesktop());
     mount.innerHTML = groups.map((g) => `
       <div class="settings-nav-group">
         <div class="settings-nav-group-label">${escapeHtml(g.label)}</div>
@@ -451,4 +452,5 @@ const SECTION_RENDERERS = {
   tailscale: renderTailscale,
   health: renderHealth,
   advanced: renderAdvanced,
+  hotkeys: renderHotkeys,
 };

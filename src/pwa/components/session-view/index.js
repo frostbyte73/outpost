@@ -21,6 +21,8 @@ import { subagents } from '../../state/subagents.js';
 import { conn } from '../../state/conn.js';
 import { usage } from '../../state/usage.js';
 import { nav } from '../../state/nav.js';
+import { keymap } from '../../state/keymap.js';
+import { formatCombo } from '../../utils/hotkey.js';
 import {
   forceReconnect,
   openAgentsForSession,
@@ -57,8 +59,8 @@ function buildSkeleton(mount) {
       <span class="sv-header-name"></span>
       <span class="sv-header-meta"></span>
       <div class="sv-header-actions">
-        <button class="sv-header-promote" type="button">Promote to tracked <span class="o-kbd">⌘⇧P</span></button>
-        <button class="sv-header-archive" type="button" hidden>Archive <span class="o-kbd">⌘⇧E</span></button>
+        <button class="sv-header-promote" type="button">Promote to tracked <span class="o-kbd"></span></button>
+        <button class="sv-header-archive" type="button" hidden>Archive <span class="o-kbd"></span></button>
         <div class="sv-header-menu-wrap">
           <button class="sv-header-menu-btn" type="button" aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋯</button>
           <div class="sv-header-menu" hidden role="menu"></div>
@@ -118,6 +120,8 @@ function buildSkeleton(mount) {
     headerMeta:  mount.querySelector('.sv-header-meta'),
     headerPromote: mount.querySelector('.sv-header-promote'),
     headerArchive: mount.querySelector('.sv-header-archive'),
+    headerPromoteKbd: mount.querySelector('.sv-header-promote .o-kbd'),
+    headerArchiveKbd: mount.querySelector('.sv-header-archive .o-kbd'),
     headerMenuBtn: mount.querySelector('.sv-header-menu-btn'),
     headerMenu:    mount.querySelector('.sv-header-menu'),
     headerRailToggle: mount.querySelector('.sv-header-rail-toggle'),
@@ -258,6 +262,8 @@ function renderHeader(dom, slice, sessionId, meta) {
   dom.headerMeta.innerHTML = `${live ? '<span class="sv-header-live" aria-hidden="true"></span>' : ''}<span>${escapeHtml(text)}</span>`;
   dom.headerMenu.innerHTML = headerMenuItemsHtml(sessionId);
   if (dom.headerArchive) dom.headerArchive.hidden = computeGitInfo(sessionId).archived;
+  if (dom.headerPromoteKbd) dom.headerPromoteKbd.textContent = formatCombo(keymap.bindingFor('session.promoteToJob'));
+  if (dom.headerArchiveKbd) dom.headerArchiveKbd.textContent = formatCombo(keymap.bindingFor('session.archive'));
   const collapsed = !!nav.get().contextCollapsed;
   dom.headerRailToggle.textContent = collapsed ? '«' : '»';
   dom.headerRailToggle.setAttribute('aria-label', collapsed ? 'Show right rail' : 'Hide right rail');
@@ -639,9 +645,12 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   const spawn = (meta.cwd || meta.spawnMode || meta.baseBranch || meta.model)
     ? { cwd: meta.cwd, spawnMode: meta.spawnMode, baseBranch: meta.baseBranch, model: meta.model }
     : null;
-  // Brand-new sessions carry spawn hints; mark the slice so the WS handler pushes
-  // the user's default approval mode on the first `approval_mode` broadcast.
-  if (spawn) sessions.for(sessionId).setPendingDefaultPush(true);
+  // NB: do NOT arm pendingDefaultPush here off `spawn`. Both mount paths supply
+  // meta.cwd for EXISTING sessions too (resolveSessionContext / mobile mount), so
+  // keying off spawn-hint presence re-armed the flag on every re-entry and let the
+  // next WS reconnect clobber the session's persisted mode with the client default.
+  // openSession() is the single arming authority — it knows isNew and sets the flag
+  // before this mount runs.
   openSessionWs(sessionId, spawn);
 
   const dom = buildSkeleton(mount);
@@ -689,10 +698,10 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   // obvious ⌘⇧A, because Chrome reserves ⌘⇧A for "Search tabs" at the
   // accelerator level — it never reaches the page for us to preventDefault.
   const onHeaderKeydown = (e) => {
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'p') {
+    if (keymap.matches(e, 'session.promoteToJob')) {
       e.preventDefault();
       promoteSessionToJob(sessionId);
-    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === 'e') {
+    } else if (keymap.matches(e, 'session.archive')) {
       // Skip when already archived — archiveSession would 404 the second time
       // and the visible button is hidden in that state anyway.
       if (computeGitInfo(sessionId).archived) return;

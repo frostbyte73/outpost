@@ -25,6 +25,7 @@ import { nav, setSessionHint } from '../../state/nav.js';
 import { work } from '../../state/work.js';
 import { usage } from '../../state/usage.js';
 import { actions } from '../../state/actions.js';
+import { keymap } from '../../state/keymap.js';
 import { settings } from '../../state/settings.js';
 import { startScheduleDraft } from '../schedules/draft.js';
 import { sendUserMessage, sessionWsReadyState } from '../session-view/session-ws.js';
@@ -203,19 +204,16 @@ function onOverlayKeydown(e) {
     closePalette();
     return;
   }
-  const mod = e.metaKey || e.ctrlKey;
-  if (!mod) return;
-  const key = e.key.toLowerCase();
   if (step === 1) {
-    if (key === 'o' && !e.shiftKey) { e.preventDefault(); closePalette(); openAddProjectSheet(); }
+    if (keymap.matches(e, 'palette.newProject')) { e.preventDefault(); closePalette(); openAddProjectSheet(); }
     return;
   }
   if (step !== 2) return;
-  if (key === 'd' && e.shiftKey) { e.preventDefault(); goToStep1(); return; }
-  if (key === 'm' && !e.shiftKey) { e.preventDefault(); cycleModel(); return; }
-  if (key === 's' && e.shiftKey) { e.preventDefault(); void launchSchedule(); return; }
-  if (key === 'enter' && e.shiftKey) { e.preventDefault(); void launchTrack(); return; }
-  if (key === 'enter' && !e.shiftKey) { e.preventDefault(); void launchSession(); return; }
+  if (keymap.matches(e, 'palette.back')) { e.preventDefault(); goToStep1(); return; }
+  if (keymap.matches(e, 'palette.cycleModel')) { e.preventDefault(); cycleModel(); return; }
+  if (keymap.matches(e, 'palette.launchSchedule')) { e.preventDefault(); void launchSchedule(); return; }
+  if (keymap.matches(e, 'palette.launchTrack')) { e.preventDefault(); void launchTrack(); return; }
+  if (keymap.matches(e, 'palette.launchSession')) { e.preventDefault(); void launchSession(); return; }
 }
 
 function goToStep1() {

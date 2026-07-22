@@ -1,6 +1,7 @@
 import { nav, KNOWN_SURFACES } from '../../state/nav.js';
 import { isDesktop } from '../../layout/index.js';
 import { openPalette, isPaletteOpen, closePalette } from '../palette/index.js';
+import { keymap } from '../../state/keymap.js';
 
 // Desktop shell keymap. Replaces the tab/pane-era bindings (⌘T/⌘W/⌘P/⌘\/⌘⇧T
 // and pane-focus arrows) — there's nothing left to tab/split/close now that
@@ -24,18 +25,16 @@ export function installKeyboard() {
 function onKey(e) {
   if (!isDesktop()) return;
 
-  const mod = e.metaKey || e.ctrlKey;
-  if (!mod) return;
-
   // The palette owns the keymap while it's open (its own Esc/⌘⇧D handlers are
-  // self-installed) — without this guard ⌘B/⌘F/⌘1-9 leak through the overlay
-  // and mutate the shell underneath it.
-  if (isPaletteOpen() && e.key !== 'k') return;
+  // self-installed) — only togglePalette is honored underneath it.
+  if (isPaletteOpen() && !keymap.matches(e, 'shell.togglePalette')) return;
 
-  if (e.key === 'k' && !e.shiftKey && !e.altKey) return openPaletteShortcut(e);
-  if (e.key === 'b' && !e.shiftKey && !e.altKey) return toggleSidebar(e);
-  if (e.key === 'f' && !e.shiftKey && !e.altKey) return focusListFilter(e);
-  if (/^[1-9]$/.test(e.key) && !e.altKey && !e.shiftKey) return jumpToSurface(e, Number(e.key));
+  if (keymap.matches(e, 'shell.togglePalette')) return openPaletteShortcut(e);
+  if (keymap.matches(e, 'shell.toggleSidebar')) return toggleSidebar(e);
+  if (keymap.matches(e, 'shell.focusFilter')) return focusListFilter(e);
+  for (let i = 0; i < JUMP_ORDER.length; i++) {
+    if (keymap.matches(e, `shell.jump.${JUMP_ORDER[i]}`)) return jumpToSurface(e, i + 1);
+  }
 }
 
 // ⌘K toggles: standard command-palette behavior, not open-only.

@@ -1,5 +1,5 @@
-// Sessions list column: header · filter (⌘F, via the shared .o-list-filter
-// class the global keymap already targets) · tabs · Running/Idle/Recent
+// Sessions list column: header · filter (shell.focusFilter, via the shared
+// .o-list-filter class the global keymap already targets) · tabs · Running/Idle/Recent
 // groups · rich cards. Replaces the per-project accordion of the legacy
 // shell/list-sessions.js with the state-grouped list the redesign calls for
 // (sessions-list.html is authoritative).
@@ -16,6 +16,8 @@
 import { sessions } from '../../state/sessions.js';
 import { approvals } from '../../state/approvals.js';
 import { subagents } from '../../state/subagents.js';
+import { keymap } from '../../state/keymap.js';
+import { formatCombo } from '../../utils/hotkey.js';
 import { nav, setSessionHint } from '../../state/nav.js';
 import { sessionGroups, deriveSkillLabel, deriveLastTurnPreview, fmtElapsedDuration } from '../../vm/sessions.js';
 import { escapeHtml } from '../../util.js';
@@ -141,17 +143,19 @@ export function renderList(mount) {
     </div>
     <div class="o-list-filterbar sess-list-searchbar">
       <input type="search" class="o-list-filter sess-list-search" placeholder="Filter sessions…" aria-label="Filter sessions">
-      <span class="o-kbd sess-filter-kbd">⌘F</span>
+      <span class="o-kbd sess-filter-kbd">${formatCombo(keymap.bindingFor('shell.focusFilter'))}</span>
     </div>
     <div class="sess-list-tabs" role="tablist" aria-label="Filter by kind"></div>
     <div class="sess-list-body"></div>
-    <button type="button" class="sess-new-btn">+ New session<span class="sess-new-kbd"> · <span class="o-kbd">⌘K</span></span></button>
+    <button type="button" class="sess-new-btn">+ New session<span class="sess-new-kbd"> · <span class="o-kbd">${formatCombo(keymap.bindingFor('shell.togglePalette'))}</span></span></button>
   `;
   const countEl = mount.querySelector('.sess-list-count');
   const tabsEl = mount.querySelector('.sess-list-tabs');
   const bodyEl = mount.querySelector('.sess-list-body');
   const filterInput = mount.querySelector('.sess-list-search');
   const newBtn = mount.querySelector('.sess-new-btn');
+  const filterKbd = mount.querySelector('.sess-filter-kbd');
+  const newKbd = newBtn.querySelector('.o-kbd');
 
   newBtn.addEventListener('click', () => openPalette());
   filterInput.addEventListener('input', (e) => { filter = e.target.value; paint(); });
@@ -241,11 +245,15 @@ export function renderList(mount) {
   const unsubApprovals = approvals.subscribe(paint);
   const unsubSubagents = subagents.subscribe(paint);
   const unsubNav = nav.subscribe(refreshActive);
+  const unsubKeymap = keymap.subscribe(() => {
+    filterKbd.textContent = formatCombo(keymap.bindingFor('shell.focusFilter'));
+    newKbd.textContent = formatCombo(keymap.bindingFor('shell.togglePalette'));
+  });
   const ticker = setInterval(() => {
     if (runningSince.size > 0) paint();
   }, 1000);
   return () => {
-    unsubSessions(); unsubApprovals(); unsubSubagents(); unsubNav();
+    unsubSessions(); unsubApprovals(); unsubSubagents(); unsubNav(); unsubKeymap();
     clearInterval(ticker);
   };
 }

@@ -1,10 +1,13 @@
 // Wraps a raw list renderer (takes a body element and renders `.lr-row`s into
 // it) with list-column chrome: a title header (from the frame's
 // data-surface-title stamp, so this stays registry-agnostic), a row count, and
-// a generic client-side text filter (⌘F focuses `.o-list-filter`). The filter
+// a generic client-side text filter (shell.focusFilter focuses `.o-list-filter`). The filter
 // is re-applied after every repaint the wrapped renderer performs — store
 // ticks rewrite the body's rows, which would otherwise silently un-hide
 // everything while the query text still sits in the input.
+import { keymap } from '../../state/keymap.js';
+import { formatCombo } from '../../utils/hotkey.js';
+
 export function mountFilterableList(mount, renderFn) {
   mount.textContent = '';
   let query = '';
@@ -22,7 +25,7 @@ export function mountFilterableList(mount, renderFn) {
 
   const bar = document.createElement('div');
   bar.className = 'o-list-filterbar';
-  bar.innerHTML = '<input type="search" class="o-list-filter" placeholder="Filter…" aria-label="Filter list"><span class="o-kbd">⌘F</span>';
+  bar.innerHTML = `<input type="search" class="o-list-filter" placeholder="Filter…" aria-label="Filter list"><span class="o-kbd">${formatCombo(keymap.bindingFor('shell.focusFilter'))}</span>`;
   const body = document.createElement('div');
   body.className = 'o-list-body';
   mount.appendChild(bar);
@@ -50,8 +53,13 @@ export function mountFilterableList(mount, renderFn) {
     query = e.target.value.trim().toLowerCase();
     applyFilter();
   });
+
+  const chip = bar.querySelector('.o-kbd');
+  const unsubKeymap = keymap.subscribe(() => { chip.textContent = formatCombo(keymap.bindingFor('shell.focusFilter')); });
+
   return () => {
     observer.disconnect();
+    unsubKeymap();
     try { unmount?.(); } catch { /* ignore */ }
   };
 }

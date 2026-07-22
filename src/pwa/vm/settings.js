@@ -3,6 +3,8 @@
 // shared by the desktop Settings surface today and the mobile "More > Settings"
 // pushed screens in P3 (D2).
 
+import { KEYMAP_COMMANDS, DEFAULT_BINDINGS } from '../state/keymap-commands.js';
+
 export const SETTINGS_SECTIONS = [
   {
     label: 'Appearance',
@@ -29,16 +31,25 @@ export const SETTINGS_SECTIONS = [
       { key: 'advanced', label: 'Advanced', icon: '⚙' },
     ],
   },
+  {
+    label: 'Hotkeys',
+    desktopOnly: true,
+    items: [
+      { key: 'hotkeys', label: 'Keyboard shortcuts', icon: '⌨' },
+    ],
+  },
 ];
 
 // `warnFlags` is `{ [sectionKey]: boolean }` — currently only 'mcp' is ever
 // true (an unreachable MCP server), computed by the caller from grants store
 // state so this stays a pure function of already-derived booleans.
-export function settingsSections(warnFlags = {}) {
-  return SETTINGS_SECTIONS.map((group) => ({
-    ...group,
-    items: group.items.map((item) => ({ ...item, warn: !!warnFlags[item.key] })),
-  }));
+export function settingsSections(warnFlags = {}, desktop = true) {
+  return SETTINGS_SECTIONS
+    .filter((group) => desktop || !group.desktopOnly)
+    .map((group) => ({
+      ...group,
+      items: group.items.map((item) => ({ ...item, warn: !!warnFlags[item.key] })),
+    }));
 }
 
 const GROUP_ORDER = ['core', 'read', 'pull', 'edit', 'push'];
@@ -96,4 +107,28 @@ export function mcpServerRows(servers = []) {
       statusLabel: MCP_LABEL[s.status] ?? s.status,
       tone: MCP_TONE[s.status] ?? 'warn',
     }));
+}
+
+const HOTKEY_SURFACE_ORDER = ['shell', 'session', 'palette', 'diff'];
+const HOTKEY_SURFACE_LABELS = { shell: 'Shell', session: 'Session', palette: 'Palette', diff: 'Diff review' };
+
+// Pure grouping of the command catalog + user overrides into per-surface row
+// groups for the Hotkeys settings page. No DOM.
+export function hotkeyRows(overrides = {}) {
+  return HOTKEY_SURFACE_ORDER.map((surface) => ({
+    surface,
+    surfaceLabel: HOTKEY_SURFACE_LABELS[surface] ?? surface,
+    rows: KEYMAP_COMMANDS
+      .filter((c) => c.surface === surface)
+      .map((c) => {
+        const binding = overrides[c.id] ?? DEFAULT_BINDINGS[c.id];
+        return {
+          id: c.id,
+          label: c.label,
+          description: c.description,
+          binding,
+          isDefault: binding === DEFAULT_BINDINGS[c.id],
+        };
+      }),
+  }));
 }

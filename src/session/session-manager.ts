@@ -368,8 +368,13 @@ export class SessionManager {
 
   private startIdleTimer(s: ActiveSession): void {
     s.idleTimer = setTimeout(() => {
+      // Never reap a session that's still mid-turn. A long subagent run keeps the
+      // parent proc's stdout quiet — subagent activity surfaces via the PreToolUse
+      // hook, which doesn't refresh lastActivity — so lastActivity goes stale while
+      // real work continues. Reap only once the turn has ended (Stop hook →
+      // markTurnEnded clears `working`).
       const since = Date.now() - s.lastActivity;
-      if (since < IDLE_TIMEOUT_MS) {
+      if (since < IDLE_TIMEOUT_MS || this.working.has(s.id)) {
         this.startIdleTimer(s);
         return;
       }
