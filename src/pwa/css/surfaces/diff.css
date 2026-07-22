@@ -514,9 +514,14 @@ html[data-layout="mobile"] .dr-hdr-actions [data-act="discard-all"] { display: n
 /* Commit sheet: reuses .sheet chrome (overlays.css) but opens over the diff
    scrim (z-index 1200), so lift its stacking context above it. Height is
    capped to clear the overlay header + notch instead of pinSheetBelowHeader
-   (which keys off #header, absent inside this overlay). */
-.dr-commit-sheet-backdrop { z-index: 1300; }
-.dr-commit-sheet {
+   (which keys off #header, absent inside this overlay).
+
+   The z-index selectors qualify on BOTH classes (.sheet.dr-commit-sheet) on
+   purpose: overlays.css is linked after diff.css, and its .sheet{z-index:91} /
+   .sheet-backdrop{z-index:90} would otherwise win the equal-specificity tie and
+   drop this sheet behind the z-1200 scrim (invisible → "commit does nothing"). */
+.sheet-backdrop.dr-commit-sheet-backdrop { z-index: 1300; }
+.sheet.dr-commit-sheet {
   z-index: 1301;
   max-height: calc(100dvh - env(safe-area-inset-top) - 56px);
 }
