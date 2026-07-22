@@ -215,8 +215,19 @@ function seedRunStates(projects) {
 // (session-view already reacts to slice updates via subscribeSlice).
 let mobileSvHandle = null;
 let mobileSvSessionId = null;
+// Session id whose mount is currently in flight. mountMobileSessionView is
+// async (dynamic import), but render() runs it more than once per session-open
+// — enterSession's synchronous store notify fires the view-watcher, then
+// openSession() calls render() again. `mobileSvHandle` is only set AFTER the
+// await, so it can't dedupe those calls; without this synchronous marker every
+// call sails past the guard and mounts a second session-view into #root,
+// leaking the first (its WS, its nav/sessions subscriptions, and a mountedCount
+// that never returns to 0). It also lets a mount that resolves after the user
+// already left abort instead of clobbering #root out from under the shell.
+let mobileSvPendingId = null;
 
 function unmountMobileSessionView() {
+  mobileSvPendingId = null;
   if (mobileSvHandle) { try { mobileSvHandle.unmount(); } catch { /* ignore */ } }
   mobileSvHandle = null;
   mobileSvSessionId = null;
@@ -227,7 +238,15 @@ async function mountMobileSessionView() {
   const id = s.currentSessionId;
   if (!id) return;
   if (mobileSvHandle && mobileSvSessionId === id) return;   // already up
-  unmountMobileSessionView();
+  if (mobileSvPendingId === id) return;                     // mount already in flight
+  mobileSvPendingId = id;
+  // A different session is currently shown (fast session-switch) — tear it down
+  // before mounting the new one so its WS/subscriptions don't leak.
+  if (mobileSvHandle) {
+    try { mobileSvHandle.unmount(); } catch { /* ignore */ }
+    mobileSvHandle = null;
+    mobileSvSessionId = null;
+  }
   // Brand-new sessions carry spawnMode/baseBranch via the nav session-hint
   // side channel (same mechanism desktop's sessions-surface uses) — those
   // fields aren't part of the persisted session slice, only meaningful on
@@ -235,6 +254,14 @@ async function mountMobileSessionView() {
   // closeSessionWs owner) reads them off this meta object.
   const hint = peekSessionHint(id);
   const { mountSessionView } = await import('./components/session-view/index.js');
+  // Revalidate after the await: the user may have left the session or switched
+  // to another one while the import resolved. If this mount is no longer the
+  // one wanted, bail rather than clobber #root (which the shell may have
+  // retaken) — leaving pendingId untouched if a newer mount claimed it.
+  if (mobileSvPendingId !== id || sessions.get().view !== 'session' || sessions.get().currentSessionId !== id) {
+    if (mobileSvPendingId === id) mobileSvPendingId = null;
+    return;
+  }
   mobileSvHandle = mountSessionView(root, id, {
     cwd: hint?.cwd ?? s.currentSessionCwd,
     spawnCwd: hint?.spawnCwd ?? s.currentSessionSpawnCwd ?? s.currentSessionCwd,
@@ -245,6 +272,7 @@ async function mountMobileSessionView() {
     approvalMode: s.approvalMode,
   });
   mobileSvSessionId = id;
+  mobileSvPendingId = null;
 }
 
 // Mobile render dispatch (D6/P3): sessions.view now only distinguishes
@@ -274,7 +302,10 @@ function render() {
     mountMobileSessionView();
     return renderSession();
   }
-  if (mobileSvHandle) unmountMobileSessionView();
+  // Always reconcile (not just when a handle exists): a mount may still be in
+  // flight (pendingId set, handle not yet assigned) — clearing it here makes
+  // that async mount bail instead of clobbering the shell we're about to mount.
+  unmountMobileSessionView();
   // Everything else ('list' — the persistent default): the tab bar + screen
   // navigator owns #root/#header from here.
   return mountMobileShell(root);
