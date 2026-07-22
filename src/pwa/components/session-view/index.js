@@ -259,7 +259,7 @@ function renderHeader(dom, slice, sessionId, meta) {
   dom.headerMenu.innerHTML = headerMenuItemsHtml(sessionId);
   if (dom.headerArchive) dom.headerArchive.hidden = computeGitInfo(sessionId).archived;
   const collapsed = !!nav.get().contextCollapsed;
-  dom.headerRailToggle.textContent = collapsed ? '◀' : '▶';
+  dom.headerRailToggle.textContent = collapsed ? '«' : '»';
   dom.headerRailToggle.setAttribute('aria-label', collapsed ? 'Show right rail' : 'Hide right rail');
 }
 
