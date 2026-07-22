@@ -367,6 +367,8 @@ function popShellLevel() {
 
 // ── Main paint ─────────────────────────────────────────────────────────
 
+let painting = false;
+
 function paint() {
   // Defensive: a store notification can synchronously cascade through
   // openSession()→sessions.enterSession()→app.js's own view-watcher→
@@ -374,6 +376,23 @@ function paint() {
   // stack (see maybeRouteSessionSelection below) — bail before touching any
   // of the now-torn-down DOM refs.
   if (!mounted) return;
+  // Re-entrancy guard: mounting a screen can synchronously mutate a store this
+  // paint subscribes to — the Tracked detail mounts an inline session, whose
+  // sessions.mountView() notifies our own sessions subscriber mid-mount, before
+  // mountTracked() has assigned its screenHandles.tracked idempotency guard. Left
+  // unguarded that re-enters paint()→mountTracked()→mountListDetailScreens() and
+  // recurses to a stack overflow. The in-flight paint always finishes with the
+  // current store state, so collapsing the re-entrant call into it is correct.
+  if (painting) return;
+  painting = true;
+  try {
+    paintBody();
+  } finally {
+    painting = false;
+  }
+}
+
+function paintBody() {
   maybeRouteSessionSelection();
   // Routing a session selection flips sessions.view to 'session' — app.js's
   // render() dispatch will unmount this shell on its next call; painting a
