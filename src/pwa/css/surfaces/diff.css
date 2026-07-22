@@ -432,6 +432,7 @@
 .dr-branch-input:focus { outline: none; border-color: var(--accent); }
 .dr-checkbox { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--text-mute); }
 .dr-checkbox input { accent-color: var(--accent); }
+.dr-pr-open { text-decoration: none; align-self: center; }
 .dr-segmented {
   display: flex;
   border: 1px solid var(--line);

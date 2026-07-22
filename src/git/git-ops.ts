@@ -230,7 +230,18 @@ export async function gitPush(cwd: string): Promise<GitCommandResult> {
     return { ok: false, stdout: '', stderr: `invalid branch name: ${branch}`, exitCode: 1 };
   }
   // --set-upstream is a no-op when already configured; wires tracking on first push.
-  return runGit(cwd, ['push', '--set-upstream', 'origin', branch]);
+  const res = await runGit(cwd, ['push', '--set-upstream', 'origin', branch]);
+  // A bare `git push` gives an opaque wall of stderr on a non-fast-forward reject
+  // (common after a merge/conflict round advanced the remote branch), and a plain
+  // `git pull --ff-only` can't reconcile a diverged branch — so spell out the fix
+  // rather than leaving the user staring at "Updates were rejected".
+  if (!res.ok && /(non-fast-forward|fetch first|\[rejected\])/i.test(res.stderr)) {
+    return {
+      ...res,
+      stderr: `${res.stderr.trim()}\n\norigin/${branch} has commits this worktree doesn't (the branch diverged — likely a merge/conflict round pushed to it). Rebase or merge origin/${branch} in and resolve before pushing; a plain --ff-only pull can't reconcile a diverged branch.`,
+    };
+  }
+  return res;
 }
 
 export async function gitPull(cwd: string): Promise<GitCommandResult> {

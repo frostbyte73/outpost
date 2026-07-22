@@ -48,7 +48,12 @@ export interface StepEditPatch {
 
 function actionNameForStep(s: Step): string {
   if (s.type === 'open-pr') {
-    if (s.conflictResolving) return 'code.resolve-conflicts';
+    // Push-capable binding must survive the transient `conflictResolving` flag:
+    // a failed merge clears it and drops the step to `conflict_unresolved`, and a
+    // daemon bounce clears it mid-round while state is still `conflicting`. Binding
+    // on the durable state (not just the flag) keeps a reopened session able to
+    // finish/push the merge instead of reverting to push-forbidden code.implement.
+    if (s.conflictResolving || s.state === 'conflicting' || s.state === 'conflict_unresolved') return 'code.resolve-conflicts';
     if (s.state === 'comment_pending_response' || s.state === 'reply_pending_review') {
       return 'code.triage-pr-comments';
     }

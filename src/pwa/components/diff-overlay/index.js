@@ -965,7 +965,7 @@ function computePrimaryLabel({ ignoreReview = false } = {}) {
     return parts.length ? parts[0] + (parts.length > 1 ? ` & ${parts.slice(1).join(' & ')}` : '') : 'Push';
   }
   if (commit.mergeMode === 'merge-to-base') return 'Squash & merge';
-  return commit.openPr ? 'Squash, push & open PR' : 'Commit & push';
+  return commit.openPr && !s.prUrl ? 'Squash, push & open PR' : 'Commit & push';
 }
 
 // The commit dialog markup (message + merge mode + branch target + push/PR
@@ -996,9 +996,15 @@ function buildCommitDialogHtml() {
   // On the default branch there's nothing to PR (main → main is a no-op), so
   // hide the checkbox until the user switches to a feature branch above.
   const onDefaultBranch = Boolean(s?.branch && s?.defaultBranch && s.branch === s.defaultBranch);
+  // Once a PR is already open for this branch, "open PR" is a no-op that would
+  // 409 on `gh pr create` — so drop the checkbox entirely and link the existing
+  // PR instead. A disabled-but-still-checked box reads as "this will open a
+  // second PR" and paralyzes the user right when they need to just commit & push.
   const openPrRow = (!isWorktree || commit.mergeMode === 'squash-to-branch') && diffState.ctx.mode !== 'pr-comment-edit'
     && !(!isWorktree && onDefaultBranch)
-    ? `<label class="dr-checkbox"><input type="checkbox" id="dr-openpr" ${commit.openPr ? 'checked' : ''} ${s?.prUrl ? 'disabled' : ''}>Open PR to main</label>`
+    ? (s?.prUrl
+      ? `<a class="dr-pr-open o-pill code" href="${escapeHtml(s.prUrl)}" target="_blank" rel="noopener">PR already open ↗</a>`
+      : `<label class="dr-checkbox"><input type="checkbox" id="dr-openpr" ${commit.openPr ? 'checked' : ''}>Open PR to main</label>`)
     : '';
   return `
     <div class="dr-commit-msg">

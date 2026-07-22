@@ -1,7 +1,8 @@
 {
   "alwaysAllow": [],
   "alwaysAllowBashPatterns": [
-    "^git merge(\\s|$)"
+    "^git merge(\\s|$)",
+    "^git add(\\s|$)"
   ],
   "alwaysAllowMcpPatterns": [],
   "alwaysAllowPathPatterns": []
