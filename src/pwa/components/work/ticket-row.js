@@ -48,7 +48,7 @@ export function stepDotState(s) {
 function escapeAttr(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
 export function stepDots(j) {
-  const steps = j.steps ?? [];
+  const steps = (j.steps ?? []).filter((s) => !s.cancelled);
   if (steps.length === 0) return '<span class="step-dot" data-state="queued"></span>';
   return steps.map((s) => {
     const label = s.type === 'action' ? `action · ${s.action ?? ''}` : s.type;
