@@ -192,6 +192,13 @@
 .o-group-hdr .o-group-count { font-size: 11px; color: var(--text-dim); }
 .o-group-hdr .o-group-rule { flex: 1; height: 1px; background: var(--line); }
 
+/* Stacked groups: every group after the first (its header/collapse follows a
+   prior .o-row-group) needs breathing room above so the label doesn't hug the
+   rows of the group before it. The first group's top space comes from the
+   scroll container's own padding. */
+.o-row-group + .o-group-hdr,
+.o-row-group + .o-group-collapse { margin-top: var(--gap-4); }
+
 /* Bare micro-heading utility — same spec as .o-group-hdr h2/h3 (11px/0.08em/
    600/uppercase/--text-dim) for callers that just need the text treatment
    without the flex/rule wrapper. This is the one canonical uppercase-label
