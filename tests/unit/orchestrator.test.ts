@@ -132,7 +132,9 @@ describe('Orchestrator.rehydrateSessionBindings', () => {
     second.engine.rehydrateSessionBindings();
 
     expect(second.engine.actionForSession(orchestratorSessionId)).toBe('meta.orchestrate');
-    expect(second.engine.actionForSession('step-sess-1')).toBe('code.implement');
+    // materialize() now starts open-pr steps in 'speccing' (spec/plan flow), so the
+    // rebound action is code.spec rather than the old hard-coded 'implementing' default.
+    expect(second.engine.actionForSession('step-sess-1')).toBe('code.spec');
   });
 });
 
@@ -173,10 +175,12 @@ describe('Orchestrator.reconcileInterruptedSteps', () => {
     const { engine, queue } = makeEngine();
     const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
     const step = addOpenPrStep(engine, job.id);
+    // materialize() now starts open-pr steps in 'speccing' (spec/plan flow); force
+    // 'implementing' here since that's the state under test, not the initial one.
     queue.mutate(job.id, (j) => ({
       ...j,
       state: 'executing',
-      steps: j.steps.map((s) => (s.id === step.id ? { ...s, sessionId: 'dead-sess' } : s)),
+      steps: j.steps.map((s) => (s.id === step.id ? { ...s, state: 'implementing', sessionId: 'dead-sess' } as OpenPrStep : s)),
     }));
 
     engine.reconcileInterruptedSteps();

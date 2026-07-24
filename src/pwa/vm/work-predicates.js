@@ -3,7 +3,8 @@
 // the same definition (D2 of the UX redesign plan).
 
 export function stepNeedsYou(s) {
-  return s.state === 'reply_pending_review' || (s.type === 'open-pr' && s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success');
+  return s.state === 'reply_pending_review' || s.state === 'spec_pending_review'
+    || (s.type === 'open-pr' && s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success');
 }
 
 // abandonJob flips job state without rewriting step states, so a terminal job

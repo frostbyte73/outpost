@@ -23,7 +23,7 @@ import type {
 } from './work-types.js';
 import { augmentEnvelopeWithLessons, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry } from './envelope.js';
 import type { ActionRegistry } from '../actions/index.js';
-import { handlerFor } from '../steps/index.js';
+import { handlerFor, initialStateForType } from '../steps/index.js';
 import type { Action, ExternalEvent, HandlerCtx } from '../steps/types.js';
 import { reconcile, validateDispositions } from './reconcile.js';
 import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
@@ -46,7 +46,7 @@ export interface StepEditPatch {
   action?: string;
 }
 
-function actionNameForStep(s: Step): string {
+export function actionNameForStep(s: Step): string {
   if (s.type === 'open-pr') {
     // Push-capable binding must survive the transient `conflictResolving` flag:
     // a failed merge clears it and drops the step to `conflict_unresolved`, and a
@@ -57,6 +57,8 @@ function actionNameForStep(s: Step): string {
     if (s.state === 'comment_pending_response' || s.state === 'reply_pending_review') {
       return 'code.triage-pr-comments';
     }
+    if (s.state === 'speccing') return 'code.spec';
+    if (s.state === 'planning') return 'code.plan';
     return 'code.implement';
   }
   return s.action;
@@ -173,8 +175,11 @@ export class WorkEngine {
     if (!j) return false;
     const step = j.steps.find((s) => s.id === role.stepId);
     if (!step) return false;
-    // open-pr steps resolve via PR merge, not submit_step_output; skip.
-    if (step.type !== 'action') return false;
+    // code.implement and the triage/conflict rounds legitimately end their turn
+    // without a submit_* call (they resolve via PR merge / gate approval). The spec
+    // and plan rounds MUST submit — if their turn ends without submit_spec /
+    // submit_impl_plan, fail the step rather than hang the job.
+    if (step.type === 'open-pr' && step.state !== 'speccing' && step.state !== 'planning') return false;
     if (step.state === 'resolved' || step.failure || step.cancelled) return false;
     this.onStepFailed(role.jobId, role.stepId, reason);
     return true;
@@ -238,6 +243,17 @@ export class WorkEngine {
           }));
         } else if (s.type === 'open-pr' && s.state === 'implementing') {
           this.onStepFailed(j.id, s.id, 'implement session interrupted by daemon restart');
+        } else if (s.type === 'open-pr' && (s.state === 'speccing' || s.state === 'planning') && s.sessionId) {
+          // Spec/plan rounds have no uncommitted edits — the shared session was reaped
+          // by the bounce; re-dispatch to resume the round rather than hang (decide()
+          // returns null for planning, and speccing's cold-spawn guard sees the stale
+          // sessionId, so neither self-heals without this).
+          const label = this.stepLabel(j.id, s.id);
+          this.mutate(j.id, (jj) => this.appendEvent(jj, {
+            kind: 'step_retried', who: 'system', stepId: s.id,
+            body: `${label} — session interrupted by daemon restart; resuming round`,
+          }));
+          void this.dispatchRound(j.id, s.id);
         }
       }
     }
@@ -673,6 +689,50 @@ export class WorkEngine {
     void this.tickOne(jobId);
   }
 
+  // code.spec finished a spec round. Store the spec and pause on the user gate —
+  // do NOT dispatch; approveSpec/rejectSpec drive the next round.
+  onSpecReady(jobId: string, stepId: string, spec: string): void {
+    this.mutateOpenPrStep(jobId, stepId, (s) => ({
+      ...s, spec, state: 'spec_pending_review', updatedAt: this.ctx.now(),
+    }));
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'session', stepId, body: 'spec ready for review',
+    }));
+  }
+
+  // code.plan finished. Store the plan and advance to implement (no gate). We do NOT
+  // dispatch code.implement here: this call runs inside the submit_impl_plan MCP handler
+  // while code.plan's turn is still open (between the tool call and its Stop). Sending
+  // /code.implement now would race the ending plan turn (and briefly rebind the session's
+  // allowlist to code.implement while code.plan is still executing). Instead the dispatch
+  // fires from the Stop hook (onSessionTurnEnded) once the shared session is idle — the
+  // same resume-when-idle invariant every other round transition already relies on.
+  onImplPlanReady(jobId: string, stepId: string, plan: string): void {
+    this.mutateOpenPrStep(jobId, stepId, (s) => ({
+      ...s, implPlan: plan, state: 'implementing', updatedAt: this.ctx.now(),
+    }));
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'session', stepId, body: 'implementation plan ready',
+    }));
+  }
+
+  // Called from the Stop hook when a spawned step session ends its turn. Handles the one
+  // round hand-off with no user gate: code.plan submits (onImplPlanReady flips the step to
+  // 'implementing') and ends its turn; now that the shared session is idle we dispatch the
+  // implement round. Guarded on the bound action still being code.plan so it fires exactly
+  // once — after code.implement is dispatched the binding is code.implement, and every
+  // other turn-end (spec gate, implement awaiting PR, triage) fails these conditions.
+  onSessionTurnEnded(sessionId: string): void {
+    const role = this.roleBySession.get(sessionId);
+    if (!role || role.role !== 'step') return;
+    const j = this.opts.queue.get(role.jobId);
+    const s = j?.steps.find((x) => x.id === role.stepId);
+    if (!s || s.type !== 'open-pr' || s.cancelled || s.failure) return;
+    if (s.state === 'implementing' && this.actionForSession(sessionId) === 'code.plan') {
+      void this.dispatchRound(role.jobId, role.stepId);
+    }
+  }
+
   onStepFailed(jobId: string, stepId: string, reason: string): void {
     this.mutateStep(jobId, stepId, (s) => ({ ...s, failure: { reason, at: this.ctx.now() } }));
     this.mutate(jobId, (j) => this.appendEvent(j, {
@@ -686,6 +746,10 @@ export class WorkEngine {
       return {
         ...s, failure: undefined, sessionId: undefined, state: h.initialState,
         reviewed: undefined, updatedAt: this.ctx.now(),
+        // open-pr-only artifacts from a prior spec/plan round — clear so a
+        // retried step restarts clean instead of rendering stale spec/plan
+        // markdown or carrying old feedback into the fresh spec envelope.
+        spec: undefined, implPlan: undefined, specFeedback: undefined,
       } as Step;
     });
     // If the job settled to a terminal state (done/failed) before the retry, restore
@@ -883,6 +947,34 @@ export class WorkEngine {
       type: 'user',
       message: { role: 'user', content: 'Replies approved — post each reply with `gh pr comment` and push any fix diff.' },
     });
+  }
+
+  approveSpec(jobId: string, stepId: string): void {
+    let ok = false;
+    this.mutateOpenPrStep(jobId, stepId, (s) => {
+      if (s.state !== 'spec_pending_review') return s;
+      ok = true;
+      return { ...s, state: 'planning', updatedAt: this.ctx.now() };
+    });
+    if (!ok) return;
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'user', stepId, body: 'spec approved',
+    }));
+    void this.dispatchRound(jobId, stepId);
+  }
+
+  rejectSpec(jobId: string, stepId: string, feedback: string): void {
+    let ok = false;
+    this.mutateOpenPrStep(jobId, stepId, (s) => {
+      if (s.state !== 'spec_pending_review') return s;
+      ok = true;
+      return { ...s, state: 'speccing', specFeedback: [...(s.specFeedback ?? []), feedback], updatedAt: this.ctx.now() };
+    });
+    if (!ok) return;
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'user', stepId, body: feedback,
+    }));
+    void this.dispatchRound(jobId, stepId);
   }
 
   mergePr(jobId: string, stepId: string): void {
@@ -1539,6 +1631,20 @@ export class WorkEngine {
     );
   }
 
+  // Single-shot resume of the shared open-pr session for a state that decide() does
+  // not self-dispatch (planning / implementing / spec revision). Rebuilds the envelope
+  // for the current state (so the round + spec/plan artifacts are current) and resumes.
+  // spawnStepSession's `s.sessionId` branch handles the resume; worktree provision is
+  // idempotent.
+  private async dispatchRound(jobId: string, stepId: string): Promise<void> {
+    const j = this.opts.queue.get(jobId);
+    const s = j?.steps.find((x) => x.id === stepId);
+    if (!j || !s || s.type !== 'open-pr') return;
+    const envelope = handlerFor(s).buildEnvelope(s, j, this.ctx);
+    const path = writeEnvelope(this.ctx.jobsDir, jobId, stepId, envelope);
+    await this.spawnStepSession(jobId, stepId, path);
+  }
+
   private async spawnStepSession(jobId: string, stepId: string, envelopePath: string): Promise<void> {
     const j = this.opts.queue.get(jobId);
     if (!j) return;
@@ -1652,7 +1758,7 @@ export class WorkEngine {
         const ws = p.workspace ?? { kind: 'writable' as const, repoCwd: '', branch: '' };
         if (ws.kind !== 'writable') throw new Error('open-pr step requires writable workspace');
         const { keepId: _, ...rest } = p;
-        return { ...rest, id, workspace: ws, state: 'implementing', createdAt: now, updatedAt: now } as OpenPrStep;
+        return { ...rest, id, workspace: ws, state: initialStateForType('open-pr'), createdAt: now, updatedAt: now } as OpenPrStep;
       }
       case 'action': {
         if (this.opts.actionRegistry && !this.opts.actionRegistry.getAction(p.action)) {
@@ -1660,7 +1766,7 @@ export class WorkEngine {
         }
         const ws = p.workspace ?? { kind: 'none' as const };
         const { keepId: _, ...rest } = p;
-        return { ...rest, id, workspace: ws, state: 'running', createdAt: now, updatedAt: now } as Step;
+        return { ...rest, id, workspace: ws, state: initialStateForType('action'), createdAt: now, updatedAt: now } as Step;
       }
     }
   }

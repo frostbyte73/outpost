@@ -126,9 +126,14 @@ export interface OpenPrStep extends StepBase {
   goal: string;
   approach: string;
   risks?: string;
-  state: 'implementing' | 'pr_open' | 'comment_pending_response'
-       | 'reply_pending_review' | 'conflicting' | 'conflict_unresolved'
-       | 'merged' | 'failed';
+  state: 'speccing' | 'spec_pending_review' | 'planning' | 'implementing' | 'pr_open'
+       | 'comment_pending_response' | 'reply_pending_review' | 'conflicting'
+       | 'conflict_unresolved' | 'merged' | 'failed';
+  // Spec → plan → implement artifacts. Stored as job state, never written to the
+  // worktree, so the review diff stays pure implementation.
+  spec?: string;         // design spec markdown (submit_spec)
+  implPlan?: string;     // implementation plan markdown (submit_impl_plan)
+  specFeedback?: string[]; // accumulated user revision notes across gate loops
   prUrl?: string;
   prState?: 'open' | 'merged' | 'closed';
   ciState?: 'pending' | 'success' | 'failure';

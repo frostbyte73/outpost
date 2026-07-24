@@ -192,6 +192,32 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'submit_spec',
+    description: 'Post the design spec for this open-pr step back to Outpost. `spec` is the full design doc as markdown. Sets the step to spec_pending_review — the user reviews the rendered spec and either accepts (→ plan round) or proposes changes (resumes this session as code.spec with their feedback). Call once, at the end of the spec round, after your self-review.',
+    inputSchema: {
+      type: 'object',
+      required: ['jobId', 'stepId', 'spec'],
+      properties: {
+        jobId: { type: 'string' },
+        stepId: { type: 'string' },
+        spec: { type: 'string', description: 'Full design spec as markdown.' },
+      },
+    },
+  },
+  {
+    name: 'submit_impl_plan',
+    description: 'Post the implementation plan for this open-pr step back to Outpost. `plan` is the task-by-task plan as markdown. Advances the step to the implement round (no user gate). Call once, at the end of the plan round, after your self-review. NOTE: this is the step-level implementation plan — distinct from the job-level orchestrator `submit_plan`.',
+    inputSchema: {
+      type: 'object',
+      required: ['jobId', 'stepId', 'plan'],
+      properties: {
+        jobId: { type: 'string' },
+        stepId: { type: 'string' },
+        plan: { type: 'string', description: 'Task-by-task implementation plan as markdown.' },
+      },
+    },
+  },
+  {
     name: 'submit_step_failed',
     description: 'Report that this step could not be completed and why. Terminal — the orchestrator will not retry.',
     inputSchema: {

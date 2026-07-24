@@ -110,9 +110,13 @@ function renderChecksHtml(s, prClosed) {
 }
 
 // A PR block is worth showing once there's a branch/PR/comment to talk about —
-// not while the step is still bare "implementing" with nothing to review yet
-// (that state renders as a plain timeline row via step-card.js).
+// not during speccing/spec_pending_review/planning, when the shared session is
+// live but hasn't touched the worktree yet (nothing to review). Those states
+// render as a plain timeline row via step-card.js instead.
+const PRE_IMPLEMENT_STATES = new Set(['speccing', 'spec_pending_review', 'planning']);
+
 export function hasPrBlock(s) {
+  if (PRE_IMPLEMENT_STATES.has(s.state)) return false;
   return !!(s.prUrl || s.workspace?.branch || (s.comments ?? []).length > 0);
 }
 

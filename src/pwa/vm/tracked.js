@@ -68,6 +68,13 @@ export function focusAction(job) {
 
   const step = waitingStep(job);
   if (step) {
+    if (step.state === 'spec_pending_review') {
+      return {
+        title: 'Spec ready for review',
+        description: `${step.title} has a spec waiting for your review.`,
+        cta: { label: 'Review spec', action: 'review-spec', stepId: step.id },
+      };
+    }
     if (step.state === 'reply_pending_review') {
       return {
         title: 'Reply drafts ready',

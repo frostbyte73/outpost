@@ -16,7 +16,8 @@ function stateLabel(s) {
   if (s.cancelled) return 'cancelled';
   // A step in its initial state with no session attached hasn't been started yet —
   // it's queued behind earlier steps. Label as "todo" to match the job-level vocabulary.
-  const initial = s.type === 'open-pr' ? 'implementing' : 'running';
+  // Mirrors OpenPrStep's initialState ('speccing').
+  const initial = s.type === 'open-pr' ? 'speccing' : 'running';
   if (!s.sessionId && s.state === initial) return 'todo';
   if (s.type === 'open-pr') {
     if (s.state === 'reply_pending_review') return 'pending';
@@ -27,13 +28,15 @@ function stateLabel(s) {
 function stateTone(s) {
   if (s.failure) return 'danger';
   if (s.cancelled) return 'mute';
-  const initial = s.type === 'open-pr' ? 'implementing' : 'running';
+  // Mirrors OpenPrStep's initialState ('speccing').
+  const initial = s.type === 'open-pr' ? 'speccing' : 'running';
   // todo: queued, no session yet.
   if (!s.sessionId && s.state === initial) return 'mute';
   // done.
   if (s.state === 'resolved' || s.state === 'merged') return 'ok';
   if (s.type === 'open-pr') {
-    // Gates: pending review, ready-to-merge.
+    // Gates: spec review, pending review, ready-to-merge.
+    if (s.state === 'spec_pending_review') return 'gate';
     if (s.state === 'reply_pending_review') return 'gate';
     if (s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success' && s.prState !== 'merged') return 'gate';
     // Otherwise active (implementing with session, pr_open without gate).
@@ -84,6 +87,18 @@ function actionFor(s) {
   if (s.failure) return `<button class="o-btn o-btn--danger" data-step-action="retry">Retry</button>`;
   if (s.cancelled) return '';
   if (s.type === 'open-pr') {
+    if (s.state === 'spec_pending_review') {
+      return `
+        <button class="o-btn o-btn--primary" data-step-action="accept-spec">Accept spec</button>
+        <button class="o-btn o-btn--default" data-step-action="toggle-spec-feedback">Propose changes</button>
+        <div class="thread-composer" data-composer="spec-feedback" hidden>
+          <textarea class="thread-compose-input" data-autogrow placeholder="What should change?"></textarea>
+          <div class="thread-composer-row">
+            <button class="o-btn o-btn--primary" data-step-action="submit-spec-feedback">Submit</button>
+          </div>
+        </div>
+      `;
+    }
     if (s.state === 'pr_open' && s.reviewState === 'approved' && s.ciState === 'success' && s.prState !== 'merged') {
       return `<button class="o-btn o-btn--primary" data-step-action="merge">Approve merge</button>`;
     }
@@ -112,7 +127,8 @@ function dotTone(s) {
   if (s.cancelled) return 'mute';
   if (s.failure) return 'danger';
   if (s.state === 'resolved' || s.state === 'merged') return 'done';
-  const initial = s.type === 'open-pr' ? 'implementing' : 'running';
+  // Mirrors OpenPrStep's initialState ('speccing').
+  const initial = s.type === 'open-pr' ? 'speccing' : 'running';
   if (stateTone(s) === 'gate') return 'hot';
   if (!s.sessionId && s.state === initial) return 'pending';
   return 'busy';
@@ -166,6 +182,8 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
   const title = s.title || s.type;
   const desc = descriptionFor(s);
   const output = (s.type === 'action' && s.output) ? renderMarkdown(s.output) : '';
+  const spec = s.type === 'open-pr' && s.spec ? renderMarkdown(s.spec) : '';
+  const implPlan = s.type === 'open-pr' && s.implPlan ? renderMarkdown(s.implPlan) : '';
   // Findings are the long tail of a step — collapse them once the step is done so
   // the timeline reads as a compact list of names/descriptions, expandable on demand.
   // Live/failed steps stay open (you're actively reading the result). Native
@@ -193,6 +211,8 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
         ${showPrBlock ? renderPrBlockHtml(job, s) : (metaFor(s) ? `<div class="tl-meta">${metaFor(s)}</div>` : '')}
         ${refsHtml(refs)}
         ${output ? `<details class="plan-findings tl-findings"${findingsOpen ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Findings</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${output}</div></details>` : ''}
+        ${spec ? `<details class="plan-findings tl-findings"${s.state === 'spec_pending_review' ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Spec</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${spec}</div></details>` : ''}
+        ${implPlan ? `<details class="plan-findings tl-findings"><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Implementation plan</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${implPlan}</div></details>` : ''}
         ${action ? `<div class="step-actions">${action}</div>` : ''}
       </div>
       ${opts.editTools ?? ''}
@@ -215,6 +235,15 @@ export function wireTimelineStep(el, job, s) {
       if (kind === 'resolve') void work.resolveStep(job.id, s.id);
       else if (kind === 'retry') void work.retryStep(job.id, s.id);
       else if (kind === 'merge') void work.approve(job.id, { gate: 'merge', stepId: s.id });
+      else if (kind === 'accept-spec') void work.approve(job.id, { gate: 'spec', stepId: s.id });
+      else if (kind === 'toggle-spec-feedback') {
+        el.querySelector('[data-composer="spec-feedback"]')?.toggleAttribute('hidden');
+      } else if (kind === 'submit-spec-feedback') {
+        const ta = el.querySelector('[data-composer="spec-feedback"] textarea');
+        const feedback = (ta?.value ?? '').trim();
+        if (!feedback) { ta?.focus(); return; }
+        void work.reject(job.id, { gate: 'spec', stepId: s.id, feedback });
+      }
     });
   });
   if (s.type === 'open-pr' && hasPrBlock(s)) wirePrBlockActions(el, job, s);

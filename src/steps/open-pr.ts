@@ -1,5 +1,5 @@
 import type { JobRecord, OpenPrStep } from '../work/work-types.js';
-import { writeEnvelope } from '../work/envelope.js';
+import { writeEnvelope, type OpenPrEnvelope } from '../work/envelope.js';
 import type { ExternalEvent, StepHandler } from './types.js';
 
 function previousFindings(job: JobRecord, selfId: string) {
@@ -13,21 +13,51 @@ function previousFindings(job: JobRecord, selfId: string) {
     }));
 }
 
+function roundForState(s: OpenPrStep): OpenPrEnvelope['typePayload']['round'] {
+  switch (s.state) {
+    case 'speccing':
+      return { kind: 'spec', feedback: s.specFeedback };
+    case 'planning':
+      return { kind: 'plan' };
+    case 'comment_pending_response':
+    case 'reply_pending_review':
+      return {
+        kind: 'pr-comments',
+        comments: (s.comments ?? []).filter((c) => {
+          if (c.respondedAt) return false;
+          const drafted = (s.draftedReplies ?? []).some((d) => d.commentId === c.id);
+          return !drafted;
+        }),
+      };
+    default:
+      return 'initial';
+  }
+}
+
 export const openPrHandler: StepHandler<OpenPrStep> = {
   type: 'open-pr',
-  initialState: 'implementing',
+  initialState: 'speccing',
 
   isResolved(s) { return s.state === 'merged'; },
 
   decide(s, job, ctx) {
     if (s.cancelled || s.failure) return null;
     switch (s.state) {
-      case 'implementing': {
+      case 'speccing': {
         if (s.sessionId) return null;
         const envelope = openPrHandler.buildEnvelope(s, job, ctx);
         const path = writeEnvelope(ctx.jobsDir, job.id, s.id, envelope);
         return { kind: 'spawn-session', jobId: job.id, stepId: s.id, envelopePath: path };
       }
+      case 'spec_pending_review':
+        return null; // gate — user accepts (→ planning) or proposes changes (→ speccing)
+      case 'planning':
+      case 'implementing':
+        // Entered only via engine transitions (approveSpec / onImplPlanReady), which
+        // resume the shared session directly (see WorkEngine.dispatchRound). decide()
+        // must NOT re-dispatch on subsequent ticks, or every incidental tick re-sends
+        // the round to a busy session. The transition owns the one-shot dispatch.
+        return null;
       case 'comment_pending_response':
       case 'reply_pending_review': {
         // One resumable session per step: don't open a triage round while an edit
@@ -72,6 +102,8 @@ export const openPrHandler: StepHandler<OpenPrStep> = {
       goal: s.goal,
       approach: s.approach,
       risks: s.risks,
+      spec: s.spec,
+      implPlan: s.implPlan,
       job: {
         source: job.source,
         title: job.title,
@@ -82,16 +114,7 @@ export const openPrHandler: StepHandler<OpenPrStep> = {
       workspace: s.workspace,
       typePayload: {
         branch: s.workspace.branch,
-        round: (s.state === 'comment_pending_response' || s.state === 'reply_pending_review')
-          ? {
-              kind: 'pr-comments',
-              comments: (s.comments ?? []).filter((c) => {
-                if (c.respondedAt) return false;
-                const drafted = (s.draftedReplies ?? []).some((d) => d.commentId === c.id);
-                return !drafted;
-              }),
-            }
-          : 'initial',
+        round: roundForState(s),
       },
     };
   },

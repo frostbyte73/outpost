@@ -36,11 +36,12 @@ function planReviewRow(j) {
 
 function stepWaitPill(s) {
   if (s.state === 'reply_pending_review') return { label: 'Reply ready', variant: 'gate' };
+  if (s.state === 'spec_pending_review') return { label: 'Spec ready', variant: 'gate' };
   return { label: 'Ready to merge', variant: 'ok' };
 }
 
 function stepWaitTone(s) {
-  return s.state === 'reply_pending_review' ? 'hot' : 'warn';
+  return (s.state === 'reply_pending_review' || s.state === 'spec_pending_review') ? 'hot' : 'warn';
 }
 
 function stepWaitingRows(j) {

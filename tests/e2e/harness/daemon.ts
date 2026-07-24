@@ -44,6 +44,10 @@ export interface StartDaemonOpts {
   // Optional: pre-seed worktree records so UI tests can target archive/delete flows
   // against rows that look like they were spawned via the worktree path.
   initialWorktrees?: SeedWorktreeRecord[];
+  // Optional: pre-seed work-queue jobs (raw JobRecord JSON) under <runtimeDir>/jobs/
+  // before the daemon starts, so Tracked-surface tests can exercise a step in a
+  // specific state without driving a real orchestrator/session through it.
+  initialJobs?: Record<string, unknown>[];
   // Phase 3: shrink the per-session event log so tests can force replay_gap deterministically.
   eventLogMaxEvents?: number;
   eventLogMaxAgeMs?: number;
@@ -131,6 +135,16 @@ export async function startDaemon(opts: StartDaemonOpts): Promise<DaemonHandle> 
       JSON.stringify({ records }, null, 2) + '\n',
       { mode: 0o600 },
     );
+  }
+
+  // Seed work-queue jobs BEFORE the daemon starts so JobQueue's constructor
+  // (which does a synchronous loadAll() of <runtimeDir>/jobs/*.json) picks them up.
+  if (opts.initialJobs?.length) {
+    const jobsDir = join(runtimeDir, 'jobs');
+    mkdirSync(jobsDir, { recursive: true, mode: 0o700 });
+    for (const job of opts.initialJobs) {
+      writeFileSync(join(jobsDir, `${String(job.id)}.json`), JSON.stringify(job, null, 2) + '\n', { mode: 0o600 });
+    }
   }
 
   const host = '127.0.0.1';

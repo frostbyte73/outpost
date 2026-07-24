@@ -95,8 +95,18 @@ export interface OpenPrEnvelope extends StepEnvelopeBase {
   goal: string;
   approach: string;
   risks?: string;
+  spec?: string;      // present from the plan round onward
+  implPlan?: string;  // present in the implement round
   workspace: { kind: 'writable'; repoCwd: string; branch: string };
-  typePayload: { branch: string; round: 'initial' | { kind: 'pr-comments'; comments: unknown[] } | { kind: 'conflict'; base?: string; push?: boolean; postAction?: 'squash-to-base' } };
+  typePayload: {
+    branch: string;
+    round:
+      | 'initial'
+      | { kind: 'spec'; feedback?: string[] }
+      | { kind: 'plan' }
+      | { kind: 'pr-comments'; comments: unknown[] }
+      | { kind: 'conflict'; base?: string; push?: boolean; postAction?: 'squash-to-base' };
+  };
 }
 
 export interface ActionEnvelope extends StepEnvelopeBase {

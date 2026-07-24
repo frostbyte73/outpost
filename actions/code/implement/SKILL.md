@@ -38,7 +38,9 @@ You'll find:
 | `goal` | One paragraph — what this step needs to deliver. |
 | `approach` | Two-three paragraphs on the planned approach. |
 | `risks` | Optional — things the orchestrator flagged for sanity-checks. |
-| `workspace.branch` | The branch name. The implementer commits and pushes to this name. |
+| `spec` | The approved design spec, as markdown. You (or an earlier session) drafted it in the spec round and the user approved it at the gate. |
+| `implPlan` | The task-by-task implementation plan, as markdown. You (or an earlier session) drafted it in the plan round, against the approved spec. |
+| `workspace.branch` | The branch name this step is implementing against. |
 | `workspace.repoCwd` | The parent repo's path (your cwd is the worktree, not the parent). |
 | `previousSteps[]` | Earlier `action` steps' `output` strings (only those with `forwardOutput: true`). High-signal context for the implementation. **Read these before charging ahead.** |
 | `typePayload.round` | Always `"initial"` for this skill. Any other value means a later round's slash command was dispatched into this same session — follow it. |
@@ -52,6 +54,8 @@ jq -r '.recentLessons[]? | "[\(.outcome)] \(.lesson)"' "$OUTPOST_ENVELOPE"
 Treat `goal`/`approach` as your spec and `risks` as sanity-checks.
 
 ## Step 1 — Orient
+
+An approved design spec (`envelope.spec`) and a task-by-task implementation plan (`envelope.implPlan`) precede this round — you authored both earlier in this same session (spec round, then plan round), and the user already approved the spec at its gate. Execute the plan task-by-task as **uncommitted** working-tree edits; it's the primary driver for Step 2, ahead of `$WORK_APPROACH`. If a plan step no longer fits reality once you look at the actual files (an API moved, a file doesn't exist, a task was based on a stale assumption), adapt and note why in your final summary — don't silently deviate.
 
 Quickly read what's there before touching anything. Do this even if `$WORK_APPROACH` is detailed — the investigator was read-only and worked from a partial view; you're the one whose diff has to land.
 

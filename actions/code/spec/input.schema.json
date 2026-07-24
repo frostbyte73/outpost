@@ -1,0 +1,67 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "code.spec input",
+  "type": "object",
+  "required": ["jobId", "stepId", "goal", "workspace", "typePayload"],
+  "properties": {
+    "jobId": { "type": "string" },
+    "stepId": { "type": "string" },
+    "goal": { "type": "string" },
+    "approach": { "type": "string" },
+    "risks": { "type": "string" },
+    "spec": {
+      "type": "string",
+      "description": "The step's current spec, if one already exists (present on a re-spec round after user feedback)."
+    },
+    "workspace": {
+      "type": "object",
+      "required": ["repoCwd", "branch"],
+      "properties": {
+        "repoCwd": { "type": "string" },
+        "branch": { "type": "string" }
+      }
+    },
+    "previousSteps": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "title": { "type": "string" },
+          "action": { "type": "string" },
+          "output": { "type": "string" }
+        }
+      }
+    },
+    "typePayload": {
+      "type": "object",
+      "required": ["branch", "round"],
+      "properties": {
+        "branch": { "type": "string" },
+        "round": {
+          "type": "object",
+          "required": ["kind"],
+          "properties": {
+            "kind": { "const": "spec" },
+            "feedback": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Present when the user rejected a prior spec draft with revision notes — accumulates across gate loops."
+            }
+          }
+        }
+      }
+    },
+    "job": {
+      "type": "object",
+      "properties": {
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "externalRef": {
+          "type": "object",
+          "properties": { "url": { "type": "string", "format": "uri" } }
+        }
+      }
+    },
+    "recentLessons": { "type": "array", "items": { "type": "object" } }
+  }
+}

@@ -490,6 +490,9 @@ async function main() {
       )) {
         console.log(`[work] stop session=${sessionId.slice(0,8)} → step failed (no MCP submission)`);
       }
+      // Plan→implement hand-off: if code.plan just ended its turn, dispatch the implement
+      // round now that the shared session is idle (see WorkEngine.onSessionTurnEnded).
+      engine.onSessionTurnEnded(sessionId);
       if (!shouldNotify) return;
       const title = findSessionTitle(sessionId);
       void pushSender.send({
@@ -669,6 +672,14 @@ async function main() {
       },
       submit_step_failed: async (a) => {
         engine.onStepFailed(a.jobId as string, a.stepId as string, a.reason as string);
+        return { ok: true };
+      },
+      submit_spec: async (a) => {
+        engine.onSpecReady(a.jobId as string, a.stepId as string, a.spec as string);
+        return { ok: true };
+      },
+      submit_impl_plan: async (a) => {
+        engine.onImplPlanReady(a.jobId as string, a.stepId as string, a.plan as string);
         return { ok: true };
       },
       submit_replies: async (a) => {

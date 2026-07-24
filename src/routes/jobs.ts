@@ -95,6 +95,10 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           engine.approveReplies(id, payload.stepId);
           break;
+        case 'spec':
+          if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
+          engine.approveSpec(id, payload.stepId);
+          break;
         case 'merge':
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           engine.mergePr(id, payload.stepId);
@@ -103,7 +107,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           await engine.resolveConflicts(id, payload.stepId);
           break;
-        default: res.statusCode = 400; res.end('gate must be plan|replies|merge|resolve-conflicts'); return;
+        default: res.statusCode = 400; res.end('gate must be plan|replies|spec|merge|resolve-conflicts'); return;
       }
     } catch (e) {
       res.statusCode = 500; res.end(`error: ${(e as Error).message}`); return;
@@ -130,11 +134,16 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
         if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) { res.statusCode = 400; res.end('feedback required'); return; }
         engine.rejectReplies(id, payload.stepId, payload.feedback);
         break;
+      case 'spec':
+        if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
+        if (typeof payload.feedback !== 'string' || !payload.feedback.trim()) { res.statusCode = 400; res.end('feedback required'); return; }
+        engine.rejectSpec(id, payload.stepId, payload.feedback);
+        break;
       case 'resolve-conflicts':
         if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
         engine.markConflictResolved(id, payload.stepId, { status: 'unresolvable', failure: payload.feedback?.trim() || 'user chose to resolve manually' });
         break;
-      default: res.statusCode = 400; res.end('gate must be plan|replies|resolve-conflicts'); return;
+      default: res.statusCode = 400; res.end('gate must be plan|replies|spec|resolve-conflicts'); return;
     }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');

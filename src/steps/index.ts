@@ -12,4 +12,8 @@ export function handlerFor<S extends Step>(step: S): StepHandler<S> {
   return registry[step.type] as unknown as StepHandler<S>;
 }
 
+export function initialStateForType(type: Step['type']): Step['state'] {
+  return registry[type].initialState;
+}
+
 export { openPrHandler, actionHandler };
