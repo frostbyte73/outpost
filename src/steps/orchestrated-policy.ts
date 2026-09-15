@@ -1,13 +1,6 @@
 import type { NextMove, OrchestratedStep } from '../work/work-types.js';
 import { workspaceError } from '../work/workspace.js';
 
-// Every accepted move charges one round (see applyMove), and so does every inbox delivery — so
-// this bounds the controller's whole loop, including one that keeps every finer guard happy by
-// moving `phase` each turn. Generous on purpose: an event-woken cycle costs two, the finer
-// guards (the unproductive-self-round cap, the gates, the dispatch attempt cap) do the actual
-// policing, and hitting this wall fails a step mid-flight on real work — a far worse outcome
-// than a runaway burning some extra tokens.
-export const MAX_ROUNDS = 80;
 // Counts UNPRODUCTIVE self-rounds in a row — ones that neither moved `phase` nor changed the
 // content of any artifact (see isProductive in orchestrated-runner). A productive round is
 // allowed however high the counter stands, and resets it: this caps spinning, not working.
@@ -70,25 +63,12 @@ export function validateNext(
         reason: `${unmerged} is still ${step.pr!.prState} and you own it — a resolve here settles the `
           + 'step as done and takes the PR out of the cockpit with work left on it. Merge it (a '
           + `self-round as ${MERGE_ACTION} once CI is green and review is approved), \`gate\` with `
-          + 'the current state so the user can take it over, or `fail` with what is outstanding. '
-          + 'Running low on rounds is a reason to gate, not to resolve.',
+          + 'the current state so the user can take it over, or `fail` with what is outstanding.',
       };
     }
     return { kind: 'allow', move };
   }
   if (move.kind === 'fail') return { kind: 'allow', move };
-
-  // `gate` is exempt alongside resolve/fail. The budget bounds autonomous work, and a gate is the
-  // opposite of that — it parks the step and spends nothing until a human acts, so re-gating can
-  // only loop as fast as the user unparks it. Barring it here would leave a controller that owns
-  // an open PR with `fail` as its only legal exit (the resolve guard above takes the other one),
-  // which is how an honest "I ran out of rounds, here is where it landed" became a lost step.
-  if (move.kind !== 'gate' && step.roundsSpent >= MAX_ROUNDS) {
-    return {
-      kind: 'reject',
-      reason: `round budget exhausted (${MAX_ROUNDS}); gate the step for the user, or resolve or fail it`,
-    };
-  }
 
   if (move.kind === 'self-round') {
     if (!productive && step.consecutiveSelfRounds >= MAX_CONSECUTIVE_SELF_ROUNDS) {

@@ -48,8 +48,8 @@ export function coalesceExternal(inbox: InboxItem[], incoming: InboxItem): Inbox
 }
 
 // How long a batch of watcher events sits before it is handed over. A reviewer leaving four
-// comments over two minutes is one piece of news, and each delivery costs the controller a round
-// against MAX_ROUNDS — so the wake it gets should describe the whole burst, not its first frame.
+// comments over two minutes is one piece of news, and each delivery costs the controller a whole
+// turn — so the wake it gets should describe the whole burst, not its first frame.
 export const EXTERNAL_QUIET_MS = 120_000;
 
 // When the currently-held batch of watcher events becomes deliverable, or undefined if nothing is
@@ -103,8 +103,8 @@ export function drainForDelivery(step: OrchestratedStep): { step: OrchestratedSt
 // drainForDelivery pull cycle — for corrective feedback on the controller's own just-attempted
 // move (a policy rejection, a declined gate), not a fresh async event. Moves only the named
 // items into `lastDelivered` (anything else already queued in `inbox` stays there for the next
-// natural delivery) and spends a round (MAX_ROUNDS is the backstop against an endless declined-
-// gate loop), but deliberately does NOT touch `consecutiveSelfRounds` — resetting it here would
+// natural delivery) and spends a round, but deliberately does NOT touch
+// `consecutiveSelfRounds` — resetting it here would
 // let a controller dodge the unproductive-self-rounds-in-a-row cap by tripping an unrelated rejection
 // between rounds.
 export function deliverImmediate(step: OrchestratedStep, items: InboxItem[]): OrchestratedStep {

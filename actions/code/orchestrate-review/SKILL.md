@@ -58,7 +58,7 @@ cat "$OUTPOST_ENVELOPE"
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `headRefOid`, `comments[]`. `headRefOid` is the PR's head commit — the fact rung 8 turns on (§4). |
 | `gateApproved` | `true` once you've opened a `gate` of your own and the user approved it. This step's ladder never opens one (§3) — the two writes it makes are drafted by their own bound rounds instead, via `writeGate` below. |
 | `gateFeedback` | Every note the user has attached to a `gate` of yours, oldest first. |
-| `roundsRemaining` | Turns left before the daemon refuses everything except `resolve` and `fail`. |
+| `roundsSpent` | How many turns this attempt has taken. Informational — there is no cap. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
 | `writeGate` | Present only while **you** (not a bound round) have raised a write draft. Absent otherwise — see `SHARED-write-drafts.md`. This step's ladder never raises one directly either; each write is drafted by the bound round doing it. |
 | `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, I/O schemas. This is your declared roster (`outpost.roster` in your own frontmatter) plus yourself, not the whole registry: an action missing here is one another controller owns. The only valid action names; never invent one. |
@@ -196,8 +196,8 @@ to, so the UI and a cold-resumed you agree on where the step is.
 
 The ladder, top to bottom — take the first row that matches. **Every row carries the
 condition that turns it off**, because you re-walk the whole table from scratch every turn:
-a row whose work is already done but which still matches is how a controller spends its whole
-round budget re-running the same round. Read each row's "no longer true once" column as part
+a row whose work is already done but which still matches is how a controller spends turn after
+turn re-running the same round. Read each row's "no longer true once" column as part
 of its condition.
 
 | # | Where the step stands | No longer true once | Move | `phase` |
@@ -210,10 +210,10 @@ of its condition.
 | 6 | `artifacts.review` present, no `artifacts.postedReview`, and your memo does **not** record a post round that handed back unable to post | the post round writes `postedReview` | `self-round` as `code.post-pr-review`, whole comment set in `note` | keep |
 | 7 | `artifacts.review` present, no `artifacts.postedReview`, and your memo **does** record a post round that handed back | — (terminal) | `fail` with `gh`'s reason verbatim | `failed` |
 | 8 | `artifacts.postedReview` present, no `artifacts.verdict`, and `pr.headRefOid` differs from the **last verified head** (§4) | the verify round writes `resolutions` with the new head on its first line | `self-round` as `code.verify-resolutions` | keep |
-| 9 | `artifacts.resolutions` has a verdict line for every comment in `postedReview`; no `artifacts.verdict`; your memo records no verdict round that handed back; **and** either nothing is `not-addressed`/`unclear`, or the user waived what is left, or `roundsRemaining <= 10` | the verdict round writes `verdict` | `self-round` as `code.submit-pr-verdict`, the verdict and every unresolved item in `note` | keep |
+| 9 | `artifacts.resolutions` has a verdict line for every comment in `postedReview`; no `artifacts.verdict`; your memo records no verdict round that handed back; **and** either nothing is `not-addressed`/`unclear`, or the user waived what is left | the verdict round writes `verdict` | `self-round` as `code.submit-pr-verdict`, the verdict and every unresolved item in `note` | keep |
 | 10 | No `artifacts.verdict` and your memo records a verdict round that handed back without submitting | — (terminal) | `resolve` if `artifacts.postedReview` exists (the comments reached the author; only the verdict didn't), else `fail` — with `gh`'s reason either way | `done` / `failed` |
 | 11 | `artifacts.verdict` present and `inputs.until !== "closed"` | — (terminal) | `resolve` with the verdict and the PR URL | `done` |
-| 12 | `artifacts.verdict` present and `inputs.until === "closed"` | `pr.prState` reaches `merged`/`closed` (row 2), or the user marks the step resolved | `wait` on `["pr-state"]` — unless `roundsRemaining <= 4`, then `resolve` with the verdict and a line saying the PR was still open | `watching` |
+| 12 | `artifacts.verdict` present and `inputs.until === "closed"` | `pr.prState` reaches `merged`/`closed` (row 2), or the user marks the step resolved | `wait` on `["pr-state"]` | `watching` |
 | 13 | Nothing above matches | a delivery wakes you | `wait` on `["head-moved","pr-comments","ci","pr-state"]` | `awaiting_response` |
 
 Two of these rows read a fact only *you* can record, so record it (§5):
@@ -366,25 +366,11 @@ the reply, so there is nothing new for it to judge. Say so in the memo and wait 
 than spending a verify round to re-derive the same verdicts.
 
 **What one cycle costs.** A wait move (1) + the delivery that wakes you (1) + the self-round to
-`code.verify-resolutions` (1) + that round's hand-back (1) = **four rounds per cycle** out of
-`MAX_ROUNDS = 80`. Fixed overhead is eight: the fan-out, the delivery that ends it, the
-synthesis-and-post move, the post round's hand-back, the first wait, then the verdict move,
-its hand-back, and the resolve. (Drafting and waiting for the user's approval mid-round is
-free — `mcp__outpost__submit_write_draft` doesn't charge a round the way
-`submit_step_progress` does, so only the bound round's *final* hand-back counts.) So the loop
-has room for about eighteen rounds of
-push-and-recheck, which is more than any real review needs, and you should never be near the
-wall on an honest one. Every one of those rounds is spent on a real push, because nothing but
-a real change wakes you — the other half of why rung 13 arms no timer.
-
-**If you are near it anyway, submit the verdict you have.** Row 9's `roundsRemaining <= 10`
-clause exists for exactly this: at ten rounds left you stop waiting for the author, take the
-verdict round, and list every still-`not-addressed` and `unclear` item in `note` so the verdict
-body carries them as the reasons for REQUEST_CHANGES. Ten leaves room for the verdict round
-(one), its hand-back (one), the `resolve` (one), and slack for a stray delivery or one
-corrective turn. **Do not `fail` the step at the wall** — a review that found real problems and
-then evaporated because it ran out of turns is worse than a REQUEST_CHANGES that says "these
-three are still open."
+`code.verify-resolutions` (1) + that round's hand-back (1) = **four rounds per cycle**. There is
+no cap on how many you may take, and every one of them is spent on a real push, because nothing
+but a real change wakes you — the other half of why rung 13 arms no timer. (Drafting and waiting
+for the user's approval mid-round is free — `mcp__outpost__submit_write_draft` doesn't charge a
+round the way `submit_step_progress` does, so only the bound round's *final* hand-back counts.)
 
 ### Rung 12 in detail — the `until: "closed"` vigil
 
@@ -392,13 +378,12 @@ With `inputs.until === "closed"` the step stays alive after the verdict as the l
 the PR: it is `wait`ing on `pr-state` and will resolve when the PR merges or closes (row 2).
 That is a deliberately open-ended vigil, and **the user's "Mark resolved" is the intended way
 out of it** — not a timeout you invent, and not a `resumeAt` you arm to give yourself an
-excuse. The one bound: at `roundsRemaining <= 4` resolve with the verdict and a line saying the
-PR was still open, because a step that runs its budget to zero and then can only `fail` hands
-the user a red step for a review that actually went fine.
+excuse. It is unbounded on purpose: the vigil costs nothing while parked, and resolving early
+takes the PR out of the user's cockpit while it is still open.
 
-**Budgets.** `roundsRemaining` counts down from 80 — every move you make costs one, and so
-does every wake the daemon delivers you; at zero it accepts only `resolve` or `fail`, so leave
-headroom rather than discovering the wall. Separately, at most **three** *unproductive*
+**Budgets.** There is no round cap. `roundsSpent` counts up — every move you make costs one,
+and so does every wake the daemon delivers you — but nothing refuses a move because it is high.
+What *is* capped is spinning: at most **three** *unproductive*
 `self-round`s in a row. A round counts as productive when the submit that ends it moves `phase`
 or writes an `artifacts` entry whose content differs from what was already there. A `dispatch`,
 a `wait`, or a `gate` (yours) resets the count outright regardless of productivity, and so does
@@ -620,5 +605,5 @@ the only place `meta.improve-actions` looks. Name the exact command or field.
 - **`gh pr review` refuses to approve your own PR.** Permanent, not transient — the account
   `gh` is authenticated as authored the PR. The verdict round hands back with that reason;
   take row 10 and `resolve`, since the comments did reach the author.
-- **Round budget nearly spent.** Rows 9 and 12 handle it. Submit the verdict you have; never
-  let the step hit the wall with an unposted conclusion.
+- **The step has been running a long time.** Not a reason to settle it. There is no round cap;
+  a parked `wait` costs nothing, and the author taking days is the ordinary case.

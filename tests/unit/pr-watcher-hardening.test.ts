@@ -102,7 +102,7 @@ describe('PrWatcher — owner/repo segments cannot be . or ..', () => {
 });
 
 // F4: the controller supplied the URL itself, so echoing it back as a moved signal
-// wakes it — and a wake costs a round against MAX_ROUNDS.
+// wakes it — and a wake costs it a whole turn.
 describe('PrWatcher — the known-URL path is not its own signal', () => {
   it('does not report pr-state purely because it recorded the URL it was given', async () => {
     const { watcher, engine } = harness(

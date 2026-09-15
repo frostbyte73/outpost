@@ -172,7 +172,9 @@ export interface OrchestratedEnvelope extends StepEnvelopeBase {
   phase?: string;
   memo?: string;
   artifacts?: Record<string, string>;
-  roundsRemaining: number;
+  // How long this attempt has been running. Informational — there is no cap; the
+  // unproductive-self-round and dispatch-attempt caps are what bound the loop.
+  roundsSpent: number;
   // Present when the daemon is resuming the controller with work it must act on.
   delivered?: InboxItem[];
   dispatches?: Array<Pick<Dispatch, 'id' | 'action' | 'brief' | 'status' | 'output' | 'failure'>>;

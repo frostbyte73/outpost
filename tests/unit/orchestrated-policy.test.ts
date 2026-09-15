@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  validateNext, briefKey, MAX_ROUNDS, MAX_CONSECUTIVE_SELF_ROUNDS, MAX_DISPATCH_ATTEMPTS,
+  validateNext, briefKey, MAX_CONSECUTIVE_SELF_ROUNDS, MAX_DISPATCH_ATTEMPTS,
   MERGE_ACTION, type ActionInfo,
 } from '../../src/steps/orchestrated-policy.js';
 import type { Dispatch, NextMove, OrchestratedStep } from '../../src/work/work-types.js';
@@ -49,10 +49,9 @@ describe('validateNext', () => {
     expect(v.kind).toBe('reject');
   });
 
-  it('rejects when the round budget is spent', () => {
-    const v = validateNext(step({ roundsSpent: MAX_ROUNDS }), { kind: 'self-round' }, info);
-    expect(v).toMatchObject({ kind: 'reject' });
-    expect((v as { reason: string }).reason).toMatch(/round budget/i);
+  // There is no round cap — a high roundsSpent is a long job, not a violation.
+  it('allows a move however many rounds the step has already spent', () => {
+    expect(validateNext(step({ roundsSpent: 500 }), { kind: 'self-round' }, info).kind).toBe('allow');
   });
 
   it('rejects consecutive self-rounds past the cap but still allows a dispatch', () => {
@@ -208,16 +207,12 @@ describe('validateNext', () => {
       .toBe('allow');
   });
 
-  it('allows resolve and fail regardless of round budget', () => {
-    const s = step({ roundsSpent: MAX_ROUNDS });
-    expect(validateNext(s, { kind: 'resolve', output: 'done' }, info).kind).toBe('allow');
-    expect(validateNext(s, { kind: 'fail', reason: 'nope' }, info).kind).toBe('allow');
-  });
 });
 
 // A controller that owns its PR must not settle the step while that PR is still open. The
-// observed failure: a controller at roundsRemaining 3 chose `resolve` over `gate` and the
-// unfinished step rendered as complete, taking an approved-but-unmerged PR out of the cockpit.
+// observed failure: a controller near the (since-removed) round wall chose `resolve` over
+// `gate` and the unfinished step rendered as complete, taking an approved-but-unmerged PR
+// out of the cockpit.
 describe('validateNext — resolving a step whose PR is still open', () => {
   const owner = (over: Partial<OrchestratedStep> = {}) => step({
     workspace: { kind: 'writable', repoCwd: '/repo', branch: 'b' },
@@ -240,7 +235,7 @@ describe('validateNext — resolving a step whose PR is still open', () => {
   });
 
   it('still allows fail, which is the honest settle for an open PR', () => {
-    expect(validateNext(owner(), { kind: 'fail', reason: 'out of budget' }, info).kind).toBe('allow');
+    expect(validateNext(owner(), { kind: 'fail', reason: 'stuck on a broken base' }, info).kind).toBe('allow');
   });
 
   it('allows the resolve once the PR is merged', () => {
@@ -268,20 +263,14 @@ describe('validateNext — resolving a step whose PR is still open', () => {
       .toBe('allow');
   });
 
-  // The guard's reason recommends `gate`, and the budget check sits right below it — so an owner
-  // that hits both must still be able to take the move it was just told to take. Otherwise the
-  // corrective turn draws a second rejection and the step fails with the PR mid-flight.
-  it('leaves gate reachable for an owner that is out of rounds AND barred from resolving', () => {
-    const s = owner({ roundsSpent: MAX_ROUNDS });
+  // The guard's reason recommends `gate` — an owner barred from resolving must be able to take
+  // the move it was just told to take, or the corrective turn draws a second rejection and the
+  // step fails with the PR mid-flight.
+  it('leaves gate and keeping-going reachable for an owner barred from resolving', () => {
+    const s = owner({ roundsSpent: 500 });
     expect(validateNext(s, resolve, info).kind).toBe('reject');
     expect(validateNext(s, { kind: 'gate', draft: 'd', question: 'q' }, info).kind).toBe('allow');
-  });
-
-  it('still refuses to keep working past the budget, and names gate as a way out', () => {
-    const s = owner({ roundsSpent: MAX_ROUNDS });
-    const v = validateNext(s, { kind: 'self-round' }, info);
-    expect(v).toMatchObject({ kind: 'reject' });
-    expect((v as { reason: string }).reason).toMatch(/gate/);
+    expect(validateNext(s, { kind: 'self-round' }, info).kind).toBe('allow');
   });
 });
 

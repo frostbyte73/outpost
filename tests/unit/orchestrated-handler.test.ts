@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import { orchestratedHandler } from '../../src/steps/orchestrated.js';
-import { MAX_ROUNDS } from '../../src/steps/orchestrated-policy.js';
 import type { HandlerCtx } from '../../src/steps/types.js';
 import type { InboxItem, JobRecord, OrchestratedStep } from '../../src/work/work-types.js';
 
@@ -68,7 +67,7 @@ describe('orchestratedHandler.decide', () => {
 });
 
 describe('orchestratedHandler.buildEnvelope', () => {
-  it('carries controller identity, memo, artifacts, and the round budget', () => {
+  it('carries controller identity, memo, artifacts, and the round count', () => {
     const s = step({
       memo: 'what I know', artifacts: { spec: '# Spec' }, phase: 'implement', roundsSpent: 5,
     });
@@ -78,7 +77,7 @@ describe('orchestratedHandler.buildEnvelope', () => {
       memo: 'what I know', phase: 'implement',
     });
     expect(env.artifacts).toEqual({ spec: '# Spec' });
-    expect(env.roundsRemaining).toBe(MAX_ROUNDS - 5);
+    expect(env.roundsSpent).toBe(5);
   });
 
   it('summarises dispatches without leaking runtime plumbing', () => {

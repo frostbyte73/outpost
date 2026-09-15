@@ -621,10 +621,9 @@ describe('WriteDraft — orchestrated steps: raiser coercion, pin isolation, den
     expect(engine.actionForStep(jobId, 'o1')).toBe('code.orchestrate-pr');
   });
 
-  // MAX_ROUNDS bounds ONE attempt's autonomous work, and a retry is a new attempt — a cold spawn
-  // whose only record of the last one is `attempts[]`. Carried forward, a step that had run long
-  // came back with nothing to spend and could only gate or fail.
-  it('resets the round budget on retry, and records the attempt that spent it', () => {
+  // roundsSpent measures ONE attempt, and a retry is a new attempt — a cold spawn whose only
+  // record of the last one is `attempts[]`.
+  it('resets the round count on retry, and records the attempt that spent it', () => {
     const { engine, queue } = makeEngine();
     const jobId = seedOrchestratedJob(queue, engine, [orchestratedStep('o1', 'code.orchestrate-pr')]);
     queue.mutate(jobId, (j) => ({

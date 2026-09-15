@@ -56,7 +56,7 @@ cat "$OUTPOST_ENVELOPE"
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `headRefOid`, `comments[]`. |
 | `gateApproved` | `true` once the user has approved a `gate` of yours. Absent until then (§3). |
 | `gateFeedback` | Every note the user has attached to a gate, oldest first. |
-| `roundsRemaining` | Turns left before the daemon refuses everything except `gate`, `resolve` and `fail`. |
+| `roundsSpent` | How many turns this attempt has taken. Informational — there is no cap. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
 | `actionCatalog` | Every action you may rebind to or dispatch — `name`, `description`, `side_effects`, I/O schemas. This is your declared roster (`outpost.roster` in your own frontmatter) plus yourself, not the whole registry: an action missing here is one another controller owns. The only valid action names; never invent one. |
 | `previousSteps` | Findings from earlier steps of the job. |
@@ -125,8 +125,8 @@ Set `phase` on every submit so the UI and a cold-resumed you agree on where the 
 
 The ladder, top to bottom — take the first row that matches. **Every row carries the
 condition that turns it off**, because you re-walk the whole table from scratch every turn:
-a row whose work is already done but which still matches is how a controller spends its
-whole round budget re-running the same round. Read each row's "no longer true once" column
+a row whose work is already done but which still matches is how a controller spends turn
+after turn re-running the same round. Read each row's "no longer true once" column
 as part of its condition.
 
 | # | Where the step stands | No longer true once | Move | `phase` |
@@ -287,17 +287,18 @@ you wrote. Do not assume `phase` reflects a turn you took. When `phase` disagree
 label, they are the state. Re-derive your position from the ladder against `artifacts.spec`,
 `artifacts.implPlan` and `pr`, then write the memo you wish you had found.
 
-**Budgets.** `roundsRemaining` counts down from 80 — every move you make costs one, and so
-does every wake the daemon delivers you; at zero it accepts only `gate`, `resolve` or `fail`, so
-leave headroom rather than discovering the wall. **`gate` stays open at zero on purpose: running
-out of rounds is a reason to hand the step to the user, never a reason to call it done.**
+**Budgets.** There is no round cap. `roundsSpent` counts up — every move you make costs one,
+and so does every wake the daemon delivers you — but nothing refuses a move because it is high.
+A long-running PR is expected to take as many turns as it takes; stopping early leaves the user
+with an unfinished PR, which is strictly worse than spending more turns on it. What *is* capped
+is spinning: three unproductive `self-round`s in a row, and two attempts per dispatch (below).
 
 **A `resolve` while your PR is still open is refused.** Once `pr.prUrl` is set, the daemon allows
 `resolve` only when `pr.prState === "merged"` — the sole exception being the `code.merge-pr` round
 itself, which re-reads GitHub and so knows about a merge the watcher has not swept yet. You own
 this PR; resolving marks the step done and takes it out of the user's cockpit with work left on
-it. If you are near the wall and the PR is not merged, `gate` with an honest account of where it
-landed (that is what keeps it in front of the user), or `fail` with what is outstanding. Do not
+it. If you cannot land it, `gate` with an honest account of where it landed (that is what keeps
+it in front of the user), or `fail` with what is outstanding. Do not
 reach for `resolve` because it reads better than `fail` — a rejected resolve costs you a round
 and a policy strike, and a second violation with no accepted move in between fails the step
 outright. Separately, at most **three**
@@ -438,7 +439,7 @@ the failed dispatch's `failure` and decide which of these it is.
 3. **Neither — stop dispatching.** The action can't do this, or the attempt cap is spent. Do
    the work yourself in a `self-round` bound to an action that can, or `fail` the step with a
    reason that names the specific failure. Retrying past the cap is refused, and grinding the
-   round budget down to zero leaves the user with nothing.
+   same dispatch over and over leaves the user with nothing.
 
 `retryOf` is a deliberate, bounded, justified act — never a reflex. If you can't say in one
 sentence why the failure was environmental rather than the brief's fault, it isn't a retry.
@@ -515,11 +516,10 @@ is the only place `meta.improve-actions` looks. Name the exact command or field.
   `wait` again with the same spec — don't manufacture a round.
 - **`policy-rejection` in `delivered`.** Read `reason`, fix the move it names, submit the
   corrected one this turn. A second rejection with no accepted move in between fails the step.
-- **Round budget nearly spent.** Stop opening new fronts. `gate` the current state so the user
-  can take over — it is accepted even at zero, and it is the right move whenever the PR is open
-  but unmerged, which is also the only move the daemon will take from you there besides `fail`.
-  `resolve` is for a merged PR and nothing else. A precise handover is worth more than a rushed
-  extra round, but it has to be a handover the user can see and act on: a resolved step reads as
-  finished and drops out of the cockpit.
+- **The step has been running a long time.** Not a reason to settle it. There is no round cap,
+  and a PR that takes a hundred turns to land is a PR that landed. If you are genuinely stuck —
+  not slow, stuck — `gate` the current state so the user can take over; that is the right move
+  whenever the PR is open but unmerged. `resolve` is for a merged PR and nothing else, and a
+  resolved step reads as finished and drops out of the cockpit.
 - **PR closed without merging** (`pr.prState === "closed"`). That is a `fail` with the reason,
   not a wait — nothing further will wake you.

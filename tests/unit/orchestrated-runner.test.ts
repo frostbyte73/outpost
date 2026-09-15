@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   applyMove, deliverInbox, pushInbox, resolveGate, type OrchestratedHost,
 } from '../../src/work/orchestrated-runner.js';
-import { MAX_CONSECUTIVE_SELF_ROUNDS, MAX_ROUNDS } from '../../src/steps/orchestrated-policy.js';
+import { MAX_CONSECUTIVE_SELF_ROUNDS } from '../../src/steps/orchestrated-policy.js';
 import { EXTERNAL_QUIET_MS } from '../../src/steps/orchestrated-inbox.js';
 import type { InboxItem, OrchestratedStep } from '../../src/work/work-types.js';
 
@@ -94,22 +94,18 @@ describe('applyMove', () => {
     expect(b.get().consecutiveSelfRounds).toBe(3);
   });
 
-  // MAX_ROUNDS is the backstop that has to hold once every finer guard is evaded. A controller
-  // that moves `phase` every round is productive every round, so consecutiveSelfRounds never
-  // climbs — the round budget is the only thing left standing.
-  it('charges the round budget on every accepted move, so an always-productive loop still ends', () => {
+  // There is no round cap: a controller that stays productive keeps going for as long as the
+  // work takes. Failing a step mid-flight on real work was worse than the runaway the cap was
+  // guarding against — the unproductive-self-round and dispatch-attempt caps police spinning.
+  it('never refuses an always-productive loop, however many rounds it has spent', () => {
     const { h, get } = host(step());
-    for (let i = 0; i < MAX_ROUNDS; i++) {
+    for (let i = 0; i < 200; i++) {
       applyMove(h, 'j1', 's1', { phase: `p${i}`, next: { kind: 'self-round', action: 'code.implement' } });
     }
-    expect(get().roundsSpent).toBe(MAX_ROUNDS);
+    expect(get().roundsSpent).toBe(200);
     expect(get().consecutiveSelfRounds).toBe(0);
     expect(h.failStep).not.toHaveBeenCalled();
-
-    applyMove(h, 'j1', 's1', { phase: 'one-more', next: { kind: 'self-round', action: 'code.implement' } });
-    const rejection = get().lastDelivered?.find((i) => i.kind === 'policy-rejection');
-    expect(rejection).toBeDefined();
-    expect((rejection as { reason: string }).reason).toMatch(/round budget/);
+    expect(get().lastDelivered?.some((i) => i.kind === 'policy-rejection')).toBeFalsy();
   });
 
   it('charges a round for a dispatch, a wait, and a gate too — not just self-rounds', () => {

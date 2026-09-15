@@ -2173,11 +2173,9 @@ export class WorkEngine {
         // the session binding, and `actionForStep`'s derivation all disagreeing about which
         // action owns the next draft.
         //
-        // The round budget resets with it. MAX_ROUNDS bounds ONE attempt's autonomous work, and
-        // this is a new attempt — a cold spawn with no transcript, which is why `attempts[]`
-        // exists to carry the history instead. Carried forward, a step that ran long enough to
-        // matter came back with nothing left to spend: the step behind PR #1342 would have
-        // reopened on 2 of 80 rounds, able to gate or fail and nothing else.
+        // The round count resets with it: it measures ONE attempt, and this is a new attempt —
+        // a cold spawn with no transcript, which is why `attempts[]` exists to carry the
+        // history instead.
         ...(s.type === 'orchestrated'
           ? { boundAction: undefined, roundsSpent: 0, consecutiveSelfRounds: 0 }
           : {}),

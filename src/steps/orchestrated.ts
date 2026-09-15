@@ -1,5 +1,4 @@
 import { buildActionCatalog, writeEnvelope, type OrchestratedEnvelope } from '../work/envelope.js';
-import { MAX_ROUNDS } from './orchestrated-policy.js';
 import { shouldDeliver } from './orchestrated-inbox.js';
 import { currentDraftForRaiser, writeGateFor } from '../work/write-draft.js';
 import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
@@ -79,7 +78,7 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
       phase: s.phase,
       memo: s.memo,
       artifacts: s.artifacts,
-      roundsRemaining: Math.max(0, MAX_ROUNDS - s.roundsSpent),
+      roundsSpent: s.roundsSpent,
       dispatches: s.dispatches.map((d) => ({
         id: d.id, action: d.action, brief: d.brief, status: d.status,
         ...(d.output !== undefined ? { output: d.output } : {}),

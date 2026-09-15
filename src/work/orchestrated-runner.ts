@@ -98,10 +98,6 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
     return;
   }
 
-  // Every accepted move is a round, whatever its kind. Charging only on inbox deliveries left
-  // the self-round loop — the most common move there is — free, so MAX_ROUNDS bounded nothing
-  // for a controller that never parked. It is the backstop that has to hold once the finer
-  // guards (productivity, the self-round cap) have all been satisfied or evaded.
   host.mutateStep(jobId, stepId, (s) => ({ ...s, roundsSpent: s.roundsSpent + 1 }));
 
   runMove(host, jobId, stepId, verdict.move, productive);

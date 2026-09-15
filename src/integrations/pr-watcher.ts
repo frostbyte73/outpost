@@ -414,7 +414,7 @@ export class PrWatcher {
     // one falls back to its inputs, a writable one re-discovers by branch).
     let prUrl = prev.prUrl && PR_URL_RE.test(prev.prUrl) ? prev.prUrl : undefined;
     // Whether this poll is only recording back the URL the controller handed us. That is not
-    // news to the controller, and a wake costs it a round against MAX_ROUNDS.
+    // news to the controller, and a wake costs it a whole turn.
     let fromKnownUrl = false;
     if (!prUrl && knownUrl) {
       // Already known by URL (a readonly review step) — never run discovery, and never
