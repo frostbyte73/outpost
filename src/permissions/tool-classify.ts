@@ -113,14 +113,15 @@ export const MCP_WRITE_TOOLS: readonly string[] = [
   'mcp__grafana__install_plugin',
   'mcp__grafana__grafana_api_request',
 
-  // incident.io
-  'mcp__incident-io__incident_create',
-  'mcp__incident-io__incident_update',
-  'mcp__incident-io__alert_attach',
-  'mcp__incident-io__alert_detach',
-  'mcp__incident-io__follow_up_create',
-  'mcp__incident-io__follow_up_update',
-  'mcp__incident-io__escalation_respond',
+  // incident.io — reached as a claude.ai connector, so the prefix is the connector's display
+  // name with `.` and ` ` folded to `_`, not the `incident-io` a local mcpServers entry gave.
+  'mcp__claude_ai_incident_io__incident_create',
+  'mcp__claude_ai_incident_io__incident_update',
+  'mcp__claude_ai_incident_io__alert_attach',
+  'mcp__claude_ai_incident_io__alert_detach',
+  'mcp__claude_ai_incident_io__follow_up_create',
+  'mcp__claude_ai_incident_io__follow_up_update',
+  'mcp__claude_ai_incident_io__escalation_respond',
 ];
 
 const MCP_WRITE_TOOL_SET: ReadonlySet<string> = new Set(MCP_WRITE_TOOLS);

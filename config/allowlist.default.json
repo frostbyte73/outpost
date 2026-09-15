@@ -25,7 +25,7 @@
     "^find(\\s|$)"
   ],
   "alwaysAllowMcpPatterns": [
-    "^mcp__incident-io__(incident_show|incident_list|incident_update_list|alert_list|alert_show|escalation_show|escalation_list|escalation_path_list|escalation_path_show|schedule_list|schedule_show|team_list|team_show|user_list|catalog_entry_list|catalog_type_list|catalog_entry_show|investigation_sync|ask|ask_incident|ask_telemetry|follow_up_list|incident_stats|alert_stats|follow_up_stats|resource_list|resource_show|alert_source_list)$",
+    "^mcp__claude_ai_incident_io__(incident_show|incident_list|incident_update_list|alert_list|alert_show|escalation_show|escalation_list|escalation_path_list|escalation_path_show|schedule_list|schedule_show|team_list|team_show|user_list|catalog_entry_list|catalog_type_list|catalog_entry_show|investigation_sync|ask|ask_incident|ask_telemetry|follow_up_list|incident_stats|alert_stats|follow_up_stats|resource_list|resource_show|alert_source_list)$",
     "^mcp__notion__notion-(fetch|search|get-comments|get-users|get-teams|query-data-sources)$",
     "^mcp__claude_ai_DataDog_MCP__",
     "^mcp__claude_ai_Slack__slack_(read_channel|read_thread|read_canvas|read_user_profile|search_channels|search_public|search_public_and_private|search_users)$",

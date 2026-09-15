@@ -94,12 +94,12 @@ describe('RecurrenceTracker', () => {
   it('suggestionFor: kind=mcp produces exact-match regex', () => {
     const t = new RecurrenceTracker();
     for (let i = 0; i < 3; i++) {
-      t.record({ cwd, toolName: 'mcp__incident-io__schedule_show', toolInput: { id: 'S-1' }, decision: 'allow' });
+      t.record({ cwd, toolName: 'mcp__claude_ai_incident_io__schedule_show', toolInput: { id: 'S-1' }, decision: 'allow' });
     }
-    const s = t.suggestionFor(cwd, 'mcp__incident-io__schedule_show', { id: 'S-1' });
+    const s = t.suggestionFor(cwd, 'mcp__claude_ai_incident_io__schedule_show', { id: 'S-1' });
     expect(s).not.toBeNull();
     expect(s!.kind).toBe('mcp');
-    expect(s!.suggestedValue).toBe('^mcp__incident-io__schedule_show$');
+    expect(s!.suggestedValue).toBe('^mcp__claude_ai_incident_io__schedule_show$');
   });
 
   it('suggestionFor: kind=tool produces the tool name unchanged', () => {
@@ -124,9 +124,9 @@ describe('RecurrenceTracker', () => {
     expect(t.suggestionFor(cwd, 'NotebookEdit', {})).toBeNull();
 
     for (let i = 0; i < 3; i++) {
-      t.record({ cwd, toolName: 'mcp__incident-io__incident_update', toolInput: { id: 'INC-1' }, decision: 'allow' });
+      t.record({ cwd, toolName: 'mcp__claude_ai_incident_io__incident_update', toolInput: { id: 'INC-1' }, decision: 'allow' });
     }
-    expect(t.suggestionFor(cwd, 'mcp__incident-io__incident_update', { id: 'INC-1' })).toBeNull();
+    expect(t.suggestionFor(cwd, 'mcp__claude_ai_incident_io__incident_update', { id: 'INC-1' })).toBeNull();
   });
 
   it('bash suggestion: empty command returns null', () => {

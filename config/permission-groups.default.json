@@ -33,7 +33,7 @@
     "alwaysAllowPathPatterns": []
   },
   "pull": {
-    "description": "Network reads: WebFetch/WebSearch, read-only MCP calls (get_/list_/search_ patterns) against Linear/Datadog/GitHub/Notion/Slack/incident-io/Grafana, curl -s, and read-only gh commands.",
+    "description": "Network reads: WebFetch/WebSearch, read-only MCP calls (get_/list_/search_ patterns) against Linear/Datadog/GitHub/Notion/Slack/incident.io/Grafana, curl -s, and read-only gh commands.",
     "alwaysAllow": [
       "WebFetch",
       "WebSearch",
@@ -53,7 +53,7 @@
       "^mcp__github__(get|list|search|pull_request_read|issue_read)",
       "^mcp__notion__notion-(fetch|search|get-|query-data-sources)",
       "^mcp__claude_ai_Slack__slack_(read_|search_)",
-      "^mcp__incident-io__(.*_show|.*_list|alert_stats|incident_stats|follow_up_stats|escalation_stats|ask|ask_incident|ask_telemetry|investigation_sync)$",
+      "^mcp__claude_ai_incident_io__(.*_show|.*_list|alert_stats|incident_stats|follow_up_stats|escalation_stats|ask|ask_incident|ask_telemetry|investigation_sync)$",
       "^mcp__grafana__(get_|list_|search_|query_|find_|analyze_)"
     ],
     "alwaysAllowPathPatterns": []

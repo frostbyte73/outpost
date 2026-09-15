@@ -40,7 +40,7 @@ describe('classifyTool — precedence rule 2: exact MCP write table', () => {
     expect(MCP_WRITE_TOOLS.length).toBeGreaterThan(20);
     expect(MCP_WRITE_TOOLS).toContain('mcp__github__merge_pull_request');
     expect(MCP_WRITE_TOOLS).toContain('mcp__grafana__grafana_api_request');
-    expect(MCP_WRITE_TOOLS).toContain('mcp__incident-io__incident_update');
+    expect(MCP_WRITE_TOOLS).toContain('mcp__claude_ai_incident_io__incident_update');
     expect(MCP_WRITE_TOOLS).toContain('mcp__claude_ai_Linear__save_comment');
     expect(MCP_WRITE_TOOLS).toContain('mcp__notion__notion-create-pages');
   });
@@ -143,8 +143,8 @@ describe('classifyTool — real read tools across vendors do not regress against
       'mcp__notion__notion-search',
       'mcp__grafana__query_prometheus',
       'mcp__grafana__list_datasources',
-      'mcp__incident-io__incident_show',
-      'mcp__incident-io__alert_list',
+      'mcp__claude_ai_incident_io__incident_show',
+      'mcp__claude_ai_incident_io__alert_list',
     ];
     for (const name of realReadTools) {
       expect(effectOf(name), name).toBe('read');

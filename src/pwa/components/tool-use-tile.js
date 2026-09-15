@@ -816,7 +816,10 @@ export const MCP_SERVER_NAMES = {
   'claude_ai_Ramp': 'Ramp',
   'claude_ai_Ramp_Data': 'Ramp',
   'claude_ai_Intuit_QuickBooks': 'QuickBooks',
+  'claude_ai_incident_io': 'incident.io',
   'plugin_linear_linear': 'Linear',
+  // Kept alongside the connector key above: event logs from before the switch still hold
+  // `mcp__incident-io__*` calls, and their tiles should keep rendering with a real name.
   'incident-io': 'incident.io',
   'notion': 'Notion',
   'github': 'GitHub',
