@@ -1,8 +1,10 @@
 // Outpost service worker. Three responsibilities:
 //   1. Standard install/activate (claim clients so the SW takes over without reload)
 //   2. Web Push handler with foreground suppression (visible window → in-page message)
-//   3. notificationclick handler that deep-links to /?session=<id>&approval=<id>, or for a
-//      `kind: 'draft'` payload, /?job=<id> — see deep-links.js's SURFACE_PARAMS
+//   3. notificationclick handler that deep-links to /?session=<id>&approval=<id>, or for the
+//      payloads with no session of their own: `kind: 'draft'` → /?job=<id>, `kind:
+//      'mcp-expiry'` → /?settings=mcp, `kind: 'claude-auth'` → /?settings=claude-account —
+//      see deep-links.js's SURFACE_PARAMS
 
 self.addEventListener('install', () => self.skipWaiting());
 self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
@@ -39,11 +41,17 @@ self.addEventListener('notificationclick', (event) => {
   // A draft-ready push has no session of its own to jump into — a dispatch child's draft is
   // raised by a background subagent, not the job's top-level session — so it deep-links to
   // the job on the tracked surface instead, same shape deep-links.js's `?job=` param produces.
-  const target = data.kind === 'draft' && data.jobId
-    ? { surface: 'tracked', id: data.jobId }
-    : { sessionId: data.sessionId, approvalId: data.approvalId };
+  // A lapsing MCP credential has no session or job either — it deep-links to the panel the
+  // re-authorization is driven from.
+  const target = data.kind === 'mcp-expiry'
+    ? { surface: 'settings', id: 'mcp', param: 'settings' }
+    : data.kind === 'claude-auth'
+    ? { surface: 'settings', id: 'claude-account', param: 'settings' }
+    : data.kind === 'draft' && data.jobId
+      ? { surface: 'tracked', id: data.jobId, param: 'job' }
+      : { sessionId: data.sessionId, approvalId: data.approvalId };
   const url = target.surface
-    ? `/?job=${encodeURIComponent(target.id)}`
+    ? `/?${target.param}=${encodeURIComponent(target.id)}`
     : target.sessionId
       ? `/?session=${encodeURIComponent(target.sessionId)}${target.approvalId ? `&approval=${encodeURIComponent(target.approvalId)}` : ''}`
       : '/';

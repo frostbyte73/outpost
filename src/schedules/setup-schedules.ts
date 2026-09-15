@@ -55,6 +55,15 @@ export function seedBuiltinSchedules(store: SchedulesStore, homeDir: string): vo
     trigger: { kind: 'cron', expr: '*/10 * * * *' },
     what: { kind: 'native', handler: 'user-prs-watcher' },
   });
+  // Daily rather than hourly: the warning window is two days wide, so a once-a-day sweep still
+  // gives two chances to act, and re-authorizing is a deliberate errand — not something worth
+  // interrupting for more often than that.
+  store.ensureBuiltin({
+    id: 'mcp-expiry',
+    name: 'MCP credential expiry',
+    trigger: { kind: 'cron', expr: '0 9 * * *' },
+    what: { kind: 'native', handler: 'mcp-expiry' },
+  });
   // No `repos` — the envelope enricher resolves cwd to the action being reviewed. Gated on
   // accumulated run evidence rather than a clock, so a fire with nothing due records a skip;
   // on a fresh install that's every fire. The daily debounce is what keeps that skip from

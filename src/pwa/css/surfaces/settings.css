@@ -329,6 +329,82 @@ html[data-layout="desktop"] .o-frame-list.settings-nav-col {
 .settings-refresh-btn { margin-bottom: var(--gap-3); }
 .settings-refresh-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 .mcp-row .o-row-sub { font-family: var(--font-mono); }
+.mcp-row-state {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* Cross-device OAuth card. Step 2 is the one that needs the room — it tells the user the
+   "can't load" page they're about to hit is expected, which is what keeps this from reading
+   as broken. See components/settings-surface/mcp.js. */
+.mcp-auth-card {
+  margin-top: var(--gap-3);
+  padding: var(--gap-3);
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+  background: var(--bg-elev);
+}
+.mcp-auth-card.ok { border-color: var(--ok); }
+.mcp-auth-card h4 { margin: 0 0 var(--gap-3); }
+.mcp-auth-steps {
+  margin: 0;
+  padding-left: 1.25em;
+  display: flex;
+  flex-direction: column;
+  gap: var(--gap-3);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.mcp-auth-steps li { line-height: 1.5; }
+.mcp-auth-steps strong { color: var(--text); }
+.mcp-auth-actions {
+  margin-top: var(--gap-2);
+  display: flex;
+  align-items: center;
+  gap: var(--gap-2);
+  flex-wrap: wrap;
+}
+.mcp-auth-input {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 6px var(--gap-2);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.mcp-auth-input:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+.mcp-auth-done { margin: 0 0 var(--gap-2); color: var(--ok); font-size: 12px; }
+.mcp-auth-lede { margin: 0 0 var(--gap-3); color: var(--text-dim); font-size: 12px; line-height: 1.5; }
+.mcp-auth-card .settings-note { margin-top: var(--gap-2); }
+.mcp-connector-rows .mcp-connectors-showall { margin-top: var(--gap-2); }
+/* The link is long enough to overflow a phone's width if it renders as its own text. */
+.mcp-auth-open { overflow-wrap: anywhere; }
+
+/* Seated under its row, the card is a member of the group's stack rather than a box below it:
+   the wrapper takes over the row chrome — .o-row's padding, so the copy lines up with the title
+   it answers — and the card inside drops its own outline. Unstyled outside a group, which is
+   the fallback slot for a flow whose row isn't rendered. */
+.o-row-group .mcp-auth-flow {
+  padding: var(--gap-3) 14px;
+  border: 1px solid var(--line);
+  background: var(--bg-elev);
+}
+.o-row-group .mcp-auth-flow + .o-row { border-top: none; }
+.o-row-group .mcp-auth-flow:last-child { border-radius: 0 0 var(--r-container) var(--r-container); }
+.o-row-group .mcp-auth-flow > .mcp-auth-card {
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: none;
+}
 
 /* ── Segmented controls (density / model / approval mode) ────────────── */
 .settings-segmented {

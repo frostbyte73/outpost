@@ -1,0 +1,34 @@
+# Allocates the pty `claude auth login` needs, same constraint as mcp-login.expect: given a
+# non-tty stdin the CLI won't reach its paste prompt, and script(1) can't stand in because it
+# tcgetattr's its own stdin, which is a socketpair under spawn().
+#
+# Unlike the MCP flow there is no --no-browser to pass: the CLI tries a browser AND prints the
+# URL either way, and its redirect_uri is a hosted claude.com callback rather than a localhost
+# one — so the page renders a code on whatever device authorized, and bringing that code back
+# is an ordinary copy rather than a salvage from a failed page load.
+#
+# argv: <claude-bin>
+# Output is streamed verbatim for the caller to parse; the code arrives later as one line on
+# our stdin.
+
+set stty_init "columns 4000"   ;# the authorization URL must not be wrapped by its own pty
+set timeout 60
+
+lassign $argv claude_bin
+spawn -noecho $claude_bin auth login
+
+expect {
+  -re {Paste code here} {}
+  timeout { exit 90 }
+  eof     { exit 91 }
+}
+
+# Blocks until the caller writes a line. Deliberately without a timeout: the daemon owns this
+# deadline and kills the process group when the flow expires.
+if {[gets stdin code] < 0} { exit 92 }
+send -- "$code\r"
+
+set timeout 180
+expect eof
+catch wait result
+exit [lindex $result 3]

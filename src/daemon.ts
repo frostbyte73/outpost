@@ -48,6 +48,11 @@ import { registerSessionsRoutes } from './routes/sessions.js';
 import { registerProjectsRoutes } from './routes/projects.js';
 import { registerPushRoutes } from './routes/push.js';
 import { registerMetaRoutes, createGroupApplier } from './routes/meta.js';
+import { registerAuthRoutes } from './routes/auth.js';
+import { McpLoginFlows } from './integrations/mcp-login.js';
+import { ClaudeLoginFlows } from './integrations/claude-login.js';
+import { McpConnectorList } from './integrations/mcp-connectors.js';
+import { McpExpiryWatcher } from './integrations/mcp-expiry-watcher.js';
 import { registerActionsRoutes, type ActionsRoutesHandlers } from './routes/actions.js';
 import { registerActionRevisionsRoutes } from './routes/action-revisions.js';
 import { registerScheduleEditRoutes } from './routes/schedule-edits.js';
@@ -278,6 +283,18 @@ async function main() {
 
   const stopTracker = new StopHookTracker({ thresholdMs: config.stopHookThresholdMs });
 
+  // Declared ahead of the SessionManager they recycle, because the dependency runs both ways: a
+  // finished login reloads live sessions, and a session dying on a lapsed credential is what
+  // tells claudeLogin there is anything to repair.
+  const onReauthorized = (): void => {
+    const { closed, deferred } = manager.reloadForReauth();
+    if (closed.length || deferred.length) {
+      console.log(`[auth] re-authorized — reloaded ${closed.length} session(s), ${deferred.length} deferred to end of turn`);
+    }
+  };
+  const loginFlows = new McpLoginFlows(onReauthorized);
+  const claudeLogin = new ClaudeLoginFlows(onReauthorized);
+
   const manager = new SessionManager({
     settingsPath,
     mcpConfigPath,
@@ -299,9 +316,27 @@ async function main() {
       rebroadcastJobLiveness(sessionId);
     },
     onSessionRegistered: () => {
+      // A session that got this far authenticated, so any recorded lapse is over — including
+      // one repaired outside Outpost, which nothing else here would ever hear about.
+      claudeLogin.clearFailure();
       // Trailing debounce: a burst of spawns (e.g. work orchestrator kicking off
       // multiple child sessions) coalesces into a single PWA refresh.
       scheduleSessionsChangedBroadcast();
+    },
+    // Every session fails the same way once this lapses, so the notification is tagged and the
+    // flag is idempotent — a queue of jobs discovering it in turn produces one card, not one each.
+    onAuthFailure: (sessionId, message) => {
+      const first = claudeLogin.failedSince() === null;
+      claudeLogin.noteFailure();
+      console.warn(`[auth] session ${sessionId} could not authenticate: ${message.trim()}`);
+      if (!first) return;
+      void pushSender.send({
+        title: 'Claude needs re-authorizing',
+        body: 'Sessions can\'t start until you sign in again. Tap to authorize from any device.',
+        tag: 'claude-auth',
+        data: { kind: 'claude-auth' },
+      });
+      try { notifyAll({ type: 'claude_auth_failed' }); } catch { /* pre-startup */ }
     },
     onSessionExit: (sessionId, code) => {
       // Session-scoped allow rules die with the session's process.
@@ -451,6 +486,10 @@ async function main() {
     },
   });
 
+  nativeHandlers.register('mcp-expiry', () => new McpExpiryWatcher({
+    mcpConfigPath,
+    notify: (payload) => { void pushSender.send(payload); },
+  }).runOnce());
   nativeHandlers.register('pr-watcher', () => prWatcher.runOnce());
   nativeHandlers.register('user-prs-watcher', () => userPrsWatcher.runOnce());
 
@@ -896,6 +935,7 @@ async function main() {
     journalStore, denialsStore, mcpConfigPath,
     permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
   });
+  registerAuthRoutes(server, { loginFlows, claudeLogin, connectors: new McpConnectorList() });
   registerRunsRoutes(server, { runsStore, usageLedger, getAccountUsage: () => latestAccountUsage });
   registerSchedulesRoutes(server, { store: schedulesStore, scheduler, notify: notifyAll, tokenStatus: (id) => tokenScheduler.describe(id) });
   registerPreferencesRoutes(server, { preferencesStore, notify: notifyAll });

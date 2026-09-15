@@ -1,0 +1,32 @@
+# Allocates the pty that `claude mcp login --no-browser` requires. Given a non-tty stdin the
+# CLI refuses outright ("stdin isn't a terminal, so authentication can't be completed here"),
+# and script(1) can't stand in for it: script tcgetattr's its OWN stdin, which is a socketpair
+# under spawn(). Despite advertising a localhost redirect_uri, the CLI does not listen on it in
+# --no-browser mode (verified), so pasting the redirect URL back is the only way to finish a
+# flow — which is precisely what lets the authorization happen on another device.
+#
+# argv: <claude-bin> <server>
+# Output is streamed verbatim for the caller to parse; the redirect URL arrives later as one
+# line on our stdin.
+
+set stty_init "columns 4000"   ;# the authorization URL must not be wrapped by its own pty
+set timeout 60
+
+lassign $argv claude_bin server
+spawn -noecho $claude_bin mcp login $server --no-browser
+
+expect {
+  -re {paste the redirect URL} {}
+  timeout { exit 90 }
+  eof     { exit 91 }
+}
+
+# Blocks until the caller writes a line. Deliberately without a timeout: the daemon owns this
+# deadline and kills the process group when the flow expires.
+if {[gets stdin url] < 0} { exit 92 }
+send -- "$url\r"
+
+set timeout 180
+expect eof
+catch wait result
+exit [lindex $result 3]

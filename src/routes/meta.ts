@@ -1,6 +1,5 @@
 import { existsSync, renameSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
@@ -17,7 +16,8 @@ import { isKnownCwd } from '../git/known-cwd.js';
 import type { JournalStore } from '../storage/journal-store.js';
 import type { DenialsStore } from '../storage/denials-store.js';
 import { readJsonObject } from './util.js';
-import { readMcpServersFile, transportOf, type McpServerConfig } from '../integrations/mcp-config.js';
+import { authKindOf, mergeMcpServers, transportOf } from '../integrations/mcp-config.js';
+import { credentialsByServer } from '../integrations/mcp-credentials.js';
 import { listTools } from '../integrations/mcp-catalog.js';
 import { proposeForServer, type ServerProposal } from '../permissions/mcp-proposal.js';
 
@@ -79,20 +79,6 @@ function isEmptyConfig(cfg: AllowlistConfig): boolean {
 }
 
 const MCP_PROBE_TIMEOUT_MS = 2500;
-
-// Discovers configured MCP servers the same way for every route that needs them: the daemon's
-// own mcp-config.json first, then `~/.claude.json`'s "mcpServers" filling in anything not
-// already named — claude merges the two for every spawned session (no --strict-mcp-config
-// flag), first occurrence wins on a name collision, so reads have to agree with that or a
-// route would propose/probe a server the daemon doesn't actually pass through to sessions.
-function mergeMcpServers(mcpConfigPath: string): Map<string, McpServerConfig> {
-  const merged = new Map<string, McpServerConfig>();
-  for (const [name, cfg] of Object.entries(readMcpServersFile(mcpConfigPath))) merged.set(name, cfg);
-  for (const [name, cfg] of Object.entries(readMcpServersFile(join(homedir(), '.claude.json')))) {
-    if (!merged.has(name)) merged.set(name, cfg);
-  }
-  return merged;
-}
 
 // Best-effort transport-level reachability check — a non-2xx response still proves
 // the server is up, so we only call it 'unreachable' on a network failure/timeout.
@@ -511,17 +497,23 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
 
   server.route('GET', '/api/mcp/status', async (_req, res) => {
     const merged = mergeMcpServers(mcpConfigPath);
+    const creds = await credentialsByServer();
 
     const servers = await Promise.all([...merged.entries()].map(async ([name, cfg]) => {
       const transport = transportOf(cfg);
-      if (transport === 'stdio') {
-        return { name, transport, status: 'configured' as const };
-      }
-      if (!cfg.url) {
-        return { name, transport, status: 'unreachable' as const };
-      }
+      // Only an OAuth server has a grant to renew, and the header's VALUE never leaves here.
+      const auth = authKindOf(cfg);
+      const cred = auth === 'oauth' ? creds.get(name) : undefined;
+      const credential = cred
+        ? { hasAccessToken: cred.hasAccessToken, hasRefreshToken: cred.hasRefreshToken,
+            ...(cred.expiresAt !== undefined ? { expiresAt: cred.expiresAt } : {}) }
+        : undefined;
+      const base = { name, transport, auth, ...(credential ? { credential } : {}) };
+
+      if (transport === 'stdio') return { ...base, status: 'configured' as const };
+      if (!cfg.url) return { ...base, status: 'unreachable' as const };
       const probe = await probeHttpServer(cfg.url, cfg.headers);
-      return { name, transport, status: probe.status, ...(probe.httpStatus !== undefined ? { httpStatus: probe.httpStatus } : {}) };
+      return { ...base, status: probe.status, ...(probe.httpStatus !== undefined ? { httpStatus: probe.httpStatus } : {}) };
     }));
 
     res.statusCode = 200;

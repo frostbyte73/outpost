@@ -1,4 +1,5 @@
 import { statSync } from 'node:fs';
+import { isAuthFailure } from '../integrations/claude-login.js';
 import { ClaudeProc } from './claude-proc.js';
 import { EventLog } from './event-log.js';
 import type { WebSocket } from 'ws';
@@ -8,9 +9,10 @@ export type SessionModel = 'sonnet' | 'opus' | 'haiku' | 'fable';
 
 // Why the daemon itself is tearing a session down, threaded into daemon_proc_exit
 // so the PWA can tell a graceful shutdown from a crash. 'idle' = reaped for
-// inactivity (resumable on the next message); 'archived' = worktree/step gone.
+// inactivity (resumable on the next message); 'archived' = worktree/step gone;
+// 'reauth' = recycled to pick up a credential that was just re-authorized.
 // Absent on the exit event means the subprocess died on its own → a real crash.
-export type SessionCloseReason = 'idle' | 'archived';
+export type SessionCloseReason = 'idle' | 'archived' | 'reauth';
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 // Replay window sized to survive iOS backgrounding the PWA.
@@ -60,6 +62,10 @@ export interface SessionManagerOpts {
   // Daemon fans this out as a `sessions_changed` notification so the PWA can refresh its
   // list without waiting for a full reload.
   onSessionRegistered?: (sessionId: string) => void;
+  // Fires when a subprocess complains that Claude's own authentication has lapsed. The
+  // complaint only ever appears on stderr, and the frame it becomes reaches attached clients
+  // only — so without this the lapse is invisible to anyone not watching the session that hit it.
+  onAuthFailure?: (sessionId: string, message: string) => void;
 }
 
 export class SessionManager {
@@ -241,6 +247,32 @@ export class SessionManager {
   // alive (resume/replan), but it is no longer working.
   markTurnEnded(sessionId: string): void {
     this.working.delete(sessionId);
+    if (this.reloadWhenIdle.delete(sessionId)) void this.close(sessionId, 'reauth');
+  }
+
+  // Recycle live sessions so they pick up a credential that was just re-authorized — Claude's
+  // own or an MCP server's. A running session reads neither again: the keychain is read at
+  // startup and MCP servers are connected there too, so the grant the user just repaired from
+  // their phone reaches nothing already in flight.
+  //
+  // Closing is the whole mechanism — sendOrResume respawns with --resume on the next message,
+  // which is the same contract idle-reaping already relies on (engine.ts:416). A session
+  // mid-turn is deliberately left alone and closed at its Stop hook instead: killing it would
+  // discard the in-flight turn and fail the step that owns it, and credentials only matter at
+  // the next spawn anyway.
+  reloadForReauth(): { closed: string[]; deferred: string[] } {
+    const closed: string[] = [];
+    const deferred: string[] = [];
+    for (const id of [...this.active.keys()]) {
+      if (this.isWorking(id)) {
+        this.reloadWhenIdle.add(id);
+        deferred.push(id);
+      } else {
+        void this.close(id, 'reauth');
+        closed.push(id);
+      }
+    }
+    return { closed, deferred };
   }
 
   // Live subprocess AND currently mid-turn. This — not isActive — is the PWA
@@ -304,6 +336,9 @@ export class SessionManager {
   // PWA Tracked "Running" bucket — a session kept alive after finishing its turn
   // (idle-reap is 15 min out) must NOT read as working.
   private readonly working = new Map<string, number>();
+  // Sessions that were mid-turn when a credential was re-authorized — closed at their Stop
+  // hook instead. See reloadForReauth.
+  private readonly reloadWhenIdle = new Set<string>();
 
   private spawn(sessionId: string, cwd: string, extraEnv?: Record<string, string>): ActiveSession {
     this.sessionCwds.set(sessionId, cwd);
@@ -348,6 +383,7 @@ export class SessionManager {
         }
       },
       onError: (errMsg) => {
+        if (isAuthFailure(errMsg)) this.opts.onAuthFailure?.(s.id, errMsg);
         for (const ws of s.clients) {
           ws.send(JSON.stringify({ type: 'daemon_error', message: errMsg }));
         }
@@ -361,6 +397,7 @@ export class SessionManager {
         }
         this.active.delete(s.id);
         this.working.delete(s.id);
+        this.reloadWhenIdle.delete(s.id);
         this.opts.onSessionExit?.(s.id, code);
       },
     });
@@ -387,6 +424,7 @@ export class SessionManager {
       this.working.delete(oldId);
       this.working.set(newId, workingSince);
     }
+    if (this.reloadWhenIdle.delete(oldId)) this.reloadWhenIdle.add(newId);
     this.sessionCwds.set(newId, s.spawnCwd);
     const model = this.sessionModels.get(oldId);
     if (model) this.sessionModels.set(newId, model);

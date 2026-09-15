@@ -13,6 +13,8 @@ const SURFACE_PARAMS = {
   schedule: 'schedules',
   run: 'runs',
   skill: 'skills',
+  // `?settings=mcp` — the id is the section key, which is what settings reads its selection as.
+  settings: 'settings',
 };
 
 export function readDeepLinkFromUrl() {

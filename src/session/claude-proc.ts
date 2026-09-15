@@ -8,7 +8,7 @@ import { LineParser } from './stream-json.js';
 // binary is installed (e.g. Homebrew's /opt/homebrew/bin). Resolve an absolute path from
 // an explicit override or the usual install locations, re-checked on every spawn so a
 // `claude-code` cask upgrade that relocates the symlink is picked up on the next session.
-function resolveClaudeBin(): string {
+export function resolveClaudeBin(): string {
   const override = process.env.OUTPOST_CLAUDE_BIN;
   if (override && existsSync(override)) return override;
   const dirs = [

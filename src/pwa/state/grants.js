@@ -1,5 +1,6 @@
 import { createStore } from './create-store.js';
 import { metaApi } from '../net/meta.js';
+import { mcpNeedsAttention } from '../vm/settings.js';
 
 // Backs the Settings > Permissions and Settings > MCP connections sections.
 // Groups and allowlist rules change rarely, so the load* entry points are
@@ -16,6 +17,7 @@ const store = createStore({
   rules: [],
   mcpServers: [],
   pendingDenials: [],
+  claudeAuth: null,
   groupsLoaded: false,
   rulesLoaded: false,
   mcpLoaded: false,
@@ -97,6 +99,18 @@ export const grantsStore = {
     await this.reloadPending();
   },
 
+  // Always re-fetched rather than cached: the answer changes underneath the tab (a credential
+  // lapses, a login lands on another device) and it is the one panel that has to be right at
+  // the moment it is read.
+  async loadClaudeAuth() {
+    try {
+      const data = await metaApi.claudeAuth();
+      store.set((s) => ({ ...s, claudeAuth: data ?? null }));
+    } catch (e) {
+      store.set((s) => ({ ...s, err: e.message }));
+    }
+  },
+
   async ensurePermissionsLoaded() {
     await Promise.all([this.loadGroups(), this.loadRules()]);
   },
@@ -106,12 +120,25 @@ export const grantsStore = {
   },
 };
 
-// Cross-section warn-dot signal: Settings > Permissions' MCP connections nav
-// item lights up if any configured server is unreachable. Consumed by
-// vm/settings.js's settingsSections() rather than computed inline there so
-// the view-model stays a pure function of already-derived booleans.
+// Cross-section warn-dot signal: the MCP connections nav item lights up if any configured
+// server is unreachable, or if an OAuth credential has lapsed or is about to. The second half
+// is the point of surfacing expiry at all — a token that quietly expires is otherwise
+// discovered by a job failing mid-step. Consumed by vm/settings.js's settingsSections() rather
+// than computed inline there so the view-model stays a pure function of derived booleans.
 export function mcpHasWarning(state) {
-  return (state.mcpServers ?? []).some((s) => s.status === 'unreachable');
+  return (state.mcpServers ?? []).some((s) => s.status === 'unreachable')
+    || mcpNeedsAttention(state.mcpServers ?? []);
+}
+
+// Same signal for Claude's own account. `failedSince` is the one that matters in practice: the
+// token refreshes itself every few hours, so a lapse shows up as a session that couldn't
+// start, never as an expiry anyone saw coming.
+export function claudeAuthHasWarning(state) {
+  const auth = state.claudeAuth;
+  if (!auth) return false;
+  if (auth.failedSince) return true;
+  // An unreadable probe is not a lapse — see claudeAccountRow.
+  return !auth.account?.error && auth.account?.loggedIn === false;
 }
 
 // Same signal, denials half: the Permissions nav item lights up while an unresolved denial is

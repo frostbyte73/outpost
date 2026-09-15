@@ -19,8 +19,10 @@ import { openAddProjectSheet } from '../cwd-picker.js';
 import { settings, VALID_DEFAULT_MODELS, DEFAULT_EDITOR_COMMAND } from '../../state/settings.js';
 import { sessions } from '../../state/sessions.js';
 import { usage } from '../../state/usage.js';
-import { grantsStore, mcpHasWarning, pendingHasWarning } from '../../state/grants.js';
-import { settingsSections, mcpServerRows } from '../../vm/settings.js';
+import { grantsStore, mcpHasWarning, pendingHasWarning, claudeAuthHasWarning } from '../../state/grants.js';
+import { settingsSections } from '../../vm/settings.js';
+import { renderMcp } from './mcp.js';
+import { renderClaudeAuth } from './claude-auth.js';
 import { renderThemeGrid, renderModeToggle } from '../theme-picker.js';
 import { mountPushSection } from '../push/index.js';
 import { renderPermissions } from '../permissions/index.js';
@@ -53,7 +55,11 @@ export function renderList(mount) {
 
   function paint() {
     const sel = nav.get().selectionBySurface.settings ?? null;
-    const warnFlags = { mcp: mcpHasWarning(grantsStore.get()), permissions: pendingHasWarning(grantsStore.get()) };
+    const warnFlags = {
+      mcp: mcpHasWarning(grantsStore.get()),
+      permissions: pendingHasWarning(grantsStore.get()),
+      'claude-account': claudeAuthHasWarning(grantsStore.get()),
+    };
     const groups = settingsSections(warnFlags, isDesktop());
     mount.innerHTML = groups.map((g) => `
       <div class="settings-nav-group">
@@ -79,10 +85,11 @@ export function renderList(mount) {
   paint();
   const unsubNav = nav.subscribe(paint);
   const unsubGrants = grantsStore.subscribe(paint);
-  // Kick off the lazy loads whose results feed the MCP and Permissions warn-dots as soon as
-  // the surface opens, not only once the user drills into MCP connections or Permissions.
+  // Kick off the lazy loads whose results feed the MCP, Permissions and Claude account
+  // warn-dots as soon as the surface opens, not only once the user drills into one of them.
   void grantsStore.ensureMcpLoaded();
   void grantsStore.loadPending();
+  void grantsStore.loadClaudeAuth();
 
   // Deferred to its own microtask: renderList runs synchronously inside the
   // shell frame's paint(), and nav.setSelection() notifies subscribers
@@ -270,52 +277,6 @@ function renderEditor(mount) {
   return settings.subscribe(paint);
 }
 
-// ── MCP connections ────────────────────────────────────────────────────
-
-function mcpRowHtml(row) {
-  const iconTone = row.tone === 'danger' ? 'hot' : 'ok'; // o-row-icon's danger modifier is named "hot"
-  return `
-    <div class="o-row mcp-row">
-      <span class="o-row-icon ${iconTone}">◈</span>
-      <div>
-        <div class="o-row-title">${escapeHtml(row.name)}</div>
-        <div class="o-row-sub">${escapeHtml(row.transport)}</div>
-      </div>
-      <span class="o-pill ${row.tone}">${escapeHtml(row.statusLabel)}</span>
-    </div>
-  `;
-}
-
-function renderMcp(mount) {
-  const body = detailShell(mount, 'MCP connections', 'Servers configured for spawned sessions (daemon-level MCP config plus your ~/.claude.json).');
-  const section = block(body, 'Servers', `
-    <button type="button" class="o-btn o-btn--default settings-refresh-btn">Refresh</button>
-    <div class="o-row-group mcp-rows"></div>
-  `);
-  const rowsEl = section.querySelector('.mcp-rows');
-  const refreshBtn = section.querySelector('.settings-refresh-btn');
-
-  function paint() {
-    const state = grantsStore.get();
-    refreshBtn.disabled = state.mcpLoading;
-    refreshBtn.textContent = state.mcpLoading ? 'Refreshing…' : 'Refresh';
-    if (!state.mcpLoaded) {
-      rowsEl.innerHTML = '<div class="settings-loading">Loading…</div>';
-      return;
-    }
-    const rows = mcpServerRows(state.mcpServers);
-    rowsEl.innerHTML = rows.length
-      ? rows.map(mcpRowHtml).join('')
-      : '<p class="settings-note">No MCP servers configured.</p>';
-  }
-
-  refreshBtn.addEventListener('click', () => { void grantsStore.loadMcp(); });
-  paint();
-  const unsub = grantsStore.subscribe(paint);
-  void grantsStore.ensureMcpLoaded();
-  return unsub;
-}
-
 // ── Projects ───────────────────────────────────────────────────────────
 
 function renderProjects(mount) {
@@ -432,6 +393,7 @@ const SECTION_RENDERERS = {
   permissions: renderPermissions,
   projects: renderProjects,
   mcp: renderMcp,
+  'claude-account': renderClaudeAuth,
   notifications: renderNotifications,
   tailscale: renderTailscale,
   health: renderHealth,

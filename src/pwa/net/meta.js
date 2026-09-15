@@ -28,6 +28,10 @@ function jsonBody(body) {
   return { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
 }
 
+function postJson(body) {
+  return { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
+}
+
 export const metaApi = {
   permissionGroups() { return request('/api/permission-groups'); },
   allowlistRules()   { return request('/api/allowlist/rules'); },
@@ -36,6 +40,29 @@ export const metaApi = {
   // the Pending classifications panel so a hung server delays only that sub-panel.
   mcpCatalog()       { return request('/api/mcp/catalog'); },
   pending()          { return request('/api/permissions/pending'); },
+
+  // Cross-device MCP OAuth. `start` blocks until the CLI has printed its authorization URL,
+  // `submit` until the token exchange settles, so both are slower than a normal GET.
+  mcpAuthFlows()               { return request('/api/mcp/auth/flows'); },
+  // Health-checks every server (~11s) and is cached server-side; `refresh` pays it again.
+  mcpConnectors(refresh)       { return request(`/api/mcp/connectors${refresh ? '?refresh=1' : ''}`); },
+  mcpAuthStart(server)         { return request('/api/mcp/auth/start', postJson({ server })); },
+  mcpAuthSubmit(flowId, redirectUrl) {
+    return request('/api/mcp/auth/submit', postJson({ flowId, redirectUrl }));
+  },
+  mcpAuthCancel(flowId)        { return request('/api/mcp/auth/cancel', postJson({ flowId })); },
+  // Connectors only — the tap that says "I authorized on claude.ai", which is also what
+  // reloads live sessions onto the new grant.
+  mcpAuthDone(flowId)          { return request('/api/mcp/auth/done', postJson({ flowId })); },
+
+  // Claude Code's own account, same shape one level up. Worth remembering while debugging it:
+  // if this is what's broken, no session can run — the daemon drives the CLI itself.
+  claudeAuth()                 { return request('/api/claude/auth'); },
+  claudeAuthStart()            { return request('/api/claude/auth/start', postJson({})); },
+  claudeAuthSubmit(flowId, code) {
+    return request('/api/claude/auth/submit', postJson({ flowId, code }));
+  },
+  claudeAuthCancel(flowId)     { return request('/api/claude/auth/cancel', postJson({ flowId })); },
 
   denialVerdict(actionName, denialId, body) {
     return request(

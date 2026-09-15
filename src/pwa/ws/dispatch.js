@@ -354,7 +354,9 @@ const sessionHandlers = {
         role: 'archived',
         text: msg.reason === 'idle'
           ? 'Session reaped after 15 min idle — send a message to resume.'
-          : 'Session archived.',
+          : msg.reason === 'reauth'
+            ? 'Reloaded to pick up the new credentials — send a message to resume.'
+            : 'Session archived.',
       });
       if (isCurrent) deps.renderSession();
       return;
@@ -458,6 +460,13 @@ const broadcastHandlers = {
 
   actions_changed() {
     import('../state/actions.js').then(({ actions: actStore }) => { void actStore.load(); });
+  },
+
+  // Claude's own sign-in lapsed. Refetching is what lights the Settings warn-dot without
+  // waiting for someone to open the section — the failure itself arrives on the stderr of one
+  // dying session, which nobody is necessarily watching.
+  claude_auth_failed() {
+    import('../state/grants.js').then(({ grantsStore: g }) => { void g.loadClaudeAuth(); });
   },
 
   user_prs_changed(msg) {
