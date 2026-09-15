@@ -12,7 +12,7 @@ claude.ai DataDog MCP: https://mcp.datadoghq.com/api/unstable/mcp-server/mcp - �
 claude.ai Intuit QuickBooks: https://ai-inc.quickbooks.intuit.com/v1/mcp - ✔ Connected
 claude.ai Gem: https://mcp.gem.com/mcp - ! Needs authentication
 notion: https://mcp.notion.com/mcp (HTTP) - ✔ Connected
-grafana: /Users/dc/.local/bin/uvx mcp-grafana - ✔ Connected
+grafana: /Users/testuser/.local/bin/uvx mcp-grafana - ✔ Connected
 posthog: https://mcp-eu.posthog.com/mcp (HTTP) - ! Needs authentication
 `;
 
@@ -34,7 +34,7 @@ describe('parseListOutput', () => {
 
   it('keeps a stdio target with a space whole', () => {
     expect(rows[4]).toEqual({
-      name: 'grafana', target: '/Users/dc/.local/bin/uvx mcp-grafana', status: 'connected',
+      name: 'grafana', target: '/Users/testuser/.local/bin/uvx mcp-grafana', status: 'connected',
     });
   });
 
