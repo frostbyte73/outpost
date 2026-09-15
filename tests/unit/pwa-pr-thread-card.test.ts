@@ -44,3 +44,35 @@ describe('renderThreadCard', () => {
     expect(html).not.toContain('thread-reaction-add');
   });
 });
+
+describe('renderThreadCard — folding', () => {
+  // One disclosure for the whole chain, not one per message: a thread is a single unit of
+  // "have I dealt with this".
+  it('wraps the entire chain in one disclosure keyed by the root comment', () => {
+    const chain = [comment(), comment({ id: 'c2', body: 'and here', inReplyTo: 'c1', createdAt: 1100 })];
+    const html = renderThreadCard(chain, undefined);
+    expect(html.match(/<details class="thread-card"/g)).toHaveLength(1);
+    expect(html).toContain('data-thread-id="c1"');
+    expect(html).toContain('please rename this');
+    expect(html).toContain('and here');
+  });
+
+  it('is open unless folded', () => {
+    expect(renderThreadCard(openChain, undefined)).toContain('data-thread-id="c1" open>');
+    expect(renderThreadCard(openChain, undefined, undefined, null, true)).not.toContain(' open>');
+  });
+
+  it('peeks the root author, its first line, and the reply count while folded', () => {
+    const chain = [comment({ body: 'please rename this\n\nand the caller too' }), comment({ id: 'c2', inReplyTo: 'c1' })];
+    const html = renderThreadCard(chain, undefined, undefined, null, true);
+    expect(html).toContain('thread-peek-author">octocat<');
+    expect(html).toContain('thread-peek-text">please rename this<');
+    expect(html).toContain('thread-peek-count">+1<');
+  });
+
+  // Never hide a textarea the user is being asked to fill.
+  it('forces a folded thread open when it carries a pending reply composer', () => {
+    const html = renderThreadCard(openChain, undefined, () => '<textarea></textarea>', null, true);
+    expect(html).toContain(' open>');
+  });
+});

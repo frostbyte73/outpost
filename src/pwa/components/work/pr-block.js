@@ -10,6 +10,7 @@ import {
 import { draftDecisionHtml, draftEvidenceHtml, draftFeedbackHtml } from './write-draft-card.js';
 import { openDiffForStep } from '../../app-bridge.js';
 import { prPatches } from '../../state/pr-patches.js';
+import { isThreadCollapsed, setThreadCollapsed } from '../../state/thread-collapse.js';
 import { worktreeChanges } from '../../state/worktree-changes.js';
 import { shortName } from '../../utils/formatting.js';
 
@@ -131,6 +132,10 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   const patches = comments.some((c) => c.file) ? prPatches.for(job?.id, s.id) : null;
   const allThreads = groupThreads(comments);
   const isResolved = (chain) => !!chain[chain.length - 1].respondedAt;
+  // Against the NEWEST message, not the root's: a fold predating a reply means the conversation
+  // moved on since, and the thread unfolds itself rather than hiding what just arrived.
+  const isFolded = (chain) =>
+    isThreadCollapsed(chain[0].id, Math.max(...chain.map((c) => c.createdAt ?? 0)));
   const draftFor = (chain) => {
     for (let i = chain.length - 1; i >= 0; i--) {
       const d = drafts.get(chain[i].id);
@@ -207,7 +212,7 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   // Order matters: `replyForComment` is what fills `claimed`, so the threads have to be
   // rendered before the leftovers can be worked out.
   const openThreadsHtml = openThreads
-    .map((chain) => renderThreadCard(chain, draftFor(chain), replyForComment, patches))
+    .map((chain) => renderThreadCard(chain, draftFor(chain), replyForComment, patches, isFolded(chain)))
     .join('');
   // A drafted reply whose `label` names no comment on this PR — a deleted comment, or an id
   // the action got wrong. It still posts if accepted, so it gets the same treatment (and the
@@ -255,7 +260,7 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
       <details class="pr-disclosure pr-threads-resolved">
         ${disclosureSummary('Comments', `${resolvedThreads.length} resolved`)}
         <ul class="threads">
-          ${resolvedThreads.map((chain) => renderThreadCard(chain, undefined, undefined, patches)).join('')}
+          ${resolvedThreads.map((chain) => renderThreadCard(chain, undefined, undefined, patches, isFolded(chain))).join('')}
         </ul>
       </details>
     ` : ''}`;
@@ -295,5 +300,19 @@ export function wirePrBlockActions(el, job, s, { replyDraft } = {}) {
   if (reviewReadyFor(s)) worktreeChanges.ensure(s.sessionId, s.updatedAt);
   el.querySelector('[data-diff-action="review"]')?.addEventListener('click', () => {
     void openDiffForStep({ jobId: job.id, stepId: s.id, sessionId: s.sessionId });
+  });
+  // `toggle` does not bubble, so this listens in the capture phase — one listener covers the
+  // open threads and the ones inside the resolved disclosure, and keeps working across a
+  // repaint's innerHTML rebuild without per-thread bookkeeping.
+  el.addEventListener('toggle', (e) => {
+    const d = e.target;
+    if (!(d instanceof HTMLElement) || !d.matches('details.thread-card')) return;
+    const id = d.getAttribute('data-thread-id');
+    if (id) setThreadCollapsed(id, !d.open);
+  }, true);
+  // The path in the summary is also the way out to the file on GitHub. Without this, following
+  // it folds the thread on the way past.
+  el.querySelectorAll('summary.thread-header a.thread-loc').forEach((a) => {
+    a.addEventListener('click', (e) => e.stopPropagation());
   });
 }

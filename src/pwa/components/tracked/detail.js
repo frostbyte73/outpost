@@ -237,7 +237,15 @@ function draftFieldByKey(root, key) {
 
 function snapshotUi(root) {
   const snap = { details: new Map(), composers: new Map(), trail: new Map(), replan: null, discard: null, launchContext: null, menuOpen: false, focus: null, draftFields: new Map() };
-  root.querySelectorAll('details').forEach((d) => snap.details.set(detailsKey(d), d.open));
+  // A thread's own fold is owned by state/thread-collapse.js and re-decided at render, so
+  // snapshotting it would let the pre-repaint DOM outrank the store — a reply arriving on a
+  // folded thread is meant to unfold it, and a restored `open` would put it straight back.
+  // The `.hunk-more` expanders nested inside a thread are NOT excluded: they carry an explicit
+  // data-details-key and this is still the only thing that carries them across a repaint.
+  root.querySelectorAll('details').forEach((d) => {
+    if (d.classList.contains('thread-card')) return;
+    snap.details.set(detailsKey(d), d.open);
+  });
   // The orchestrated card's trail strip (orchestrated-card.js) is plain buttons, not
   // <details>, so the pass above can't see which artifact the user has open. At most one
   // chip per step is open, so the step id is the whole key.

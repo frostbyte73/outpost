@@ -1292,9 +1292,6 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
   border-top: 1px solid var(--line);
 }
 
-.thread :where(header) {
-  padding: 0; border: none; background: transparent;
-}
 /* A thread is a container, not a row. It sits on --bg — recessed one plane below the
    .pr-block's --bg-elev, because a review conversation is quoted from somewhere else — and
    carries the signature left-edge rail as a real full-height border rather than a pseudo-element
@@ -1325,10 +1322,12 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
 /* Last, so it outranks the three above at equal specificity: a thread holding an unapproved
    reply is waiting on the user, which beats whatever the triage recommended for it. */
 .thread.thread--replying { border-left-color: var(--warn); }
+/* Block rather than the flex column it was: this is a <details> now, every child is already
+   full-width with no margin to collapse, and `details { display: flex }` is the one layout
+   browsers have historically disagreed about. */
 .thread-card {
   background: transparent;
-  display: flex;
-  flex-direction: column;
+  display: block;
 }
 
 /* Thread header — a strip at the PARENT's elevation, so the conversation below it reads as
@@ -1343,6 +1342,53 @@ details.pr-block--merged { padding: 0; overflow: hidden; }
   border-bottom: 1px solid var(--line);
   background: var(--bg-elev);
 }
+/* The header doubles as the thread's disclosure control — the whole conversation folds under
+   it, root and replies together, because a thread is one unit of "have I dealt with this". */
+summary.thread-header {
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+}
+summary.thread-header::-webkit-details-marker { display: none; }
+summary.thread-header::before {
+  content: '▸';
+  flex: none;
+  align-self: center;
+  color: var(--text-dim);
+  transition: transform var(--dur-1) var(--ease);
+}
+.thread-card[open] > summary.thread-header::before { transform: rotate(90deg); }
+/* Folded, the header is the last thing in the container — its own hairline would double up
+   with the container's bottom edge. */
+.thread-card:not([open]) > summary.thread-header { border-bottom-color: transparent; }
+
+/* The peek stands in for the conversation while it's folded; open, the messages are right
+   there and it would only repeat the first of them. */
+.thread-card[open] > summary .thread-peek { display: none; }
+.thread-peek {
+  flex: 1 0 100%;
+  display: flex;
+  align-items: baseline;
+  gap: var(--gap-2);
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-mute);
+}
+.thread-peek-author { flex: none; color: var(--text-dim); }
+.thread-peek-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-peek-count {
+  flex: none;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+}
+summary.thread-header:hover .thread-peek-text { color: var(--text); }
+
 .thread-header .thread-loc {
   font-family: var(--font-mono);
   font-size: 12px; letter-spacing: 0.02em;

@@ -7,7 +7,8 @@
 // pr-block.js fills with the pending write draft's field for that specific comment
 // (reply-draft.js), rendered directly beneath it so the reply reads as the answer to the
 // message above it rather than as a footnote at the end of the thread. This module stays
-// read-only either way — it renders what it's handed and owns no controls of its own.
+// read-only either way — it renders what it's handed, including whether the thread is folded
+// (state/thread-collapse.js, read by pr-block.js), and reaches for no store of its own.
 import { renderMarkdown } from '../../markdown.js';
 import { windowForComment } from '../../utils/diff-window.js';
 
@@ -156,6 +157,20 @@ function rationaleHtml(draft) {
     </footer>`;
 }
 
+// The one-line stand-in for a folded thread: who opened it, the first line of what they said,
+// and how many replies followed. It takes its own row in the header rather than sharing the
+// path's — on a narrow column neither would survive the other.
+function peekHtml(root, replies) {
+  const first = stripHtmlComments(root.body).split('\n').map((l) => l.trim()).find(Boolean) ?? '';
+  const text = first.length > 140 ? `${first.slice(0, 139)}…` : first;
+  return `
+    <span class="thread-peek">
+      <span class="thread-peek-author">${escapeHtml(root.author ?? 'unknown')}</span>
+      <span class="thread-peek-text">${escapeHtml(text)}</span>
+      ${replies > 0 ? `<span class="thread-peek-count">+${replies}</span>` : ''}
+    </span>`;
+}
+
 // One message on the thread's avatar spine. The avatar is a direct grid child rather than a
 // member of the head row so the gutter is a real column every message shares — that column IS
 // the thread, and the 2px rail drawn down it is what makes a reply read as a reply. Reactions
@@ -176,7 +191,7 @@ function messageHtml(c, { first, last, reactions }) {
     </div>`;
 }
 
-export function renderThreadCard(chain, draft, replyHtmlFor = () => '', patches = null) {
+export function renderThreadCard(chain, draft, replyHtmlFor = () => '', patches = null, collapsed = false) {
   const root = chain[0];
   const win = windowForComment({
     patch: root.file ? patches?.[root.file] : undefined,
@@ -190,19 +205,27 @@ export function renderThreadCard(chain, draft, replyHtmlFor = () => '', patches 
   const recClass = draft?.recommendation ? ` thread-has-${draft.recommendation}` : '';
   const replies = chain.map((c) => replyHtmlFor(c.id) || '');
   const reactions = reactionsStrip(chain);
+  // The whole conversation folds under one disclosure — root, replies, hunk and rationale
+  // together — because a thread is one unit of "have I dealt with this". A pending reply
+  // composer forces it open regardless of the stored fold: never hide a textarea the user is
+  // being asked to fill.
+  const replying = replies.some(Boolean);
+  const open = replying || !collapsed;
   // The header carries only what the thread is ABOUT — the location, and the triage verdict on
   // it. Author and time used to print here too, then again 10px below in the first message's
   // own head: one string, two typographies. The message row is where they belong. No reply
-  // count either: the messages are right there on the spine, already counted.
+  // count either: the messages are right there on the spine, already counted — except in the
+  // peek, which stands in for the spine when it isn't drawn.
   return `
-    <li class="thread${recClass}${replies.some(Boolean) ? ' thread--replying' : ''}" data-comment-id="${escapeHtml(leaf.id)}">
-      <article class="thread-card">
-        <header class="thread-header">
+    <li class="thread${recClass}${replying ? ' thread--replying' : ''}" data-comment-id="${escapeHtml(leaf.id)}">
+      <details class="thread-card" data-thread-id="${escapeHtml(root.id)}"${open ? ' open' : ''}>
+        <summary class="thread-header">
           ${root.url
     ? `<a class="thread-loc" href="${escapeHtml(root.url)}" target="_blank" rel="noopener">${escapeHtml(loc)} ↗</a>`
     : `<span class="thread-loc">${escapeHtml(loc)}</span>`}
           ${recPill(draft?.recommendation)}
-        </header>
+          ${peekHtml(root, chain.length - 1)}
+        </summary>
         ${win ? renderHunkWindow(win, root.id) : ''}
         <div class="thread-body">
           ${chain.map((c, i) => messageHtml(c, {
@@ -212,7 +235,7 @@ export function renderThreadCard(chain, draft, replyHtmlFor = () => '', patches 
   }) + replies[i]).join('')}
         </div>
         ${rationaleHtml(draft)}
-      </article>
+      </details>
     </li>
   `;
 }
