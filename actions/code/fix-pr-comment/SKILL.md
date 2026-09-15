@@ -83,9 +83,29 @@ mcp__outpost__submit_step_progress({
   stepId: "<$STEP_ID>",
   phase: "pr_comments",
   memo: "<which comments you addressed and the edit each got>",
+  artifacts: { commitMessage: "<subject line, then a blank line, then a short body>" },
   next: { kind: "self-round" }
 })
 ```
+
+`artifacts.commitMessage` pre-fills the message box in the PWA's git view, where the user
+commits your diff by hand. Write it on every round that leaves edits in the working tree.
+Skip it and they get a generic draft off the step's title — the same text they already used
+on this PR's first commit, round after round.
+
+It is a commit message, not a report:
+
+- **Describe this round's diff only** — not the whole step, not what earlier rounds pushed.
+- Subject ≤ 72 chars, imperative mood, no trailing period, no `feat:`/`fix:` prefix unless
+  the repo's own `git log` uses one. Blank line, then 1–3 sentences on *why*.
+- Plain text — no markdown headers, bullets, or code fences.
+- No `Closes <TICKET>` trailer; this step is usually one of several on the ticket, so
+  the claim would be false. The ticket link lives on the PR, not on each commit.
+- Nothing about the process: don't say "addresses the review comment", don't name the
+  reviewer, don't mention Outpost or this step. The diff is the subject, not the errand.
+
+Omit the key on a round that changed no files. The daemon drops it the moment the user
+commits, so the next round starts from a blank box rather than your last message.
 
 If you couldn't figure out what to change, or the edit conflicts, say so in `memo` and
 hand back the same way — the decision turn decides whether that is retryable, and it is

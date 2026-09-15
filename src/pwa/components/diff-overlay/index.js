@@ -22,6 +22,7 @@ import { isDesktop } from '../../layout/index.js';
 import { keymap } from '../../state/keymap.js';
 import { installAppBridge } from '../../app-bridge.js';
 import { registerBackHandler } from '../mobile-shell/history.js';
+import { draftCommitMessage } from '../../utils/commit-message.js';
 import {
   diffState,
   sourceCtl,
@@ -86,26 +87,6 @@ function stepOrdinal(job, step) {
   if (!job || !step) return null;
   const i = job.steps.findIndex((s) => s.id === step.id);
   return i >= 0 ? i + 1 : null;
-}
-
-// ── Commit-message drafting ──────────────────────────────────────────────
-// Client-side, deterministic template cycling (⌘R) — no LLM call, per spec.
-function firstLine(s) { return (s ?? '').split('\n').find((l) => l.trim().length > 0)?.trim() ?? ''; }
-
-function draftCommitMessage(ctx, variant) {
-  if (!ctx) return '';
-  const closes = ctx.job?.externalRef?.issueIdentifier ? `\n\nCloses ${ctx.job.externalRef.issueIdentifier}` : '';
-  const step = ctx.step;
-  if (!step) return '';
-  const title = step.title || 'Update';
-  const verdict = (step.type === 'action' ? step.output : undefined)?.trim() || '';
-  const goal = firstLine(step.goal);
-  const variants = [
-    () => [title, verdict || goal].filter(Boolean).join('\n\n'),
-    () => [`Fix: ${title}`, verdict || goal].filter(Boolean).join('\n\n'),
-    () => [title, goal, verdict].filter(Boolean).join('\n\n'),
-  ];
-  return `${variants[((variant % variants.length) + variants.length) % variants.length]()}${closes}`.trim();
 }
 
 function defaultCommit(ctx, status) {

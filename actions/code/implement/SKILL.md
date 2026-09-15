@@ -116,12 +116,30 @@ mcp__outpost__submit_step_progress({
   stepId: "<$STEP_ID>",
   phase: "implement",
   memo: "<what you changed, any deviation from the plan and why, what to look for in review>",
-  artifacts: { implementation: "<the same summary as markdown: files touched, what each change does, deviations, what you could not finish>" },
+  artifacts: {
+    implementation: "<the same summary as markdown: files touched, what each change does, deviations, what you could not finish>",
+    commitMessage: "<subject line, then a blank line, then a short body>"
+  },
   next: { kind: "self-round" }
 })
 ```
 
 Write `artifacts.implementation` even when you could **not** finish — say plainly what is done, what is broken, and what you gave up on. A blocked implementation the controller can see beats a silent round it has to re-run.
+
+## `artifacts.commitMessage`
+
+Write it on **every** round that leaves edits in the working tree. The user commits your diff by hand from the PWA's git view, and this is what pre-fills the message box there. Skip it and they get a generic draft off the step's title — the same one they already used on the first commit of this PR, round after round.
+
+It is a commit message, not a report. Different rules from `implementation`:
+
+- **Describe this round's diff only** — not the step's goal, not what earlier rounds already landed and pushed.
+- Subject line ≤ 72 chars, imperative mood, no trailing period, no `feat:`/`fix:` prefix unless the repo's own `git log` uses one.
+- Blank line, then 1–3 sentences of body on *why*, wrapped at ~72. Omit the body for a genuinely self-evident change.
+- Plain text. No markdown headers, no bullet lists, no code fences.
+- Don't add a `Closes <TICKET>` trailer. This step is usually one of several on the ticket, so the claim would be false — the ticket link lives on the PR, not on each commit.
+- Nothing about the process: no "as requested", no "addresses the review comment", no mention of Outpost, the step, or yourself.
+
+Skip the key entirely on a round that changed no files. A stale message is worse than none — the daemon drops this artifact the moment the user commits, precisely so the next round starts from a blank box rather than the last round's text.
 
 `next: {kind:"self-round"}` with no `action` hands the session back to `code.orchestrate-pr` for a decision turn. It owns the ladder — whether to wait for the PR, ask you for more, or fail the step — so do not pick that yourself. Do not try to open the PR, and do not wait for approval messages.
 

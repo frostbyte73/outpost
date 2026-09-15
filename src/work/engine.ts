@@ -262,6 +262,23 @@ export class WorkEngine {
     return this.opts.worktreeManager.get(role.stepId);
   }
 
+  // `artifacts.commitMessage` is a round's proposed message for work that is still UNCOMMITTED,
+  // so committing consumes it. Every other artifact accumulates for the step's whole life; this
+  // one must not, or the diff viewer drafts the last round's message over the next round's diff —
+  // exactly the staleness it was added to fix. Called from the commit route, which is the single
+  // funnel: squash-to-branch and merge-to-base both commit a dirty tree through it first.
+  consumeCommitMessageDraft(sessionId: string): void {
+    const role = this.roleBySession.get(sessionId);
+    if (!role || role.role !== 'step') return;
+    const step = this.opts.queue.get(role.jobId)?.steps.find((s) => s.id === role.stepId);
+    if (step?.type !== 'orchestrated' || !step.artifacts?.commitMessage) return;
+    this.mutateStep(role.jobId, role.stepId, (s) => {
+      if (s.type !== 'orchestrated' || !s.artifacts) return s;
+      const { commitMessage: _drafted, ...rest } = s.artifacts;
+      return { ...s, artifacts: rest };
+    });
+  }
+
   // Binds a spawned session to an action name. The hook-handler reads this binding
   // and enforces deny-on-allowlist-miss for the session — no per-action mode.
   // Public so the daemon can bind sessions it spawns directly (e.g. action-builder

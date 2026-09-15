@@ -221,6 +221,9 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.statusCode = 400; res.end('commit message too long (5000 char max)'); return;
     }
     const result = await gitCommit(resolved.cwd, message);
+    // The drafted message described the working tree; it is now history. Only on success —
+    // a failed commit leaves the diff (and the draft that matches it) exactly where they were.
+    if (result.ok) engine.consumeCommitMessageDraft(m[1]!);
     let status;
     try { status = await gitStatus(resolved.cwd); } catch { status = null; }
     res.statusCode = result.ok ? 200 : 409;

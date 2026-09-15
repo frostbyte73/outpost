@@ -291,7 +291,10 @@ export function orchestratedRows(step) {
   const artifactRows = [
     ...(s.memo ? [{ key: 'memo', slug: slugOf('memo', takenSlugs), label: ARTIFACT_LABEL.memo, body: s.memo }] : []),
     ...Object.entries(artifacts)
-      .filter(([, body]) => typeof body === 'string' && body.trim())
+      // `commitMessage` is a form pre-fill for the diff overlay's commit box, not a document to
+      // browse — and being written last, a chip for it would also steal the `latest` mark below
+      // from `implementation`, which is the one that says what the round actually did.
+      .filter(([key, body]) => key !== 'commitMessage' && typeof body === 'string' && body.trim())
       .map(([key, body]) => ({ key, slug: slugOf(key, takenSlugs), label: ARTIFACT_LABEL[key] ?? humanizeKey(key), body })),
   ].map((a) => ({ ...a, latest: false }));
   // The artifacts render as one strip of chips, in the order the controller produced them,
