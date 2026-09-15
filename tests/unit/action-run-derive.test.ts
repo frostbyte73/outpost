@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { deriveRunEvents, type RunEvent } from '../../src/work/action-run-derive.js';
-import type { ActionStep, JobRecord, Step } from '../../src/work/work-types.js';
+import type { ActionStep, JobRecord, OrchestratedStep, Step } from '../../src/work/work-types.js';
 import type { WriteDraft } from '../../src/work/write-draft.js';
 
 const NOW = 1_700_000_000_000;
@@ -237,5 +237,103 @@ describe('deriveRunEvents — orchestrator', () => {
     expect(deriveRunEvents(reviewing, executing, OPTS)).toEqual([
       { t: 'close', key: { jobId: 'j1' }, outcome: 'accepted', at: NOW },
     ]);
+  });
+});
+
+// Controller rounds derived nothing until now, and the hole was silent in the way that
+// matters: selectActionToImprove elects on run counts and scores on run outcomes, so the
+// thirteen actions that only ever run bound to a controller had no rows and no route into the
+// improvement loop except a recurring permission denial.
+describe('deriveRunEvents — controller rounds', () => {
+  const controller = (over: Partial<OrchestratedStep> = {}): OrchestratedStep => ({
+    id: 's1', type: 'orchestrated', title: 'ship it', description: '',
+    controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
+    dispatches: [], inbox: [], roundsSpent: 3, consecutiveSelfRounds: 0,
+    state: 'running', sessionId: 'sess1', createdAt: 0, updatedAt: 0, ...over,
+  });
+
+  const draft = (over: Partial<WriteDraft> = {}): WriteDraft => ({
+    id: 'd1', action: 'code.reply-pr-comments', raisedBy: { kind: 'controller' },
+    summary: 's', calls: [], requestedAt: 0, ...over,
+  });
+
+  // `controller` is fixed for the step's whole life, so labelling by it would file every bound
+  // sub-action's round under code.orchestrate-pr — which is exactly why these actions were
+  // invisible.
+  it('labels a bound round with the action the session actually ran as', () => {
+    expect(deriveRunEvents(undefined, job([controller({ boundAction: 'code.implement' })]), OPTS))
+      .toMatchObject([{ t: 'open', action: 'code.implement', round: 'code.implement' }]);
+  });
+
+  it('closes the bound round and opens a fresh one when the controller rebinds', () => {
+    expect(diff(
+      controller({ boundAction: 'code.triage-pr-comments' }),
+      controller({ boundAction: 'code.reply-pr-comments' }),
+    )).toEqual([
+      { t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'accepted', at: NOW },
+      {
+        t: 'open', key: { jobId: 'j1', stepId: 's1' }, action: 'code.reply-pr-comments',
+        round: 'code.reply-pr-comments', sessionId: 'sess1', at: NOW,
+      },
+    ]);
+  });
+
+  it('closes the round when the controller parks on a wait', () => {
+    expect(diff(controller({ boundAction: 'code.fix-ci' }), controller({ boundAction: 'code.fix-ci', state: 'waiting' })))
+      .toEqual([{ t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'accepted', at: NOW }]);
+  });
+
+  // The whole point of the round key carrying the bound action: the gate has to land on the row
+  // for the sub-action that raised it, not on whatever the controller ran before it.
+  it('walks a bound round through its own draft gate and records the skip as denied', () => {
+    const bound = (over: Partial<OrchestratedStep> = {}) =>
+      controller({ boundAction: 'code.reply-pr-comments', ...over });
+    const parked = bound({ state: 'gate_pending_approval', drafts: [draft()] });
+
+    expect(diff(bound(), parked)).toEqual([
+      { t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'accepted', at: NOW },
+      {
+        t: 'open', key: { jobId: 'j1', stepId: 's1' }, action: 'code.reply-pr-comments',
+        round: 'code.reply-pr-comments#draft', sessionId: 'sess1', at: NOW,
+      },
+    ]);
+
+    // Skipping every call drops the draft without ever approving it — same shape as a deny, and
+    // `submitted` is what the close leaves behind for the verdict to overwrite.
+    expect(diff(parked, bound())).toEqual([
+      { t: 'close', key: { jobId: 'j1', stepId: 's1' }, outcome: 'submitted', at: NOW },
+      {
+        t: 'verdict', key: { jobId: 'j1', stepId: 's1' },
+        round: 'code.reply-pr-comments#draft', outcome: 'denied', at: NOW,
+      },
+      {
+        t: 'open', key: { jobId: 'j1', stepId: 's1' }, action: 'code.reply-pr-comments',
+        round: 'code.reply-pr-comments', sessionId: 'sess1', at: NOW,
+      },
+    ]);
+  });
+
+  it('sends the round back for a redraft when the user proposes changes', () => {
+    const bound = (over: Partial<OrchestratedStep> = {}) =>
+      controller({ boundAction: 'code.reply-pr-comments', ...over });
+    const parked = bound({ state: 'gate_pending_approval', drafts: [draft()] });
+    const redrafting = bound({ drafts: [draft({ feedback: ['too soft'] })] });
+
+    expect(diff(parked, redrafting)).toMatchObject([
+      { t: 'close', outcome: 'submitted' },
+      { t: 'verdict', round: 'code.reply-pr-comments#draft', outcome: 'revised', feedbackChars: 8 },
+      { t: 'open', round: 'code.reply-pr-comments#redraft' },
+    ]);
+  });
+
+  // A dispatch-raised draft never parks the parent step, so treating it as the controller's own
+  // would split a round that never actually stopped.
+  it('ignores a dispatch-raised draft when deciding the controller round', () => {
+    const before = controller({ boundAction: 'code.orchestrate-pr' });
+    const after = controller({
+      boundAction: 'code.orchestrate-pr',
+      drafts: [draft({ action: 'write.linear-comment', raisedBy: { kind: 'dispatch', dispatchId: 'x1' } })],
+    });
+    expect(diff(before, after)).toEqual([]);
   });
 });

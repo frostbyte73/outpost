@@ -169,7 +169,9 @@ export async function acceptDraft(
   // Pinning nothing would be worse than useless: writeGateFor reports a draft with no
   // unconsumed pins as spent, so the resumed session would see no gate at all and draft the
   // same calls again.
-  if (!keep.length) return settleUnrun(host, jobId, stepId, draft, skippedCalls);
+  // `calls`, not `skippedCalls`: every call is skipped on this path, and the lesson is built
+  // from the drafted bodies that the stripping above throws away.
+  if (!keep.length) return settleUnrun(host, jobId, stepId, step, draft, calls);
 
   // Rebuild from the identity/payload fields only (allowlist, not a denylist of consumption
   // fields) — a freshly approved draft has no pin history yet, whatever the caller's `calls`
@@ -316,13 +318,15 @@ function describeCalls(calls: PinnedCall[]): string {
   return calls.map((c, i) => c.label ?? c.tool?.name ?? `call ${i + 1}`).join(', ');
 }
 
-// Settle a draft nothing will run from: drop it, tell whoever raised it, and journal one
-// lesson. Deny and skip-everything share every bit of the plumbing and differ only in the
-// record they leave — who the lesson is about, and what it says — so the routing lives here
+interface DraftLesson { action: string; outcome: string; lesson: string }
+
+// Settle a draft nothing will run from: drop it, tell whoever raised it, and journal what it
+// taught. Deny and skip-everything share every bit of the plumbing and differ only in the
+// record they leave — who the lessons are about, and what they say — so the routing lives here
 // once rather than in two copies that can drift on which raiser wakes how.
 function settleDraftUnrun(
   host: DraftHost, jobId: string, stepId: string, draft: WriteDraft,
-  record: { event: string; note: string; journalAction: string; outcome: string; lesson: string },
+  record: { event: string; note: string; lessons: DraftLesson[] },
 ): DraftDecisionResult {
   host.mutateStep(jobId, stepId, (s) => ({
     ...s, drafts: (s.drafts ?? []).filter((d) => d.id !== draft.id), updatedAt: host.now(),
@@ -335,36 +339,91 @@ function settleDraftUnrun(
     // blocked here the way it is for a controller-raised draft. A second, redundant push would
     // just be a no-op inbox item nobody reads.
     host.settleDispatch(jobId, stepId, draft.raisedBy.dispatchId, record.note);
-    host.journal(record.journalAction, jobId, stepId, record.outcome, record.lesson);
-    return { ok: true };
-  }
-  if (draft.raisedBy.kind === 'controller') {
+  } else if (draft.raisedBy.kind === 'controller') {
     host.notifyControllerDenied(jobId, stepId, record.note);
-    host.journal(record.journalAction, jobId, stepId, record.outcome, record.lesson);
-    return { ok: true };
+  } else {
+    host.declineStep(jobId, stepId, record.note);
   }
-  host.declineStep(jobId, stepId, record.note);
-  host.journal(record.journalAction, jobId, stepId, record.outcome, record.lesson);
+  for (const l of record.lessons) host.journal(l.action, jobId, stepId, l.outcome, l.lesson);
   return { ok: true };
+}
+
+// Whoever CHOSE to run this action: the controller for a draft raised under it, the job's own
+// orchestrator for a plain ActionStep.
+function chooserOf(host: DraftHost, jobId: string, step: Step, draft: WriteDraft): string {
+  if (draft.raisedBy.kind === 'step') return host.getJob(jobId)?.orchestratorAction ?? 'meta.orchestrate';
+  return step.type === 'orchestrated' ? step.controller : draft.action;
+}
+
+// How many drafted calls the skip lesson quotes, and how much of each. Rationed against
+// JournalStore's 400-char lesson cap. An 80-char excerpt reliably reaches the end of a reply's
+// opening clause, which is where a concession ("You're correct, …") declares itself.
+const MAX_PROPOSALS_QUOTED = 2;
+const PROPOSAL_EXCERPT = 80;
+
+// What the user was actually shown for one call. A drafted file body (the reply text, the issue
+// description) beats the command referencing it: the command is boilerplate, the body is the
+// thing they rejected.
+function proposedText(c: PinnedCall): string {
+  const body = Object.values(c.files ?? {}).join(' ')
+    || (c.tool ? JSON.stringify(c.tool.args) : '')
+    || c.bash
+    || '';
+  return body.replace(/\s+/g, ' ').trim();
+}
+
+// Spends most of the lesson's budget on WHAT was proposed, not just which ids it was proposed
+// against. Ids alone — all this lesson used to carry — name nothing a later reader can
+// generalise from, which is why nine recorded skips of agreeing PR replies taught nobody that
+// the replies agreed.
+function describeProposals(calls: PinnedCall[]): string {
+  const quoted = calls.slice(0, MAX_PROPOSALS_QUOTED).map((c, i) => {
+    const text = proposedText(c);
+    const excerpt = text.length > PROPOSAL_EXCERPT ? `${text.slice(0, PROPOSAL_EXCERPT - 1)}…` : text;
+    return `[${c.label ?? `call ${i + 1}`}] "${excerpt}"`;
+  });
+  const rest = calls.length - quoted.length;
+  return [...quoted, ...(rest > 0 ? [`(+${rest} more)`] : [])].join(' | ');
 }
 
 // Every call in the submission carried the user's skip verdict. Unlike a deny, this is not a
 // complaint about the action having been run at all — running it was right, the user simply
-// wants none of what it proposed — so the lesson goes to the action that DRAFTED the calls,
-// under its own outcome, rather than to whoever chose to run it.
+// wants none of what it proposed.
+//
+// The lesson goes to the action that DRAFTED the calls, under its own outcome, rather than to
+// whoever chose to run it.
+//
+// A briefed draft gets a SECOND copy, to the briefer. A `step` raiser wrote its own payload out
+// of its own judgment, so the drafting action owns it alone; a `controller` or `dispatch` raiser
+// was handed the content and, in the strictest case, is forbidden from departing from it —
+// `code.reply-pr-comments` posts `boundNote` verbatim and treats anything it adds as unapproved
+// text. Filing that skip against the transcriber alone lands the evidence on the one participant
+// that did not choose what was said.
 function settleUnrun(
-  host: DraftHost, jobId: string, stepId: string, draft: WriteDraft,
+  host: DraftHost, jobId: string, stepId: string, step: Step, draft: WriteDraft,
   skipped: PinnedCall[],
 ): DraftDecisionResult {
   const which = describeCalls(skipped);
+  const what = describeProposals(skipped);
+  const briefer = draft.raisedBy.kind === 'step' ? undefined : chooserOf(host, jobId, step, draft);
   return settleDraftUnrun(host, jobId, stepId, draft, {
     event: `skipped every drafted call from ${draft.action}: ${which}`,
     note: `The user reviewed the drafted calls and chose to run none of them (${which}). `
       + 'Treat them as deliberately skipped, record them as such, and do not draft them again.',
-    journalAction: draft.action,
-    outcome: 'skipped',
-    lesson: `the user skipped every call ${draft.action} drafted here (${which}) — it proposed `
-      + 'writes they did not want made, though running the action itself was right',
+    lessons: [
+      {
+        action: draft.action,
+        outcome: 'skipped',
+        lesson: `the user skipped all ${skipped.length} calls drafted here — running the action `
+          + `was right, this payload wasn't. Proposed: ${what}`,
+      },
+      ...(!briefer || briefer === draft.action ? [] : [{
+        action: briefer,
+        outcome: 'skipped',
+        lesson: `you ran ${draft.action} here and the user skipped every call it drafted from `
+          + `your brief. Proposed: ${what}`,
+      }]),
+    ],
   });
 }
 
@@ -385,17 +444,13 @@ export function denyDraft(
   if (!lookup.found) return lookup.result;
   const draft = lookup.draft;
 
-  // Whoever CHOSE to run this action: the controller for a draft raised under it, the job's
-  // own orchestrator for a plain ActionStep.
-  const chooser = draft.raisedBy.kind === 'step'
-    ? host.getJob(jobId)?.orchestratorAction ?? 'meta.orchestrate'
-    : step.type === 'orchestrated' ? step.controller : draft.action;
-
   return settleDraftUnrun(host, jobId, stepId, draft, {
     event: `denied ${draft.action}: ${note}`,
     note: draft.raisedBy.kind === 'dispatch' ? `denied: ${note}` : note,
-    journalAction: chooser,
-    outcome: 'denied',
-    lesson: `${draft.action} was run here and the user denied its write: ${note}`,
+    lessons: [{
+      action: chooserOf(host, jobId, step, draft),
+      outcome: 'denied',
+      lesson: `${draft.action} was run here and the user denied its write: ${note}`,
+    }],
   });
 }

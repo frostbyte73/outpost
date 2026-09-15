@@ -55,13 +55,15 @@ For each comment in `pendingComments`:
 
 **Pick `edit` when** the reviewer's concern is best resolved by changing code. "Good catch, this is broken — fix it" is `edit`, not `reply` + paragraph explaining the fix. The user can still override into Reply if they disagree, but your recommendation should match what serves the PR best.
 
-**Pick `reply` when** the reviewer asks a question, you're pushing back, or you're explaining a trade-off the diff can't carry — anything where words add information the code can't.
+**Pick `reply` when** you are disputing the comment — the reviewer is wrong, or the trade-off they are questioning was deliberate — or when you are declaring it out of scope for this PR. Answering a direct question counts as a reply only when the answer is one of those two: it tells the reviewer something the pushed diff cannot.
 
-**Pick `ignore` when** the comment is pure social affirmation ("nice work!"), already addressed by an intervening edit, or otherwise has no actionable content. Note that "ignore" here means "mark resolved internally" — it does not touch GitHub's resolved-thread state.
+**A reply never agrees.** "You're correct", "good catch", "will fix", "nice catch — updated", "done in the next push" — agreement is an `edit` when the code should change and an `ignore` when it shouldn't, never a `reply`. Every reply costs the user an approval on a public PR, and one that concedes a point the reviewer already made spends it on nothing the diff won't say better. If the first clause of your draft concedes, the recommendation is wrong — don't reword it, change it.
+
+**Pick `ignore` when** the comment is pure social affirmation ("nice work!"), already addressed by an intervening edit, or otherwise has no actionable content — including one you simply agree with and have nothing to add to. Note that "ignore" here means "mark resolved internally" — it does not touch GitHub's resolved-thread state.
 
 Always include a rationale. One sentence. Cite the comment text or thread state ("reviewer is asking about the migration path, not the implementation"). The rationale appears under every thread in the UI, so be specific — *"recommend reply — answer the question"* helps no one.
 
-**Also draft a reply for every comment unless it's a pure affirmation.** The user might override your recommendation. The draft is what they'll see in the Reply composer if they do.
+**Draft a reply wherever you can honestly dispute or scope out the comment**, including on an `edit` or `ignore` the user might override into Reply — that draft is what they'll see in the composer. Where you can't, leave `draftReply` empty. A blank composer is a better answer than a manufactured concession, which is the one thing that will definitely be skipped.
 
 If you need the current diff to ground a recommendation:
 
@@ -89,7 +91,7 @@ Each draft:
 
 *Reviewer says "this race condition could double-charge — wrap in a transaction":*
 ```json
-{ "commentId": "...", "recommendation": "edit", "rationale": "Reviewer flagged a real bug (double-charge race); a reply alone doesn't help.", "draftReply": "You're right — wrapping in a transaction.", "confidence": "high" }
+{ "commentId": "...", "recommendation": "edit", "rationale": "Reviewer flagged a real bug (double-charge race); a reply alone doesn't help.", "draftReply": "", "confidence": "high" }
 ```
 
 *Reviewer asks "why are we polling here instead of using the existing event?":*

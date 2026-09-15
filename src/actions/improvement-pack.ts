@@ -105,11 +105,17 @@ function unresolvedDenials(denials: ActionDenial[]): ActionDenial[] {
   return denials.filter((d) => !d.verdict);
 }
 
-// All three terms are counts, so they're directly comparable: a failure weighs more than a
-// send-back, which weighs more than a blocked call.
+// All four terms are counts, so they're directly comparable: a failure weighs more than a
+// denied payload, which weighs more than a send-back, which weighs more than a blocked call.
+//
+// `denied` is counted because without it an action can be rejected by the user every single
+// time and still score zero. That is not hypothetical — it is how nine consecutive skipped
+// reply drafts left `code.reply-pr-comments` bottom-ranked. It sits above `revised` because
+// the user threw the payload out rather than asking for a different wording.
 function needsAttentionScore(sc: Scorecard, denials: ActionDenial[]): number {
   const failures = sc.outcomes.failed + sc.outcomes.gave_up;
-  return 3 * failures + 2 * sc.outcomes.revised + recurringDenials(denials).length;
+  return 4 * failures + 3 * sc.outcomes.denied + 2 * sc.outcomes.revised
+    + recurringDenials(denials).length;
 }
 
 interface Candidate {
