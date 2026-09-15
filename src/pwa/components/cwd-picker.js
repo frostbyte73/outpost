@@ -157,7 +157,8 @@ export function closeAddProjectSheet() {
 }
 
 function cwdPickerBodyHtml(initialError) {
-  const recents = sessions.get().projects.map((p) => {
+  const projects = sessions.get().projects.filter((p) => !p.internal);
+  const recents = projects.map((p) => {
     const basename = p.cwd.split('/').filter(Boolean).pop() || p.cwd;
     // RTL on cwd line so the basename tail stays visible when the path overflows.
     return `
@@ -174,7 +175,7 @@ function cwdPickerBodyHtml(initialError) {
        </div>`
     : '';
   const customValue = initialError?.failedCwd ? `value="${escapeHtml(initialError.failedCwd)}"` : '';
-  const hasRecents = sessions.get().projects.length > 0;
+  const hasRecents = projects.length > 0;
   return `
     <div class="grabber"></div>
     <div class="header-row">

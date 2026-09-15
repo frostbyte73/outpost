@@ -36,6 +36,7 @@ import { escapeHtml } from '../../util.js';
 
 const RECENT_LIMIT = 5;
 const PREFS_KEY = 'outpost:palette:v1';
+const REPO_ICON = '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="3" transform="rotate(45 12 12)"/></svg>';
 // Session spawn accepts a per-launch model family ('fable'|'opus'|'sonnet'|'haiku';
 // null defers to the daemon default) — the chip's pick rides the session hint
 // into the spawn WS query. Ids match state/settings.js's VALID_DEFAULT_MODELS
@@ -59,7 +60,7 @@ let unregisterPaletteBack = null;
 let step = 1;
 let query = '';
 let highlightIndex = 0;
-let selectedCwd = null; // { cwd, branch, kind: 'repo'|'worktree', isGitRepo }
+let selectedCwd = null; // { cwd, branch, isGitRepo, lastModified }
 let lastFocused = null;
 
 // Step-2 transient state. promptText/worktreeMode/baseBranch persist across a
@@ -228,7 +229,7 @@ function goToStep1() {
 function goToStep2(entry) {
   selectedCwd = entry;
   step = 2;
-  worktreeMode = (entry.kind === 'repo' && entry.isGitRepo) ? prefs.worktreeMode : 'in-place';
+  worktreeMode = entry.isGitRepo ? prefs.worktreeMode : 'in-place';
   baseBranch = null;
   defaultBranch = null;
   branchList = [];
@@ -242,37 +243,21 @@ function goToStep2(entry) {
   if (worktreeMode === 'worktree') hydrateBranches();
 }
 
-// ── Data: candidate cwds from the sessions store — known project roots plus
-// every distinct worktree path seen across their sessions. No new endpoint;
-// full "git status" (clean/N modified/N ahead) isn't in this data (only
-// /api/projects/:x/branches has git detail, and that's branch-only) so that
-// status column is omitted rather than faked — branch is shown when known.
+// ── Data: candidate cwds from the sessions store — the known project roots,
+// minus the daemon's own cwds under the runtime dir (installed action dirs,
+// step worktrees), which are places work RAN, not places to start it. No new
+// endpoint; full "git status" (clean/N modified/N ahead) isn't in this data
+// (only /api/projects/:x/branches has git detail, and that's branch-only) so
+// that status column is omitted rather than faked.
 function buildCandidates() {
-  const projects = sessions.get().projects ?? [];
-  const repos = projects.map((p) => ({
-    cwd: p.cwd,
-    branch: null,
-    kind: 'repo',
-    isGitRepo: !!p.isGitRepo,
-    lastModified: p.lastModified,
-  }));
-  const worktrees = new Map();
-  for (const p of projects) {
-    for (const s of p.sessions ?? []) {
-      if (!s.worktreePath) continue;
-      const existing = worktrees.get(s.worktreePath);
-      if (!existing || s.lastModified > existing.lastModified) {
-        worktrees.set(s.worktreePath, {
-          cwd: s.worktreePath,
-          branch: s.worktreeBranch ?? null,
-          kind: 'worktree',
-          isGitRepo: true,
-          lastModified: s.lastModified,
-        });
-      }
-    }
-  }
-  return [...repos, ...worktrees.values()];
+  return (sessions.get().projects ?? [])
+    .filter((p) => !p.internal)
+    .map((p) => ({
+      cwd: p.cwd,
+      branch: null,
+      isGitRepo: !!p.isGitRepo,
+      lastModified: p.lastModified,
+    }));
 }
 
 function basename(cwd) {
@@ -282,13 +267,9 @@ function basename(cwd) {
 function groupedCandidates() {
   const all = [...buildCandidates()].sort((a, b) => b.lastModified - a.lastModified);
   const recent = all.slice(0, RECENT_LIMIT);
-  const recentCwds = new Set(recent.map((c) => c.cwd));
-  const rest = all.filter((c) => !recentCwds.has(c.cwd));
-  const ephemeral = rest.filter((c) => c.kind === 'worktree').sort((a, b) => a.cwd.localeCompare(b.cwd));
-  const known = rest.filter((c) => c.kind === 'repo').sort((a, b) => a.cwd.localeCompare(b.cwd));
+  const known = all.slice(RECENT_LIMIT).sort((a, b) => a.cwd.localeCompare(b.cwd));
   return [
     { label: 'Recent', rows: recent },
-    { label: 'Ephemeral worktrees', rows: ephemeral },
     { label: 'Known repos', rows: known },
   ].filter((g) => g.rows.length > 0);
 }
@@ -312,12 +293,6 @@ function flatRows() {
   return groupedCandidates().flatMap((g) => g.rows);
 }
 
-function iconFor(kind) {
-  return kind === 'worktree'
-    ? '<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="5" width="14" height="14" rx="3" transform="rotate(45 12 12)"/></svg>'
-    : '<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="none"><rect x="5" y="5" width="14" height="14" rx="3" transform="rotate(45 12 12)"/></svg>';
-}
-
 function highlightPath(cwd, needle) {
   const escaped = escapeHtml(cwd);
   if (!needle) return escaped;
@@ -333,7 +308,7 @@ function rowHtml(entry, idx, needle) {
   const branch = entry.branch ? `<span class="branch">${escapeHtml(entry.branch)}</span>` : '';
   return `
     <div class="search-row${idx === highlightIndex ? ' hit' : ''}" data-idx="${idx}" role="option">
-      <span class="icon">${iconFor(entry.kind)}</span>
+      <span class="icon">${REPO_ICON}</span>
       <span class="path">${highlightPath(entry.cwd, needle)}</span>
       ${branch}
     </div>`;
@@ -506,12 +481,11 @@ function step2Html() {
 }
 
 function cwdBarInnerHtml() {
-  const entry = selectedCwd ?? { cwd: '', branch: null, kind: 'repo' };
+  const entry = selectedCwd ?? { cwd: '', branch: null };
   const branch = entry.branch ? `<span class="branch">${escapeHtml(entry.branch)}</span>` : '';
-  const canWorktree = entry.kind === 'repo' && entry.isGitRepo;
 
   let asRow = '';
-  if (canWorktree) {
+  if (entry.isGitRepo) {
     const explain = worktreeMode === 'worktree'
       ? `Fresh worktree at <code>~/.outpost/wt/&lt;auto&gt;</code>. Your checkout stays untouched.`
       : `Runs directly in the checkout. Modifications land on the current branch.`;
@@ -536,19 +510,13 @@ function cwdBarInnerHtml() {
         ${branchPicker}
         <span class="worktree-explain">${explain}</span>
       </div>`;
-  } else if (entry.kind === 'worktree') {
-    asRow = `
-      <div class="cwd-bar-row">
-        <span class="cwd-bar-label o-microhead">As</span>
-        <span class="worktree-explain">Already an isolated worktree${entry.branch ? ` on <code>${escapeHtml(entry.branch)}</code>` : ''}.</span>
-      </div>`;
   }
 
   return `
     <div class="cwd-bar-row">
       <span class="cwd-bar-label o-microhead">In</span>
       <button type="button" class="cwd-chip-compact" id="p-cwd-chip" title="Change cwd (⌘⇧D)">
-        <span class="git-icon">${iconFor(entry.kind)}</span>
+        <span class="git-icon">${REPO_ICON}</span>
         <span>${escapeHtml(entry.cwd)}</span>
         ${branch}
       </button>
@@ -602,7 +570,7 @@ const branchCache = new Map();
 const BRANCH_CACHE_MS = 30_000;
 
 async function hydrateBranches() {
-  if (!selectedCwd || selectedCwd.kind !== 'repo') return;
+  if (!selectedCwd?.isGitRepo) return;
   const cwd = selectedCwd.cwd;
   const cached = branchCache.get(cwd);
   if (cached && Date.now() - cached.at < BRANCH_CACHE_MS) {
@@ -901,7 +869,7 @@ async function launchTrack() {
   try {
     const ta = modalEl?.querySelector('#p-prompt');
     const prompt = (ta?.value ?? promptText ?? '').trim();
-    const canWorktree = selectedCwd.kind === 'repo' && selectedCwd.isGitRepo;
+    const canWorktree = !!selectedCwd.isGitRepo;
     if (canWorktree && worktreeMode !== 'worktree') {
       setWorktreeMode('worktree', { persist: false });
     }
@@ -941,7 +909,7 @@ async function launchSchedule() {
   try {
     const ta = modalEl?.querySelector('#p-prompt');
     const prompt = (ta?.value ?? promptText ?? '').trim();
-    const canWorktree = !!selectedCwd && selectedCwd.kind === 'repo' && selectedCwd.isGitRepo;
+    const canWorktree = !!selectedCwd?.isGitRepo;
     const usingWorktree = canWorktree && worktreeMode === 'worktree';
     const prefill = {
       prompt,

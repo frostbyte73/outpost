@@ -474,6 +474,26 @@ describe('SessionStore — registry merge + isGitRepo', () => {
     expect(match!.source).toBe('claude');
     expect(typeof match!.isGitRepo).toBe('boolean');
   });
+
+  it('flags cwds under the runtime dir as internal, on the path boundary', () => {
+    const root = mkdtempSync(join(tmpdir(), 'ss-internal-root-'));
+    const host = mkdtempSync(join(tmpdir(), 'ss-internal-'));
+    const runtimeDir = join(host, '.outpost');
+    const inside = join(runtimeDir, 'actions', 'code', 'implement');
+    const sibling = `${runtimeDir}-backup`;
+    for (const cwd of [inside, sibling]) {
+      mkdirSync(cwd, { recursive: true });
+      const dir = join(root, cwd.replace(/\//g, '-'));
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(
+        join(dir, `sess-${cwd.length}.jsonl`),
+        JSON.stringify({ type: 'user', cwd, message: { content: 'hi' } }) + '\n',
+      );
+    }
+    const projects = new SessionStore({ root, runtimeDir }).listProjects();
+    expect(projects.find((p) => p.cwd === inside)!.internal).toBe(true);
+    expect(projects.find((p) => p.cwd === sibling)!.internal).toBeUndefined();
+  });
 });
 
 describe('SessionStore — worktree merge', () => {

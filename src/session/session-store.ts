@@ -38,6 +38,10 @@ export interface ProjectInfo {
   source: 'claude' | 'registry' | 'both';
   // Populated only when the user has run a `[1m]` model variant; lets the PWA pick 1M over the 200k default.
   contextWindowSize?: number;
+  // A cwd the daemon itself created under the runtime dir — an installed action dir or a step
+  // worktree. Still in the payload because session lookups resolve through the project row, but
+  // never offered as a place to start new work.
+  internal?: boolean;
 }
 
 export interface SubagentCompletion {
@@ -485,17 +489,19 @@ export class SessionStore {
   private readonly registry: ProjectRegistry | undefined;
   private readonly worktreeManager: WorktreeManager | undefined;
   private readonly sessionMetaDir: string | undefined;
+  private readonly runtimeDir: string | undefined;
   private cwdCache = new Map<string, { cwd: string; mtime: number }>();
   // JSONL is append-only, so size unchanged ⇒ cached timestamp still valid.
   private lastMsgTsCache = new Map<string, { size: number; ts: number | null }>();
   // Never invalidated within a daemon lifetime — restart picks up new git inits.
   private gitRepoCache = new Map<string, boolean>();
 
-  constructor(opts: { root: string; registry?: ProjectRegistry; worktreeManager?: WorktreeManager; sessionMetaDir?: string }) {
+  constructor(opts: { root: string; registry?: ProjectRegistry; worktreeManager?: WorktreeManager; sessionMetaDir?: string; runtimeDir?: string }) {
     this.root = opts.root;
     this.registry = opts.registry;
     this.worktreeManager = opts.worktreeManager;
     this.sessionMetaDir = opts.sessionMetaDir;
+    this.runtimeDir = opts.runtimeDir;
   }
 
   // Durable per-session marker written when Outpost spawns an action session
@@ -634,7 +640,7 @@ export class SessionStore {
     if (!this.worktreeManager) {
       raw.sort((a, b) => b.lastModified - a.lastModified);
       stampAutoArchived(raw);
-      return raw;
+      return this.stampInternal(raw);
     }
 
     // Tombstones included so their JSONLs fold under the parent project as archived rows, not orphans.
@@ -698,7 +704,14 @@ export class SessionStore {
 
     const out = [...parents.values()];
     out.sort((a, b) => b.lastModified - a.lastModified);
-    return out;
+    return this.stampInternal(out);
+  }
+
+  private stampInternal(projects: ProjectInfo[]): ProjectInfo[] {
+    if (!this.runtimeDir) return projects;
+    const prefix = this.runtimeDir.endsWith('/') ? this.runtimeDir : `${this.runtimeDir}/`;
+    for (const p of projects) if (p.cwd.startsWith(prefix)) p.internal = true;
+    return projects;
   }
 
   private listSessionsInDir(dir: string): SessionInfo[] {

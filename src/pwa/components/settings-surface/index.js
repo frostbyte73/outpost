@@ -327,7 +327,9 @@ function renderProjects(mount) {
   const rowsEl = section.querySelector('.settings-projects');
 
   function paint() {
-    const projects = [...(sessions.get().projects ?? [])].sort((a, b) => a.cwd.localeCompare(b.cwd));
+    const projects = (sessions.get().projects ?? [])
+      .filter((p) => !p.internal)
+      .sort((a, b) => a.cwd.localeCompare(b.cwd));
     rowsEl.innerHTML = projects.length
       ? projects.map((p) => `
         <div class="settings-project-row">

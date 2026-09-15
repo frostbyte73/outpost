@@ -7,7 +7,10 @@ import { testScript, redraftSchedule } from '../../net/schedules.js';
 // Known project paths, offered as a datalist for the working-directory input so
 // prompt/script schedules land in a registered cwd (the backend rejects unknown ones).
 function cwdDatalistOptions() {
-  return (sessions.get().projects ?? []).map((p) => `<option value="${escapeHtml(p.cwd)}"></option>`).join('');
+  return (sessions.get().projects ?? [])
+    .filter((p) => !p.internal)
+    .map((p) => `<option value="${escapeHtml(p.cwd)}"></option>`)
+    .join('');
 }
 
 function viewRows(w) {
