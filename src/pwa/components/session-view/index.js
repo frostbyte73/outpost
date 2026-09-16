@@ -33,6 +33,7 @@ import {
 import { escapeHtml } from './html.js';
 import { reconcileKeyedRows, resetKeyedRows, setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { minimalMsgHtml } from './message-html.js';
+import { createScrollIntent, getIntent, scrollTranscriptTo } from './scroll-intent.js';
 import { openSessionWs, closeSessionWs, sendUserMessage, reconnectAndSend, sendApprovalModeSet, sendInterrupt, sessionWsReadyState } from './session-ws.js';
 import { renderThinkingStrip, renderTodoPill, renderConnBanner } from './regions.js';
 import { renderMeterStrip } from './meter.js';
@@ -351,18 +352,6 @@ function renderModelChip(dom, sessionId) {
 // drafts don't need to survive a page reload, just tab churn.
 const composerDraft = new Map();
 
-// Persistent per-session scroll intent. `stickyBottom` defaults true so a
-// freshly-mounted tab lands at the newest message. When the user scrolls up,
-// we flip to false and remember their absolute scrollTop; when they come back
-// within 40px of the bottom, we flip back. Survives unmount/remount so tab
-// switches restore whichever mode the user last chose.
-const scrollIntent = new Map();
-function getIntent(sessionId) {
-  let it = scrollIntent.get(sessionId);
-  if (!it) { it = { stickyBottom: true, savedScrollTop: 0 }; scrollIntent.set(sessionId, it); }
-  return it;
-}
-
 // Floating "jump to latest" pill — visible whenever the user has scrolled away
 // from the bottom, with an unread count once new entries land behind them.
 // Unread state is mount-scoped (dom.__unread / dom.__lastTotal), reset by
@@ -488,10 +477,8 @@ function renderTranscript(dom, slice, sessionId) {
   // rAF so scrollHeight reflects layout of the newly-written HTML — otherwise
   // on first mount the transcript can still measure at 0 and scrollTop=0.
   requestAnimationFrame(() => {
-    const suppress = t.__ovSuppress;
-    if (suppress) suppress.until = performance.now() + 80;
-    if (intent.stickyBottom) t.scrollTop = t.scrollHeight;
-    else t.scrollTop = Math.min(intent.savedScrollTop, Math.max(0, t.scrollHeight - t.clientHeight));
+    if (intent.stickyBottom) scrollTranscriptTo(t, t.scrollHeight);
+    else scrollTranscriptTo(t, Math.min(intent.savedScrollTop, Math.max(0, t.scrollHeight - t.clientHeight)));
   });
 }
 
@@ -737,23 +724,14 @@ export function mountSessionView(mount, sessionId, meta = {}) {
 
   // Scroll listener drives sticky-bottom intent. Manual scroll away from the
   // bottom flips into "restore-offset" mode; scrolling back within 40px
-  // returns to "pin-to-bottom" mode. Own writes are suppressed via
-  // suppressUntil — otherwise the initial snap-to-bottom would be misread as
-  // a user scroll on tabs that take a layout frame to settle.
-  const suppressRef = { until: 0 };
-  dom.transcript.__ovSuppress = suppressRef;
+  // returns to "pin-to-bottom" mode. Our own writes are recognised by value
+  // (see scroll-intent.js) rather than ignored for a time window.
+  const scroller = createScrollIntent(sessionId);
+  dom.transcript.__ovScroll = scroller;
   const onScroll = () => {
-    if (performance.now() < suppressRef.until) return;
     const t = dom.transcript;
-    const distFromBottom = t.scrollHeight - t.scrollTop - t.clientHeight;
-    const intent = getIntent(sessionId);
-    if (distFromBottom < 40) {
-      intent.stickyBottom = true;
-      dom.__unread = 0;
-    } else {
-      intent.stickyBottom = false;
-      intent.savedScrollTop = t.scrollTop;
-    }
+    if (!scroller.handleScroll(t)) return;
+    if (scroller.intent.stickyBottom) dom.__unread = 0;
     updateJumpPill(dom, sessionId);
   };
   dom.transcript.addEventListener('scroll', onScroll, { passive: true });
@@ -761,9 +739,7 @@ export function mountSessionView(mount, sessionId, meta = {}) {
     const intent = getIntent(sessionId);
     intent.stickyBottom = true;
     dom.__unread = 0;
-    const t = dom.transcript;
-    suppressRef.until = performance.now() + 80;
-    t.scrollTop = t.scrollHeight;
+    scrollTranscriptTo(dom.transcript, dom.transcript.scrollHeight);
     updateJumpPill(dom, sessionId);
   });
 
