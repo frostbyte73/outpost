@@ -17,7 +17,7 @@ test('plan mode denies a Bash call without enqueuing an approval', async ({ daem
   // Open a session.
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
 
   // Wait for the session WebSocket to be fully open. The composer renders before the

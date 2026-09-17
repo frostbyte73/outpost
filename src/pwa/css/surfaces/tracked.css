@@ -729,6 +729,21 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
    (rail, padding) from base.css — only the grid placement is this row's business. */
 .orc-dispatch-feed { grid-column: 1 / -1; }
 
+/* ── Taking the wheel ─────────────────────────────────────────────────────
+   While the user drives a session, syncInlineMounts swaps the two-line tail for the real
+   mountSessionView. That component sets `height: 100%` on .sv-host, so the step card has to
+   lend it an explicit window — doubled up on .sv-host so specificity decides this rather
+   than which sheet happens to load last. */
+.step-wheel-row { display: flex; justify-content: flex-end; margin: 6px 6px 0; }
+
+.step-inline-session-mount--driven.sv-host {
+  height: min(60vh, 32rem);
+  margin: 8px 6px 4px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--r-container);
+}
+
 /* ── "Message the controller" ─────────────────────────────────────────────
    One line at rest — utils/autogrow.js grows it, and the Send row only appears
    once there's something to send. It was a permanently-open 76px box plus a

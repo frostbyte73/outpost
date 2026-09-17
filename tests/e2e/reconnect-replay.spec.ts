@@ -17,11 +17,11 @@ test.use({ daemonOpts: { fixturePath: FIXTURE } });
 
 test('reconnect with ?since=N replays missed messages', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
-  await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
 
   // Send the first prompt and wait for the response. This populates the event log on
   // the server and advances lastSeenSeq on the client.
-  await outpostPage.locator('#composer').click();
+  await outpostPage.locator('.sv-composer').click();
   await outpostPage.keyboard.type('first');
   await outpostPage.keyboard.press('Enter');
   await expect(outpostPage.getByText('hello back')).toBeVisible({ timeout: 10_000 });
@@ -55,7 +55,7 @@ test('reconnect with ?since=N replays missed messages', async ({ daemon, outpost
   expect(seqAfterReconnect).toBeGreaterThanOrEqual(seqBeforeDrop);
 
   // Send a second prompt and confirm new messages still flow.
-  await outpostPage.locator('#composer').click();
+  await outpostPage.locator('.sv-composer').click();
   await outpostPage.keyboard.type('second');
   await outpostPage.keyboard.press('Enter');
   await expect(outpostPage.getByText('second response')).toBeVisible({ timeout: 10_000 });

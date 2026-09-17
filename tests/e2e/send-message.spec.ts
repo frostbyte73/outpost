@@ -11,7 +11,7 @@ test('typing a message and pressing Enter produces an assistant response', async
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   // Wait for the composer to appear (session view skeleton).
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
 
   // Type into the contenteditable composer and press Enter (desktop chromium sends on Enter).

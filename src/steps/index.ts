@@ -16,4 +16,13 @@ export function initialStateForType(type: Step['type']): Step['state'] {
   return registry[type].initialState;
 }
 
+// Is this step done, whatever the outcome — resolved, failed, cancelled, or (ActionStep only)
+// declined, which is a user veto of its write draft rather than a breakage. Mirrored
+// client-side by isTerminalStep in pwa/vm/work-predicates.js; the two must agree.
+export function isTerminalStep(step: Step): boolean {
+  return !!step.failure || !!step.cancelled || step.state === 'resolved'
+    || step.state === 'failed'
+    || (step.type === 'action' && step.state === 'declined');
+}
+
 export { actionHandler, orchestratedHandler };

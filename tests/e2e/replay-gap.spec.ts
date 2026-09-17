@@ -18,17 +18,17 @@ test.use({ daemonOpts: { fixturePath: FIXTURE, eventLogMaxEvents: 1 } });
 
 test('stale ?since= triggers replay_gap and catchUpFromDisk recovers', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
-  await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
 
   // Two sends: total events pushed are init (seq=1), assistant#1 (seq=2), assistant#2
   // (seq=3). With cap=1, after the third push earliestSeq=3 and seqs 1+2 are gone.
   // Reconnecting with ?since=1 then satisfies the gap condition (1 < 3-1=2) and the
   // server emits replay_gap.
-  await outpostPage.locator('#composer').click();
+  await outpostPage.locator('.sv-composer').click();
   await outpostPage.keyboard.type('one');
   await outpostPage.keyboard.press('Enter');
   await expect(outpostPage.getByText('hello back')).toBeVisible({ timeout: 10_000 });
-  await outpostPage.locator('#composer').click();
+  await outpostPage.locator('.sv-composer').click();
   await outpostPage.keyboard.type('two');
   await outpostPage.keyboard.press('Enter');
   await expect(outpostPage.getByText('second response')).toBeVisible({ timeout: 10_000 });

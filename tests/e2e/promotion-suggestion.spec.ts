@@ -26,7 +26,7 @@ test('3rd identical approval carries a suggestion in the approval_pending payloa
   // Open session.
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
   await outpostPage.waitForFunction(
     () => document.documentElement.getAttribute('data-conn') === 'connected',
@@ -91,7 +91,7 @@ test.use({ viewport: { width: 390, height: 844 } });
 
 test('clicking Always allow in the footer promotes the rule and approves the call', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
   await outpostPage.waitForFunction(
     () => document.documentElement.getAttribute('data-conn') === 'connected',

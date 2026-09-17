@@ -18,7 +18,7 @@ test.beforeAll(() => {
 test('re-opening a session on mobile preserves its permission mode', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
   await outpostPage.waitForFunction(
     () => document.documentElement.getAttribute('data-conn') === 'connected',
@@ -64,7 +64,7 @@ test('re-opening a session on mobile preserves its permission mode', async ({ da
 test('bypass-confirm refresh keeps the mode popover on-screen', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
 
   await outpostPage.locator('#header-mode-chip').click();

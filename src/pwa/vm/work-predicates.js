@@ -65,8 +65,11 @@ export function draftAwaitsUser(s, d) {
   return s.state === 'gate_pending_approval';
 }
 
-export function stepNeedsYou(s) {
+export function stepNeedsYou(s, drivenIds) {
   if (isTerminalStep(s)) return false;
+  // The user took the wheel: the step is stopped because it is their turn, which is exactly
+  // this predicate's question.
+  if (drivenIds && s.sessionId && drivenIds.has(s.sessionId)) return true;
   // Both step kinds park here for an explicit approval: a human_gate action before an
   // external write, an orchestrated step before the move its controller voluntarily gated.
   // A green, approved PR is deliberately NOT listed here. Merging is the controller's own
@@ -108,5 +111,6 @@ export function isTerminalJob(j) {
 export function needsYou(j) {
   if (isTerminalJob(j)) return false;
   if (j.state === 'plan_pending_review') return true;
-  return (j.steps ?? []).some((s) => !s.cancelled && stepNeedsYou(s));
+  const driven = new Set(j.live?.interactiveSessionIds ?? []);
+  return (j.steps ?? []).some((s) => !s.cancelled && stepNeedsYou(s, driven));
 }

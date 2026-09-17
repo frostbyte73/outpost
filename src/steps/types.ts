@@ -22,6 +22,9 @@ export interface HandlerCtx {
   // Lets a step handler read an action's frontmatter (e.g. runner) at decide time.
   // Optional so tests can construct a ctx without a registry.
   actionRegistry?: ActionRegistry;
+  // Is this session one the user has taken the wheel on? Optional for the same reason as
+  // actionRegistry — a test ctx need not supply it, and absent reads as "on autopilot".
+  isInteractive?: (sessionId: string) => boolean;
 }
 
 export interface StepHandler<S extends Step> {

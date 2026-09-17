@@ -52,7 +52,7 @@ test('a project rule auto-allows a subsequent tool call (no approval card appear
   // Open a session in TEST_CWD; the fixture's MCP tool_use should auto-allow because of the project rule.
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
 
   // Wait for the WS to connect before sending the prompt.

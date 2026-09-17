@@ -16,7 +16,7 @@ test.beforeAll(() => {
 test('clicking Stop interrupts the claude subprocess and silently resumes the session', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
   await composer.click();
   await outpostPage.keyboard.type('go');
@@ -27,7 +27,7 @@ test('clicking Stop interrupts the claude subprocess and silently resumes the se
 
   // While the mock is paused waiting for input, the daemon-side claude is still alive
   // and the send button doubles as Stop. Click it.
-  await outpostPage.locator('#send').click();
+  await outpostPage.locator('.sv-send').click();
 
   // The user-initiated interrupt should NOT produce the "subprocess exited" error tile —
   // the PWA treats it as expected and silently resumes the session.
@@ -46,7 +46,7 @@ test('clicking Stop interrupts the claude subprocess and silently resumes the se
   // until the user reloaded the session.
   await composer.click();
   await outpostPage.keyboard.type('keep going');
-  const send = outpostPage.locator('#send');
+  const send = outpostPage.locator('.sv-send');
   await expect(send).toHaveClass(/\barmed\b/);
   await expect(send).not.toHaveClass(/sv-send-disconnected/);
 });

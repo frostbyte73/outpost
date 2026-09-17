@@ -8,6 +8,7 @@
 // rendered tree, or mounts churn every repaint.
 
 import { mountInlineSession } from '../work/inline-session.js';
+import { mountSessionView } from '../session-view/index.js';
 
 const mountsByJob = new Map();
 
@@ -90,6 +91,9 @@ export function syncInlineMounts(root, job) {
   // "everything is live", which is the pre-existing behaviour: show the transcript tail.
   const liveIds = job.live ? new Set(job.live.sessionIds ?? []) : null;
   const isLive = (id) => (liveIds ? liveIds.has(id) : true);
+  // A driven session gets the full session view (transcript + composer + mode selector) in
+  // place of the two-line tail — see wheel-toggle.js.
+  const drivenIds = new Set(job.live?.interactiveSessionIds ?? []);
 
   root.querySelectorAll('[data-session-id]').forEach((el) => {
     const sessionId = el.getAttribute('data-session-id');
@@ -97,14 +101,19 @@ export function syncInlineMounts(root, job) {
     seen.add(sessionId);
     const step = stepForSession(job, sessionId);
     const live = isLive(sessionId);
+    const driven = drivenIds.has(sessionId);
     const prior = existing.get(sessionId);
-    if (prior && prior.el === el) {
+    // A change in driven-ness changes WHICH component owns the element, so it can't be an
+    // update — tear the old one down and mount the other.
+    if (prior && prior.el === el && prior.driven === driven) {
       prior.handle.updateStep?.(step, live);
       return;
     }
     if (prior) prior.handle.unmount();
-    const handle = mountInlineSession(el, sessionId, { jobId: job.id, step, live });
-    existing.set(sessionId, { el, handle });
+    const handle = driven
+      ? mountSessionView(el, sessionId, { jobId: job.id })
+      : mountInlineSession(el, sessionId, { jobId: job.id, step, live });
+    existing.set(sessionId, { el, handle, driven });
   });
 
   for (const [sessionId, entry] of Array.from(existing.entries())) {

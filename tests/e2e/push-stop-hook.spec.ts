@@ -55,7 +55,7 @@ test.describe('Stop hook fires push when turn >= threshold', () => {
         data: { subscription: { endpoint: fake.endpoint, keys: VAPID_KEYS } },
       });
       await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
-      const composer = outpostPage.locator('#composer');
+      const composer = outpostPage.locator('.sv-composer');
       await expect(composer).toBeVisible({ timeout: 10_000 });
       await composer.click();
       await outpostPage.keyboard.type('go');
@@ -82,7 +82,7 @@ test.describe('Stop hook does NOT fire push when turn < threshold', () => {
         data: { subscription: { endpoint: fake.endpoint, keys: VAPID_KEYS } },
       });
       await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
-      const composer = outpostPage.locator('#composer');
+      const composer = outpostPage.locator('.sv-composer');
       await expect(composer).toBeVisible({ timeout: 10_000 });
       await composer.click();
       await outpostPage.keyboard.type('short');

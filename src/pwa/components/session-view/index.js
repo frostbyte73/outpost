@@ -93,10 +93,10 @@ function buildSkeleton(mount) {
       <div class="sv-meter-region"></div>
       <div class="sv-slash-palette" hidden></div>
       <div class="sv-composer-row">
-        <div class="sv-composer" id="composer" contenteditable="true" role="textbox" aria-multiline="true"
+        <div class="sv-composer" contenteditable="true" role="textbox" aria-multiline="true"
              aria-label="Message" autocapitalize="sentences" data-placeholder="Type a message…"></div>
         <span class="sv-model-chip" hidden></span>
-        <button class="sv-send" id="send" type="button" aria-label="Send">↵</button>
+        <button class="sv-send" type="button" aria-label="Send">↵</button>
       </div>
     </div>
   `;

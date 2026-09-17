@@ -65,7 +65,7 @@ seededTest('user can leave an inline comment on the branch diff and submit a bun
   // surface, then open the seeded session from its card.
   await outpostPage.locator('.o-sidebar-item[data-surface="sessions"]').click();
   await outpostPage.locator(`.sess-card[data-session-id="${SEED_SESSION_ID}"]`).click();
-  await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
 
   // Desktop hides the toolbar's `.sv-git-btn` (mobile-only — see session-view.css)
   // and folds "open diff" into the header's ⋯ menu instead, alongside Archive.

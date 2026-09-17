@@ -21,7 +21,7 @@ test.afterAll(() => {
 test('an unattended approval times out and resolves as deny', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
   await composer.click();
   await outpostPage.keyboard.type('do the thing');

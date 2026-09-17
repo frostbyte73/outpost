@@ -57,8 +57,9 @@ function planReviewItem(j) {
 }
 
 function stepGateItems(j) {
+  const driven = new Set(j.live?.interactiveSessionIds ?? []);
   return (j.steps ?? [])
-    .filter((s) => !s.cancelled && stepNeedsYou(s))
+    .filter((s) => !s.cancelled && stepNeedsYou(s, driven))
     .map((s) => ({
       key: `gate:${j.id}:${s.id}`,
       kind: 'step-gate',

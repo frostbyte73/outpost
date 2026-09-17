@@ -27,7 +27,7 @@ test('a session launched from the mobile palette carries its cwd to the daemon',
   await outpostPage.locator('#p-prompt').fill('hello from the palette');
   await outpostPage.locator('.p-launch-btn[data-launch="session"]').click();
 
-  await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
   await outpostPage.waitForFunction(
     () => document.documentElement.getAttribute('data-conn') === 'connected',
     undefined,

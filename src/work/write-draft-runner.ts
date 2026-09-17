@@ -1,4 +1,7 @@
 import type { JobRecord, Step } from './work-types.js';
+// A submit against a step that's already done is a stale or duplicate call; re-parking it
+// would resurrect a terminal step and re-ask the user about something already settled.
+import { isTerminalStep as isTerminal } from '../steps/index.js';
 import { confirmationsRequired } from '../permissions/dangerous-writes.js';
 import {
   extractFileReferences, hashFileContents, sameRaiser, writeFileContents,
@@ -49,14 +52,6 @@ function findPendingDraft(step: Step, draftId: string, stepId: string): DraftLoo
 
 function replaceDraft(step: Step, draftId: string, fn: (d: WriteDraft) => WriteDraft): Step {
   return { ...step, drafts: (step.drafts ?? []).map((d) => d.id === draftId ? fn(d) : d) };
-}
-
-// A submit against a step that's already done — resolved, failed, cancelled, or (for an
-// ActionStep) declined — is a stale or duplicate call; re-parking it would resurrect a
-// terminal step and re-ask the user about something already settled.
-function isTerminal(step: Step): boolean {
-  return !!step.failure || !!step.cancelled || step.state === 'resolved'
-    || (step.type === 'action' && step.state === 'declined');
 }
 
 // The MCP tool's error channel: a session calling submit_write_draft against a step that

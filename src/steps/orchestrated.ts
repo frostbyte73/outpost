@@ -29,6 +29,9 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
       const path = writeEnvelope(ctx.jobsDir, job.id, s.id, envelope);
       return { kind: 'spawn-session', jobId: job.id, stepId: s.id, envelopePath: path };
     }
+    // The user is driving this controller: nothing wakes it into a round until they hand
+    // back. Items stay in the inbox and deliver on the tick that follows the release.
+    if (ctx.isInteractive?.(s.sessionId)) return null;
     // A live controller is woken only through the inbox. sessionWorking is false here
     // because the engine checks liveness itself before acting on deliver-inbox; this
     // decide() only reports that something is owed.

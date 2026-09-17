@@ -108,6 +108,10 @@ export interface HandleHookOpts {
   // session's step: for a dispatch session, the bound step is the parent orchestrated step,
   // whose action is the CONTROLLER, not the child action the hook actually denied.
   onGatedDenial?: (sessionId: string, action: string, reason: string) => void;
+  // Has the user taken the wheel on this session? A driven action session keeps its confined
+  // grants but raises an approval card on a miss instead of denying, and honours the mode
+  // gestures an autopilot step session has no approver for.
+  interactiveFor?: (sessionId: string) => boolean;
   onNotify: (approval: PendingApproval) => void;
   // Called when an action-bound session has a tool call denied by allowlist-miss.
   // The daemon stores these so the user can review + add suggested rules in the PWA.
@@ -188,9 +192,34 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
   const {
     hookInput, allowlist, queue, modes, cwdForSession, worktreePathForSession, actionForSession,
     gatedForAction, pinFor, onPinConsumed, draftStateFor, onGatedDenial, onNotify, onActionDenial,
+    interactiveFor,
   } = opts;
   const mode = modes.get(hookInput.session_id);
   const action = actionForSession?.(hookInput.session_id);
+
+  // Park the call on the interactive approval queue and answer with the user's verdict.
+  // Shared by an ordinary session's allowlist miss and a driven action session's — see the
+  // `driven` branch below.
+  const enqueue = async (): Promise<HookResponse> => {
+    const decisionPromise = queue.enqueue({
+      sessionId: hookInput.session_id,
+      toolName: hookInput.tool_name,
+      toolInput: hookInput.tool_input,
+      toolUseId: hookInput.tool_use_id,
+      agentId: hookInput.agent_id,
+      agentType: hookInput.agent_type,
+    });
+    const pending = queue.listPending().at(-1);
+    if (pending) onNotify(pending);
+    const decision = await decisionPromise;
+    return {
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: decision.allow ? 'allow' : 'deny',
+        ...(decision.reason ? { permissionDecisionReason: decision.reason } : {}),
+      },
+    };
+  };
 
   // Bypass: short-circuit before any check — except for an action-bound session. A step
   // session is never put in bypass deliberately (it has no mode selector of its own), but
@@ -227,6 +256,20 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
   const projectCwd = cwdForSession?.(hookInput.session_id);
   const worktreePath = worktreePathForSession?.(hookInput.session_id);
   if (action) {
+    const driven = interactiveFor?.(hookInput.session_id) ?? false;
+    // The mode gestures are gated behind `!action` above because an autopilot step session has
+    // no approver. A driven one does, so they apply here. `bypass` is deliberately absent: it
+    // would take the write gate off a session that can push, and the PWA doesn't offer it.
+    if (driven) {
+      if (mode === 'plan') {
+        if (PLAN_MODE_ALWAYS.has(hookInput.tool_name)) return allowResp();
+        if (hookInput.tool_name.startsWith('mcp__') && isPlanModeReadableMcpTool(hookInput.tool_name)) {
+          return allowResp();
+        }
+        return denyResp('Plan mode — read-only');
+      }
+      if (mode === 'accept-edits' && EDIT_TOOLS.has(hookInput.tool_name)) return allowResp();
+    }
     const gated = gatedForAction?.(action);
     if (gatedForAction && !gated) {
       // The registry has never heard of this action — not "inherits no gated group" (that
@@ -282,6 +325,10 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
     if (allowlist.allows(hookInput.tool_name, hookInput.tool_input, projectCwd, action, worktreePath, hookInput.session_id)) {
       return allowResp();
     }
+    // A miss while the user is driving is them steering, not the action failing — so it raises
+    // a card they can answer, and records nothing. DenialsStore is meta.improve-actions'
+    // evidence; a denial row here would describe a conversation.
+    if (driven) return enqueue();
     onActionDenial?.({
       actionName: action,
       sessionId: hookInput.session_id,
@@ -297,23 +344,5 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
     return allowResp();
   }
 
-  const decisionPromise = queue.enqueue({
-    sessionId: hookInput.session_id,
-    toolName: hookInput.tool_name,
-    toolInput: hookInput.tool_input,
-    toolUseId: hookInput.tool_use_id,
-    agentId: hookInput.agent_id,
-    agentType: hookInput.agent_type,
-  });
-  const pending = queue.listPending().at(-1);
-  if (pending) onNotify(pending);
-
-  const decision = await decisionPromise;
-  return {
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: decision.allow ? 'allow' : 'deny',
-      ...(decision.reason ? { permissionDecisionReason: decision.reason } : {}),
-    },
-  };
+  return enqueue();
 }

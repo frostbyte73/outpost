@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { Server } from '../../src/server.js';
 import { registerJobsRoutes } from '../../src/routes/jobs.js';
 import { WorkEngine } from '../../src/work/engine.js';
+import { InteractiveStore } from '../../src/session/interactive-store.js';
 import { JobQueue } from '../../src/work/work-queue.js';
 import type { ActionStep, JobRecord } from '../../src/work/work-types.js';
 import { freePort } from '../e2e/harness/port.js';
@@ -86,6 +87,7 @@ async function startServer(h: ReturnType<typeof harness>): Promise<number> {
     jobQueue: h.queue, engine: h.engine,
     prWatcher: {} as never, prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
     worktreeManager: {} as never, jobsDir: h.jobsDir,
+    interactive: new InteractiveStore(),
   });
   await server.listen();
   return port;

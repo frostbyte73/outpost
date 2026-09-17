@@ -26,7 +26,7 @@ import { augmentEnvelopeWithLessons, buildActionCatalog, writeEnvelope, STEP_TYP
 import { readonlyView, workspaceError } from './workspace.js';
 import { expectRepoOf, parsePrUrl } from './pr-url.js';
 import type { ActionRegistry } from '../actions/index.js';
-import { handlerFor, initialStateForType } from '../steps/index.js';
+import { handlerFor, initialStateForType, isTerminalStep } from '../steps/index.js';
 import { orchestratedHandler } from '../steps/orchestrated.js';
 import type { Action, HandlerCtx } from '../steps/types.js';
 import {
@@ -39,6 +39,7 @@ import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
 import { appendJobEvent } from '../storage/job-event-log.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ApprovalModeStore } from '../permissions/approval-mode.js';
+import type { InteractiveStore } from '../session/interactive-store.js';
 import type { JournalStore } from '../storage/journal-store.js';
 import type { LaunchGovernor, LaunchState, LaunchPriority } from './launch-governor.js';
 import {
@@ -180,6 +181,10 @@ export interface WorkEngineOpts {
   now?: () => number;
   actionsStore?: ActionsStore;
   modes?: ApprovalModeStore;
+  // Which sessions the user has taken the wheel on. Optional so the unit harnesses can omit
+  // it — an absent store reads as "everything is on autopilot", which is the pre-existing
+  // behaviour for every gate that consults it.
+  interactive?: InteractiveStore;
   journalStore?: JournalStore;
   actionRegistry?: ActionRegistry;
   // Token-aware launch queue. Every autonomous launch routes through it via submitLaunch;
@@ -241,6 +246,32 @@ export class WorkEngine {
     return this.roleBySession.get(sessionId)?.jobId;
   }
 
+  // The job/step a session may be driven on, or undefined if the user can't take the wheel:
+  // the session isn't one of ours, or its step already settled and nothing will resume it.
+  // An orchestrator session has no step, and that's an eligible shape, not a miss.
+  interactiveTarget(sessionId: string): { jobId: string; stepId?: string } | undefined {
+    const role = this.roleBySession.get(sessionId);
+    if (!role) return undefined;
+    if (role.role === 'orchestrator') return { jobId: role.jobId };
+    const step = this.opts.queue.get(role.jobId)?.steps.find((s) => s.id === role.stepId);
+    if (!step || isTerminalStep(step)) return undefined;
+    return { jobId: role.jobId, stepId: role.stepId };
+  }
+
+  // The message a submit_* tool answers with while the user is driving. Deliberately tells the
+  // model not to retry: a retry loop against a gate only the user can open burns the round
+  // budget and buries the conversation in tool errors.
+  interactiveRefusal(jobId: string, stepId?: string): string | undefined {
+    const j = this.opts.queue.get(jobId);
+    const sessionId = stepId
+      ? j?.steps.find((s) => s.id === stepId)?.sessionId
+      : j?.orchestratorSessionId;
+    if (!this.opts.interactive?.isInteractive(sessionId)) return undefined;
+    return 'The user has taken the wheel on this session — autopilot is paused and this call is '
+      + 'refused while they are driving. Do not retry it. Answer them and wait; you will be told '
+      + 'when control is handed back, and you should report your move then.';
+  }
+
   // Resolves the worktree path for a spawned step session. Worktree records are
   // keyed by stepId (see WorktreeManager.provision), but step sessions run under a
   // freshly-minted sessionId — so a direct `worktreeManager.get(sessionId)` misses.
@@ -286,6 +317,14 @@ export class WorkEngine {
   bindAction(sessionId: string, actionName: string): void {
     if (!this.opts.actionsStore) return;
     this.actionBySession.set(sessionId, actionName);
+  }
+
+  // Test seam: register a session against a step exactly as a spawn would, without running
+  // the spawn path (which needs a launch governor and a real worktree). Nothing in the
+  // daemon calls this.
+  adoptStepSessionForTest(jobId: string, stepId: string, sessionId: string): void {
+    this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
+    this.mutateStep(jobId, stepId, (s) => ({ ...s, sessionId }));
   }
 
   // Durably marks a freshly-spawned session as an action (name + readable title) for
@@ -348,6 +387,10 @@ export class WorkEngine {
   // genuine hang. Undefined when the session isn't a step's, or when ending the turn is
   // legitimate for the state it's in.
   private unresolvedFailable(sessionId: string): { jobId: string; stepId: string } | undefined {
+    // The user is driving: a turn ending without a submit is a reply waiting on their next
+    // message, not a hang. It can't disarm itself the way autopilot does either —
+    // noteSessionActivity fires on tool calls, and a conversational reply makes none.
+    if (this.opts.interactive?.isInteractive(sessionId)) return undefined;
     const role = this.roleBySession.get(sessionId);
     if (!role) return undefined;
     if (role.role === 'dispatch') {
@@ -392,6 +435,7 @@ export class WorkEngine {
       newId: opts.newId ?? (() => randomUUID()),
       now: opts.now ?? (() => Date.now()),
       actionRegistry: opts.actionRegistry,
+      isInteractive: (id) => opts.interactive?.isInteractive(id) ?? false,
     };
   }
 
@@ -432,7 +476,11 @@ export class WorkEngine {
         // Clear the dead session BEFORE settling any dispatch below: a settle that delivers to
         // a still-`running` parent would resume the session we are about to drop, leaving two
         // controller sessions on one step.
-        if (s.sessionId && s.state === 'running') {
+        // A driven step keeps its session across the restart: the conversation is the state,
+        // the flag persisted alongside it, and the user's next composer message resumes the
+        // subprocess through sendOrResume. Clearing it here would cold-respawn the action and
+        // discard everything they had agreed.
+        if (s.sessionId && s.state === 'running' && !this.opts.interactive?.isInteractive(s.sessionId)) {
           const label = this.stepLabel(j.id, s.id);
           this.mutateStep(j.id, s.id, (st) => ({
             ...st, sessionId: undefined, updatedAt: this.ctx.now(),
@@ -1493,7 +1541,7 @@ export class WorkEngine {
         this.opts.sessionManager.sendOrResume(
           sessionId,
           cwd,
-          { type: 'user', message: { role: 'user', content: `/${actionName}` } },
+          { type: 'user', message: { role: 'user', content: this.resumePrompt(sessionId, actionName) } },
           { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'action' },
         );
         return true;
@@ -1553,7 +1601,7 @@ export class WorkEngine {
         this.bindAction(sessionId, d.action);
         this.opts.sessionManager.sendOrResume(
           sessionId, cwd,
-          { type: 'user', message: { role: 'user', content: `/${d.action}` } },
+          { type: 'user', message: { role: 'user', content: this.resumePrompt(sessionId, d.action) } },
           { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: dispatchId, STEP_TYPE: 'action' },
         );
         return true;
@@ -1955,6 +2003,24 @@ export class WorkEngine {
   // whatever the inbox just delivered. Mirrors dispatchActionResume's stale-Stop bookkeeping:
   // a resume fired while the controller's current turn is still open must not race that
   // turn's own Stop hook into failing this (live) step.
+  // The prompt that carries a session into its next round. `/action` re-invokes the skill from
+  // the top, which is right for autopilot and wrong while the user is driving — it would
+  // restart the action mid-conversation. Worded for every driven resume, not just a draft
+  // accept: resolveGate reaches here too.
+  private resumePrompt(sessionId: string, action: string): string {
+    if (!this.opts.interactive?.isInteractive(sessionId)) return `/${action}`;
+    return 'Autopilot is paused — the user is still driving. Something they did (an approved '
+      + 'write draft, a resolved gate) has updated your envelope: re-read it, act on it if it '
+      + 'needs acting on, and carry on with them. Do not report a move.';
+  }
+
+  // Test seam for the resume path; the daemon reaches it through applyMove/resolveGate.
+  async resumeControllerRoundForTest(
+    jobId: string, stepId: string, action: string | undefined, note: string | undefined,
+  ): Promise<void> {
+    await this.resumeControllerRound(jobId, stepId, action, note);
+  }
+
   private async resumeControllerRound(
     jobId: string, stepId: string, action: string | undefined, note: string | undefined,
   ): Promise<void> {
@@ -2039,7 +2105,7 @@ export class WorkEngine {
         this.opts.sessionManager.sendOrResume(
           sessionId,
           cwd,
-          { type: 'user', message: { role: 'user', content: `/${boundAction}` } },
+          { type: 'user', message: { role: 'user', content: this.resumePrompt(sessionId, boundAction) } },
           { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'orchestrated' },
         );
         return true;
@@ -2151,6 +2217,10 @@ export class WorkEngine {
     const cur = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     const wsErr = cur ? workspaceError(cur.workspace) : null;
     if (wsErr) throw new Error(`${wsErr}. Edit the step's workspace to repair it — that re-runs it.`);
+    // Retry means "start this over", not "keep my conversation" — the step cold-respawns
+    // under a fresh session id, so a flag left behind only lingers in the store and keeps the
+    // old session reading as driven in the timeline.
+    if (cur?.sessionId) this.opts.interactive?.set(cur.sessionId, false);
     const trimmed = note?.trim() || undefined;
     this.mutateStep(jobId, stepId, (s) => {
       const h = handlerFor(s);

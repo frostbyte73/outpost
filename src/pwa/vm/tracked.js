@@ -45,7 +45,8 @@ export function trackedGroups(jobs = []) {
 }
 
 function waitingStep(job) {
-  return (job.steps ?? []).find((s) => !s.cancelled && stepNeedsYou(s));
+  const driven = new Set(job.live?.interactiveSessionIds ?? []);
+  return (job.steps ?? []).find((s) => !s.cancelled && stepNeedsYou(s, driven));
 }
 
 function liveStep(job) {

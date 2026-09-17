@@ -14,7 +14,7 @@ test.beforeAll(() => { mkdirSync(TEST_CWD, { recursive: true }); });
 test('cold-start ?session=&approval= opens session and locates approval card', async ({ daemon, outpostPage }) => {
   // Spin up a session + approval the normal way first.
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
   await composer.click();
   await outpostPage.keyboard.type('go');
@@ -31,7 +31,7 @@ test('cold-start ?session=&approval= opens session and locates approval card', a
   await outpostPage.goto(`${daemon.baseUrl}/?session=${encodeURIComponent(pending.sessionId)}&approval=${encodeURIComponent(pending.approvalId)}`);
 
   // Session view active.
-  await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
 
   // Card with the data-approval-id is in the DOM and visible.
   const card = outpostPage.locator(`.approval-card[data-approval-id="${pending.approvalId}"]`);

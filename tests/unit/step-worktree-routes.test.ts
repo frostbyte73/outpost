@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Server } from '../../src/server.js';
+import { InteractiveStore } from '../../src/session/interactive-store.js';
 import { registerGitRoutes } from '../../src/routes/git.js';
 import { registerJobsRoutes } from '../../src/routes/jobs.js';
 import { WorkEngine } from '../../src/work/engine.js';
@@ -119,7 +120,7 @@ describe('POST /api/work/jobs/:id/steps/:stepId/message — terminated jobs', ()
       jobQueue: h.queue, engine: h.engine,
       prWatcher: {} as never,
       prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
-      worktreeManager: {} as never, jobsDir: h.jobsDir,
+      worktreeManager: {} as never, jobsDir: h.jobsDir, interactive: new InteractiveStore(),
     });
     await server.listen();
 
@@ -138,7 +139,7 @@ describe('POST /api/work/jobs/:id/steps/:stepId/message — terminated jobs', ()
       jobQueue: h.queue, engine: h.engine,
       prWatcher: {} as never,
       prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
-      worktreeManager: {} as never, jobsDir: h.jobsDir,
+      worktreeManager: {} as never, jobsDir: h.jobsDir, interactive: new InteractiveStore(),
     });
     await server.listen();
 
@@ -218,7 +219,7 @@ describe('POST /api/work/jobs/:id/steps/:stepId/resolve — orchestrated steps',
       jobQueue: queue, engine,
       prWatcher: {} as never,
       prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
-      worktreeManager: {} as never, jobsDir: join(dir, 'jobs'),
+      worktreeManager: {} as never, jobsDir: join(dir, 'jobs'), interactive: new InteractiveStore(),
     });
     await server.listen();
 
@@ -238,7 +239,7 @@ describe('POST /api/work/jobs/:id/steps/:stepId/resolve — orchestrated steps',
       jobQueue: h.queue, engine: h.engine,
       prWatcher: {} as never,
       prFilePatches: {} as never, scheduler: {} as never, sessionStore: {} as never,
-      worktreeManager: {} as never, jobsDir: h.jobsDir,
+      worktreeManager: {} as never, jobsDir: h.jobsDir, interactive: new InteractiveStore(),
     });
     await server.listen();
 

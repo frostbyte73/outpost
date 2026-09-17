@@ -38,6 +38,7 @@ import { renderMarkdown } from '../../markdown.js';
 import { wireOverflowMenu } from '../../utils/overflow-menu.js';
 import { openSession } from '../../app-bridge.js';
 import { shortName } from '../../utils/formatting.js';
+import { isDriven, wheelRowHtml } from './wheel-toggle.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 // The trail's chips carry DOM ids so they can point `aria-controls` at their bodies, and a
@@ -125,9 +126,10 @@ function overflowHtml(vm) {
 // still owns it for every other step type) so the composer can follow immediately after it.
 // syncInlineMounts keys purely on sessionId across the whole rendered tree, so the mount
 // works identically wherever in the step it lands — it just has to appear exactly once.
-function feedMountHtml(s) {
+function feedMountHtml(s, job) {
   if (!s.sessionId) return '';
-  return `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>`;
+  const driven = isDriven(job, s.sessionId);
+  return `${wheelRowHtml(job, s.sessionId)}<div class="step-inline-session-mount${driven ? ' step-inline-session-mount--driven' : ''}" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>`;
 }
 
 // A running dispatch IS the implementor session, and its row used to offer exactly one way to
@@ -287,7 +289,7 @@ export function renderOrchestratedCard(step, { job } = {}) {
       ${gateActionsHtml(vm)}
       ${vm.controllerDraft && !replyDraft ? renderWriteDraft(vm.controllerDraft) : ''}
       ${holding ? dispatches : ''}
-      ${feedMountHtml(step)}
+      ${feedMountHtml(step, job)}
       ${composerHtml(step)}
     </div>`;
 }

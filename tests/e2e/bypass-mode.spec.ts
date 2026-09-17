@@ -17,7 +17,7 @@ test('bypass mode allows mcp__incident-io__incident_update without any approval 
   // Open a session.
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
 
   // Wait for the WS to connect before sending (mirrors plan-mode.spec.ts).

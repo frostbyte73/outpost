@@ -12,6 +12,10 @@ export interface JobLiveness {
   // client-side: the sessions store's `runState` is forced to 'foreground' by the act of
   // mounting the feed at all (recomputeRunState in state/sessions.js).
   sessionIds: string[];
+  // Sessions the user has taken the wheel on. Deliberately independent of `sessionIds`: a
+  // driven session is usually NOT mid-turn (it is waiting on the user), and the step card
+  // still has to render a composer for it.
+  interactiveSessionIds: string[];
 }
 
 export interface JobLaunchStatus {
@@ -27,10 +31,16 @@ export type JobWithLiveness = JobRecord & { live: JobLiveness; launchStatus: Job
 export function withLiveness(
   job: JobRecord,
   isActive: (sessionId?: string) => boolean,
+  isInteractive: (sessionId?: string) => boolean = () => false,
 ): JobRecord & { live: JobLiveness } {
   const stepIds: string[] = [];
   const alive = new Set<string>();
-  const note = (sessionId?: string) => { if (sessionId && isActive(sessionId)) alive.add(sessionId); };
+  const driven = new Set<string>();
+  const note = (sessionId?: string) => {
+    if (!sessionId) return;
+    if (isActive(sessionId)) alive.add(sessionId);
+    if (isInteractive(sessionId)) driven.add(sessionId);
+  };
   note(job.orchestratorSessionId);
   for (const s of job.steps) {
     if (s.cancelled) continue;
@@ -48,6 +58,7 @@ export function withLiveness(
       orchestrator: isActive(job.orchestratorSessionId),
       stepIds,
       sessionIds: [...alive],
+      interactiveSessionIds: [...driven],
     },
   };
 }
@@ -58,6 +69,7 @@ export function serializeJob(
   job: JobRecord,
   isActive: (sessionId?: string) => boolean,
   launchStatusFor: (job: JobRecord) => JobLaunchStatus,
+  isInteractive?: (sessionId?: string) => boolean,
 ): JobWithLiveness {
-  return { ...withLiveness(job, isActive), launchStatus: launchStatusFor(job) };
+  return { ...withLiveness(job, isActive, isInteractive), launchStatus: launchStatusFor(job) };
 }

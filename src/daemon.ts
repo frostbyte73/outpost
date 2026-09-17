@@ -25,6 +25,7 @@ import { LaunchGovernor } from './work/launch-governor.js';
 import type { JobRecord } from './work/work-types.js';
 import { ensureActionsInstalled, bundledRepoDir } from './setup-actions.js';
 import { ActionsStore } from './storage/actions-store.js';
+import { InteractiveStore } from './session/interactive-store.js';
 import { ActionRegistry } from './actions/index.js';
 import { actionDirFor } from './actions/registry.js';
 import type { PermissionGroupMap } from './actions/types.js';
@@ -209,6 +210,7 @@ async function main() {
   const projectAllowlistDir = join(RUNTIME_DIR, 'allowlists');
   const outpostActionsDir = join(RUNTIME_DIR, 'actions');
   const actionsStore = new ActionsStore(join(RUNTIME_DIR, 'actions.json'));
+  const interactive = new InteractiveStore(join(RUNTIME_DIR, 'interactive-sessions.json'));
   const permissionGroups = loadRuntimePermissionGroups(PERMISSION_GROUPS_PATH, PERMISSION_GROUPS_SEEDED_PATH, permissionGroupsDefault as PermissionGroupMap);
   // Seed the bundled action defaults into ~/.outpost/actions before the registry
   // reads it — user-modified action dirs are left alone, so LiveKit-specific edits
@@ -414,6 +416,7 @@ async function main() {
     jobsDir: join(RUNTIME_DIR, 'jobs'),
     actionsStore,
     modes,
+    interactive,
     journalStore,
     actionRegistry,
     governor: launchGovernor,
@@ -714,6 +717,7 @@ async function main() {
           return rec && !rec.archivedAt ? rec.worktreePath : undefined;
         },
         actionForSession: (id) => engine.actionForSession(id),
+        interactiveFor: (id) => interactive.isInteractive(id),
         gatedForAction: (name) => actionRegistry.gatedFor(name),
         pinFor: (sid, tool, input) => engine.pinFor(sid, tool, input),
         onPinConsumed: (sid, callId, toolUseId) => engine.consumePin(sid, callId, toolUseId),
@@ -789,6 +793,9 @@ async function main() {
     },
     onMcp: (body) => handleMcpRequest(body, OUTPOST_MCP_TOOLS, {
       submit_plan: async (a) => {
+        // No stepId: an orchestrator's plan is refused against the JOB's orchestrator session.
+        const refusal = engine.interactiveRefusal(a.jobId as string);
+        if (refusal) throw new Error(refusal);
         engine.onPlanReady(
           a.jobId as string,
           (a.mode as 'initial' | 'replan') ?? 'initial',
@@ -810,6 +817,8 @@ async function main() {
         return { ok: true };
       },
       submit_step_output: async (a) => {
+        const refusal = engine.interactiveRefusal(a.jobId as string, a.stepId as string);
+        if (refusal) throw new Error(refusal);
         engine.onStepResolved(a.jobId as string, a.stepId as string, { output: a.output as string | undefined });
         return { ok: true };
       },
@@ -822,6 +831,8 @@ async function main() {
         return { ok: true };
       },
       submit_step_progress: async (a) => {
+        const refusal = engine.interactiveRefusal(a.jobId as string, a.stepId as string);
+        if (refusal) throw new Error(refusal);
         engine.onStepProgress(a.jobId as string, a.stepId as string, {
           memo: a.memo as string | undefined,
           phase: a.phase as string | undefined,
@@ -917,6 +928,12 @@ async function main() {
   registerSessionsRoutes(server, {
     sessionStore, manager, worktreeManager, queue, recurrence, allowlist,
     latestStatuslineBySession, cwdForSession, summarizeToolInput, captureSessionEnd,
+    interactive,
+    interactiveTarget: (id) => engine.interactiveTarget(id),
+    jobIdForSession: (id) => engine.jobIdForSession(id),
+    // engine.tick is async; the route doesn't wait on it — the WS broadcast is what tells
+    // the client anything happened.
+    tickJob: (id) => { void engine.tick(id); },
     info: {
       version: pkg.version,
       approvalTimeoutMs: APPROVAL_TIMEOUT_MS,
@@ -927,7 +944,7 @@ async function main() {
   });
   registerGitRoutes(server, { sessionStore, worktreeManager, engine, prWatcher, preferencesStore });
   registerProjectsRoutes(server, { sessionStore, projectRegistry });
-  registerJobsRoutes(server, { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, jobsDir: join(RUNTIME_DIR, 'jobs') });
+  registerJobsRoutes(server, { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, jobsDir: join(RUNTIME_DIR, 'jobs'), interactive });
   registerPushRoutes(server, { pushStore, pushSender, userPrsWatcher });
   registerMetaRoutes(server, {
     actionRegistry, permissionGroups, allowlist, allowlistPath: ALLOWLIST_PATH, projectAllowlistDir,
@@ -1057,7 +1074,7 @@ async function main() {
     if (!jobId) return;
     const owner = jobQueue.get(jobId);
     if (!owner) return;
-    try { notifyAll({ type: 'work_job_changed', jobId, job: serializeJob(owner, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job)) }); }
+    try { notifyAll({ type: 'work_job_changed', jobId, job: serializeJob(owner, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job), (id) => interactive.isInteractive(id)) }); }
     catch { /* notifyAll not in scope yet during startup */ }
   };
 
@@ -1247,7 +1264,7 @@ async function main() {
   // of whether Linear integration is configured.
   jobQueue.subscribe((ev) => {
     if (ev.kind === 'upsert') {
-      notifyAll({ type: 'work_job_changed', jobId: ev.jobId, job: serializeJob(ev.job, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job)) });
+      notifyAll({ type: 'work_job_changed', jobId: ev.jobId, job: serializeJob(ev.job, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job), (id) => interactive.isInteractive(id)) });
       const terminal = ev.job.state === 'done' || ev.job.state === 'failed' || ev.job.state === 'abandoned';
       // A schedule-spawned code.* job (createSpawnDeps.createJob) is a JobRecord like any
       // other — tag it with schedule context so it lands in the ledger as kind:'sched'

@@ -18,7 +18,7 @@ test('approval card appears, Approve triggers the tool result and final text', a
   await openSessionAtCwd(outpostPage, daemon, TEST_CWD);
 
   // Send a prompt to trigger Claude to emit the tool_use.
-  const composer = outpostPage.locator('#composer');
+  const composer = outpostPage.locator('.sv-composer');
   await expect(composer).toBeVisible({ timeout: 10_000 });
   await composer.click();
   await outpostPage.keyboard.type('do the thing');

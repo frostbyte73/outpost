@@ -9,6 +9,8 @@ import { stepLaunchBadge } from '../../vm/tracked.js';
 import { launchPillClass } from './ticket-row.js';
 import { isTerminalStep, hasUnapprovedDraft, draftAwaitsUser } from '../../vm/work-predicates.js';
 import { shortName } from '../../utils/formatting.js';
+import { isDriven, wheelRowHtml } from './wheel-toggle.js';
+import { sessionsApi } from '../../net/sessions.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
@@ -347,7 +349,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
           ${waitBlockHtml(s)}
           ${draftsHtml(s)}
           ${launchRowHtml(job, s)}
-          ${!orchestrated && s.sessionId ? `<div class="step-inline-session-mount" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
+          ${!orchestrated && s.sessionId ? `${wheelRowHtml(job, s.sessionId)}<div class="step-inline-session-mount${isDriven(job, s.sessionId) ? ' step-inline-session-mount--driven' : ''}" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
           ${orchestrated ? renderOrchestratedCard(s, { job }) : ''}
           ${refsHtml(refs)}
           ${output ? `<details class="plan-findings tl-findings"${findingsOpen ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Findings</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${output}</div></details>` : ''}
@@ -379,6 +381,17 @@ export function wireTimelineStep(el, job, s) {
         const ta = el.querySelector('[data-composer="step-retry"] textarea');
         void work.retryStep(job.id, s.id, (ta?.value ?? '').trim() || undefined)
           .catch((err) => alert(`Retry failed: ${err?.message ?? err}`));
+      }
+      else if (kind === 'take-wheel' || kind === 'hand-back') {
+        const sessionId = btn.getAttribute('data-wheel-session');
+        if (!sessionId) return;
+        const taking = kind === 'take-wheel';
+        // The re-enable matters only on failure: a successful call broadcasts
+        // work_job_changed, which repaints the card and discards this element.
+        btn.disabled = true;
+        void sessionsApi.setInteractive(sessionId, taking)
+          .catch((err) => alert(`${taking ? 'Take the wheel' : 'Hand back'} failed: ${err?.message ?? err}`))
+          .finally(() => { btn.disabled = false; });
       }
     });
   });

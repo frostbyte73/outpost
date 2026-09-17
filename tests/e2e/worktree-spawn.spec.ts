@@ -22,7 +22,7 @@ test.beforeEach(() => {
 
 test('worktree spawn: WorktreeManager creates a tree, session view opens', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, testRepo, { spawnMode: 'worktree', baseBranch: 'main' });
-  await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
   // Worktree creation is async; poll until it shows up. ~few hundred ms in practice.
   await expect.poll(
     () => execFileSync('git', ['-C', testRepo, 'worktree', 'list']).toString(),

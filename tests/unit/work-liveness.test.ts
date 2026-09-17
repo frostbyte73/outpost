@@ -59,7 +59,9 @@ describe('withLiveness', () => {
       { id: 's2', type: 'action', state: 'resolved', sessionId: 'dead' } as any,
     ] });
     const out = withLiveness(j, () => false);
-    expect(out.live).toEqual({ orchestrator: false, stepIds: [], sessionIds: [] });
+    expect(out.live).toEqual({
+      orchestrator: false, stepIds: [], sessionIds: [], interactiveSessionIds: [],
+    });
   });
 
   it('does not mutate or persist onto the original job', () => {
@@ -67,5 +69,20 @@ describe('withLiveness', () => {
     const out = withLiveness(j, () => true);
     expect((j as any).live).toBeUndefined();
     expect(out).not.toBe(j);
+  });
+
+  it('reports which sessions the user is driving, whether or not they are mid-turn', () => {
+    const j = job({
+      orchestratorSessionId: 'orch',
+      steps: [{ id: 'st1', type: 'action', state: 'running', sessionId: 'a' } as any],
+    });
+    const out = withLiveness(j, () => false, (id) => id === 'a');
+    expect(out.live.interactiveSessionIds).toEqual(['a']);
+    expect(out.live.sessionIds).toEqual([]);
+  });
+
+  it('defaults to nobody driving when no predicate is given', () => {
+    const j = job({ steps: [{ id: 'st1', type: 'action', state: 'running', sessionId: 'a' } as any] });
+    expect(withLiveness(j, () => true).live.interactiveSessionIds).toEqual([]);
   });
 });

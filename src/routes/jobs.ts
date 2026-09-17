@@ -7,6 +7,7 @@ import type { PrWatcher } from '../integrations/pr-watcher.js';
 import type { PrFilePatches } from '../integrations/pr-file-patches.js';
 import type { Scheduler } from '../schedules/scheduler.js';
 import type { SessionStore } from '../session/session-store.js';
+import type { InteractiveStore } from '../session/interactive-store.js';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 import { readJsonBody, readJsonObject } from './util.js';
 import { serializeJob } from '../work/job-liveness.js';
@@ -23,6 +24,7 @@ export interface JobsRoutesDeps {
   sessionStore: SessionStore;
   worktreeManager: WorktreeManager;
   jobsDir: string;
+  interactive: InteractiveStore;
 }
 
 const DEFAULT_EVENT_LIMIT = 500;
@@ -105,10 +107,11 @@ async function handleDraftDecision(
 }
 
 export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
-  const { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, jobsDir } = deps;
+  const { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, jobsDir, interactive } = deps;
 
   const serialize = (j: JobRecord) =>
-    serializeJob(j, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job));
+    serializeJob(j, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job),
+      (id) => interactive.isInteractive(id));
 
   server.route('GET', '/api/work/jobs', (_req, res) => {
     res.statusCode = 200;

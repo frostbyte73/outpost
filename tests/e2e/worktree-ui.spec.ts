@@ -98,7 +98,7 @@ test('palette worktree toggle + branch select spawns a worktree on the selected 
   await branchSelect.selectOption('feature-x');
 
   await launchSessionViaKeyboard(outpostPage);
-  await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
 
   const rec = await waitForWorktreeRecord(daemon);
   expect(rec.worktreePath).toContain('worktrees/');
@@ -118,7 +118,7 @@ test('non-git project shows no worktree toggle in the palette and spawns a share
   await expect(outpostPage.locator('.branch-select')).toHaveCount(0);
 
   await launchSessionViaKeyboard(outpostPage);
-  await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
 
   // No worktree record should have been created.
   await outpostPage.waitForTimeout(500);
@@ -178,7 +178,7 @@ seededTest('archiving a worktree session via the session header menu removes the
   const row = outpostPage.locator(`.sess-card[data-session-id="${SEED_SESSION_ID}"]`);
   await expect(row).toBeVisible({ timeout: 10_000 });
   await row.click();
-  await expect(outpostPage.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
 
   // Archive is a top-level header button, not a ⋯ menu item — the overflow menu
   // keeps only "Open diff" + the destructive "Delete" (session-view/index.js's

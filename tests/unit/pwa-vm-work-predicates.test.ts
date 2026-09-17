@@ -10,6 +10,19 @@ function job(overrides = {}) {
   return { id: 'j1', title: 'Job', state: 'executing', steps: [], ...overrides };
 }
 
+describe('stepNeedsYou — a driven session', () => {
+  it('a step the user is driving is waiting on them', () => {
+    const step = { id: 'st1', type: 'orchestrated', state: 'running', sessionId: 'a' };
+    expect(stepNeedsYou(step)).toBe(false);
+    expect(stepNeedsYou(step, new Set(['a']))).toBe(true);
+  });
+
+  it('a settled step is never waiting on them, driven or not', () => {
+    const step = { id: 'st1', type: 'orchestrated', state: 'resolved', sessionId: 'a' };
+    expect(stepNeedsYou(step, new Set(['a']))).toBe(false);
+  });
+});
+
 describe('stepNeedsYou', () => {
   // Merging is the controller's own move (code.merge-pr) and runs unattended; only a
   // voluntary `gate` move from the controller parks it as the user's turn.

@@ -42,7 +42,7 @@ async function openSeededSession(page: import('@playwright/test').Page): Promise
   const row = page.locator(`.sess-card[data-session-id="${SESSION_ID}"]`);
   await expect(row).toBeVisible({ timeout: 10_000 });
   await row.click();
-  await expect(page.locator('#composer')).toBeVisible({ timeout: 10_000 });
+  await expect(page.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
 }
 
 test('two devices on the same session see each other\'s activity', async ({ daemon, outpostPage, browser }) => {
@@ -59,14 +59,14 @@ test('two devices on the same session see each other\'s activity', async ({ daem
     // Send from device A → "hello back" on both devices. Scoped to the transcript —
     // the Sessions surface's list card also shows a live last-turn preview of the
     // same text, so an unscoped page-wide getByText matches both (strict-mode violation).
-    await outpostPage.locator('#composer').click();
+    await outpostPage.locator('.sv-composer').click();
     await outpostPage.keyboard.type('from-a');
     await outpostPage.keyboard.press('Enter');
     await expect(outpostPage.locator('.sv-transcript').getByText('hello back')).toBeVisible({ timeout: 10_000 });
     await expect(pageB.locator('.sv-transcript').getByText('hello back')).toBeVisible({ timeout: 10_000 });
 
     // Send from device B → "second response" on both devices.
-    await pageB.locator('#composer').click();
+    await pageB.locator('.sv-composer').click();
     await pageB.keyboard.type('from-b');
     await pageB.keyboard.press('Enter');
     await expect(pageB.locator('.sv-transcript').getByText('second response')).toBeVisible({ timeout: 10_000 });
