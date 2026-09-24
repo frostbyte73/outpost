@@ -789,11 +789,25 @@ export class WorkEngine {
   }
 
   // Launch-queue status for a job's orchestrator and each of its steps (PWA consumes this).
+  // A step's own key covers a launch of the controller itself; a fan-out child is parked under
+  // `${jobId}#${stepId}#${dispatchId}`, which nothing used to ask about — so the one step whose
+  // work was sitting behind a busy slot rendered as idle, while its card went on quoting the
+  // `waitingOn.reason` written when the fan-out began. Fold the children in so the step reports
+  // the queue it is actually in. Its own launch wins: that is the controller, not a child of it.
   launchStatusFor(job: JobRecord): { job: LaunchState; steps: Record<string, LaunchState> } {
     const gov = this.opts.governor;
     const idle: LaunchState = { state: 'idle' };
     const steps: Record<string, LaunchState> = {};
-    for (const s of job.steps) steps[s.id] = gov ? gov.describe(`${job.id}#${s.id}`) : idle;
+    for (const s of job.steps) {
+      let state = gov ? gov.describe(`${job.id}#${s.id}`) : idle;
+      if (gov && state.state === 'idle' && s.type === 'orchestrated') {
+        for (const d of s.dispatches) {
+          const child = gov.describe(`${job.id}#${s.id}#${d.id}`);
+          if (child.state !== 'idle') { state = child; break; }
+        }
+      }
+      steps[s.id] = state;
+    }
     return { job: gov ? gov.describe(`${job.id}#orchestrator`) : idle, steps };
   }
 
@@ -813,6 +827,15 @@ export class WorkEngine {
   // A step-review is the exception that needs clearing rather than re-launching: its session
   // died with the previous process, so the gate would block every dispatch forever. Drop it
   // and let owesStepReview re-fire on the next tick, which spawns a fresh review.
+  //
+  // A `queued` dispatch is the case decide() cannot cover, because a dispatch is not a step:
+  // its parent controller is parked in `waiting`, so decide() correctly leaves the step alone
+  // and nothing re-emits the child. `queued` means only that its launch closure sat in the
+  // governor's in-memory map when the process ended — the flip to `running` happens inside that
+  // closure — so it strands in a state no one re-drives while untilAllDispatchesDone holds the
+  // controller open forever. One review step waited 44 days that way. Re-driven rather than
+  // failed (reconcileInterruptedSteps' treatment for the `running` orphan): this one never ran,
+  // so there is nothing to recover from and no reason to spend one of its attempts.
   reconcilePendingLaunches(): void {
     for (const j of this.opts.queue.list()) {
       if (j.reviewingStepId) {
@@ -820,6 +843,16 @@ export class WorkEngine {
       }
       if (j.state === 'planning' && !j.orchestratorSessionId) {
         void this.spawnInitialOrchestrator(j, j.orchestratorAction ?? 'meta.orchestrate');
+      }
+      if (j.state === 'done' || j.state === 'abandoned') continue;
+      for (const s of j.steps) {
+        if (s.type !== 'orchestrated' || s.cancelled) continue;
+        if (s.state === 'resolved' || s.state === 'failed') continue;
+        for (const d of s.dispatches) {
+          if (d.status !== 'queued') continue;
+          void this.spawnDispatchSession(j.id, s.id, d).catch((e) =>
+            console.error(`[work] re-driving dispatch ${d.id} on ${j.id}: ${(e as Error).message}`));
+        }
       }
     }
   }
