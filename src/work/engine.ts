@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import type { JobQueue } from './work-queue.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
@@ -2468,7 +2469,15 @@ export class WorkEngine {
   // the step's controller's call, and it learns of them from the matching inbox event, not
   // from this. `iterations` is not a fact; it is the watcher pruning a replies round that a
   // restart stranded in_progress, which only the observer of the new comments can know is dead.
+  //
+  // A sweep re-reads every live PR whether or not anything moved, so applying what it read
+  // unconditionally stamped updatedAt on an idle PR every hour. The tracked list sorts on that
+  // and renders it as the row's age, so a step nobody had touched in six weeks sat at the top
+  // reading "2m ago". Nothing else reads the bump, so a sweep that learned nothing writes nothing.
   applyPrFacts(jobId: string, stepId: string, facts: Partial<PrFacts>, iterations?: IterationRecord[]): void {
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    if (!iterations && step?.type === 'orchestrated'
+      && isDeepStrictEqual({ ...(step.pr ?? {}), ...facts }, step.pr ?? {})) return;
     this.mutateStep(jobId, stepId, (s) => s.type === 'orchestrated'
       ? {
         ...s,
