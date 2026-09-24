@@ -67,8 +67,10 @@ export const schedulesStore = {
 
   // WS events: `schedules_changed` carries no payload (list-shape change — create/
   // update/delete/duplicate/pause) so it just triggers a refetch; `schedule_run_changed`
-  // carries `{scheduleId, run}` and patches that schedule's run list in place (a run's
-  // start/finish/skip), no refetch needed.
+  // carries `{scheduleId, run, nextRunAt}` and patches that schedule's run list in place
+  // (a run's start/finish/skip), no refetch needed. `nextRunAt` rides along because a
+  // fire is the only thing that advances it and emits no list-shape event — patching the
+  // runs alone left the card rendering the fire time that just passed, i.e. "overdue".
   applyWsEvent(msg) {
     if (!msg || typeof msg.type !== 'string') return;
     if (msg.type === 'schedules_changed') {
@@ -85,7 +87,10 @@ export const schedulesStore = {
           : [run, ...existing];
         const runsBySchedule = new Map(s.runsBySchedule);
         runsBySchedule.set(scheduleId, nextRuns);
-        return { ...s, runsBySchedule };
+        const schedules = 'nextRunAt' in msg
+          ? s.schedules.map((sch) => (sch.id === scheduleId ? { ...sch, nextRunAt: msg.nextRunAt } : sch))
+          : s.schedules;
+        return { ...s, schedules, runsBySchedule };
       });
     }
   },

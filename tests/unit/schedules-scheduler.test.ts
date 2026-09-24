@@ -140,6 +140,25 @@ describe('Scheduler — once triggers', () => {
 });
 
 describe('Scheduler — run-now / guards / spawn dispatch', () => {
+  // A cron fire is the only thing that advances nextRunAt and it emits no list-shape event,
+  // so the run event has to carry the advanced value or clients keep rendering the fire time
+  // that just passed (which reads as "overdue").
+  it('a cron fire notifies with a nextRunAt past the fire', async () => {
+    const store = new SchedulesStore(tmpPath());
+    const created = store.create(input({ trigger: { kind: 'cron', expr: '* * * * * *' } }));
+    let notified: (m: { nextRunAt: number | null; run: { startedAt: number } }) => void;
+    const firstNotify = new Promise<{ nextRunAt: number | null; run: { startedAt: number } }>((r) => { notified = r; });
+    const scheduler = makeScheduler(store, {
+      spawn: { spawnSkillSession: () => ({ sessionId: 'sess-cron' }) },
+      notify: (m) => notified(m as { nextRunAt: number | null; run: { startedAt: number } }),
+    });
+    scheduler.start();
+
+    const msg = await firstNotify;
+    expect(msg.nextRunAt).toBeGreaterThan(msg.run.startedAt);
+    expect(msg.nextRunAt).toBe(scheduler.nextRunAt(created.id));
+  });
+
   it('runNow bypasses the enabled flag and guards', async () => {
     const store = new SchedulesStore(tmpPath());
     const created = store.create(input({ enabled: false, guards: [{ kind: 'usage-threshold', window: '7d', op: '>', value: 0 }] }));

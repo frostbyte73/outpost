@@ -49,7 +49,7 @@ export interface SchedulerDeps {
   // Optional — omit in tests that only exercise skill/prompt spawn logic, not script/native.
   inline?: SchedulerInlineDeps;
   // Wired to the daemon's `notifyAll` (src/daemon.ts). Fired with
-  // `{type:'schedule_run_changed', scheduleId, run}` on run start/finish/skip.
+  // `{type:'schedule_run_changed', scheduleId, run, nextRunAt}` on run start/finish/skip.
   notify?: (message: unknown) => void;
   now?: () => number;
 }
@@ -331,7 +331,9 @@ export class Scheduler {
     return updated;
   }
 
+  // `nextRunAt` rides along: a cron fire advances it and emits no list-shape event, so a client
+  // that only patched the run list kept showing the fire time that had just passed as the next one.
   private notify(scheduleId: string, run: ScheduleRun): void {
-    this.deps.notify?.({ type: 'schedule_run_changed', scheduleId, run });
+    this.deps.notify?.({ type: 'schedule_run_changed', scheduleId, run, nextRunAt: this.nextRunAt(scheduleId) });
   }
 }
