@@ -9,7 +9,7 @@ const LINEAR_SCRIPT = String.raw`
 set -euo pipefail
 resp=$(curl -fsS -X POST https://api.linear.app/graphql \
   -H "authorization: $LINEAR_API_TOKEN" -H 'content-type: application/json' \
-  -d '{"query":"query { viewer { assignedIssues(filter: { state: { type: { in: [\"unstarted\", \"started\"] } } }, first: 50) { nodes { id identifier url title description } } } }"}')
+  -d '{"query":"query { viewer { assignedIssues(filter: { state: { type: { in: [\"backlog\", \"unstarted\", \"started\"] } } }, first: 50) { nodes { id identifier url title description } } } }"}')
 echo "$resp" | jq -c '.data.viewer.assignedIssues.nodes[]' | while read -r issue; do
   identifier=$(echo "$issue" | jq -r .identifier)
   url=$(echo "$issue" | jq -r .url)
