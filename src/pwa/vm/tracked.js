@@ -44,6 +44,22 @@ export function trackedGroups(jobs = []) {
   return { running, needsYou: needsYouJobs, waiting, backlog, done };
 }
 
+// The tracked column's own ordering: one flat list of everything still live, most
+// recently active first, with Done kept as its own group. Bucketing the live jobs by
+// attention (Running / Needs you / Waiting / Backlog) sank the job the user was actually
+// working on to the bottom of the column the moment it parked on CI or a dispatch, since
+// "Waiting" sits under both groups above it. The row's tone icon still carries the
+// needs-you signal (jobTone), so the split was buying ordering, not information.
+export function trackedRows(jobs = []) {
+  const active = [], done = [];
+  for (const j of jobs) {
+    if (j.state === 'done' || j.state === 'abandoned') done.push(j);
+    else active.push(j);
+  }
+  active.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+  return { active, done };
+}
+
 function waitingStep(job) {
   const driven = new Set(job.live?.interactiveSessionIds ?? []);
   return (job.steps ?? []).find((s) => !s.cancelled && stepNeedsYou(s, driven));

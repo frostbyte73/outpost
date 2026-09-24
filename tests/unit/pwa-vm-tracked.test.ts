@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
-import { trackedGroups, focusAction, launchBadge, jobLaunchBadge, stepLaunchBadge, isHighPriority, orchestratedRows } from '../../src/pwa/vm/tracked.js';
+import { trackedGroups, trackedRows, focusAction, launchBadge, jobLaunchBadge, stepLaunchBadge, isHighPriority, orchestratedRows } from '../../src/pwa/vm/tracked.js';
 
 const live = (orchestrator: boolean, stepIds: string[] = []) => ({ orchestrator, stepIds });
 
@@ -82,6 +82,20 @@ describe('trackedGroups', () => {
     const g = trackedGroups(jobs);
     expect(g.running.map((j: any) => j.id)).toEqual(['j1']);
     expect(g.needsYou).toEqual([]);
+  });
+});
+
+describe('trackedRows', () => {
+  it('orders live jobs by updatedAt regardless of attention bucket, done last', () => {
+    const jobs = [
+      { id: 'gated', state: 'executing', updatedAt: 10, steps: [{ id: 's1', type: 'orchestrated', state: 'gate_pending_approval' }] },
+      { id: 'done', state: 'done', updatedAt: 99, steps: [] },
+      { id: 'parked', state: 'executing', updatedAt: 30, steps: [{ id: 's1', type: 'orchestrated', state: 'waiting', phase: 'pr_open' }] },
+      { id: 'failed', state: 'failed', updatedAt: 20, steps: [] },
+    ];
+    const { active, done } = trackedRows(jobs);
+    expect(active.map((j: any) => j.id)).toEqual(['parked', 'failed', 'gated']);
+    expect(done.map((j: any) => j.id)).toEqual(['done']);
   });
 });
 

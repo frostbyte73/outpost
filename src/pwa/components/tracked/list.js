@@ -1,11 +1,11 @@
-// Tracked list column — jobs bucketed by attention priority (vm/tracked.js's
-// trackedGroups), rendered as o-row cards. Reuses ticket-row.js's pure
+// Tracked list column — live jobs most-recently-active first, then Done (vm/tracked.js's
+// trackedRows), rendered as o-row cards. Reuses ticket-row.js's pure
 // derivation (jobTone/ago/stepDots) rather than reimplementing job-state math.
 
 import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
 import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
-import { trackedGroups, jobLaunchBadge } from '../../vm/tracked.js';
+import { trackedRows, jobLaunchBadge } from '../../vm/tracked.js';
 import { jobTone, ago, stepDots, launchPillClass } from '../work/ticket-row.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -55,12 +55,9 @@ export function renderTrackedList(body) {
   let doneOpen = false;
   const paint = () => {
     const jobs = work.get().jobs ?? [];
-    const { running, needsYou, waiting, backlog, done } = trackedGroups(jobs);
+    const { active, done } = trackedRows(jobs);
     const html = [
-      groupHtml('Running', running),
-      groupHtml('Needs you', needsYou),
-      groupHtml('Waiting', waiting),
-      groupHtml('Backlog', backlog),
+      groupHtml('Active', active),
       collapsedGroupHtml('Done', done, doneOpen),
     ].join('');
     // Guarded: a work-store event for ANY job notifies every subscriber, and a
