@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -967,6 +967,56 @@ describe('WorktreeManager — base freshness on re-provision', () => {
     // The pre-existing commit is the entire diff; without the fix baseRef named the moved
     // origin/main, so a squash would have rewound past 6 upstream commits and swallowed them.
     expect(runGitDiff(rec, 'branch')).toBe('');
+  });
+});
+
+// CSCU-93: the user merged the PR and cleaned up the branch + worktree by hand, which leaves the
+// index record un-archived pointing at a directory that is gone. provision() handed that path
+// back, and every later round spawned claude with a cwd that doesn't exist — which Node reports
+// as `spawn /opt/homebrew/bin/claude ENOENT`, naming the binary, so it reads as a broken install.
+describe('WorktreeManager — a live record whose tree was removed behind its back', () => {
+  it('re-creates the worktree when the user removed it with git', async () => {
+    const { local } = makeClonePair();
+    const ws = { kind: 'writable' as const, repoCwd: local, branch: 'feat/merged-and-cleaned' };
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-cleaned', ws);
+    execFileSync('git', ['-C', local, 'worktree', 'remove', '--force', '--', path!]);
+    execFileSync('git', ['-C', local, 'branch', '-D', '--', 'feat/merged-and-cleaned']);
+    expect(existsSync(path!)).toBe(false);
+
+    const again = await m.provision('step-cleaned', ws);
+
+    expect(again.path).toBe(path);
+    expect(existsSync(again.path!)).toBe(true);
+  });
+
+  it('re-creates the worktree when the directory was deleted without git', async () => {
+    const { local } = makeClonePair();
+    const ws = { kind: 'writable' as const, repoCwd: local, branch: 'feat/rm-rf' };
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-rmrf', ws);
+    rmSync(path!, { recursive: true, force: true });
+
+    const again = await m.provision('step-rmrf', ws);
+
+    expect(again.path).toBe(path);
+    expect(existsSync(again.path!)).toBe(true);
+  });
+
+  it('re-creates a readonly checkout the same way', async () => {
+    const { local } = makeClonePair();
+    const ws = { kind: 'readonly' as const, repoCwd: local };
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const { path } = await m.provision('step-ro-gone', ws);
+    rmSync(path!, { recursive: true, force: true });
+
+    const again = await m.provision('step-ro-gone', ws);
+
+    expect(again.path).toBe(path);
+    expect(existsSync(again.path!)).toBe(true);
   });
 });
 

@@ -262,18 +262,29 @@ export class WorktreeManager {
     if (!ref.repoCwd || typeof ref.repoCwd !== 'string') {
       throw new Error(`workspace.${ref.kind} requires repoCwd (got ${JSON.stringify(ref.repoCwd)})`);
     }
-    if (this.records.has(stepId)) {
-      const rec = this.records.get(stepId)!;
-      if (!rec.archivedAt) {
+    const live = this.records.get(stepId);
+    if (live && !live.archivedAt) {
+      if (existsSync(live.worktreePath)) {
         // The tree survives across rounds; its base must not. Readonly stays pinned on purpose —
         // it is a detached snapshot, and moving it under a step that already reported findings
         // against those line numbers is worse than reading a slightly older tree.
         if (ref.kind === 'writable') {
-          await this.alignToBase(rec);
+          await this.alignToBase(live);
           this.persist();
         }
-        return { path: rec.worktreePath };
+        return { path: live.worktreePath };
       }
+      // A record only describes a provisioned tree while the directory is still there. Cleaning up
+      // by hand after a merge (`git worktree remove`, or an `rm -rf`) leaves it un-archived naming
+      // nothing, and handing that path back spawns every later round with a cwd that doesn't
+      // exist — which Node reports as `spawn <claude> ENOENT`, naming the binary, so it reads as a
+      // broken install rather than a missing directory. Drop it and cut a fresh one. The prune is
+      // for the `rm -rf` half: git still has `.git/worktrees/<id>` registered and refuses to add.
+      try {
+        execFileSync('git', ['-C', live.projectCwd, 'worktree', 'prune'], { stdio: 'pipe' });
+      } catch { /* best-effort; `worktree add` reports anything that actually blocks it */ }
+      this.records.delete(stepId);
+      this.persist();
     }
     if (opts.expectRepo) await assertOriginRepo(ref.repoCwd, opts.expectRepo);
     if (ref.kind === 'writable') {
