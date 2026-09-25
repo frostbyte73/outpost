@@ -145,6 +145,30 @@ function dispatchFeedHtml(d) {
   return `<div class="orc-dispatch-feed step-inline-session-mount" data-session-id="${escapeHtml(d.sessionId)}"></div>`;
 }
 
+// A brief is the child's ENTIRE context — `code.orchestrate-pr`'s SKILL.md tells the
+// controller to write one that stands alone, so these run past 10k characters of markdown.
+// The row rendered it raw and uncollapsed, which buried the whole card under one dispatch.
+//
+// The body is filled on open rather than at paint: a collapsed <details> still costs its full
+// markup in every repaint's innerHTML, and the drill-in rebuilds several times a minute on a
+// live job (same reason the PR-comment hunks render 20 rows and not the rest).
+function briefHtml(d) {
+  if (!d.brief) return '';
+  return `
+    <details class="orc-dispatch-brief" data-brief="${escapeHtml(d.id)}" data-details-key="orc-brief-${escapeHtml(d.id)}">
+      <summary><span class="orc-dispatch-brief-lead">${escapeHtml(briefLead(d.brief))}</span></summary>
+      <div class="orc-dispatch-brief-body md-body" data-brief-body></div>
+    </details>`;
+}
+
+// Controllers open a brief with a one-sentence statement of the job before the **PR:** /
+// **Base branch:** block, so the first non-empty line is the summary line worth showing.
+function briefLead(brief) {
+  const line = brief.split('\n').find((l) => l.trim()) ?? '';
+  const flat = line.replace(/[*_`#>]/g, '').trim();
+  return flat.length > 140 ? `${flat.slice(0, 139)}…` : flat;
+}
+
 function dispatchRowHtml(d) {
   const cat = actionCategory(d.action);
   return `
@@ -155,7 +179,7 @@ function dispatchRowHtml(d) {
       ${d.sessionId
         ? `<button type="button" class="o-btn o-btn--ghost sm orc-dispatch-open" data-orc-session="${escapeHtml(d.sessionId)}">Open ↗</button>`
         : ''}
-      ${d.brief ? `<div class="orc-dispatch-brief">${escapeHtml(d.brief)}</div>` : ''}
+      ${briefHtml(d)}
       ${d.failure ? `<div class="orc-dispatch-failure">${escapeHtml(d.failure)}</div>` : ''}
       ${dispatchFeedHtml(d)}
       ${d.draft ? renderWriteDraft(d.draft) : ''}
@@ -309,6 +333,20 @@ function openTrail(trail, slug) {
   trail.classList.toggle('is-open', slug != null);
 }
 
+// restoreUi re-opens a <details> by assigning `open`, which fires `toggle` the same as a
+// click, so a brief the user had open refills itself after a repaint.
+function wireBriefs(card, vm) {
+  vm.dispatchRows.forEach((d) => {
+    if (!d.brief) return;
+    const el = card.querySelector(`[data-brief="${CSS.escape(d.id)}"]`);
+    const body = el?.querySelector('[data-brief-body]');
+    if (!body) return;
+    el.addEventListener('toggle', () => {
+      if (el.open && !body.innerHTML) body.innerHTML = renderMarkdown(d.brief);
+    });
+  });
+}
+
 function wireTrail(card) {
   const trail = card.querySelector('[data-trail]');
   if (!trail) return;
@@ -329,6 +367,7 @@ export function wireOrchestratedCard(el, step, { job } = {}) {
   }
   wireOverflowMenu(card);
   wireTrail(card);
+  wireBriefs(card, vm);
 
   // The controller's own draft and each dispatch's are self-contained cards (their own
   // Accept/Propose changes/Deny) — wireWriteDraft finds its own markup by draft id inside

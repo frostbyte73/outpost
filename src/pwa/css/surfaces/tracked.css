@@ -719,8 +719,34 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   line-height: 1.5;
   overflow-wrap: anywhere;
 }
-.orc-dispatch-brief { color: var(--text-mute); }
 .orc-dispatch-failure { color: var(--danger); }
+/* Same chevron-labelled disclosure as .pr-disclosure, at the row's own 12px. */
+.orc-dispatch-brief > summary {
+  cursor: pointer; user-select: none;
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  color: var(--text-mute);
+  list-style: none;
+}
+.orc-dispatch-brief > summary::-webkit-details-marker { display: none; }
+.orc-dispatch-brief > summary::before {
+  content: '▸';
+  flex: none;
+  color: var(--text-dim);
+  transition: transform var(--dur-1) var(--ease);
+}
+.orc-dispatch-brief[open] > summary::before { transform: rotate(90deg); }
+.orc-dispatch-brief > summary:hover { color: var(--text); }
+/* The lead is already truncated to 140 chars, but a narrow row would still wrap it to two —
+   the collapsed form is a one-line label or it isn't a label. */
+.orc-dispatch-brief-lead {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.orc-dispatch-brief-body { margin-top: 6px; }
 /* A dispatch-raised write draft is a full-bleed block same as brief/failure above — without
    this it auto-places into the grid's first (auto-sized) column and renders crushed. */
 .orc-dispatch .wd-card { grid-column: 1 / -1; }

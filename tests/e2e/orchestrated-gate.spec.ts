@@ -144,7 +144,15 @@ seededTest('renders the controller, phase, dispatches and the gate draft as sepa
   await expect(dispatch).toHaveCount(1);
   await expect(dispatch.locator('.type-mono')).toHaveText('implement');
   await expect(dispatch.locator('.o-pill')).toHaveText('done');
-  await expect(dispatch.locator('.orc-dispatch-brief')).toHaveText('Build the widget');
+  // A brief is the child's whole context, so controllers write them 10k characters long. The
+  // row shows the lead line and renders the body only once it's opened — a collapsed
+  // <details> still costs its markup in every repaint's innerHTML, and this one rebuilds
+  // several times a minute on a live job.
+  const brief = dispatch.locator('.orc-dispatch-brief');
+  await expect(brief.locator('.orc-dispatch-brief-lead')).toHaveText('Build the widget');
+  await expect(brief.locator('[data-brief-body]')).toBeEmpty();
+  await brief.locator('summary').click();
+  await expect(brief.locator('[data-brief-body]')).toContainText('Build the widget');
 
   // Gate row: the question heads it, the drafted move renders as markdown below.
   await expect(card.locator('.tl-gate-head')).toContainText(QUESTION);
