@@ -2,27 +2,52 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "code.review-diff input",
   "type": "object",
-  "required": ["workspace"],
   "properties": {
     "workspace": {
       "type": "object",
-      "required": ["repoCwd", "branch"],
+      "required": [
+        "repoCwd",
+        "branch"
+      ],
       "properties": {
-        "repoCwd": { "type": "string" },
-        "branch": { "type": "string" }
-      }
+        "repoCwd": {
+          "type": "string"
+        },
+        "branch": {
+          "type": "string"
+        }
+      },
+      "description": "Omit when passing worktreePath \u2014 a worktreePath review is dispatched with workspace {\"kind\":\"none\"} and has no checkout of its own."
     },
     "context": {
       "type": "object",
       "properties": {
-        "goal": { "type": "string" },
-        "approach": { "type": "string" },
-        "risks": { "type": "string" }
+        "goal": {
+          "type": "string"
+        },
+        "approach": {
+          "type": "string"
+        },
+        "risks": {
+          "type": "string"
+        },
+        "spec": {
+          "type": "string",
+          "description": "The approved design spec, as markdown. Present when the caller wants the implementation checked against its intent, not just linted."
+        },
+        "implPlan": {
+          "type": "string",
+          "description": "The task-by-task implementation plan, as markdown."
+        }
       }
     },
     "diffRange": {
       "type": "string",
       "description": "Optional git diff range to review instead of the uncommitted working-tree diff, e.g. \"<merge-base>...<head>\" (three-dot form). Omit to review the uncommitted diff as before."
+    },
+    "worktreePath": {
+      "type": "string",
+      "description": "Absolute path of the worktree holding the diff. When set, run every git read as `git -C <worktreePath> \u2026` and read files under it instead of the session's own cwd. Used when reviewing a controller's uncommitted work, which a checkout of the branch would not contain."
     }
   },
   "additionalProperties": false

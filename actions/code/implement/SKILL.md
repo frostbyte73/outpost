@@ -14,7 +14,7 @@ outpost:
 
 # Project implementer
 
-You're running in the worktree `code.orchestrate-pr` owns, bound to the *initial* implementation round of its step. Your job: implement the change as **uncommitted file edits** in the worktree, then hand the session back to the controller with `mcp__outpost__submit_step_progress`. The user reviews via the PWA's git view and handles every git operation themselves — `git add`, `git commit`, `git push`, `gh pr create`. Your output is files; the user takes it from there, and the controller parks on a `wait` until the PR appears.
+You're running in the worktree `code.orchestrate-pr` owns, bound to the *initial* implementation round of its step. Your job: implement the change as **uncommitted file edits** in the worktree, then hand the session back to the controller with `mcp__outpost__submit_step_progress`. The user reviews via the PWA's git view and handles every git operation themselves — `git add`, `git commit`, `git push`, `gh pr create`. Your output is files; the controller then puts them through a fresh-context review (its ladder rows 5-7) and binds you again for anything blocking, before the user is ever shown the diff.
 
 **This round ends with exactly one `mcp__outpost__submit_step_progress` call, then you stop.** A round that ends without one is read as a hang and fails the whole step — the implementation included.
 
@@ -87,7 +87,37 @@ Don't expand scope. A bug fix fixes the bug; it doesn't refactor the surrounding
 
 Run the project's tests at least once before declaring done. If the repo has linting or type-checking, run that too. The command lives in the repo's `CLAUDE.md` / `README.md` / `package.json` scripts — use what the repo defines, not a guess.
 
+## Step 2a — When this round is addressing review findings
+
+After the initial implementation, `code.orchestrate-pr` dispatches fresh review sessions at
+your worktree and binds you again with what they found (its ladder rows 5-7). You can tell:
+`boundNote` carries blocking findings and names a pass number. That round is narrower than the
+first one.
+
+- **Fix what was found, and nothing else.** A review round is not an invitation to revisit the
+  design. Widening the diff here invalidates the pass that just ran and buys another one.
+- **Push back rather than complying with a finding you believe is wrong.** The reviewer read
+  the code without your context and can be mistaken. Say why in `artifacts.reviewFixes` — the
+  controller carries declines into the next pass's brief so the lens doesn't re-raise them.
+  Silently not fixing something, on the other hand, reads as an oversight and gets re-found.
+- **Write `artifacts.reviewFixes`** on the same submit. It names the pass and is what tells the
+  ladder this round happened — without it the controller re-runs the same fix round:
+
+```
+addressed pass 2
+
+- src/work/engine.ts:412 — <what you changed>
+- src/pwa/app.js:88 — declined: <why the finding does not hold>
+```
+
+Also refresh `artifacts.implementation` so it describes the code as it now stands, and write a
+`commitMessage` for this round's diff as usual.
+
 ## Step 3 — Self-review the diff
+
+This is a hygiene pass over your own work, not the review — a fresh session does that in
+rows 5-7 above, because you cannot catch what you were already wrong about. Keep it cheap and
+don't treat it as the thing that makes the diff ready.
 
 Before finishing, read your own working-tree diff (`git diff`) end-to-end. Things to actively look for:
 
@@ -108,7 +138,7 @@ ToolSearch({ query: "select:mcp__outpost__submit_step_progress,mcp__outpost__sub
 
 If `submit_step_progress` doesn't come back, say so and stop — the daemon does not scrape the transcript, and a round that never submits fails the step.
 
-`artifacts.implementation` is the **only** durable signal that the implementation is finished. Nothing else in the envelope can say so: the edits are uncommitted, there is no PR yet, and `phase` is just a label. The controller's ladder reads this artifact to stop running implement rounds and start waiting for the PR — so write it, and make it a real summary rather than "done":
+`artifacts.implementation` is the **only** durable signal that the implementation is finished. Nothing else in the envelope can say so: the edits are uncommitted, there is no PR yet, and `phase` is just a label. The controller's ladder reads this artifact to stop running implement rounds and dispatch the review lenses — so write it, and make it a real summary rather than "done":
 
 ```
 mcp__outpost__submit_step_progress({

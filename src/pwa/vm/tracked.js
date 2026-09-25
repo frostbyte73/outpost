@@ -161,6 +161,7 @@ const PHASE_LABEL = {
   spec: 'Spec',
   plan: 'Plan',
   implement: 'Implement',
+  review: 'Review',
   pr_open: 'PR open',
   pr_comments: 'PR comments',
   conflict: 'Conflict',

@@ -184,7 +184,7 @@ was not drafted and must not go out.
 
 **Dispatch is for the lenses, and only the lenses.** Children are read-only by construction
 (`workspace: {"kind":"writable"}` on a dispatch is rejected) and nothing in this step edits a
-tree anyway, so the whole fan-out is the three review lenses in rung 3. Everything after that
+tree anyway, so the whole fan-out is the review lenses in rung 3. Everything after that
 is a self-round in *your* session, because it needs the review reasoning that lives here.
 
 **Phase vocabulary.** Seven you set yourself: `triage`, `lenses`, `synthesis`,
@@ -267,22 +267,24 @@ gh pr diff "$PR_URL" --name-only
 git fetch origin <baseRefName>
 ```
 
-Pick the lenses from the file list:
+**The default is `code.review-diff`, alone.** It reads the change as a whole and it is the one
+lens every review runs.
 
-- `code.review-diff` — always.
-- `code.security-review` — always. Somebody else's PR is exactly the case where you do not get
-  to assume good faith about a dependency bump or a new endpoint.
-- `code.review-ui` — only when the PR touches PWA paths (`src/pwa/**`, `*.css`, `*.html`, or
-  the equivalent in whatever repo this is). Dispatching it against a backend-only diff spends
-  a child session to be told there is no UI.
+`code.security-review` and `code.review-ui` are **on request only** — add one when, and only
+when, the user has asked for it, in `inputs.goal` or a `user-message` ("security pass on this
+one", "check the UI"). Do not infer the request from the file list. "Always run the security
+lens on somebody else's PR" and "run the UI lens whenever the diff touches `src/pwa/**`" both
+read as prudent and in practice fire on nearly every PR, which turns a review the user wanted
+once into a standing cost. If a diff looks to you like it warrants one, put that in the review
+you post and let the user call it.
 
-Then dispatch them **in one move**, in parallel:
+Then dispatch what you picked **in one move** — in parallel if the user asked for more than
+one:
 
 ```
 { kind: "dispatch", dispatches: [
-  { action: "code.review-diff",      brief: "…", inputs: { workspace: { repoCwd: "<envelope workspace.repoCwd>", branch: "<headRefName>" }, diffRange: "origin/<baseRefName>...<headRefOid>" } },
-  { action: "code.security-review",  brief: "…", inputs: { … same shape … } },
-  { action: "code.review-ui",        brief: "…", inputs: { … same shape … } }
+  { action: "code.review-diff",      brief: "…", inputs: { workspace: { repoCwd: "<envelope workspace.repoCwd>", branch: "<headRefName>" }, diffRange: "origin/<baseRefName>...<headRefOid>" } }
+  // + code.security-review / code.review-ui, same shape, ONLY if the user asked for them
 ] }
 ```
 
@@ -298,14 +300,15 @@ base branch after the fork and the lens would flag other people's code as the PR
 instead — `gh api "repos/{owner}/{repo}/compare/<base>...<head>"`, field
 `.merge_base_commit.sha` — and pass `<mergeBaseSha>...<headRefOid>`.
 
-**Write briefs that stand alone, and that say what the other lenses are covering.** A child's
+**Write briefs that stand alone, and say what any other lens is covering.** A child's
 context is its brief plus the job's own title and description: it cannot see your memo, your
-artifacts, the `pr` facts, or the other two children.
+artifacts, the `pr` facts, or its siblings.
 Each brief needs the PR URL and number, its title and what its description claims it does, the
 author, the base branch, the file list (or its shape, if it is long), `inputs.goal` if the
-review is narrower than general, and **one line naming the other lenses running in parallel and
-what each owns**. Without that line all three report the same missing error handling from three
-angles and you spend the synthesis round deleting duplicates. Tell each child to finish by
+review is narrower than general, and — when the user asked for a second or third lens — **one
+line naming the others running in parallel and what each owns**. Without that line they all
+report the same missing error handling from different angles and you spend the synthesis round
+deleting duplicates. Tell each child to finish by
 calling `mcp__outpost__submit_step_output` with its findings — a dispatched child that ends its
 turn without submitting is recorded as failed, and its output is the whole point.
 
@@ -314,7 +317,7 @@ you passed, and the head sha it pins. That artifact is what falsifies this rung.
 
 ### Rung 5 in detail — synthesis, then the post round
 
-The three lens outputs are in `dispatches[].output`. Reading and reconciling them is reasoning
+The lens outputs are in `dispatches[].output`. Reading and reconciling them is reasoning
 over what the envelope already holds, so do it on this turn rather than spending a round on a
 self-round to go think.
 
@@ -507,11 +510,12 @@ the failed lens's `failure` and decide which of these it is.
    missing — check it before blaming the child). Do **not** retry: a verbatim re-run fails the
    same way. Write a better brief and dispatch that; a materially different brief needs no
    `retryOf`.
-3. **Neither — go on with the lenses you have.** Two lenses that reported are a review. Record
-   in `artifacts.lenses` which one you gave up on and what it would have covered, say so in
-   the review's summary line so the author knows the security pass didn't run, and take rung 5.
-   A review that never gets posted because one lens wouldn't start is worth less than a review
-   with a stated gap.
+3. **Neither — go on with the lenses you have.** Record in `artifacts.lenses` which one you
+   gave up on and what it would have covered, say so in the review's summary line so the author
+   knows that pass didn't run, and take rung 5. A review that never gets posted because one lens
+   wouldn't start is worth less than a review with a stated gap. If the lens that failed was
+   `code.review-diff` — the only one that runs by default — there is no review without it: say
+   so and `fail` rather than posting a security-only pass as if it were the review.
 
 `retryOf` is a deliberate, bounded, justified act — never a reflex. If you can't say in one
 sentence why the failure was environmental rather than the brief's fault, it isn't a retry.

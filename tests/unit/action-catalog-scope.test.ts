@@ -55,6 +55,8 @@ describe('controller scope', () => {
       'code.reply-pr-comments',
       'code.resolve-conflicts',
       'code.review-diff',
+      'code.review-ui',
+      'code.security-review',
       'code.spec',
       'code.triage-pr-comments',
     ]);
@@ -77,6 +79,7 @@ describe('controller scope', () => {
     for (const bound of [
       'code.spec', 'code.plan', 'code.implement', 'code.resolve-conflicts', 'code.fix-ci',
       'code.triage-pr-comments', 'code.reply-pr-comments', 'code.fix-pr-comment', 'code.merge-pr',
+      'code.review-diff', 'code.security-review', 'code.review-ui',
     ]) expect(visible.has(bound)).toBe(true);
   });
 

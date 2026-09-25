@@ -1,6 +1,6 @@
 ---
 name: code.orchestrate-pr
-description: Use when invoked as `/code.orchestrate-pr` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step` and `type=orchestrated` and `controller=code.orchestrate-pr`. Owns one PR-shaped step end to end — spec, plan, implement, then shepherd the PR through CI, comments, conflicts, and merge. Decides its own next move each turn and reports it via `mcp__outpost__submit_step_progress`.
+description: Use when invoked as `/code.orchestrate-pr` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set with `kind=step` and `type=orchestrated` and `controller=code.orchestrate-pr`. Owns one PR-shaped step end to end — spec, plan, implement, fresh-context review, then shepherd the PR through CI, comments, conflicts, and merge. Decides its own next move each turn and reports it via `mcp__outpost__submit_step_progress`.
 outpost:
   kind: step-orchestrator
   category: code
@@ -11,6 +11,8 @@ outpost:
     - code.plan
     - code.implement
     - code.review-diff
+    - code.security-review
+    - code.review-ui
     - code.triage-pr-comments
     - code.fix-pr-comment
     - code.reply-pr-comments
@@ -32,7 +34,7 @@ you didn't write down is gone.
 
 **Every turn ends with exactly one `mcp__outpost__submit_step_progress` call, then you stop** —
 with one exception: a turn where you raise your own write draft ends with
-`mcp__outpost__submit_write_draft` instead (row 5 — see
+`mcp__outpost__submit_write_draft` instead (row 8 — see
 `~/.outpost/actions/SHARED-write-drafts.md`). A turn that ends without one of those two is
 read as a hang and fails the step. A turn that keeps
 working after it has reported is racing the move it just declared.
@@ -48,9 +50,9 @@ cat "$OUTPOST_ENVELOPE"
 | `jobId`, `stepId` | Identify this step on every `mcp__outpost__*` call. |
 | `goal` | What this PR must accomplish. `inputs.approach` / `inputs.risks` carry the planner's framing when it had one. |
 | `workspace` | `{"kind":"writable","repoCwd":…,"branch":…}` — the branch this PR lives on. Your cwd is already that worktree. |
-| `phase` | The label you set last turn. One of the eight strings in §3. |
+| `phase` | The label you set last turn. One of the nine strings in §3. |
 | `memo` | What you wrote last turn. Your only durable memory (§5). Empty on your first turn — and on a job migrated mid-flight. |
-| `artifacts` | Named markdown blobs accumulated across turns, merged and never replaced. The ladder keys on five of them: `spec` (from `code.spec`), `implPlan` (`code.plan`), `implementation` (`code.implement`), `draftedReplies` (`code.triage-pr-comments`) and `postedReplies` (`code.reply-pr-comments`). Anything else you store is yours — except `commitMessage`, which is not yours and no ladder row reads: `code.implement` and `code.fix-pr-comment` write it for the user's commit box, and the daemon **deletes** it when the user commits. It is the one artifact that can vanish between turns. Never write it yourself, and never infer from its absence that no implement round has run — read `implementation` for that. |
+| `artifacts` | Named markdown blobs accumulated across turns, merged and never replaced. The ladder keys on seven of them: `spec` (from `code.spec`), `implPlan` (`code.plan`), `implementation` (`code.implement`), `review` (yours — the latest review pass, §3a), `reviewFixes` (`code.implement`, on a fix round), `draftedReplies` (`code.triage-pr-comments`) and `postedReplies` (`code.reply-pr-comments`). Anything else you store is yours — except `commitMessage`, which is not yours and no ladder row reads: `code.implement` and `code.fix-pr-comment` write it for the user's commit box, and the daemon **deletes** it when the user commits. It is the one artifact that can vanish between turns. Never write it yourself, and never infer from its absence that no implement round has run — read `implementation` for that. |
 | `delivered` | The inbox batch that woke you — why you are running right now. Absent on a plain continuation. |
 | `dispatches` | Every child you have fanned out: `id`, `action`, `brief`, `status`, `output`, `failure`. |
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `headRefOid`, `comments[]`. |
@@ -108,8 +110,10 @@ Your six moves:
 **Dispatched children are read-only; edits happen on your rounds.** The branch belongs to you
 and your worktree is the only checkout holding it, so a child gets a detached checkout of that
 same branch at its own path — the full code to read, no ability to change it. A dispatch that
-asks for `workspace: {"kind":"writable"}` is rejected. Anything that touches the tree —
-implementing, fixing CI, resolving conflicts, applying a review comment — is a `self-round`
+asks for `workspace: {"kind":"writable"}` is rejected — and that detached checkout is the
+*committed* branch, so it does not carry your uncommitted edits; the review lenses take
+`workspace: {"kind":"none"}` and read your worktree by path instead (§3a). Anything that
+touches the tree — implementing, fixing CI, resolving conflicts, applying a review comment — is a `self-round`
 bound to the action that does it, which runs in *your* worktree. Dispatch is for read-shaped
 fan-out: reviews, investigations, second opinions across several files at once.
 
@@ -119,8 +123,8 @@ files and lines, and the change each needs into `boundNote`. Those rounds all si
 `phase` and write no artifact, so they are exactly what the unproductive-self-round cap (below)
 counts — group them rather than racing it.
 
-**Phase vocabulary — use exactly these eight strings**, no others, no variants:
-`spec`, `plan`, `implement`, `pr_open`, `pr_comments`, `conflict`, `merged`, `failed`.
+**Phase vocabulary — use exactly these nine strings**, no others, no variants:
+`spec`, `plan`, `implement`, `review`, `pr_open`, `pr_comments`, `conflict`, `merged`, `failed`.
 Set `phase` on every submit so the UI and a cold-resumed you agree on where the step is.
 
 The ladder, top to bottom — take the first row that matches. **Every row carries the
@@ -135,28 +139,32 @@ as part of its condition.
 | 2 | `artifacts.spec` present, no `artifacts.implPlan`, `gateApproved` not `true` | you gate it and the user approves | `gate` with the spec text as `draft` | `spec` |
 | 3 | `artifacts.spec` present, no `artifacts.implPlan`, `gateApproved === true` | the plan round writes `implPlan` | `self-round` as `code.plan` | `plan` |
 | 4 | `artifacts.implPlan` present, no `artifacts.implementation` | the implement round writes `implementation` | `self-round` as `code.implement` | `implement` |
-| 5 | `artifacts.implementation` present, no `pr.prUrl` | `pr.prUrl` appears (the watcher confirms the PR exists — whether you opened it or the user did by hand) | if the branch isn't pushed yet, `wait`; once it is, draft (or, once approved, run) opening the PR — see below | `implement` |
-| 6 | `pr.prUrl` present and `pr.prState === "merged"` | — (terminal) | `resolve` with a summary and the PR URL | `merged` |
-| 7 | `pr.prUrl` present and `pr.prState === "closed"` | — (terminal) | `fail` with "PR closed without merging" | `failed` |
-| 8 | `pr.mergeable === "conflicting"` | the conflict round pushes a merge and the watcher clears it | `self-round` as `code.resolve-conflicts` | `conflict` |
-| 9 | CI failure that has **settled** (every check in `pr.ciChecks` reported, at least one failed) | the fix round pushes and CI re-runs | `self-round` as `code.fix-ci` | `pr_open` |
-| 10 | Comments in `pr.comments` that are not yours, not answered, and not covered by `artifacts.draftedReplies` | the triage round drafts them | `self-round` as `code.triage-pr-comments` | `pr_comments` |
-| 11 | `artifacts.draftedReplies` holds `reply` drafts not listed in `artifacts.postedReplies` | the reply round posts them | `self-round` as `code.reply-pr-comments`, with the exact reply bodies in `note` | `pr_comments` |
-| 12 | `artifacts.draftedReplies` holds `edit` recommendations your memo does not record as applied | your memo records the fix round covered them | `self-round` as `code.fix-pr-comment` | `pr_comments` |
-| 13 | `pr.ciState === "success"`, `pr.reviewState === "approved"`, and your memo does **not** record a `code.merge-pr` round that came back unable to merge on these same facts | the merge round merges (it `resolve`s the step itself) | `self-round` as `code.merge-pr` | `pr_open` |
-| 14 | Nothing above matches | a delivery wakes you | `wait` on `["ci","review-state","pr-state","pr-comments"]` | keep the current `phase` |
+| 5 | `artifacts.implementation` present, the current pass has no lenses out and no `artifacts.review` for it (§3a) | you dispatch them | `dispatch` the review lenses at your worktree | `review` |
+| 6 | Every lens dispatch for the current pass has settled, `artifacts.review` not yet written for it | this turn's submit writes `review` | synthesize **on this turn**, write `artifacts.review` | `review` |
+| 7 | `artifacts.review` reports blocking findings for pass *n*, `artifacts.reviewFixes` records no pass *n* | the fix round writes `reviewFixes` for pass *n* | `self-round` as `code.implement`, findings verbatim in `note` | `review` |
+| 8 | `artifacts.review` reports the current pass clean (or the cap is spent, §3a), no `pr.prUrl` | `pr.prUrl` appears (the watcher confirms the PR exists — whether you opened it or the user did by hand) | if the branch isn't pushed yet, `wait`; once it is, draft (or, once approved, run) opening the PR — see below | `implement` |
+| 9 | `pr.prUrl` present and `pr.prState === "merged"` | — (terminal) | `resolve` with a summary and the PR URL | `merged` |
+| 10 | `pr.prUrl` present and `pr.prState === "closed"` | — (terminal) | `fail` with "PR closed without merging" | `failed` |
+| 11 | `pr.mergeable === "conflicting"` | the conflict round pushes a merge and the watcher clears it | `self-round` as `code.resolve-conflicts` | `conflict` |
+| 12 | CI failure that has **settled** (every check in `pr.ciChecks` reported, at least one failed) | the fix round pushes and CI re-runs | `self-round` as `code.fix-ci` | `pr_open` |
+| 13 | Comments in `pr.comments` that are not yours, not answered, and not covered by `artifacts.draftedReplies` | the triage round drafts them | `self-round` as `code.triage-pr-comments` | `pr_comments` |
+| 14 | `artifacts.draftedReplies` holds `reply` drafts not listed in `artifacts.postedReplies` | the reply round posts them | `self-round` as `code.reply-pr-comments`, with the exact reply bodies in `note` | `pr_comments` |
+| 15 | `artifacts.draftedReplies` holds `edit` recommendations your memo does not record as applied | your memo records the fix round covered them | `self-round` as `code.fix-pr-comment` | `pr_comments` |
+| 16 | `pr.ciState === "success"`, `pr.reviewState === "approved"`, and your memo does **not** record a `code.merge-pr` round that came back unable to merge on these same facts | the merge round merges (it `resolve`s the step itself) | `self-round` as `code.merge-pr` | `pr_open` |
+| 17 | Nothing above matches | a delivery wakes you | `wait` on `["ci","review-state","pr-state","pr-comments"]` | keep the current `phase` |
 
 Three of these read a fact only *you* can record, so record it:
 
-- **Row 11 → 12.** Both fire off `artifacts.draftedReplies`. Row 11 is falsified by
-  `artifacts.postedReplies` (the reply round writes it); row 12 has no artifact, so your memo
+- **Row 14 → 15.** Both fire off `artifacts.draftedReplies`. Row 14 is falsified by
+  `artifacts.postedReplies` (the reply round writes it); row 15 has no artifact, so your memo
   is the record — name the comments each `code.fix-pr-comment` round covered.
-- **Row 13.** A merge that failed on a permanent blocker (branch protection wants a second
+- **Row 16.** A merge that failed on a permanent blocker (branch protection wants a second
   approval, a required check nobody will re-run) leaves `ciState`/`reviewState` untouched, so
   the row matches again forever. If `code.merge-pr` handed back and nothing in `pr` has moved
-  since, take row 14 and say in `reason` what the merge is blocked on — do not re-gate it.
-- **Row 5** is the only row for "implemented, no PR yet", and it's the one row where you draft
-  a write yourself instead of binding a round to another action — see the detail below.
+  since, take row 17 and say in `reason` what the merge is blocked on — do not re-gate it.
+- **Row 8** is the only row for "implemented and reviewed, no PR yet", and it's the one row
+  where you draft a write yourself instead of binding a round to another action — see the
+  detail below.
   `code.implement` still deliberately leaves the edits uncommitted for the user to review,
   commit, and push themselves if they'd rather do it by hand; either way `pr.prUrl` appearing
   is what falsifies the row. Do **not** re-run `code.implement` to try to force it.
@@ -172,20 +180,107 @@ outright — the merge, a comment, a branch delete — not a spec or a plan. The
 redo with feedback; the draft is gone, and neither you nor the bound round that drafted it will
 be asked to compose another for this decision. Take it as a fresh delivery on the ladder:
 reconsider `pr`/`artifacts` from scratch and pick whatever row now matches — often the same row
-that raised the draft, this time reasoning past the fact that the user said no, or row 14 if
+that raised the draft, this time reasoning past the fact that the user said no, or row 17 if
 nothing better applies — rather than assuming a redraft is expected.
 
 **Rows below the one that matched still matter next turn.** The ladder is a priority order
 re-evaluated from scratch on every decision turn, not a script you walk once. A conflict that
-appears after CI went green sends you back up it. Rows 6-13 all presuppose `pr.prUrl`; until
-it exists only rows 1-5 can match.
+appears after CI went green sends you back up it. Rows 9-16 all presuppose `pr.prUrl`; until
+it exists only rows 1-8 can match.
 
-The happy path walks it once: 1 → 2 → 3 → 4 → 5 (draft `gh pr create`, or the user opens it by
-hand) → 14 → comments and CI churn through 8-12 → 13 → the merge round resolves the step. If
-you find yourself on a row you were on two turns ago with nothing new written, the row is
-missing its falsifier — say so in `memo` and take row 14 rather than running it again.
+The happy path walks it once: 1 → 2 → 3 → 4 → 5 → 6 → (7 → 5 → 6 again per round of findings)
+→ 8 (draft `gh pr create`, or the user opens it by hand) → 17 → comments and CI churn through
+11-15 → 16 → the merge round resolves the step. If you find yourself on a row you were on two
+turns ago with nothing new written, the row is missing its falsifier — say so in `memo` and
+take row 17 rather than running it again.
 
-### Row 5 in detail — opening the PR
+### 3a. Rows 5-7 in detail — the review loop
+
+**Nothing reviews this code but you.** The spec, the plan and the implementation were all
+written by this one session, each step reading the last, and a session cannot catch what it was
+already wrong about — by the implement round the reasoning that produced the bug is the same
+reasoning judging it. `code.implement`'s own Step 3 self-review is a hygiene pass over its own
+diff, not a review. Rows 5-7 are the review: **fresh sessions that have never seen your
+reasoning, reading only the code.** Walk them before the PR exists, so the findings cost you a
+round instead of costing the user a review cycle on an open PR.
+
+**The lenses read your worktree, not a checkout of their own.** At this point the change is
+*uncommitted* — `code.implement` leaves it that way deliberately — and a dispatched child gets
+a detached checkout of the branch, which is the tree *without* your edits. A lens pointed at
+its own cwd there finds a clean tree, reports no issues, and you ship an unreviewed diff. So
+dispatch each lens with **`workspace: {"kind":"none"}`** and pass your own worktree path as
+`inputs.worktreePath`; the lens runs `git -C <worktreePath> diff` and reads files under it.
+Both are in the `read` group, so this works without any extra grant.
+
+```
+{ kind: "dispatch", dispatches: [
+  { action: "code.review-diff", brief: "…", workspace: { kind: "none" },
+    inputs: { worktreePath: "<workspace.repoCwd of YOUR worktree — your cwd>",
+              context: { goal: "…", spec: "<artifacts.spec>", implPlan: "<artifacts.implPlan>" } } }
+] }
+```
+
+**The default is `code.review-diff`, alone.** It is the lens that reads the change as a whole
+and it is the one every pass runs.
+
+`code.security-review` and `code.review-ui` are **on request only** — add one to the fan-out
+when, and only when, the user has asked for it: in the job's goal or the step's `inputs`, or in
+a `user-message` ("give this a security pass", "check the UI against the design system"). Do
+not infer the request from the diff. A rule like "dispatch the security lens whenever the diff
+touches auth" ends up firing on essentially every change, which is how a review the user asked
+for once becomes a tax on every PR. If you think a diff genuinely warrants one, say so in
+`artifacts.review` and let the user call it — that costs a sentence; guessing costs a session
+every pass.
+
+Record in `artifacts.review` which lenses you ran, so a cold-resumed you doesn't re-litigate
+the choice.
+
+**Give the lens the spec and the plan, and say so in the brief.** Diff hygiene is the cheap
+half; the expensive half is *did this implement what the spec said*. A lens that never sees
+`artifacts.spec` can only tell you the code is tidy. Put the goal, the spec and the plan in
+`inputs.context`, and write a brief that stands alone — the child sees nothing of your memo,
+artifacts or envelope. If the user did ask for a second lens, name it in each brief and say
+what it owns, or both report the same finding from two angles.
+
+**Pass numbering, and why the brief must carry it.** A second dispatch with the same
+`(action, brief)` is rejected (§7), so every re-review must say `pass 2`, `pass 3` in its brief
+— along with what the previous pass found and what the fix round changed, which is also what
+stops the new lens re-raising a finding you already declined.
+
+**Row 6 — synthesize on the turn the dispatches come back.** Reconciling the lens outputs is
+reasoning over what the envelope already holds, so do it on that decision turn rather than
+spending a round to go think. Dedupe across lenses, drop nits that wouldn't change the code,
+and write `artifacts.review` with this shape — the first line is what rows 5, 7 and 8 read:
+
+```
+pass 2 — blocking (1 blocking, 3 advisory)
+
+### Blocking
+- src/work/engine.ts:412 — <finding, and why it matters>
+
+### Advisory
+- …
+
+### Declined
+- <finding> — <why you are not acting on it>
+```
+
+`blocking` is `severity: "error"` — something that would actively break. `warn`/`info` are
+advisory: fix them on the same round if they're cheap, otherwise list them under Declined with
+a reason. Write `clean` in place of `blocking` when nothing blocking is left.
+
+**Row 7 — the fix round.** `self-round` as `code.implement` with the blocking findings verbatim
+in `note`, each with its file, line and what needs to change. That round edits the worktree and
+writes `artifacts.reviewFixes` naming the pass it addressed, which is what falsifies row 7 and
+re-arms row 5 for the next pass. Findings it deliberately did *not* act on belong in
+`reviewFixes` with the reason, not silently dropped.
+
+**The cap is three passes.** If pass 3 still reports blocking findings, stop looping: `gate`
+the user with the outstanding findings and what you tried, and let them decide whether to ship
+it, redirect the fix, or abandon. Three fresh reviews that keep finding the same class of
+problem is a signal about the spec, not something a fourth review fixes.
+
+### Row 8 in detail — opening the PR
 
 `artifacts.implementation` existing does **not** mean the branch is pushed —
 `code.implement` deliberately leaves its edits uncommitted for the user to review, and nothing
@@ -247,9 +342,9 @@ a `gate` of your own: the user still approves before anything lands, and the rou
 approved is the one that can actually merge.
 
 **The bound action's draft shows the user your `note`.** Whatever you put in `note` when you
-bind a round (row 11's reply bodies, the merge strategy, a conflict-resolution instruction) is
+bind a round (row 14's reply bodies, the merge strategy, a conflict-resolution instruction) is
 what that action reads to compose its draft — see each action's own Step 1 for exactly which
-field it reads it into. That is the whole reason row 11 puts the reply bodies verbatim into
+field it reads it into. That is the whole reason row 14 puts the reply bodies verbatim into
 `note` rather than summarizing them: the bound action drafts precisely that text, the user
 reads it at the draft, approves once, and `code.reply-pr-comments` posts it. Two approvals for
 one write is a bug, not caution. Whenever a bound round is about to draft a write, write `note`
@@ -307,10 +402,10 @@ it moves `phase` or writes an `artifacts` entry whose content differs from what 
 there — a redraft under the same key counts, a byte-identical resubmit does not. Anything else
 — same phase, nothing new written — charges the count. A `dispatch`, `wait`, or `gate` (yours),
 or a delivery carrying a fresh *external* event (a watcher tick, a user message, a dispatch
-finishing), resets it outright. **Raising your own write draft (row 5) is invisible to this
+finishing), resets it outright. **Raising your own write draft (row 8) is invisible to this
 counter either way** — that turn ends via `mcp__outpost__submit_write_draft`, not
 `submit_step_progress`, so it neither charges nor resets `consecutiveSelfRounds`; the count is
-exactly what it was before you drafted. (Row 5's follow-up `wait` once the PR is open does
+exactly what it was before you drafted. (Row 8's follow-up `wait` once the PR is open does
 reset it, same as any other `wait`.) A delivery that only hands back your own last move — a
 policy rejection, a declined gate, a declined draft — deliberately does **not** reset it
 either, so you cannot clear the count by tripping a rejection between rounds.
@@ -330,7 +425,7 @@ this ladder has a row for — not every time one moves — because every wake co
 Three things deliberately happen without waking you:
 
 - **CI going to `pending`.** Your own `code.fix-ci` push causes it, and no row reads it.
-- **CI going green while review has not approved.** Row 13 is the only row that reads
+- **CI going green while review has not approved.** Row 16 is the only row that reads
   `success`, and it needs the approval too. When the approval lands, `review-state` wakes you
   and `pr.ciState` is already green — so read both, never assume the green was announced.
 - **A comment posted by the account this daemon writes as.** Your own replies are not news.
@@ -350,12 +445,12 @@ catch yourself wanting to "check back in an hour", the honest moves are: `wait` 
 the events that would actually change your answer, or `gate` the user if nothing would. Both
 cost zero rounds while parked; a poll costs two every time it finds nothing changed.
 
-**`head-moved` is for row 5 only — after the PR exists, wait on the four.** Before there is a
-PR it is the *user's* push landing on origin, which is exactly what row 5 is parked for and the
+**`head-moved` is for row 8 only — after the PR exists, wait on the four.** Before there is a
+PR it is the *user's* push landing on origin, which is exactly what row 8 is parked for and the
 only signal that exists at that point. Once the PR is open the head moves because *you* moved
-it: `code.fix-ci` and `code.resolve-conflicts` both push, so naming `head-moved` from row 14
+it: `code.fix-ci` and `code.resolve-conflicts` both push, so naming `head-moved` from row 17
 onward means every fix you dispatch wakes you to be told your own push landed, at one round
-each. Row 14 waits on `["ci","review-state","pr-state","pr-comments"]` and that is the right
+each. Row 17 waits on `["ci","review-state","pr-state","pr-comments"]` and that is the right
 set. (`pr.headRefOid` is still worth *reading* — it is how you tell whether a dispatched fix
 actually pushed.)
 
@@ -389,6 +484,9 @@ Rewrite it in full each turn — it is a narrative, not an append-only log. Writ
 of you that remembers nothing:
 
 - Why the code looks the way it does — the shape the spec settled on and what was rejected.
+- Which review pass you are on, and what the last one found. `artifacts.review` and
+  `artifacts.reviewFixes` are the durable record the ladder reads; the memo is where you say
+  why you declined a finding, so the next pass's brief can tell the lens not to re-raise it.
 - Which comments you have already answered, and how.
 - What you are waiting for, and what would end the wait.
 - What you gated on, and what an approval means (`gateApproved` says yes; only the memo says
@@ -399,7 +497,7 @@ Vague memos ("continuing work on the PR") cost a whole round to rebuild. Be spec
 
 ## 6. Never write without drafting, and never take over a bound round's write
 
-You inherit the `push` permission group yourself now (row 5 needs it to draft `gh pr create`),
+You inherit the `push` permission group yourself now (row 8 needs it to draft `gh pr create`),
 so the old "your own grant is reads only" line is no longer literally true — but the rule that
 matters hasn't changed: **any write, from any turn, must go through
 `mcp__outpost__submit_write_draft` and stop for approval first** — see
@@ -414,7 +512,7 @@ here); `code.reply-pr-comments` and `code.post-pr-review` own posting comments (
 exact-body-verbatim discipline); `code.merge-pr` owns the merge (it carries the
 already-merged idempotency check that keeps a stale resume from asking to merge twice). Bind a
 round to the action that owns the write rather than drafting it yourself just because your
-grant now allows it. The one write that genuinely is yours is opening the PR (row 5) — nothing
+grant now allows it. The one write that genuinely is yours is opening the PR (row 8) — nothing
 else in the catalog does that. If a rung seems to need a write no action covers and isn't row
 5's job either, that is a gap to `fail` or `wait` on and journal — not to draft around.
 
@@ -467,7 +565,7 @@ transcript for a move.
 mcp__outpost__submit_step_progress({
   jobId: "<jobId>",
   stepId: "<stepId>",
-  phase: "spec" | "plan" | "implement" | "pr_open" | "pr_comments" | "conflict" | "merged" | "failed",
+  phase: "spec" | "plan" | "implement" | "review" | "pr_open" | "pr_comments" | "conflict" | "merged" | "failed",
   memo: "<rewritten in full this turn>",
   artifacts: { spec: "…markdown…" },        // only what this turn produced; merged, not replaced
   next: { kind: "self-round", action: "code.plan", note: "Spec approved; plan against it." }
@@ -480,12 +578,17 @@ Other `next` shapes:
 { kind: "self-round", action: "code.fix-pr-comment", note: "<the comment verbatim, file+line, the change to make>" }
 { kind: "self-round", action: "code.reply-pr-comments",
   note: "review:ABC — \"<the exact reply body>\"\nissue:123 — \"<the exact reply body>\"" }   // the bound round drafts this text for the user's approval
-{ kind: "dispatch", dispatches: [ { action: "code.review-diff", brief: "…everything the child gets…" } ] }
+{ kind: "dispatch", dispatches: [                        // row 5 — one lens by default, see §3a
+    { action: "code.review-diff", brief: "pass 1 — …everything the child gets…",
+      workspace: { kind: "none" },
+      inputs: { worktreePath: "<your worktree>", context: { goal: "…", spec: "…", implPlan: "…" } } } ] }
+{ kind: "self-round", action: "code.implement",
+  note: "Review pass 2 blocking findings:\nsrc/work/engine.ts:412 — <finding and the fix>" }   // row 7
 { kind: "dispatch", dispatches: [ { action: "code.review-diff", brief: "…identical…", retryOf: "<failed dispatch id>" } ] }
 { kind: "wait", wait: { reason: "PR open — watching CI, reviews, and comments",
                         events: ["ci", "review-state", "pr-state", "pr-comments"] } }
 { kind: "wait", wait: { reason: "PR opened — confirming the watcher picked it up",
-                        events: ["pr-state"] } }   // after row 5's draft commits — see §3
+                        events: ["pr-state"] } }   // after row 8's draft commits — see §3
 { kind: "gate", draft: "<the spec>", question: "Approve this spec?" }
 { kind: "resolve", output: "Merged <prUrl>: <what shipped>." }
 { kind: "fail", reason: "<specific, actionable>" }
@@ -512,6 +615,10 @@ is the only place `meta.improve-actions` looks. Name the exact command or field.
 
 - **Envelope missing or unreadable.** Say so in one line and exit; the engine settles the step
   on the next tick. Don't guess at the state from the worktree.
+- **A review lens reports "no changes to review."** It read its own cwd instead of your
+  worktree — you omitted `workspace: {"kind":"none"}` or `inputs.worktreePath` (§3a). Do not
+  accept it as a clean pass; that is the one failure that puts an unreviewed diff in front of
+  the user wearing a review's clothes. Re-brief the lens with both set.
 - **Woken with nothing new.** Re-derive from `pr` + `artifacts`. If your position is unchanged,
   `wait` again with the same spec — don't manufacture a round.
 - **`policy-rejection` in `delivered`.** Read `reason`, fix the move it names, submit the

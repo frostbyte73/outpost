@@ -23,6 +23,29 @@ Read-only UI/UX + design-system review of PWA-facing changes. Does not modify fi
 | `workspace.branch` | yes | Branch under review. |
 | `context` | no | Optional `{goal, approach, risks}` from the step that produced the diff. |
 | `diffRange` | no | Git diff range to review instead of the uncommitted diff — see below. |
+| `worktreePath` | no | Absolute path of the worktree holding the diff. When set, run every git read as `git -C <worktreePath> …` and read files under it, instead of using your own cwd — see below. |
+
+
+### `worktreePath` — when the diff lives in somebody else's worktree
+
+Your own cwd is not always where the change is. A controller reviewing its *uncommitted* work
+dispatches you with no workspace of your own (`workspace: {"kind":"none"}`) and passes
+`worktreePath`, because a checkout of the branch would hold the committed tree — the change
+under review would not be in it, you would review an empty diff, and you would report no
+issues on code you never read.
+
+When `worktreePath` is set, prefix every git read with `-C` and root every file read at that
+path:
+
+```bash
+git -C <worktreePath> status
+git -C <worktreePath> diff
+```
+
+Both are in the `read` group, so no extra grant is needed. If `git -C <worktreePath> diff` and
+`git -C <worktreePath> status` both come back empty, **say so as a failure** rather than
+reporting a clean review — an empty diff means the path or the range was wrong, not that the
+code is fine.
 
 ## Ground the review in the design system first
 
