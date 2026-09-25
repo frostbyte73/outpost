@@ -115,6 +115,14 @@ function connect(id) {
       sessions.for(id).setLastSeenSeq(nextSeq);
       return;
     }
+    if (msg.type === 'daemon_error' && msg.fatal) {
+      // The daemon refused the attach itself, so the close that follows is a verdict on this
+      // URL, not a dropped socket — reconnecting re-sends the identical query and is refused
+      // identically. Retrying anyway loops forever at the base backoff (the upgrade completes
+      // before attach() runs, so `onopen` fires and zeroes `retries` on every pass), appending
+      // an error line each time. Falls through to the dispatcher so the user still sees it once.
+      info.closingIntent = true;
+    }
     if (msg.type === 'daemon_session_renamed') {
       // /clear spawned a new internal session_id; if this WS's session was the
       // mobile-current one, snap the shell onto the new id so the user stays

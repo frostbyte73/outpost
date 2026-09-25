@@ -17,12 +17,29 @@ describe('orchestratorStepShim', () => {
     expect(orchestratorStepShim(job)).toBeNull();
   });
 
-  it('returns null when no plan has been posted yet', () => {
+  // Whether the timeline can date the run and whether the run is over are different
+  // questions. Answering "live" on undatable bounds made the job detail mount an inline
+  // session for an exited orchestrator and hold a WS open to it — see the next case.
+  it('settles a job past planning even with no end event to bound the run', () => {
     const job = {
       state: 'failed',
       events: [{ kind: 'orchestrator_started', at: T0 }],
     };
-    expect(orchestratorStepShim(job)).toBeNull();
+    const html = renderTerminalChipHtml(orchestratorStepShim(job));
+    expect(html).toContain('data-variant="finished"');
+    expect(html).not.toMatch(/in \d/);
+  });
+
+  // A job whose plan arrived as a `plan_reconciled` never ran an orchestrator turn the
+  // timeline recorded, so there are no orchestrator events at all to bound.
+  it('settles a job with no orchestrator events on its timeline', () => {
+    const job = {
+      state: 'executing',
+      events: [{ kind: 'plan_reconciled', at: T0 }, { kind: 'step_started', stepId: 'a', at: T0 }],
+    };
+    const shim = orchestratorStepShim(job);
+    expect(shim.state).toBe('resolved');
+    expect(renderTerminalChipHtml(shim)).toContain('data-variant="finished"');
   });
 
   it('synthesizes a resolved step spanning the most recent orchestrator run', () => {

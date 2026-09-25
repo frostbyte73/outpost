@@ -87,6 +87,14 @@ export class SessionManager {
 
   constructor(private opts: SessionManagerOpts) {}
 
+  // Refuse an attach the daemon can never satisfy. `fatal` is what tells the client this close
+  // is a verdict on the URL rather than a dropped connection — it reconnects with backoff on an
+  // ordinary close, and re-sending the identical query would be refused identically, forever.
+  private rejectAttach(ws: WebSocket, message: string): void {
+    ws.send(JSON.stringify({ type: 'daemon_error', fatal: true, message }));
+    ws.close();
+  }
+
   // On resume, cwd is read from the session's JSONL; the opts.cwd argument is only honored for new sessions.
   // On worktree-creation failure the daemon emits daemon_error and closes the WS — no silent fallback to shared mode.
   attach(sessionId: string, ws: WebSocket, opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string; since?: number; model?: SessionModel } = {}): void {
@@ -111,35 +119,27 @@ export class SessionManager {
       return;
     }
     if (!opts.cwd || !opts.cwd.startsWith('/')) {
-      ws.send(JSON.stringify({
-        type: 'daemon_error',
-        message: opts.cwd
-          ? `cwd must be absolute: ${opts.cwd}`
-          : 'cwd required for new session',
-      }));
-      ws.close();
+      this.rejectAttach(ws, opts.cwd
+        ? `cwd must be absolute: ${opts.cwd}`
+        : 'cwd required for new session');
       return;
     }
     try {
       if (!statSync(opts.cwd).isDirectory()) {
-        ws.send(JSON.stringify({ type: 'daemon_error', message: `cwd is not a directory: ${opts.cwd}` }));
-        ws.close();
+        this.rejectAttach(ws, `cwd is not a directory: ${opts.cwd}`);
         return;
       }
     } catch {
-      ws.send(JSON.stringify({ type: 'daemon_error', message: `cwd does not exist: ${opts.cwd}` }));
-      ws.close();
+      this.rejectAttach(ws, `cwd does not exist: ${opts.cwd}`);
       return;
     }
     if (opts.spawnMode === 'worktree') {
       if (!this.opts.worktreeManager) {
-        ws.send(JSON.stringify({ type: 'daemon_error', message: 'worktreeManager not configured but spawnMode=worktree requested' }));
-        ws.close();
+        this.rejectAttach(ws, 'worktreeManager not configured but spawnMode=worktree requested');
         return;
       }
       if (!opts.baseBranch) {
-        ws.send(JSON.stringify({ type: 'daemon_error', message: 'baseBranch required for spawnMode=worktree' }));
-        ws.close();
+        this.rejectAttach(ws, 'baseBranch required for spawnMode=worktree');
         return;
       }
       const cwd = opts.cwd;
@@ -151,11 +151,7 @@ export class SessionManager {
           const rec = await wtMgr.create({ sessionId, projectCwd: cwd, baseBranch });
           worktreePath = rec.worktreePath;
         } catch (e) {
-          ws.send(JSON.stringify({
-            type: 'daemon_error',
-            message: `worktree creation failed: ${(e as Error).message}`,
-          }));
-          ws.close();
+          this.rejectAttach(ws, `worktree creation failed: ${(e as Error).message}`);
           return;
         }
         const session = this.spawn(sessionId, worktreePath);

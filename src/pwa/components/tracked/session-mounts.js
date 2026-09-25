@@ -46,13 +46,22 @@ function runBounds(events, { startKinds, endKinds, stepId }) {
 // While `planning` — or while a step-review holds the gate, which runs on top of
 // `executing` — the orchestrator is still live: return null so the mount keeps
 // showing the streaming transcript tail.
+//
+// Missing bounds are NOT a reason to return null. Whether the job timeline can date the run
+// and whether the run is over are different questions, and a job whose plan arrived as a
+// `plan_reconciled` has no orchestrator events to date it by at all. Answering "live" there
+// made the mount attach to a session that had long since exited — and once its transcript
+// aged out of ~/.claude/projects, to one the daemon could no longer resolve a cwd for.
+// The chip already handles unknown timing: it reads "✓ Finished" with no duration.
 export function orchestratorStepShim(job) {
   if (job.state === 'planning' || job.reviewingStepId) return null;
   const { start, end } = runBounds(job.events ?? [], {
     startKinds: ORCHESTRATOR_START_KINDS, endKinds: ORCHESTRATOR_END_KINDS, stepId: null,
   });
-  if (!end) return null;
-  return { state: 'resolved', events: [{ kind: 'spawned', at: start }, { kind: 'resolved', at: end }] };
+  const events = [];
+  if (start) events.push({ kind: 'spawned', at: start });
+  if (end) events.push({ kind: 'resolved', at: end });
+  return { state: 'resolved', events };
 }
 
 // Legacy fallback for job records written before the engine wrote step.events:
