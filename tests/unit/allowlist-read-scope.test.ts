@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Allowlist, type AllowlistConfig } from '../../src/permissions/allowlist.js';
 import groups from '../../config/permission-groups.default.json' with { type: 'json' };
 
@@ -75,6 +78,18 @@ describe('a core-only action reads its envelope and nothing else', () => {
     // `.pr.number` is not a file — reading it as one would deny every real jq call.
     expect(coreOnly('jq .pr.number')).toBe(true);
     expect(coreOnly('jq -r \'.recentLessons[]? | .text\'')).toBe(true);
+  });
+});
+
+describe('a relative read resolves against the session worktree', () => {
+  const wt = mkdtempSync(join(tmpdir(), 'read-scope-wt-'));
+  const inWorktree = (c: string) =>
+    group('core').allows('Bash', { command: c }, undefined, undefined, wt, undefined);
+
+  it('allows a path under the worktree and refuses one that climbs out', () => {
+    expect(inWorktree('cat package.json')).toBe(true);
+    expect(inWorktree('cat ../../.ssh/id_rsa')).toBe(false);
+    expect(coreOnly('cat package.json')).toBe(false);
   });
 });
 

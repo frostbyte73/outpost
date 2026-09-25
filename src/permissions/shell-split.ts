@@ -2,8 +2,6 @@
 // independently allow, and read the redirection targets each clause writes to. No
 // knowledge of rules or scopes lives here — `allowlist.ts` is what judges the output.
 
-import { resolve } from 'node:path';
-
 export interface ShellClause {
   // Clause text as written, redirections included. What a denial REPORTS and what the operand
   // walkers read; not what the bash patterns match against — see `matchText`.
@@ -304,12 +302,11 @@ export function splitShellClauses(cmd: string): ShellClause[] | null {
   return clauses;
 }
 
-// The literal filesystem path a redirection target names, or null when it can't be
-// known statically. Expansions ($VAR, $(…), `…`, ~), globs, and relative paths all
-// answer null: the daemon sees the command text, never the expanded value, and never
-// the cwd the shell will actually be in by the time the clause runs (an earlier
-// `cd` in the same command would move it). Unknowable means denied.
-export function literalRedirectPath(word: string): string | null {
+// The literal path a word names, exactly as written — absolute or relative — with quoting and
+// backslash escapes resolved, or null when it can't be known statically at all. Expansions
+// ($VAR, $(…), `…`, ~) and globs answer null: the daemon sees the command text, never the
+// expanded value. Deciding what a relative result resolves against is the caller's job.
+export function literalPathWord(word: string): string | null {
   let out = '';
   let i = 0;
   let sq = false;
@@ -332,8 +329,7 @@ export function literalRedirectPath(word: string): string | null {
     if (c === '$' || c === '`' || c === '~' || c === '*' || c === '?' || c === '[') return null;
     out += c; i++;
   }
-  if (!out.startsWith('/')) return null;
-  return resolve(out);
+  return out;
 }
 
 // Names a leading `NAME=value` may not carry. The prefix is peeled off before the clause is

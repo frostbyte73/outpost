@@ -3,7 +3,10 @@ import { dirname, join, resolve } from 'node:path';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRegistry } from '../actions/index.js';
 import type { ActionAllowlist } from '../actions/types.js';
-import { literalRedirectPath, readWordAt, splitShellClauses, stripLeadingAssignments } from './shell-split.js';
+import {
+  literalPathWord, readWordAt, splitShellClauses, stripLeadingAssignments,
+  type ShellClause,
+} from './shell-split.js';
 import { clausesShellSafe, unsafeClauseReason } from './shell-safety.js';
 import { extractFileReferences, isValidTmpFilePath } from './file-flags.js';
 import { refusedWrite } from './dangerous-writes.js';
@@ -257,6 +260,36 @@ function looksPathLike(value: string): boolean {
 // every redirect in the clause, read or write, to keep reading the operand words after it.
 const REDIRECT_AT_START = /^([0-9]*)(<<<|<<|<&|<|&>>|&>|>>|>\||>&|>)/;
 
+const CWD_CHANGERS = new Set(['cd', 'pushd', 'popd']);
+
+// What a relative operand resolves against: the directory the daemon spawned the session in,
+// which for a worktree session is the worktree root. Without this every `rm build`, `cat
+// pkg/x.go` and `> out.log` denied with no rule that could ever fix it — and a model writes
+// the relative form by default, so "delete the file you just wrote" was unreachable.
+//
+// A `cd` anywhere in the same command moves the cwd somewhere the checker can't follow (each
+// clause shares one shell), so the base drops away and relative operands go back to denying.
+// No group grants `cd` today, which makes such a command dead at the pattern check anyway —
+// but the denial-suggestion machinery offers `^cd(\s|$)` as a one-click grant, so the day it
+// is taken must not silently re-point every relative path at another repo.
+function relativeBase(clauses: ShellClause[], sessionWorktreePath?: string): string | undefined {
+  if (!sessionWorktreePath) return undefined;
+  for (const c of clauses) {
+    const head = readWordAt(stripLeadingAssignments(c.text), 0);
+    if (head && CWD_CHANGERS.has(head)) return undefined;
+  }
+  return sessionWorktreePath;
+}
+
+// The absolute path an operand names, or null when it can't be resolved statically.
+function operandPath(word: string, base?: string): string | null {
+  const literal = literalPathWord(word);
+  if (literal === null || literal === '') return null;
+  if (literal.startsWith('/')) return resolve(literal);
+  if (!base) return null;
+  return resolve(base, literal);
+}
+
 function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown): boolean {
   if (rules.alwaysAllow.has(toolName)) return true;
   if (toolName === 'Bash') {
@@ -378,9 +411,10 @@ export class Allowlist {
   private redirectsAllowed(cmd: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
     const clauses = splitShellClauses(cmd);
     if (clauses === null) return false;
+    const base = relativeBase(clauses, sessionWorktreePath);
     for (const clause of clauses) {
       for (const word of clause.writeTargets) {
-        const path = literalRedirectPath(word);
+        const path = operandPath(word, base);
         if (path === null) return false;
         if (isDeviceSink(path)) continue;
         const asWrite = { file_path: path };
@@ -430,6 +464,7 @@ export class Allowlist {
     if (scopes.some((s) => s.alwaysAllow.has('Read'))) return true;
     const clauses = splitShellClauses(cmd);
     if (clauses === null) return false;
+    const base = relativeBase(clauses, sessionWorktreePath);
     for (const clause of clauses) {
       const body = stripLeadingAssignments(clause.text);
       const head = readWordAt(body, 0);
@@ -437,7 +472,7 @@ export class Allowlist {
       const ok = this.walkOperands(
         body.slice(head.length),
         head === 'jq' ? () => true : undefined,
-        (operand) => this.readArgAllowed(operand, scopes, sessionWorktreePath),
+        (operand) => this.readArgAllowed(operand, scopes, sessionWorktreePath, base),
       );
       if (!ok) return false;
     }
@@ -449,9 +484,11 @@ export class Allowlist {
   // (claude-proc.ts) — and the checker sees command text, never the expansion, so it is
   // recognised by spelling. That recognition lives HERE, in one place, rather than in every
   // rule that wants to permit reading the envelope.
-  private readArgAllowed(word: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
+  private readArgAllowed(
+    word: string, scopes: CompiledRules[], sessionWorktreePath?: string, base?: string,
+  ): boolean {
     if (ENVELOPE_WORDS.has(word)) return true;
-    const path = literalRedirectPath(word);
+    const path = operandPath(word, base);
     if (path === null) return false;
     if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) return true;
     return scopes.some((s) => rulesAllow(s, 'Read', { file_path: path }));
@@ -466,6 +503,7 @@ export class Allowlist {
   private fileOpArgsAllowed(cmd: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
     const clauses = splitShellClauses(cmd);
     if (clauses === null) return false;
+    const base = relativeBase(clauses, sessionWorktreePath);
     for (const clause of clauses) {
       const body = stripLeadingAssignments(clause.text);
       // The command word is always readable cleanly here: bashPatternsMatch already required
@@ -473,7 +511,7 @@ export class Allowlist {
       // far, which means it starts with a plain word, not a redirect or a metacharacter.
       const head = readWordAt(body, 0);
       if (!head || !SCOPED_FILE_OPS.has(head)) continue;
-      if (!this.scopedOperandsAllowed(body.slice(head.length), head, scopes, sessionWorktreePath)) return false;
+      if (!this.scopedOperandsAllowed(body.slice(head.length), head, scopes, sessionWorktreePath, base)) return false;
     }
     return true;
   }
@@ -539,21 +577,22 @@ export class Allowlist {
   }
 
   private scopedOperandsAllowed(
-    rest: string, head: string, scopes: CompiledRules[], sessionWorktreePath?: string,
+    rest: string, head: string, scopes: CompiledRules[], sessionWorktreePath?: string, base?: string,
   ): boolean {
     return this.walkOperands(
       rest,
       head === 'chmod' ? (w) => CHMOD_MODE_RE.test(w) : undefined,
-      (operand) => this.pathArgAllowed(operand, scopes, sessionWorktreePath),
+      (operand) => this.pathArgAllowed(operand, scopes, sessionWorktreePath, base),
     );
   }
 
   // One argument word, resolved exactly like a redirect target: unresolvable ($VAR, $(…),
-  // backtick, ~, glob, or any relative path — the checker sees command text, never the cwd the
-  // clause will actually run in) denies before any rule is consulted; otherwise it must be
-  // under the session's own worktree or covered by a granted Write-style path rule.
-  private pathArgAllowed(word: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
-    const path = literalRedirectPath(word);
+  // backtick, ~, glob) denies before any rule is consulted; otherwise it must be under the
+  // session's own worktree or covered by a granted Write-style path rule.
+  private pathArgAllowed(
+    word: string, scopes: CompiledRules[], sessionWorktreePath?: string, base?: string,
+  ): boolean {
+    const path = operandPath(word, base);
     if (path === null) return false;
     if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) return true;
     return scopes.some((s) => rulesAllow(s, 'Write', { file_path: path }));
@@ -568,10 +607,11 @@ export class Allowlist {
     const clauses = splitShellClauses(cmd);
     if (clauses === null || clauses.length === 0) return { kind: 'none', reason: 'the command does not parse' };
     const targets: string[] = [];
+    const base = relativeBase(clauses, ctx.sessionWorktreePath);
     for (const clause of clauses) {
       for (const word of clause.writeTargets) {
-        const path = literalRedirectPath(word);
-        if (path === null) return { kind: 'none', reason: 'a redirect target that is not a literal absolute path' };
+        const path = operandPath(word, base);
+        if (path === null) return { kind: 'none', reason: 'a redirect target that does not resolve to a literal path' };
         if (!isDeviceSink(path)) targets.push(path);
       }
     }

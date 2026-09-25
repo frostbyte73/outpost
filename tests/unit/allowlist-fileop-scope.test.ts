@@ -84,12 +84,44 @@ describe('edit-group file ops are scoped to the session worktree', () => {
     expect(bash(a, 'chmod 777 /etc/passwd', wt)).toBe(false);
   });
 
-  it('denies a relative path — the daemon cannot know the shell cwd it resolves against', () => {
-    expect(bash(a, 'rm build', wt)).toBe(false);
-    expect(bash(a, 'touch sub/file', wt)).toBe(false);
+  // A relative path resolves against the directory the daemon spawned the session in. It used
+  // to deny outright, which made "delete the file you just wrote" unreachable — a model writes
+  // the relative form by default, and `bashDenialCause` correctly reported that no rule would
+  // change the outcome, so there was no way out of it either.
+  it('resolves a relative path against the session worktree', () => {
+    expect(bash(a, 'rm build', wt)).toBe(true);
+    expect(bash(a, 'touch sub/file', wt)).toBe(true);
+    expect(bash(a, 'rm ./tests/unit/new.test.ts', wt)).toBe(true);
     // mkdir is unscoped (see above), so a relative path is not a scoping question for it —
     // it is allowed the same as any other mkdir destination.
     expect(bash(a, 'mkdir sub/dir', wt)).toBe(true);
+  });
+
+  it('denies a relative path that climbs out of the worktree', () => {
+    expect(bash(a, 'rm -rf ../../etc', wt)).toBe(false);
+    expect(bash(a, `cp secrets ${wt}/../elsewhere`, wt)).toBe(false);
+  });
+
+  it('denies a relative path when the session has no worktree to resolve against', () => {
+    expect(bash(a, 'rm build')).toBe(false);
+  });
+
+  // Each clause of one Bash call shares a shell, so a `cd` moves the cwd somewhere this checker
+  // cannot follow. No group grants `cd` today, so such a command is already dead at the pattern
+  // check — but the denial-suggestion machinery offers `^cd(\s|$)` as a one-click grant, which
+  // is what this session rule stands in for. The base has to drop away on its own rather than
+  // leaning on a pattern miss that may not be there tomorrow.
+  it('stops resolving relative paths once a clause could have moved the cwd', () => {
+    const withCd = new Allowlist({
+      alwaysAllow: [],
+      alwaysAllowBashPatterns: [...GROUPS['edit']!.alwaysAllowBashPatterns, '^cd(\\s|$)'],
+      alwaysAllowMcpPatterns: [],
+      alwaysAllowPathPatterns: GROUPS['edit']!.alwaysAllowPathPatterns ?? [],
+    });
+    const run = (command: string) => withCd.allows('Bash', { command }, undefined, undefined, wt, undefined);
+    expect(run('rm build')).toBe(true);
+    expect(run('cd /Users/x/other && rm build')).toBe(false);
+    expect(run(`cd /Users/x/other && rm ${wt}/build`)).toBe(true);
   });
 
   it('denies an escape normalised away by resolve()', () => {
@@ -147,9 +179,11 @@ describe('edit-group file ops are scoped to the session worktree', () => {
   // POSIX `--` ends option parsing: everything after it is a literal operand, even one that
   // looks like a flag. A classifier that treats "starts with -" as "is a flag" unconditionally
   // would let `-rf` slide right past the relative-path check that denies every other operand.
-  describe('-- ends flag parsing, so a disguised relative path still denies', () => {
-    it('denies a flag-shaped operand after a bare --', () => {
-      expect(bash(a, 'rm -- -rf', wt)).toBe(false);
+  describe('-- ends flag parsing, so a disguised path still gets scoped', () => {
+    it('scopes a flag-shaped operand after a bare -- instead of skipping it as a flag', () => {
+      // `-rf` past `--` is a filename, and it scopes into the worktree like any other.
+      expect(bash(a, 'rm -- -rf', wt)).toBe(true);
+      expect(bash(a, 'rm -- -rf', undefined)).toBe(false);
     });
 
     it('denies the real out-of-scope target that follows --', () => {

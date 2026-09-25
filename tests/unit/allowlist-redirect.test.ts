@@ -61,9 +61,16 @@ describe('redirection is gated like a Write — read-only action', () => {
     expect(bash(a, 'echo x > "$OUT"')).toBe(false);
     expect(bash(a, 'echo x > ~/.zshrc')).toBe(false);
     expect(bash(a, 'echo x > $(echo /tmp/y)')).toBe(false);
-    expect(bash(a, 'echo x > out.txt')).toBe(false);      // relative — the shell's cwd is unknowable here
+    expect(bash(a, 'echo x > out.txt')).toBe(false);      // relative, and no worktree to resolve against
     expect(bash(a, 'echo x > /tmp/*.log')).toBe(false);   // glob
     expect(bash(a, 'echo x >')).toBe(false);              // no target at all
+  });
+
+  it('resolves a relative target against the session worktree when there is one', () => {
+    const wt = mkdtempSync(join(tmpdir(), 'redirect-wt-'));
+    const inWorktree = (cmd: string) => a.allows('Bash', { command: cmd }, undefined, undefined, wt, undefined);
+    expect(inWorktree('echo x > out.txt')).toBe(true);
+    expect(inWorktree('echo x > ../escape.txt')).toBe(false);
   });
 });
 
