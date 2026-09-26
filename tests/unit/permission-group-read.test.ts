@@ -53,6 +53,35 @@ describe('the read group and git merge-base', () => {
   });
 });
 
+// The file operand is optional so the stdin form works: every recorded use of `sed` here is a
+// pipeline stage slicing a CI log, and requiring an operand denied exactly that. Which makes the
+// range the only thing standing between this rule and the rest of sed's language — `w` writes a
+// file, `e` executes a command, `-i` edits in place — so the ceiling is pinned rather than
+// trusted to the shape of the alternation.
+describe('the read group and sed', () => {
+  it('allows a line-range print, from a file or from stdin', () => {
+    for (const c of [
+      "sed -n '6500,8360p'",
+      "sed -n '1,5p' /tmp/x.log",
+      'sed -n 6500,8360p',
+    ]) expect(allows(c), c).toBe(true);
+  });
+
+  it('admits no other sed, and no second operand to hide one in', () => {
+    for (const c of [
+      "sed -i 's/a/b/' /etc/hosts",
+      "sed -n 'w /etc/passwd'",
+      "sed -n '1,5p;w /etc/passwd'",
+      "sed -n 's/x/y/e'",
+      "sed 's/a/b/' file",
+      "sed -n '1,5p' a b",
+      // The operand slot is a FILE: a flag there would leave sed nothing to edit, but the
+      // rule should not be the thing relying on that.
+      "sed -n '1,5p' --in-place",
+    ]) expect(allows(c), c).toBe(false);
+  });
+});
+
 // `git submodule status` is how an action learns whether a vendored path is populated and at
 // which pin. It was denied, so code.spec rounds guessed — and `git -C <empty-submodule-dir> log`
 // silently reports the PARENT repo's commits, so guessing wrong looks like an answer.

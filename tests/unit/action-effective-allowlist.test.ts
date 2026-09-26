@@ -288,11 +288,12 @@ describe('code.orchestrate-pr effective allowlist', () => {
     }
   });
 
-  // `push` grants the method-bearing `gh api` now, so a REST write is reachable — and gated,
-  // like every other write this action can name. The plain GET still isn't: this action takes
-  // no `pull`, and `push` deliberately matches writes only (a push rule that matched a read
-  // would force a draft before an action could read anything).
-  it('reaches a gh api write only through the gate, and no GET at all', () => {
+  // `push` grants the method-bearing `gh api`, so a REST write is reachable — and gated, like
+  // every other write this action can name. The GET is reachable too now that this action takes
+  // `pull`, and is NOT gated: the two groups draw the line, not one rule. `push` matches writes
+  // only (a push rule that matched a read would force a draft before an action could read), so
+  // adding a read group widens what it can read without touching what it must draft for.
+  it('reaches a gh api write only through the gate, and the GET ungated', () => {
     for (const c of [
       'gh api -X PUT repos/livekit/outpost/pulls/12/merge',
       'gh api --method DELETE repos/livekit/outpost/git/refs/heads/main',
@@ -300,7 +301,8 @@ describe('code.orchestrate-pr effective allowlist', () => {
       expect(allows(c), c).toBe(true);
       expect(isGated(c), c).toBe(true);
     }
-    expect(allows('gh api repos/livekit/outpost/pulls/12')).toBe(false);
+    expect(allows('gh api repos/livekit/outpost/pulls/12')).toBe(true);
+    expect(isGated('gh api repos/livekit/outpost/pulls/12')).toBe(false);
   });
 
   it('registers as a step-orchestrator, not an ordinary action', () => {

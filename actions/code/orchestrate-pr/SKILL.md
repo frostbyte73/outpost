@@ -19,7 +19,7 @@ outpost:
     - code.resolve-conflicts
     - code.fix-ci
     - code.merge-pr
-  permissions: [read, push]
+  permissions: [read, pull, push]
   timeout_sec: 900
   retries: 0
 ---

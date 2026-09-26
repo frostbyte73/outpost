@@ -6,7 +6,7 @@ outpost:
   category: write
   side_effects: external-write
   runner: claude
-  permissions: [pull, push]
+  permissions: [read, pull, push]
   timeout_sec: 21600
   retries: 0
 ---
