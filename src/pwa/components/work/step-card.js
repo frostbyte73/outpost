@@ -1,7 +1,6 @@
 import { work } from '../../state/work.js';
 import { sessions } from '../../state/sessions.js';
-import { openDiffForStep } from '../../app-bridge.js';
-import { orchestratedHasPrBlock, renderOrchestratedCard, wireOrchestratedCard } from './orchestrated-card.js';
+import { renderOrchestratedCard, wireOrchestratedCard } from './orchestrated-card.js';
 import { actionCategory, actionDisplayName } from './action-icon.js';
 import { renderWriteDraft, wireWriteDraft } from './write-draft-card.js';
 import { renderMarkdown } from '../../markdown.js';
@@ -259,25 +258,6 @@ function launchRowHtml(job, s) {
   `;
 }
 
-// Structured outbound links per step: whatever real data supports (no
-// fabricated "N log excerpts" counts — the mockup invents structure our data
-// model doesn't have; only render refs we can actually resolve).
-function stepRefs(job, s) {
-  const refs = [];
-  if (s.type !== 'orchestrated') return refs;
-  if (s.sessionId && s.phase !== 'merged') refs.push({ kind: 'diff', label: 'Review changes' });
-  if (s.pr?.prUrl) refs.push({ kind: 'pr', label: 'Open PR', href: s.pr.prUrl });
-  return refs;
-}
-
-function refsHtml(refs) {
-  if (!refs.length) return '';
-  return `<div class="tl-refs">${refs.map((r) => r.href
-    ? `<a class="tl-ref" href="${escapeHtml(r.href)}" target="_blank" rel="noopener" data-ref="${r.kind}">${escapeHtml(r.label)} ↗</a>`
-    : `<button type="button" class="tl-ref" data-ref="${r.kind}">${escapeHtml(r.label)} →</button>`,
-  ).join('')}</div>`;
-}
-
 // ── Finished-step fold ──────────────────────────────────────────────────
 // A step that is over is history, and history is the bulk of a long job: its transcript
 // chip, findings, PR block and paper trail push the live step — and the planner's feed
@@ -329,10 +309,6 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
   // An orchestrated step's session mount is rendered by the card itself, so its composer can
   // sit directly under the transcript tail — see orchestrated-card.js's own header comment.
   const orchestrated = s.type === 'orchestrated';
-  // The PR block (mounted inside the orchestrated card) carries its own diff-review
-  // button and PR link, so suppress the standalone refs alongside it. The transcript is
-  // never a link — its inline feed carries an "Open ↗" affordance.
-  const refs = orchestrated && orchestratedHasPrBlock(s) ? [] : stepRefs(job, s);
   const action = actionFor(s);
   const foldable = stepIsFoldable(s);
   const folded = foldable && !expandedSteps.has(s.id);
@@ -351,7 +327,6 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
           ${launchRowHtml(job, s)}
           ${orchestrated ? '' : stepFeedHtml(job, s)}
           ${orchestrated ? renderOrchestratedCard(s, { job }) : ''}
-          ${refsHtml(refs)}
           ${output ? `<details class="plan-findings tl-findings"${findingsOpen ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Findings</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${output}</div></details>` : ''}
           ${action ? `<div class="step-actions">${action}</div>` : ''}
         </div>
@@ -362,13 +337,6 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
 }
 
 export function wireTimelineStep(el, job, s) {
-  el.querySelectorAll('[data-ref]').forEach((btn) => {
-    if (btn.tagName === 'A') return; // external link — no JS needed
-    btn.addEventListener('click', () => {
-      const kind = btn.getAttribute('data-ref');
-      if (kind === 'diff') void openDiffForStep({ jobId: job.id, stepId: s.id, sessionId: s.sessionId });
-    });
-  });
   el.querySelectorAll('[data-step-action]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();

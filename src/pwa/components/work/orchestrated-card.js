@@ -62,11 +62,10 @@ function prView(s) {
   };
 }
 
-// Exported so step-card.js can suppress its own diff/PR refs when the card already
-// carries them, without reaching into the adapter above. `phase` is only written once
-// the controller reports its first move, so an unset phase is still pre-PR — without
-// that guard a just-created step shows a Discard CTA for work that doesn't exist yet.
-export function orchestratedHasPrBlock(s) {
+// `phase` is only written once the controller reports its first move, so an unset phase is
+// still pre-PR — without that guard a just-created step shows a Discard CTA for work that
+// doesn't exist yet.
+function orchestratedHasPrBlock(s) {
   if (!s.phase || PRE_PR_PHASES.has(s.phase)) return false;
   return hasPrBlock(prView(s));
 }

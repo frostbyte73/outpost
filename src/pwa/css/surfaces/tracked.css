@@ -647,24 +647,6 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 }
 .tl-step[data-collapsed="true"] .tl-content > .tl-ident { margin-bottom: 0; }
 
-.tl-refs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
-  margin-top: 6px;
-  font-size: 12px;
-}
-.tl-ref {
-  background: none;
-  border: 0;
-  padding: 0;
-  color: var(--accent);
-  cursor: pointer;
-  font: inherit;
-  text-decoration: none;
-}
-.tl-ref:hover { text-decoration: underline; }
-
 /* Per-step token-launch-queue status — own row, same rhythm as .tl-ident. */
 .tl-launch {
   display: flex;
