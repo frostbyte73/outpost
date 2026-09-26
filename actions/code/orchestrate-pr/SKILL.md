@@ -242,6 +242,30 @@ half; the expensive half is *did this implement what the spec said*. A lens that
 artifacts or envelope. If the user did ask for a second lens, name it in each brief and say
 what it owns, or both report the same finding from two angles.
 
+**Never put your defense of your own output in the brief.** The lens is the only thing in the
+step that did not write the code. Hand it a question and it answers the question; hand it a
+question with your reasoning attached and it hands the reasoning back — in your own words,
+scored as agreement. That is not a review, and it is indistinguishable from one afterward.
+
+The line to hold is *who decided*:
+
+- **A decision the user made is settled** — "the user approved skipping `mage proto` at the
+  spec gate" or "the user chose this field name". Say it, so the lens does not spend its pass
+  re-litigating something already answered above its pay grade.
+- **Your own justification for your own diff is the thing you are dispatching the lens to
+  test.** Keep it out. Name the thing and the rule that governs it, not your verdict on them:
+  *"there is a comment on the new field — check it clause by clause against the house comment
+  rules"*, never *"the comment is three lines because the house rules carve out proto fields;
+  judge whether that holds"*. The second sentence asks; the first already answered, and the
+  answer is what comes back.
+
+This failed exactly once and is why the rule is here: a brief explained that a three-line proto
+comment was sanctioned by a house-style carve-out and asked the lens to judge it anyway. The
+lens replied that the comment documented contract rather than restating the code, "which is the
+carve-out working as intended", reported clean, and the user cut two thirds of the comment by
+hand eleven minutes later. On the same diff it re-derived tag freedom and field polarity
+correctly and unprompted — the fresh context worked everywhere it was left alone.
+
 **Pass numbering, and why the brief must carry it.** A second dispatch with the same
 `(action, brief)` is rejected (§7), so every re-review must say `pass 2`, `pass 3` in its brief
 — along with what the previous pass found and what the fix round changed, which is also what

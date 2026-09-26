@@ -312,6 +312,16 @@ deleting duplicates. Tell each child to finish by
 calling `mcp__outpost__submit_step_output` with its findings — a dispatched child that ends its
 turn without submitting is recorded as failed, and its output is the whole point.
 
+**Never put a verdict in a brief.** A lens hands back what it was handed: tell it what to look
+at and it looks, tell it what to conclude and it returns your conclusion in your own words,
+scored as agreement — which is indistinguishable from a real review afterward. Here the code is
+somebody else's, so the temptation is not defending your own diff but passing on the author's
+defense of theirs. Same rule, same reason. The PR description's claims, a maintainer's comment
+on the thread, your own triage read — all of it is **context to test**, never a finding to
+confirm. Write *"the description claims X; check whether the diff does X"*, never *"the diff
+does X as the description says; confirm"*. If your triage already formed a view, that view
+belongs in `artifacts.lenses` as your reasoning for picking that lens, not in the brief.
+
 Record in `artifacts.lenses` which lenses you dispatched, why you skipped any, the `diffRange`
 you passed, and the head sha it pins. That artifact is what falsifies this rung.
 
