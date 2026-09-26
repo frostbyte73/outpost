@@ -2276,6 +2276,24 @@ html[data-layout="mobile"] #header .mh-menu-item-danger { color: var(--danger); 
       border-radius: var(--r-control);
       padding: 1px 6px;
     }
+    /* `!` run — the user's own command rather than the model's. The prompt glyph carries
+       that distinction; output sits in the command column, height-capped so a long `ls`
+       doesn't take over the feed. */
+    .msg.msg-shell-run .shell-prompt { color: var(--accent); }
+    .msg.msg-shell .shell-run-out {
+      margin: 4px 0 0 calc(2ch + 8px);
+      max-height: 320px;
+      overflow: auto;
+      font-family: var(--font-mono);
+      font-size: 11.5px;
+      line-height: 1.5;
+      color: var(--text-mute);
+      white-space: pre-wrap;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .msg.msg-shell .shell-run-out.is-err { color: var(--danger); }
+    .msg.msg-shell .shell-run-out.is-running { color: var(--text-dim); font-style: italic; }
     /* Rejected entry in the subagent feed — mirror .agent-entry-rejected's treatment
        of .msg.tool_use: opacity dim on the whole row, danger strike on the command. */
     .agent-entry-rejected .msg.msg-shell { opacity: 0.62; }

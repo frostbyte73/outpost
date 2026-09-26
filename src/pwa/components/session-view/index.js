@@ -20,6 +20,7 @@ import { approvals } from '../../state/approvals.js';
 import { subagents } from '../../state/subagents.js';
 import { conn } from '../../state/conn.js';
 import { usage } from '../../state/usage.js';
+import { settings } from '../../state/settings.js';
 import { nav } from '../../state/nav.js';
 import { keymap } from '../../state/keymap.js';
 import { formatCombo } from '../../utils/hotkey.js';
@@ -34,7 +35,7 @@ import { escapeHtml } from './html.js';
 import { reconcileKeyedRows, resetKeyedRows, setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { minimalMsgHtml } from './message-html.js';
 import { createScrollIntent, getIntent, scrollTranscriptTo } from './scroll-intent.js';
-import { openSessionWs, closeSessionWs, sendUserMessage, reconnectAndSend, sendApprovalModeSet, sendInterrupt, sessionWsReadyState } from './session-ws.js';
+import { openSessionWs, closeSessionWs, sendUserMessage, reconnectAndSend, sendShellExec, reconnectAndRunShell, sendApprovalModeSet, sendInterrupt, sessionWsReadyState } from './session-ws.js';
 import { renderThinkingStrip, renderTodoPill, renderConnBanner } from './regions.js';
 import { renderMeterStrip } from './meter.js';
 import { bindAskCardHandlers } from '../ask-card.js';
@@ -548,9 +549,33 @@ function wireComposer(dom, sessionId, paletteState) {
     if (paletteState) evaluatePaletteState(dom, paletteState, repaintPalette);
   });
   armed();
+  const clearComposer = () => {
+    dom.composer.textContent = '';
+    composerDraft.delete(sessionId);
+    armed();
+  };
+  // `!cmd` runs in the session's cwd as the user, not the model — no allowlist, no
+  // approval card. Output lands in a tile now and rides into the next message the user
+  // sends (see src/session/shell-exec.ts), so running commands costs no turn.
+  const runShell = (command) => {
+    if (!command) return;
+    const execId = `sh-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    sessions.for(sessionId).appendTranscript({ role: 'shell', execId, text: command, running: true });
+    if (!sendShellExec(sessionId, execId, command)) {
+      reconnectAndRunShell(sessionId, execId, command);
+      if (sessions.getSlice(sessionId)?.runState === 'inactive') {
+        sessions.setRunState(sessionId, 'foreground');
+      }
+      renderConnBanner(dom.banner, sessionConnState(sessionId), forceReconnect);
+    }
+    clearComposer();
+  };
   const send = () => {
     const text = dom.composer.textContent.trim();
     if (!text) return;
+    // Only special while the preference is on — otherwise a message that happens to open
+    // with "!" is a message, not a swallowed command. The daemon refuses either way.
+    if (text.startsWith('!') && settings.get().shellCommands) { runShell(text.slice(1).trim()); return; }
     // Happy path: the socket is open, send immediately. If it isn't, the session
     // was interrupted or its subprocess exited — typing a message is an explicit
     // intent to resume, so reconnect (which respawns the subprocess daemon-side)
@@ -569,9 +594,7 @@ function wireComposer(dom, sessionId, paletteState) {
     // Marked __pending so future stages can render it dimmed until
     // server-echoed.
     sessions.for(sessionId).appendTranscript({ role: 'user', text, __pending: true });
-    dom.composer.textContent = '';
-    composerDraft.delete(sessionId);
-    armed();
+    clearComposer();
   };
   // While the assistant is generating, the send button doubles as a stop button
   // (paint() flips .is-stop / textContent). Same dual-role treatment as the
@@ -860,6 +883,15 @@ export function mountSessionView(mount, sessionId, meta = {}) {
     renderModelChip(dom, sessionId);
     renderMeterStrip(dom, sessionId);
   });
+  // Its own subscriber rather than a line in paint(): the only settings change this view
+  // cares about is one attribute, and paint() rewrites the whole transcript.
+  const paintPlaceholder = () => {
+    dom.composer.dataset.placeholder = settings.get().shellCommands
+      ? 'Type a message, or ! to run a command…'
+      : 'Type a message…';
+  };
+  const unsubSettings = settings.subscribe(paintPlaceholder);
+  paintPlaceholder();
   paint();
   paintAgents();
 
@@ -872,6 +904,7 @@ export function mountSessionView(mount, sessionId, meta = {}) {
       unsubConn();
       unsubNavHeader();
       unsubUsage();
+      unsubSettings();
       unwireHeader();
       document.removeEventListener('keydown', onHeaderKeydown);
       unwireComposer();

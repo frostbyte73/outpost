@@ -707,6 +707,7 @@ html[data-density="roomy"] {
 }
 .inline-session-body .msg.msg-shell .shell-line-comment,
 .inline-session-body .msg.msg-shell .shell-aside,
+.inline-session-body .msg.msg-shell .shell-run-out,
 .inline-session-body .msg.msg-shell .shell-flags { display: none; }
 .inline-session-body .msg.msg-read {
   font-size: 11px;

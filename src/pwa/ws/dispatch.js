@@ -386,6 +386,30 @@ const sessionHandlers = {
     if (sid) sessions.for(sid).setStatusline(sl);
   },
 
+  // A `!` command finished — fill in the tile the composer appended when it was sent.
+  // Matched on execId rather than position: several can be in flight at once. Nothing
+  // matches when this is a replay into a reloaded page (or a second client that didn't
+  // type it), in which case the frame IS the tile.
+  shell_result(msg, sid) {
+    const known = sessions.getSlice(sid)?.transcript
+      ?.some((m) => m.role === 'shell' && m.execId === msg.execId);
+    if (!known) {
+      sessions.for(sid).appendTranscript({
+        role: 'shell',
+        execId: msg.execId,
+        text: msg.command ?? '',
+        stdout: msg.stdout ?? '',
+        stderr: msg.stderr ?? '',
+      });
+      return;
+    }
+    sessions.for(sid).mapTranscript((m) => (
+      m.role === 'shell' && m.execId === msg.execId
+        ? { ...m, running: false, stdout: msg.stdout ?? '', stderr: msg.stderr ?? '' }
+        : m
+    ));
+  },
+
   approval_mode(msg, sid, isCurrent) {
     // first broadcast on a fresh session: push the per-client default if it differs from 'ask'.
     // Flag lives on the slice so mobile and desktop tabs share the same trigger; the send

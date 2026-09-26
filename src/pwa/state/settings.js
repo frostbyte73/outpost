@@ -44,6 +44,11 @@ function loadLaunchConcurrency() {
   const v = Number(localStorage.getItem('cr:launchConcurrency'));
   return Number.isInteger(v) && v >= 1 ? v : 1;
 }
+// Mirrors the daemon's own default (preferences-store.ts) — off until turned on. The mirror
+// only decides whether the composer treats `!` as a command; the daemon enforces it either way.
+function loadShellCommands() {
+  return localStorage.getItem('cr:shellCommands') === 'true';
+}
 
 const store = createStore({
   theme: loadTheme(),
@@ -52,6 +57,7 @@ const store = createStore({
   defaultModel: loadDefaultModel(),
   editorCommand: loadEditorCommand(),
   launchConcurrency: loadLaunchConcurrency(),
+  shellCommands: loadShellCommands(),
   acceptEdits: false,
   modePopoverOpen: false,
   pushPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
@@ -99,12 +105,19 @@ function applyLaunchConcurrency(n) {
   store.set((s) => (s.launchConcurrency === n ? s : { ...s, launchConcurrency: n }));
 }
 
+function applyShellCommands(v) {
+  if (typeof v !== 'boolean') return;
+  try { localStorage.setItem('cr:shellCommands', String(v)); } catch {}
+  store.set((s) => (s.shellCommands === v ? s : { ...s, shellCommands: v }));
+}
+
 register({ key: 'theme', apply: applyTheme, current: () => store.get().theme });
 register({ key: 'mode', apply: applyMode, current: () => store.get().mode });
 register({ key: 'defaultApprovalMode', apply: applyDefaultApprovalMode, current: () => store.get().defaultApprovalMode });
 register({ key: 'defaultModel', apply: applyDefaultModel, current: () => store.get().defaultModel });
 register({ key: 'editorCommand', apply: applyEditorCommand, current: () => store.get().editorCommand });
 register({ key: 'launchConcurrency', apply: applyLaunchConcurrency, current: () => store.get().launchConcurrency });
+register({ key: 'shellCommands', apply: applyShellCommands, current: () => store.get().shellCommands });
 
 export const settings = {
   get: store.get,
@@ -134,6 +147,10 @@ export const settings = {
   setLaunchConcurrency(n) {
     applyLaunchConcurrency(n);
     push('launchConcurrency', store.get().launchConcurrency);
+  },
+  setShellCommands(v) {
+    applyShellCommands(!!v);
+    push('shellCommands', store.get().shellCommands);
   },
   applyLaunchConcurrency,
   setAcceptEdits(v) {

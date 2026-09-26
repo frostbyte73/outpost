@@ -8,6 +8,7 @@ import { ProjectRegistry } from './storage/project-registry.js';
 import { ApprovalQueue } from './permissions/approvals.js';
 import { SessionStore } from './session/session-store.js';
 import { SessionManager } from './session/session-manager.js';
+import { SessionShell } from './session/shell-exec.js';
 import { Server } from './server.js';
 import { HookServer } from './permissions/hook-server.js';
 import { handleMcpRequest, OUTPOST_MCP_TOOLS } from './mcp-server.js';
@@ -400,6 +401,11 @@ async function main() {
   };
   const linearWriter = new LinearWriter({ stateIds: linearStateIds });
   const preferencesStore = new PreferencesStore(join(RUNTIME_DIR, 'preferences.json'));
+  const sessionShell = new SessionShell({
+    cwdFor: (id) => manager.getCwd(id),
+    broadcast: (id, message) => manager.broadcast(id, message),
+    enabled: () => preferencesStore.getShellCommandsEnabled(),
+  });
   // Token-aware launch queue. Constructed before the engine (which takes it as a dep).
   // `latestAccountUsage` is declared later and read lazily through the closure — same
   // pattern as tokenScheduler below.
@@ -1228,7 +1234,7 @@ async function main() {
     // this catches whatever a future branch forgets.
     ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
       try {
-        handleSessionMessage(raw, sessionId, { queue, manager, modes, log: (l) => console.log(l) });
+        handleSessionMessage(raw, sessionId, { queue, manager, modes, shell: sessionShell, log: (l) => console.log(l) });
       } catch (e) {
         console.error(`[api] session ${sessionId.slice(0, 8)} message handler threw: ${(e as Error).message}`);
         try { ws.send(JSON.stringify({ type: 'daemon_error', message: (e as Error).message })); } catch { /* socket already gone */ }

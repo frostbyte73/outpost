@@ -148,15 +148,15 @@ function connect(id) {
       info.pendingMode = null;
       try { ws.send(JSON.stringify({ type: 'approval_mode_set', mode })); } catch { /* onclose retries */ }
     }
-    // Flush user messages queued while the socket was down — reconnectAndSend
-    // stashes them when the user sends into an interrupted/exited session.
+    // Flush frames queued while the socket was down — reconnectAndQueue stashes them
+    // when the user sends (or runs a `!` command) in an interrupted/exited session.
     // Ordering preserved; the daemon replays them to the resumed subprocess.
     if (info.queued?.length) {
       const pending = info.queued;
       info.queued = [];
-      for (const text of pending) {
-        try { ws.send(JSON.stringify({ type: 'user_message', content: text })); }
-        catch { (info.queued ||= []).push(text); /* onclose retries */ }
+      for (const frame of pending) {
+        try { ws.send(JSON.stringify(frame)); }
+        catch { (info.queued ||= []).push(frame); /* onclose retries */ }
       }
     }
     // Re-run disk catch-up on every open so gaps from suspend/reconnect fill in.
@@ -243,14 +243,24 @@ export function sendUserMessage(id, text) {
   return true;
 }
 
-// Send a user_message, reconnecting the session first if its socket is down.
-// Used when the user types into an interrupted or exited session: the WS was
-// force-closed (see forceCloseSessionWs) so `sendUserMessage` would drop the
-// message. Re-opening the socket makes the daemon respawn the subprocess in
-// `resume` mode (session-manager.attach → spawn), and the message is queued to
+// Run a `!` command server-side in the session's cwd. The daemon answers with a
+// `shell_result` frame carrying the same execId, which fills in the tile the
+// caller already appended. Returns false if the socket isn't open.
+export function sendShellExec(id, execId, command) {
+  const info = conns.get(id);
+  if (!info?.ws || info.ws.readyState !== WebSocket.OPEN) return false;
+  info.ws.send(JSON.stringify({ type: 'shell_exec', execId, command }));
+  return true;
+}
+
+// Send a frame, reconnecting the session first if its socket is down. Used when
+// the user types into (or runs a `!` command in) an interrupted or exited
+// session: the WS was force-closed (see forceCloseSessionWs) so a plain send
+// would drop it. Re-opening the socket makes the daemon respawn the subprocess
+// in `resume` mode (session-manager.attach → spawn), and the frame is queued to
 // flush the moment the socket opens. Returns true if it sent immediately,
 // false if it was queued for the reconnect.
-export function reconnectAndSend(id, text) {
+function reconnectAndQueue(id, frame) {
   if (!id) return false;
   let info = conns.get(id);
   if (!info) {
@@ -261,7 +271,7 @@ export function reconnectAndSend(id, text) {
     info = conns.get(id);
     if (!info) return false;
   } else if (info.ws && info.ws.readyState === WebSocket.OPEN) {
-    info.ws.send(JSON.stringify({ type: 'user_message', content: text }));
+    info.ws.send(JSON.stringify(frame));
     return true;
   } else {
     // A retry is backing off (or the socket is mid-close). Cancel closing
@@ -271,9 +281,17 @@ export function reconnectAndSend(id, text) {
     if (info.timer) { clearTimeout(info.timer); info.timer = null; }
     if (!info.ws || info.ws.readyState === WebSocket.CLOSED) connect(id);
   }
-  (info.queued ||= []).push(text);
+  (info.queued ||= []).push(frame);
   republishConn();
   return false;
+}
+
+export function reconnectAndSend(id, text) {
+  return reconnectAndQueue(id, { type: 'user_message', content: text });
+}
+
+export function reconnectAndRunShell(id, execId, command) {
+  return reconnectAndQueue(id, { type: 'shell_exec', execId, command });
 }
 
 // Change the session's approval mode server-side. Daemon broadcasts the new

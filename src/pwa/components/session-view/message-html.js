@@ -11,6 +11,8 @@ import {
   shellLineHtml,
   readLineHtml,
   editWriteTileHtml,
+  formatBashCommandText,
+  projectifyText,
 } from '../tool-use-tile.js';
 import { askMsgHtml } from '../ask-flow.js';
 import { isDiffReviewMessage, parseDiffReviewMessage } from '../diff-review-format.js';
@@ -20,6 +22,9 @@ const SHELL_TOOLS = new Set(['Bash', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'S
 
 function stripCommandScaffolding(text) {
   return text
+    .replace(/<bash-input>[\s\S]*?<\/bash-input>\s*/g, '')
+    .replace(/<bash-stdout>[\s\S]*?<\/bash-stdout>\s*/g, '')
+    .replace(/<bash-stderr>[\s\S]*?<\/bash-stderr>\s*/g, '')
     .replace(/<local-command-stdout>[\s\S]*?<\/local-command-stdout>\s*/g, '')
     .replace(/<local-command-stderr>[\s\S]*?<\/local-command-stderr>\s*/g, '')
     .replace(/<command-name>[\s\S]*?<\/command-name>\s*/g, '')
@@ -43,6 +48,24 @@ function toolTileHtml(m, expandedTools, ctx) {
     ? `<div class="tool-reject-reason">${escapeHtml(m.rejectReason)}</div>`
     : '';
   return `<div class="tool-rejected"><span class="tool-reject-tag">Rejected</span>${tile}${reasonHtml}</div>`;
+}
+
+// A `!` command the user ran themselves — the Bash tile's $-prompt frame with a `!` marker
+// and the output beneath it. stdout and stderr stay separate blocks so a command that wrote
+// to both doesn't read as one stream.
+function shellRunHtml(m, ctx) {
+  const cmd = String(m.text ?? '');
+  const cmdLine = `<div class="shell-line"><span class="shell-prompt">!</span><span class="shell-cmd">${escapeHtml(projectifyText(formatBashCommandText(cmd), ctx))}</span></div>`;
+  let out;
+  if (m.running) {
+    out = `<div class="shell-run-out is-running">running…</div>`;
+  } else {
+    const stdout = (m.stdout ?? '').trimEnd();
+    const stderr = (m.stderr ?? '').trimEnd();
+    out = (stdout ? `<pre class="shell-run-out">${escapeHtml(stdout)}</pre>` : '')
+      + (stderr ? `<pre class="shell-run-out is-err">${escapeHtml(stderr)}</pre>` : '');
+  }
+  return `<div class="msg msg-shell msg-shell-run"><div class="shell-body">${cmdLine}${out}</div></div>`;
 }
 
 // Pending-ask fallback tile. Pending asks are normally filtered out of the
@@ -117,6 +140,7 @@ export function oneLineMsgHtml(m, ctx) {
       : (m.text ?? '');
     return wrapOneLine('ask', escapeHtml(`? ${truncate(q, 120)}`));
   }
+  if (m.role === 'shell') return wrapOneLine('shell', escapeHtml(`! ${truncate(m.text ?? '', 120)}`));
   if (m.role === 'error') return wrapOneLine('error', escapeHtml(`! ${truncate(m.text ?? '', 120)}`));
   if (m.role === 'user') {
     const stripped = stripCommandScaffolding(m.text ?? '');
@@ -135,6 +159,7 @@ export function oneLineMsgHtml(m, ctx) {
 // `minimalMsgHtml`). `expandedTools` is a Set<toolUseId> from the caller's
 // session slice; when omitted, tool tiles fall back to the singleton mirror.
 export function minimalMsgHtml(m, expandedTools, ctx) {
+  if (m.role === 'shell') return shellRunHtml(m, ctx);
   if (m.role === 'tool_use') return toolTileHtml(m, expandedTools, ctx);
   if (m.role === 'ask') return m.answer == null ? askPendingHtml(m) : askMsgHtml(m);
   if (m.role === 'tool_result') {

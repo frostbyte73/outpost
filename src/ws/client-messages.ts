@@ -63,10 +63,17 @@ interface ApprovalModeTarget {
   set(sessionId: string, mode: ApprovalMode): void; // throws on an unrecognized mode
 }
 
+interface ShellTarget {
+  run(sessionId: string, execId: string, command: string): Promise<void>;
+  drain(sessionId: string): string;
+  restore(sessionId: string, blocks: string): void;
+}
+
 export interface SessionMessageDeps {
   queue: ApprovalDecideTarget;
   manager: SessionMessageTarget;
   modes: ApprovalModeTarget;
+  shell?: ShellTarget;
   log?: (line: string) => void;
 }
 
@@ -76,15 +83,27 @@ export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: Ses
   const log = deps.log ?? (() => {});
   if (msg.type === 'user_message') {
     const { content } = msg as { content: string };
+    // `!` output the user produced since their last message rides in ahead of what they
+    // typed — see SessionShell. Nothing is sent when they only ran commands, so the
+    // blocks wait here rather than costing a turn of their own.
+    const blocks = deps.shell?.drain(sessionId) ?? '';
     // SessionManager.send throws when the session isn't in `active` — which a client
     // can trigger any time by typing into a session whose subprocess has since exited
     // (a daemon restart drops every active entry while the PWA keeps showing them).
     // Unguarded, that throw unwinds through ws.on('message') and kills the daemon,
     // which drops every other session too. Report it, don't die.
     try {
-      deps.manager.send(sessionId, { type: 'user', message: { role: 'user', content } });
+      deps.manager.send(sessionId, { type: 'user', message: { role: 'user', content: blocks + content } });
     } catch (e) {
+      deps.shell?.restore(sessionId, blocks);
       log(`[api] user_message to ${sessionId.slice(0, 8)} failed: ${(e as Error).message}`);
+    }
+  } else if (msg.type === 'shell_exec') {
+    const { execId, command } = msg as { execId?: string; command?: string };
+    if (deps.shell && typeof execId === 'string' && typeof command === 'string' && command.trim()) {
+      void deps.shell.run(sessionId, execId, command).catch((e: Error) => {
+        log(`[api] shell_exec in ${sessionId.slice(0, 8)} failed: ${e.message}`);
+      });
     }
   } else if (msg.type === 'approval_decide') {
     const { approvalId, decision, reason } = msg as { approvalId: string; decision: 'allow' | 'deny'; reason?: string };

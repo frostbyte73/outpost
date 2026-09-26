@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, statSync, unlinkSync, openSync, readSync, closeSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
 import { join } from 'node:path';
 import { LineParser } from './stream-json.js';
+import { splitBashBlocks } from './shell-exec.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
 
@@ -62,8 +63,12 @@ export interface SubagentInfo {
 }
 
 export interface TranscriptMessage {
-  role: 'user' | 'assistant' | 'tool_use' | 'tool_result';
+  // 'shell' is a `!` command the user ran themselves — `text` is the command, output in
+  // stdout/stderr. See shell-exec.ts.
+  role: 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'shell';
   text: string;
+  stdout?: string;
+  stderr?: string;
   // Owning assistant message's API id (`msg_*`); used by the PWA to dedupe WS replay vs disk load.
   msgId?: string;
   // Raw tool_use input alongside rendered string so the PWA can rebuild UI without re-parsing `text`.
@@ -89,11 +94,24 @@ function isSystemInjection(text: string): boolean {
   return t.startsWith('<local-command-') ||
     t.startsWith('<command-') ||
     t.startsWith('<system-reminder>') ||
-    t.startsWith('<bash-input>') ||
-    t.startsWith('<bash-stdout>') ||
     t.startsWith('<task-notification>') ||
     t.startsWith('Base directory for this skill:') ||
     t.startsWith('Caveat: ');
+}
+
+// `!` runs ride into the next user message ahead of whatever the user typed (see
+// shell-exec.ts), so both halves have to come back out: a tile per run, then the message.
+function extractShellRuns(text: string, msgId?: string): TranscriptMessage[] | null {
+  const { runs, rest } = splitBashBlocks(text);
+  if (runs.length === 0) return null;
+  const parts: TranscriptMessage[] = runs.map((r) => ({
+    role: 'shell' as const,
+    text: r.command,
+    stdout: r.stdout,
+    stderr: r.stderr,
+  }));
+  if (rest) parts.push({ role: 'user', text: rest, ...(msgId ? { msgId } : {}) });
+  return parts;
 }
 
 // Extract <command-args> from a slash-command invocation so the transcript shows what the human typed.
@@ -266,6 +284,8 @@ function extractTranscriptMessages(obj: unknown, taskToolUseIds: Set<string>): T
 
   if (typeof content === 'string') {
     if (o.type === 'user') {
+      const shell = extractShellRuns(content, msgId);
+      if (shell !== null) return shell;
       const rewritten = rewriteSlashCommandInvocation(content);
       if (rewritten !== null) return [{ role: 'user', text: rewritten, ...(msgId ? { msgId } : {}) }];
       if (isSystemInjection(content)) return [];
@@ -278,6 +298,8 @@ function extractTranscriptMessages(obj: unknown, taskToolUseIds: Set<string>): T
   for (const b of content) {
     if (b.type === 'text' && typeof b.text === 'string') {
       if (o.type === 'user') {
+        const shell = extractShellRuns(b.text, msgId);
+        if (shell !== null) { parts.push(...shell); continue; }
         const rewritten = rewriteSlashCommandInvocation(b.text);
         if (rewritten !== null) {
           parts.push({ role: 'user', text: rewritten, ...(msgId ? { msgId } : {}) });

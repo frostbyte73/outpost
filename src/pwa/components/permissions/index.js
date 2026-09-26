@@ -1,4 +1,5 @@
 import { detailShell, block } from '../settings-surface/detail-shell.js';
+import { settings } from '../../state/settings.js';
 import { renderGroupsBlock } from './groups.js';
 import { renderPendingBlock } from './pending.js';
 import { renderGrantsBlock } from './grants.js';
@@ -10,6 +11,29 @@ import { renderGrantsBlock } from './grants.js';
 export function renderPermissions(mount) {
   const body = detailShell(mount, 'Permissions',
     'Permission groups are the only thing that grants an action anything. Editing one is re-linted before it applies, and every change is recorded in the group’s history.');
+
+  // First block on the page because it's the one thing here that isn't about actions: it
+  // governs what YOU can run from the composer, with no group and no approval card between
+  // the command and the shell.
+  const shellSection = block(body, 'Shell commands', `
+    <div class="settings-segmented" data-role="shell-commands">
+      <button type="button" data-value="off">Off</button>
+      <button type="button" data-value="on">On</button>
+    </div>
+    <p class="settings-note">Lets <code>!command</code> in a session composer run in that session's working directory, as you — no allowlist, no approval card. Output shows in the transcript and rides into your next message so Claude sees it. Anyone who can reach this PWA can use it.</p>
+  `);
+  function paintShell() {
+    const on = settings.get().shellCommands;
+    for (const btn of shellSection.querySelectorAll('button[data-value]')) {
+      btn.classList.toggle('active', btn.dataset.value === (on ? 'on' : 'off'));
+    }
+  }
+  shellSection.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-value]');
+    if (btn) settings.setShellCommands(btn.dataset.value === 'on');
+  });
+  paintShell();
+  const unsubShell = settings.subscribe(paintShell);
 
   const groupsSection = block(body, 'Permission groups', '<div class="permgroup-list"></div>');
   const pendingSection = block(body, 'Pending classifications',
@@ -29,5 +53,5 @@ export function renderPermissions(mount) {
   const unmountPending = renderPendingBlock(pendingSection.querySelector('.perm-pending-list'));
   const unmountGrants = renderGrantsBlock(grantsSection.querySelector('.perm-grants-list'),
     { promoteToGroup: groupsApi.promote });
-  return () => { groupsApi.unmount(); unmountPending(); unmountGrants(); };
+  return () => { unsubShell(); groupsApi.unmount(); unmountPending(); unmountGrants(); };
 }

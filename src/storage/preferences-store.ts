@@ -32,6 +32,13 @@ export class PreferencesStore {
     return Number.isInteger(raw) && (raw as number) >= 1 ? (raw as number) : 1;
   }
 
+  // `!` in the composer runs whatever the user types with no allowlist and no approval card
+  // (see session/shell-exec.ts), so it stays off until turned on in Settings > Permissions.
+  // Absent reads as off — an older preferences.json must not grant it.
+  getShellCommandsEnabled(): boolean {
+    return (this.get() as { shellCommands?: unknown }).shellCommands === true;
+  }
+
   // Undefined rather than a default, so the fallback lives with the code that spawns it.
   getEditorCommand(): string | undefined {
     const raw = (this.get() as { editorCommand?: unknown }).editorCommand;

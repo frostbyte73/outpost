@@ -495,8 +495,11 @@ async function catchUpFromDisk(id) {
       return;
     }
 
-    // user messages have no msgId, so block dedup can't catch them; skip by count instead
+    // user messages have no msgId, so block dedup can't catch them; skip by count instead.
+    // `!` shell tiles have the same problem — disk only learns of them once they ride into
+    // the next user message, and by then the live tile is already in the transcript.
     let userMsgsToSkip = slice.transcript.filter((m) => m.role === 'user').length;
+    let shellMsgsToSkip = slice.transcript.filter((m) => m.role === 'shell').length;
     let added = false;
     for (const m of messages) {
       if (m.role === 'tool_use' && m.toolUseId) {
@@ -510,6 +513,8 @@ async function catchUpFromDisk(id) {
         continue;
       } else if (m.role === 'user') {
         if (userMsgsToSkip > 0) { userMsgsToSkip--; continue; }
+      } else if (m.role === 'shell') {
+        if (shellMsgsToSkip > 0) { shellMsgsToSkip--; continue; }
       }
       if (applyTaskTranscriptMessage(m, id)) { added = true; continue; }
       if (applyAskTranscriptMessage(m, sessions.getSlice(id)?.transcript ?? [], id)) { added = true; continue; }
@@ -549,6 +554,12 @@ function rebuildTranscriptFromDisk(messages, sessionId) {
   const pendingLocalUsers = (slice?.transcript ?? []).filter(
     (m) => m.role === 'user' && !m.msgId && !diskUserTexts.has(m.text),
   );
+  // Same reasoning for `!` runs: one reaches disk only when the next user message carries
+  // it, so a rebuild before that would drop tiles whose output is still queued.
+  const diskShellCommands = new Set(messages.filter((m) => m.role === 'shell').map((m) => m.text));
+  const pendingLocalShell = (slice?.transcript ?? []).filter(
+    (m) => m.role === 'shell' && !diskShellCommands.has(m.text),
+  );
 
   // Only reset per-session state — the global dedup sets (seenBlockSigs,
   // consumedTaskResults, taskToolUseIds, pendingCreates) are shared with
@@ -570,7 +581,7 @@ function rebuildTranscriptFromDisk(messages, sessionId) {
     }
     filtered.push(m);
   }
-  S.setTranscript([...filtered, ...pendingLocalUsers]);
+  S.setTranscript([...filtered, ...pendingLocalShell, ...pendingLocalUsers]);
 }
 
 function leaveSession() {
