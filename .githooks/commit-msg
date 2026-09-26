@@ -1,0 +1,19 @@
+#!/bin/sh
+# Strip Claude attribution trailers from every commit message. Claude Code injects a
+# session-start reminder telling the model to append one, and the model has done it
+# repeatedly against a standing instruction not to — so the line comes off mechanically
+# here rather than depending on the model remembering.
+#
+# Enabled by `git config core.hooksPath .githooks` (per clone — run it after a fresh clone).
+msg="$1"
+tmp="$msg.declaude"
+
+grep -v -i -E \
+  -e '^[[:space:]]*Co-authored-by:[[:space:]]*Claude' \
+  -e '^[[:space:]]*Co-authored-by:.*noreply@anthropic\.com' \
+  -e 'Generated with \[Claude Code\]' \
+  "$msg" > "$tmp" || :
+
+# Drop any blank lines the removal left dangling at the end.
+awk '{l[NR]=$0} END{last=0; for(i=1;i<=NR;i++) if(l[i] ~ /[^[:space:]]/) last=i; for(i=1;i<=last;i++) print l[i]}' "$tmp" > "$msg"
+rm -f "$tmp"
