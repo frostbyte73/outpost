@@ -241,6 +241,13 @@ export interface PrFacts {
   // sitting on a self-armed timer. Stops updating once `prUrl` resolves — `headRefOid` is the
   // same commit from then on, read from the PR itself.
   branchHeadOid?: string;
+  // The daemon's own `gh pr create` is in flight for this branch — the PWA's
+  // squash-and-open-PR button, or the Open PR button. For those seconds the branch is on
+  // origin with no PR on it, which is exactly the state that wakes a controller parked on
+  // `head-moved` into drafting a `gh pr create` for the PR being created. Cleared either side
+  // of the call and at boot, so a request that didn't survive a restart can't silence the
+  // watcher for the rest of the step's life.
+  isOpeningPr?: boolean;
   comments?: PrComment[];
   threadHash?: string;
 }

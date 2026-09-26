@@ -333,7 +333,9 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
     if (refuseIfReadonly(worktreeManager, engine, m[1]!, res)) return;
     const payload = await readJsonObject<{ title?: string; body?: string; base?: string }>(req, res, { allowEmpty: true });
     if (!payload) return;
+    engine.markPrOpening(m[1]!);
     const result = await gitOpenPr(resolved.cwd, payload);
+    engine.finishPrOpening(m[1]!, result.ok ? result.url : undefined);
     let status;
     try { status = await gitStatus(resolved.cwd); } catch { status = null; }
     res.statusCode = result.ok ? 200 : 409;
@@ -393,9 +395,12 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       // not open. Re-squashing to base would rewind past the pushed head and fail the
       // push (and forcing would rewrite the PR). Fast-forward the round's commits instead.
       const exists = await gitRemoteBranchExists(rec.worktreePath, payload.newBranch);
+      // Only the squash path opens a PR; an append fast-forwards one that's already there.
+      if (!exists) engine.markPrOpening(sessionId);
       const result: GitCommandResult & { url?: string } = exists
         ? await gitFinalizeAppendToBranch({ worktreePath: rec.worktreePath, branch: payload.newBranch, baseBranch })
         : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, baseRef: diffBaseFor(rec), newBranch: payload.newBranch, message });
+      if (!exists) engine.finishPrOpening(sessionId, result.ok ? result.url : undefined);
       // The PR head moved (or a new PR opened) — nudge the watcher so the owning step's
       // controller learns of it without waiting on the hourly sweep.
       if (result.ok) {

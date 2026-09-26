@@ -282,6 +282,15 @@ problem is a signal about the spec, not something a fourth review fixes.
 
 ### Row 8 in detail — opening the PR
 
+**`pr.prUrl` in the envelope — not your memo — decides whether this row is live at all, so read
+it this turn.** A memo written before the branch landed still says "on wake, draft
+`gh pr create`", and the user pushing *and opening the PR themselves* is the single most common
+way this row gets falsified between that memo and your next turn. The branch check below tells
+you nothing about this: a pushed branch is exactly what a PR opened by hand leaves behind. A
+`gh pr create` drafted while `pr.prUrl` is set is refused by the daemon, not merely wrong — you
+get the refusal back from `mcp__outpost__submit_write_draft` and still owe the turn a
+`submit_step_progress`.
+
 `artifacts.implementation` existing does **not** mean the branch is pushed —
 `code.implement` deliberately leaves its edits uncommitted for the user to review, and nothing
 in the ladder commits or pushes on their behalf. Check the remote before drafting anything,

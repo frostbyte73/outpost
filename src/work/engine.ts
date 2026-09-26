@@ -25,7 +25,7 @@ import type {
 } from './work-types.js';
 import { augmentEnvelopeWithLessons, buildActionCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry, type CatalogScope } from './envelope.js';
 import { readonlyView, workspaceError } from './workspace.js';
-import { expectRepoOf, parsePrUrl } from './pr-url.js';
+import { expectRepoOf, parsePrUrl, PR_URL_RE } from './pr-url.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { handlerFor, initialStateForType, isTerminalStep } from '../steps/index.js';
 import { orchestratedHandler } from '../steps/orchestrated.js';
@@ -463,6 +463,11 @@ export class WorkEngine {
     for (const j of this.opts.queue.list()) {
       for (const s of j.steps) {
         if (s.cancelled || s.failure) continue;
+        // An HTTP request that was opening a PR when the daemon stopped is not opening one
+        // now. Left set, it silences this step's `head-moved` wakes for good.
+        if (s.type === 'orchestrated' && s.pr?.isOpeningPr) {
+          this.applyPrFacts(j.id, s.id, { isOpeningPr: false });
+        }
         // pushInbox coalesces external items as they arrive, but only from the version that
         // does — a step parked before this daemon booted can be holding a pile of repeats it
         // would hand the controller all at once on the next delivery (one step had 76). Fold
@@ -2520,6 +2525,29 @@ export class WorkEngine {
       }
       : s);
     this.mutate(jobId, (j) => ({ ...j, linearStatusDirty: true }));
+  }
+
+  // Bracket the daemon's own `gh pr create` (the git routes' two PR-opening buttons) on
+  // whichever step owns this session. `markPrOpening` is what stops the push half of that call
+  // from waking the controller mid-flight, and what the PWA renders as "Opening PR…" the
+  // instant the button is hit rather than a minute later when the watcher first sees it.
+  markPrOpening(sessionId: string): void {
+    const role = this.roleBySession.get(sessionId);
+    if (role?.role === 'step') this.applyPrFacts(role.jobId, role.stepId, { isOpeningPr: true });
+  }
+
+  // `url` is the PR the call actually opened, or undefined if it failed. Recording it here is
+  // the only time the daemon knows a PR's URL without discovery: `discoverPr`'s `gh pr list`
+  // is otherwise the sole path, and it runs on the 1m escalation at best — a whole minute in
+  // which the step's own `pr` says no PR exists and row 8 of code.orchestrate-pr still matches.
+  finishPrOpening(sessionId: string, url?: string): void {
+    const role = this.roleBySession.get(sessionId);
+    if (role?.role !== 'step') return;
+    const found = typeof url === 'string' && PR_URL_RE.test(url) ? url : undefined;
+    this.applyPrFacts(role.jobId, role.stepId, {
+      isOpeningPr: false,
+      ...(found ? { prUrl: found, prState: 'open' as const } : {}),
+    });
   }
 
   // ─────────────────────────────────────────────────────────

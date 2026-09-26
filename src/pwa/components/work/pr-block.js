@@ -28,6 +28,12 @@ function reviewBadge(s) {
   if (s === 'changes_requested') return '<span class="o-pill review">Changes requested</span>';
   return '<span class="o-pill">Review required</span>';
 }
+// The window between hitting squash-and-open-PR and `gh pr create` answering — the branch is
+// pushed, no PR exists yet, and without this the card reads as idle for as long as the push
+// takes. Goes quiet the moment `prUrl` lands, because the link in the header says it better.
+function openingBadge(s) {
+  return s.isOpeningPr && !s.prUrl ? '<span class="o-pill">Opening PR…</span>' : '';
+}
 // Mergeability is a distinct blocker from CI: a conflicting PR reads as "CI
 // pending" but actually can't land. The controller owns the fix — its own
 // code.resolve-conflicts round — so this is a status pill, not a CTA; the user's lever
@@ -182,7 +188,9 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
   // Once merged, "Merged" (in the stats row) says it all — the CI/approval pills
   // are implied and just add noise to the collapsed line; the full check
   // breakdown still lives in the expandable Checks disclosure.
-  const badges = isMerged ? [] : [mergeBadge(s), ciBadge(s), reviewBadge(s.reviewState)].filter(Boolean);
+  const badges = isMerged
+    ? []
+    : [openingBadge(s), mergeBadge(s), ciBadge(s), reviewBadge(s.reviewState)].filter(Boolean);
 
   // The two always-visible rows — repo/badges + branch/diff. When merged these become the
   // collapsed summary; otherwise they head the open block. No title row: `PrFacts` carries

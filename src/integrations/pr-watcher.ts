@@ -539,6 +539,11 @@ export class PrWatcher {
     const head = await this.remoteHead(cwd, branch);
     if (!head || head === prev.branchHeadOid) return;
     this.opts.engine.applyPrFacts(jobId, s.id, { branchHeadOid: head });
+    // The daemon is opening the PR for this branch right now, and its `git push` is what put
+    // the head there. Waking the controller on it hands it "branch pushed, no PR" — the one
+    // reading of row 8 that makes it draft a `gh pr create` for the PR being created a second
+    // later. The fact is recorded above either way, so the next real wake carries the head.
+    if (prev.isOpeningPr) return;
     this.opts.engine.pushStepInbox(jobId, s.id, {
       kind: 'external',
       source: 'pr-watcher',

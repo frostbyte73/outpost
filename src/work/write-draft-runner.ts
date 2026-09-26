@@ -3,6 +3,7 @@ import type { JobRecord, Step } from './work-types.js';
 // would resurrect a terminal step and re-ask the user about something already settled.
 import { isTerminalStep as isTerminal } from '../steps/index.js';
 import { confirmationsRequired } from '../permissions/dangerous-writes.js';
+import { duplicatePrCreate } from '../steps/orchestrated-policy.js';
 import {
   extractFileReferences, hashFileContents, sameRaiser, writeFileContents,
   type DraftRaisedBy, type PinnedCall, type WriteDraft,
@@ -101,6 +102,20 @@ export function submitDraft(
     // step's top-level state doesn't — it's routinely `waiting` while dispatches are in
     // flight, and that's not a reason to refuse the dispatch's own review request.
     return { ok: false, reason: `step is in state ${step.state}, not accepting a draft` };
+  }
+
+  if (step.type === 'orchestrated') {
+    const existing = duplicatePrCreate(step, incoming.calls);
+    if (existing) {
+      return {
+        ok: false,
+        reason: `${existing} already exists for this step (${step.pr?.prState ?? 'open'}) — a second `
+          + '`gh pr create` on the same branch is not what you want, and the user has nothing to '
+          + 'approve here. Re-read `pr` in the envelope rather than your memo: the row that opens the '
+          + 'PR is falsified, and the row matching these facts is below it. Report that move with '
+          + 'submit_step_progress instead.',
+      };
+    }
   }
 
   const draft: WriteDraft = { ...incoming, raisedBy, id: host.newId(), requestedAt: host.now() };

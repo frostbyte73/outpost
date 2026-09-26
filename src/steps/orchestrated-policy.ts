@@ -38,6 +38,26 @@ function unmergedOwnPr(step: OrchestratedStep): string | undefined {
   return pr.prUrl;
 }
 
+// Leading-anchored for the same reason the `push` group's rules are: a call that isn't reaches
+// `allows()` and denies there anyway, so there is no second spelling to chase.
+const PR_CREATE_RE = /^gh\s+pr\s+create(\s|$)/;
+
+// The PR a drafted `gh pr create` would duplicate, or undefined if opening one is legitimate.
+// Row 8 of `code.orchestrate-pr` is the only row that opens a PR and `pr.prUrl` is its falsifier,
+// but a controller that re-walks the ladder from its memo rather than from the envelope takes the
+// row anyway — the observed case drafted against a PR whose recorded `headRefOid` already matched
+// its own HEAD, on a turn woken by a delivery reading "PR open". Same argument as unmergedOwnPr:
+// the ladder row is prose, and prose did not hold. A `closed` PR is left alone — that one is row
+// 10's `fail`, not this guard's call.
+export function duplicatePrCreate(
+  step: OrchestratedStep, calls: ReadonlyArray<{ bash?: string }>,
+): string | undefined {
+  const pr = step.pr;
+  if (!pr?.prUrl || pr.prState === 'closed') return undefined;
+  if (!calls.some((c) => typeof c.bash === 'string' && PR_CREATE_RE.test(c.bash.trim()))) return undefined;
+  return pr.prUrl;
+}
+
 export function briefKey(action: string, brief: string): string {
   let h = 5381;
   for (let i = 0; i < brief.length; i++) h = ((h << 5) + h + brief.charCodeAt(i)) | 0;
