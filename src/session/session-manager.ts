@@ -336,7 +336,13 @@ export class SessionManager {
   // hook instead. See reloadForReauth.
   private readonly reloadWhenIdle = new Set<string>();
 
+  // `extraEnv` is sticky: a caller that has none (attach, from the PWA) inherits what this
+  // session was last spawned with, so a step session keeps its `$OUTPOST_ENVELOPE` no matter
+  // which door respawns it. Persisted rather than held in memory — a daemon restart followed
+  // by a PWA attach is the same loss.
   private spawn(sessionId: string, cwd: string, extraEnv?: Record<string, string>): ActiveSession {
+    if (extraEnv) this.opts.sessionStore.writeSpawnEnv(sessionId, extraEnv);
+    const env = extraEnv ?? this.opts.sessionStore.readSpawnEnv(sessionId) ?? {};
     this.sessionCwds.set(sessionId, cwd);
     const s: ActiveSession = {
       id: sessionId,
@@ -359,7 +365,7 @@ export class SessionManager {
       settingsPath: this.opts.settingsPath,
       mcpConfigPath: this.opts.mcpConfigPath,
       cwd,
-      env: { DAEMON_AUTH: this.opts.daemonAuthSecret, DAEMON_HOST: this.opts.daemonHost, OUTPOST_HOOK_PORT: String(this.opts.hookPort), ...(extraEnv ?? {}) },
+      env: { DAEMON_AUTH: this.opts.daemonAuthSecret, DAEMON_HOST: this.opts.daemonHost, OUTPOST_HOOK_PORT: String(this.opts.hookPort), ...env },
       ...(permissionMode ? { permissionMode } : {}),
       ...(model ? { model } : {}),
       onMessage: (msg) => {

@@ -532,23 +532,48 @@ export class SessionStore {
   // and survives daemon restarts (unlike the in-memory action binding). Keyed by
   // session id, so it's independent of the ~/.claude/projects/* dir encoding.
   writeActionMeta(sessionId: string, meta: { action: string; title: string }): void {
+    this.mergeSessionMeta(sessionId, meta);
+  }
+
+  // The per-session vars the daemon spawned this session with (`OUTPOST_ENVELOPE` and its
+  // job/step ids). Persisted because the respawn is not always the daemon's: the PWA attaching
+  // to an idle-reaped session respawns it with no env of its own, and sendOrResume then finds
+  // it live and never gets to apply any — leaving a step session unable to read its envelope
+  // for the rest of its life. Never holds the hook secret; only the caller's `extraEnv`.
+  writeSpawnEnv(sessionId: string, env: Record<string, string>): void {
+    this.mergeSessionMeta(sessionId, { spawnEnv: env });
+  }
+
+  readSpawnEnv(id: string): Record<string, string> | null {
+    const env = this.readSessionMeta(id)?.spawnEnv;
+    return env && typeof env === 'object' ? env as Record<string, string> : null;
+  }
+
+  // Both writers own their own keys of one shared sidecar, and the action stamp lands right
+  // after the spawn — a whole-file write from either would drop the other's.
+  private mergeSessionMeta(sessionId: string, fields: Record<string, unknown>): void {
     if (!this.sessionMetaDir || !/^[\w-]+$/.test(sessionId)) return;
     try {
       mkdirSync(this.sessionMetaDir, { recursive: true, mode: 0o700 });
       const path = join(this.sessionMetaDir, `${sessionId}.json`);
       const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
-      writeFileSync(tmp, JSON.stringify(meta), { mode: 0o600 });
+      writeFileSync(tmp, JSON.stringify({ ...this.readSessionMeta(sessionId), ...fields }), { mode: 0o600 });
       renameSync(tmp, path);
     } catch { /* best-effort — the session just renders as a plain interactive one */ }
   }
 
-  private readActionMeta(id: string): { action: string; title: string } | null {
+  private readSessionMeta(id: string): Record<string, unknown> | null {
     if (!this.sessionMetaDir || !/^[\w-]+$/.test(id)) return null;
     try {
-      const parsed = JSON.parse(readFileSync(join(this.sessionMetaDir, `${id}.json`), 'utf8')) as { action?: unknown; title?: unknown };
-      if (typeof parsed?.action !== 'string') return null;
-      return { action: parsed.action, title: typeof parsed.title === 'string' ? parsed.title : '' };
+      const parsed = JSON.parse(readFileSync(join(this.sessionMetaDir, `${id}.json`), 'utf8')) as unknown;
+      return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : null;
     } catch { return null; }
+  }
+
+  private readActionMeta(id: string): { action: string; title: string } | null {
+    const parsed = this.readSessionMeta(id);
+    if (typeof parsed?.action !== 'string') return null;
+    return { action: parsed.action, title: typeof parsed.title === 'string' ? parsed.title : '' };
   }
 
   private isGitRepo(cwd: string): boolean {
