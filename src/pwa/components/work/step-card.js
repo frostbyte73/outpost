@@ -9,7 +9,7 @@ import { stepLaunchBadge } from '../../vm/tracked.js';
 import { launchPillClass } from './ticket-row.js';
 import { isTerminalStep, hasUnapprovedDraft, draftAwaitsUser } from '../../vm/work-predicates.js';
 import { shortName } from '../../utils/formatting.js';
-import { isDriven, wheelRowHtml } from './wheel-toggle.js';
+import { stepFeedHtml } from './wheel-toggle.js';
 import { sessionsApi } from '../../net/sessions.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -349,7 +349,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
           ${waitBlockHtml(s)}
           ${draftsHtml(s)}
           ${launchRowHtml(job, s)}
-          ${!orchestrated && s.sessionId ? `${wheelRowHtml(job, s.sessionId)}<div class="step-inline-session-mount${isDriven(job, s.sessionId) ? ' step-inline-session-mount--driven' : ''}" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>` : ''}
+          ${orchestrated ? '' : stepFeedHtml(job, s)}
           ${orchestrated ? renderOrchestratedCard(s, { job }) : ''}
           ${refsHtml(refs)}
           ${output ? `<details class="plan-findings tl-findings"${findingsOpen ? ' open' : ''}><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Findings</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${output}</div></details>` : ''}

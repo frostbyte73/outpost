@@ -20,6 +20,7 @@ import {
   startingStripHtml,
   terminalChipVariant,
 } from './session-terminal-chip.js';
+import { wheelButtonHtml } from './wheel-toggle.js';
 import { decideApproval, openSession } from '../../app-bridge.js';
 
 function isTerminal(step) { return step ? terminalChipVariant(step) !== null : false; }
@@ -68,13 +69,19 @@ function renderTail(slice, sessionId) {
 
 function buildSkeleton(mount) {
   mount.classList.add('step-inline-session');
+  // Set by stepFeedHtml on the mounts whose session the user may take over — a dispatch
+  // child's feed and the orchestrator's carry no wheel, so they set nothing.
+  const wheelSession = mount.dataset.wheelSession;
+  if (wheelSession) mount.classList.add('step-inline-session--wheel');
   mount.innerHTML = `
     <div class="inline-session-header">
-      <span class="inline-session-spacer"></span>
       <button class="inline-session-open" type="button" aria-label="Open session in its own tab">Open ↗</button>
     </div>
-    <div class="inline-session-thinking"></div>
     <div class="inline-session-body"></div>
+    <div class="inline-session-foot">
+      <div class="inline-session-thinking"></div>
+      ${wheelSession ? wheelButtonHtml(wheelSession, false) : ''}
+    </div>
   `;
   return {
     root: mount,
@@ -209,7 +216,7 @@ export function mountInlineSession(mount, sessionId, { jobId, step = null, live:
       stopMetaTicker();
       if (live) { closeSessionWs(sessionId); sessions.unmountView(sessionId); live = false; }
       mount.textContent = '';
-      mount.classList.remove('step-inline-session');
+      mount.classList.remove('step-inline-session', 'step-inline-session--wheel');
     },
   };
 }

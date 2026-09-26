@@ -38,7 +38,7 @@ import { renderMarkdown } from '../../markdown.js';
 import { wireOverflowMenu } from '../../utils/overflow-menu.js';
 import { openSession } from '../../app-bridge.js';
 import { shortName } from '../../utils/formatting.js';
-import { isDriven, wheelRowHtml } from './wheel-toggle.js';
+import { stepFeedHtml } from './wheel-toggle.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 // The trail's chips carry DOM ids so they can point `aria-controls` at their bodies, and a
@@ -114,22 +114,6 @@ function overflowHtml(vm) {
         <button class="o-btn o-btn--ghost sm" data-orc-action="mark-resolved"${hint ? ` title="${escapeHtml(hint)}"` : ''}>${escapeHtml(label)}</button>
       </div>
     </div>`;
-}
-
-// The controller's own transcript tail — and, once its session goes quiet, its status
-// instead, as a chip in the same slot a finished action step uses for "✓ Finished in 10m37s"
-// (session-terminal-chip.js). The status used to be a row of its own right here, above the
-// feed, which meant a parked controller said it twice: once as prose, and once as the two
-// lines of transcript it happened to end on.
-//
-// Rendered here rather than by step-card.js (which
-// still owns it for every other step type) so the composer can follow immediately after it.
-// syncInlineMounts keys purely on sessionId across the whole rendered tree, so the mount
-// works identically wherever in the step it lands — it just has to appear exactly once.
-function feedMountHtml(s, job) {
-  if (!s.sessionId) return '';
-  const driven = isDriven(job, s.sessionId);
-  return `${wheelRowHtml(job, s.sessionId)}<div class="step-inline-session-mount${driven ? ' step-inline-session-mount--driven' : ''}" data-session-id="${escapeHtml(s.sessionId)}" data-step-id="${escapeHtml(s.id)}"></div>`;
 }
 
 // A running dispatch IS the implementor session, and its row used to offer exactly one way to
@@ -296,6 +280,10 @@ function replyDraftFor(step, vm) {
   return orchestratedHasPrBlock(step) && isReplyDraft(vm.controllerDraft) ? vm.controllerDraft : null;
 }
 
+// The controller's feed sits second-to-last rather than being left to step-card.js (which still
+// owns it for every other step type) so the composer can follow immediately after the tail it
+// answers. syncInlineMounts keys purely on sessionId across the whole rendered tree, so the
+// mount works identically wherever in the step it lands — it just has to appear exactly once.
 export function renderOrchestratedCard(step, { job } = {}) {
   const vm = orchestratedRows(step);
   const replyDraft = replyDraftFor(step, vm);
@@ -313,7 +301,7 @@ export function renderOrchestratedCard(step, { job } = {}) {
       ${gateActionsHtml(vm)}
       ${vm.controllerDraft && !replyDraft ? renderWriteDraft(vm.controllerDraft) : ''}
       ${holding ? dispatches : ''}
-      ${feedMountHtml(step, job)}
+      ${stepFeedHtml(job, step)}
       ${composerHtml(step)}
     </div>`;
 }

@@ -759,15 +759,29 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
    While the user drives a session, syncInlineMounts swaps the two-line tail for the real
    mountSessionView. That component sets `height: 100%` on .sv-host, so the step card has to
    lend it an explicit window — doubled up on .sv-host so specificity decides this rather
-   than which sheet happens to load last. */
-.step-wheel-row { display: flex; justify-content: flex-end; margin: 6px 6px 0; }
+   than which sheet happens to load last.
+
+   The frame owns the border, and its bar carries the way out: an accented title bar says the
+   step is under manual control without the window itself shouting it. */
+.step-drive {
+  margin: 8px 6px 4px;
+  border: 1px solid var(--accent);
+  border-radius: var(--r-container);
+  overflow: hidden;
+}
+.step-drive-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 8px 5px 12px;
+  background: var(--accent-soft);
+}
+.step-drive-label { font-size: 12px; color: var(--accent); }
 
 .step-inline-session-mount--driven.sv-host {
   height: min(60vh, 32rem);
-  margin: 8px 6px 4px;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--r-container);
 }
 
 /* ── "Message the controller" ─────────────────────────────────────────────
