@@ -272,9 +272,11 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
     name: 'submit_step_progress',
     description:
       'Report this orchestrated step\'s progress and declare your next move. Call exactly once at the '
-      + 'end of every turn. `memo` is your durable narrative — rewrite it each turn with what a future '
-      + 'you (after a compaction or a cold resume) would need to know; it is replayed in your envelope. '
-      + '`artifacts` are named markdown blobs merged into the step (spec, implPlan, review, ...). '
+      + 'end of every turn. `memo` is your note to your next turn — rewrite it each turn with what a '
+      + 'future you (after a compaction or a cold resume) would need to know; it is replayed in your '
+      + 'envelope. It is REPLACED wholesale each turn, so it is not a record — anything a human should '
+      + 'be able to read later goes in `artifacts`, named markdown blobs merged into the step and kept '
+      + '(spec, implPlan, review, ...). '
       + '`next` is one of: {kind:"self-round",action?,note?} continue on your own session, optionally '
       + 'rebound to another action\'s skill and permissions; {kind:"dispatch",dispatches:[{action,brief}]} '
       + 'fan out to fresh sessions, each seeing only its brief; {kind:"wait",wait:{reason,events?,'
@@ -289,7 +291,7 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
       properties: {
         jobId: { type: 'string' },
         stepId: { type: 'string' },
-        memo: { type: 'string', description: 'Your durable narrative. Rewritten each turn; replayed in your envelope.' },
+        memo: { type: 'string', description: 'Your note to your next turn. REPLACED wholesale each turn; replayed in your envelope. Not a record — use `artifacts` for anything a human reads later.' },
         phase: { type: 'string', description: 'Short label for where the step is, e.g. spec, implement, pr_open.' },
         artifacts: {
           type: 'object',
