@@ -19,11 +19,12 @@
   <script>
     (function () {
       var validThemes = ['halcyon', 'almanac', 'terminal', 'nordic', 'ink', 'botanical', 'plasma', 'atlas', 'library'];
-      var validModes = ['light', 'dark'];
+      var validModes = ['light', 'dark', 'system'];
       var theme = localStorage.getItem('cr:theme');
       var mode = localStorage.getItem('cr:mode');
       if (validThemes.indexOf(theme) === -1) theme = 'halcyon';
       if (validModes.indexOf(mode) === -1) mode = 'dark';
+      if (mode === 'system') mode = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
       document.documentElement.setAttribute('data-theme', theme);
       document.documentElement.setAttribute('data-mode', mode);
 

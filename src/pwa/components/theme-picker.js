@@ -6,7 +6,9 @@
 // what's already styled in css/mobile.css — reused as-is, no new CSS needed.
 
 import { escapeHtml } from '../util.js';
-import { settings } from '../state/settings.js';
+import { settings, syncThemeColorMeta } from '../state/settings.js';
+
+export { syncThemeColorMeta };
 
 export const THEMES = [
   { key: 'halcyon', label: 'Halcyon', sub: 'Cyan · Lavender' },
@@ -28,14 +30,6 @@ function themeCardHtml(t) {
     <div class="preview-text">${escapeHtml(t.label)}</div>
     <div class="preview-sub">${escapeHtml(t.sub)}</div>
   </button>`;
-}
-
-// Keep <meta name="theme-color"> in sync with the active theme's --bg so the iOS
-// Safari address bar / PWA status bar tint matches when the user switches palette.
-export function syncThemeColorMeta() {
-  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta && bg) meta.setAttribute('content', bg);
 }
 
 function paintThemeSelection(container) {
@@ -70,12 +64,13 @@ function paintModeSelection(container) {
   }
 }
 
-// Renders the light/dark segmented toggle into `container`. Returns an unmount.
+// Renders the light/dark/system segmented toggle into `container`. Returns an unmount.
 export function renderModeToggle(container) {
   container.classList.add('mode-toggle');
   container.innerHTML = `
     <button data-mode="light" type="button"><span class="glyph"></span>Light</button>
     <button data-mode="dark" type="button"><span class="glyph"></span>Dark</button>
+    <button data-mode="system" type="button"><span class="glyph"></span>System</button>
   `;
   const onClick = (e) => {
     const btn = e.target.closest('button[data-mode]');

@@ -2,7 +2,22 @@ import { createStore } from './create-store.js';
 import { register, push } from './preferences.js';
 
 export const VALID_THEMES = ['halcyon', 'almanac', 'terminal', 'nordic', 'ink', 'botanical', 'plasma', 'atlas', 'library'];
-export const VALID_MODES = ['light', 'dark'];
+export const VALID_MODES = ['light', 'dark', 'system'];
+// 'system' is stored as-is but never reaches <html data-mode>: CSS only knows
+// light/dark, so it's resolved here and re-resolved when the OS flips.
+const lightQuery = typeof window.matchMedia === 'function' ? window.matchMedia('(prefers-color-scheme: light)') : null;
+function resolveMode(mode) {
+  if (mode !== 'system') return mode;
+  return lightQuery?.matches ? 'light' : 'dark';
+}
+
+// Keep <meta name="theme-color"> in sync with the active theme's --bg so the iOS
+// Safari address bar / PWA status bar tint matches when the user switches palette.
+export function syncThemeColorMeta() {
+  const bg = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta && bg) meta.setAttribute('content', bg);
+}
 // 'default' defers to whatever the `claude` binary picks (today's behavior —
 // the daemon passes no --model flag). Named options let a session-spawn path
 // that reads this later (⌘K palette, D5) pin a family without duplicating
@@ -69,7 +84,12 @@ const store = createStore({
 // pre-paint script in index.html applies these on <html>; mirror so subscribers
 // see the same source-of-truth from first read
 document.documentElement.setAttribute('data-theme', store.get().theme);
-document.documentElement.setAttribute('data-mode', store.get().mode);
+document.documentElement.setAttribute('data-mode', resolveMode(store.get().mode));
+lightQuery?.addEventListener?.('change', () => {
+  if (store.get().mode !== 'system') return;
+  document.documentElement.setAttribute('data-mode', resolveMode('system'));
+  syncThemeColorMeta();
+});
 
 function applyTheme(theme) {
   if (!VALID_THEMES.includes(theme)) return;
@@ -79,7 +99,7 @@ function applyTheme(theme) {
 }
 function applyMode(mode) {
   if (!VALID_MODES.includes(mode)) return;
-  document.documentElement.setAttribute('data-mode', mode);
+  document.documentElement.setAttribute('data-mode', resolveMode(mode));
   try { localStorage.setItem('cr:mode', mode); } catch {}
   store.set((s) => (s.mode === mode ? s : { ...s, mode }));
 }
