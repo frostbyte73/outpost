@@ -974,6 +974,12 @@ export class WorkEngine {
       const err = workspaceError(p.workspace);
       if (err) throw new Error(`step ${i + 1} ("${p.title}"): ${err}`);
     });
+    // The summary is the plan's one always-visible line in the PWA. Checked here because the MCP
+    // schema's length bounds are advice to the model, not something any layer enforces.
+    if (findings) {
+      const n = typeof findings.summary === 'string' ? findings.summary.trim().length : 0;
+      if (n < 50 || n > 200) throw new Error(`findings.summary must be 50-200 characters (got ${n}): an exec summary of the plan, shown above the folded investigation`);
+    }
     const activeSteps = j.steps.filter((s) => !s.cancelled);
     // Wholesale-replace path: no active steps to reconcile against, or the
     // orchestrator explicitly declared this as an initial plan (e.g. after a

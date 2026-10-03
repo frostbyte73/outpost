@@ -125,8 +125,9 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
         findings: {
           type: 'object',
           description: 'Optional structured investigation the orchestrator ran up front — markdown writeup + evidence + optional verdict + caveats. Same shape as read.investigate output. Shown to the user at plan approval and persisted for audit. Omit for trivially-routable jobs, but record at least a one-line verification when there was a claim to check.',
-          required: ['findings'],
+          required: ['summary', 'findings'],
           properties: {
+            summary: { type: 'string', minLength: 50, maxLength: 200, description: 'Exec summary of the plan in 50-200 characters: what the job really is and what the plan does about it. The only part of the investigation the user sees without expanding anything.' },
             findings: { type: 'string', description: 'Primary markdown writeup. Specific, cited, calibrated.' },
             evidence: {
               type: 'array',

@@ -1966,6 +1966,10 @@ a.thread-loc:hover { text-decoration: underline; }
 }
 .tl-findings[open] > summary .tl-findings-caret { transform: rotate(180deg); }
 .tl-findings[open] .step-findings { margin-top: 8px; }
+/* One investigation topic per disclosure (finding.js) — a divided list of summaries under the verdict. */
+.finding-summary { margin: 0; font-size: 14px; line-height: 1.45; color: var(--text); }
+.finding-topic { margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.finding-topic-title { font-size: 13px; color: var(--text-mute); }
 
 /* Findings / notes — rendered markdown produced by the session. */
 .step-findings {
