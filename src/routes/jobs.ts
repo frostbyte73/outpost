@@ -13,6 +13,7 @@ import { readJsonBody, readJsonObject } from './util.js';
 import { serializeJob } from '../work/job-liveness.js';
 import { readJobEvents } from '../storage/job-event-log.js';
 import { parseDraftCalls } from '../work/write-draft.js';
+import { d2ThemeFor, renderDiagram, themeOverrides } from '../work/plan-diagram.js';
 import type { DraftDecisionResult } from '../work/write-draft-runner.js';
 
 export interface JobsRoutesDeps {
@@ -151,6 +152,25 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ events: readJobEvents(jobsDir, m[1]!, limit) }));
+  });
+
+  // The plan's d2 diagram, painted in the PWA theme's own tokens (one query param per token). The CSP is for whoever opens this URL
+  // directly: as an <img> an SVG runs nothing, as a document it would run in the PWA's origin.
+  server.route('GET', '/api/work/jobs/:id/diagram.svg', async (req, res) => {
+    const url = new URL(req.url ?? '', 'http://internal');
+    const m = url.pathname.match(/^\/api\/work\/jobs\/([\w-]+)\/diagram\.svg$/);
+    const src = m ? jobQueue.get(m[1]!)?.plan?.findings?.diagram : undefined;
+    if (!src) { res.statusCode = 404; res.end('not found'); return; }
+    try {
+      const svg = await renderDiagram(src, d2ThemeFor(url.searchParams.get('theme')), themeOverrides((t) => url.searchParams.get(t)));
+      res.statusCode = 200;
+      res.setHeader('content-type', 'image/svg+xml');
+      res.setHeader('cache-control', 'no-cache');
+      res.setHeader('content-security-policy', "default-src 'none'; style-src 'unsafe-inline'; font-src data:; img-src data:");
+      res.end(svg);
+    } catch (err) {
+      res.statusCode = 422; res.end((err as Error).message);
+    }
   });
 
   // Per-file diffs for the PR's commented files, so the PWA can render a review comment inside

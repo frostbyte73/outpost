@@ -129,6 +129,7 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
           properties: {
             summary: { type: 'string', minLength: 50, maxLength: 200, description: 'Exec summary of the plan in 50-200 characters: what the job really is and what the plan does about it. The only part of the investigation the user sees without expanding anything.' },
             findings: { type: 'string', description: 'Primary markdown writeup. Specific, cited, calibrated.' },
+            diagram: { type: 'string', description: 'Optional d2 source (https://d2lang.com) for the flow the plan changes — see ~/.outpost/actions/SHARED-d2-diagrams.md for when to draw one. Compiled on submit: a compile error rejects the plan with d2\'s message. No imports (`@file`) and no `icon:`.' },
             evidence: {
               type: 'array',
               items: {

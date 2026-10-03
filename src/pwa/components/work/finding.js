@@ -31,9 +31,37 @@ function topic(key, title, html) {
     </details>`;
 }
 
-// Only the exec summary and the structured verdict line are visible by default. Every markdown
+// The daemon paints the diagram in these tokens (D2_SLOTS in src/work/plan-diagram.ts), read off
+// <html> at paint time, so it matches whichever theme + mode is showing.
+export const DIAGRAM_TOKENS = ['bg', 'bg-elev', 'bg-elev-2', 'line', 'line-soft', 'text', 'text-mute', 'text-dim', 'accent', 'accent-2'];
+const diagramSrc = (url) => {
+  const root = document.documentElement;
+  const css = getComputedStyle(root);
+  const params = new URLSearchParams({ theme: root.dataset.theme ?? '' });
+  for (const t of DIAGRAM_TOKENS) params.set(t, css.getPropertyValue(`--${t}`).trim());
+  return `${url}?${params}`;
+};
+
+// A theme switch repaints nothing on this surface, so each diagram re-points itself instead.
+if (typeof MutationObserver === 'function') {
+  new MutationObserver(() => {
+    for (const img of document.querySelectorAll('img[data-diagram-url]')) {
+      img.src = diagramSrc(img.dataset.diagramUrl);
+      if (img.parentElement instanceof HTMLAnchorElement) img.parentElement.href = img.src;
+    }
+  }).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-mode'] });
+}
+
+// A tap opens it full size.
+function diagram(url) {
+  const src = diagramSrc(url);
+  return `<a class="plan-diagram" href="${escapeHtml(src)}" target="_blank" rel="noopener"><img src="${escapeHtml(src)}" data-diagram-url="${escapeHtml(url)}" alt="Plan diagram" loading="lazy"></a>`;
+}
+
+// Only the exec summary, the verdict line and the diagram are visible by default. Every markdown
 // topic — the text before the first heading included — plus evidence and caveats fold on their own.
-export function renderFinding(finding, label = 'Investigation') {
+// `diagramUrl` is the caller's, since only it knows which job the finding belongs to.
+export function renderFinding(finding, label = 'Investigation', diagramUrl) {
   if (!finding || !finding.findings) return '';
   const { lead, topics } = splitTopics(finding.findings);
   if (lead.trim()) topics.unshift({ title: 'Overview', body: lead });
@@ -59,6 +87,7 @@ export function renderFinding(finding, label = 'Investigation') {
       <div class="plan-findings-label o-microhead">${escapeHtml(label)}</div>
       ${finding.summary ? `<p class="finding-summary">${escapeHtml(finding.summary)}</p>` : ''}
       ${verdict}
+      ${finding.diagram && diagramUrl ? diagram(diagramUrl) : ''}
       ${sections.join('')}
     </div>
   `;
