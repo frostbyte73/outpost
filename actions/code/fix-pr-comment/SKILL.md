@@ -48,7 +48,7 @@ COMMENTS=$(jq -c '.pr.comments // []' "$OUTPOST_ENVELOPE")
 
 ## Step 2 — Edit files
 
-Make the minimum change that addresses the reviewer's concern. Same constraints as the implementer:
+Make the minimum change that addresses the reviewer's concern. Read `cat ~/.outpost/actions/SHARED-lean-code.md` first. A comment names one call site, so grep every caller of the code you change. Same constraints as the implementer:
 
 - Edit files in place; never `git add` / `git commit` / `git push`.
 - Never run `gh pr comment` / `gh pr review` / any GitHub mutation. Replies are a separate path — `code.reply-pr-comments` posts them, on a round the user approves separately.
