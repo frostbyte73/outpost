@@ -5,6 +5,7 @@
 
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { parseJsonObject } from '../routes/util.js';
+import { denyResp } from './hook-handler.js';
 
 export interface HookServerOpts {
   port: number;
@@ -64,8 +65,26 @@ export class HookServer {
       res.end('not found');
       return;
     }
-    if (req.headers['x-daemon-auth'] !== this.opts.daemonAuthSecret) {
-      console.log(`[hook-server] 401 from ${req.socket.remoteAddress}`);
+    const sent = req.headers['x-daemon-auth'];
+    if (sent !== this.opts.daemonAuthSecret) {
+      // The usual sender is a Claude session that outlived the daemon run that spawned it,
+      // still holding that run's per-launch secret — so name the route and say which way the
+      // secret was wrong, or a burst of these is unexplainable from the log alone.
+      const why = sent === undefined ? 'no secret' : 'wrong secret';
+      // Claude Code treats a non-2xx PreToolUse answer as a NON-blocking hook error: the tool
+      // call goes ahead under the session's own permission mode, past every gate this daemon
+      // owns (action confinement, write-draft pins). So the gate's own route fails closed with
+      // a deny instead. A deny grants nothing, which is what makes it safe to hand to a caller
+      // that couldn't authenticate — and it covers an orphan of a SIGKILLed daemon, which no
+      // shutdown handler gets the chance to close.
+      if (req.url === '/hook/pretool') {
+        console.log(`[hook-server] denied ${req.url} from ${req.socket.remoteAddress} (${why})`);
+        res.statusCode = 200;
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify(denyResp('This session was started by an earlier Outpost daemon run, so its tool calls can no longer be authorized. Stop and end your turn.')));
+        return;
+      }
+      console.log(`[hook-server] 401 ${req.url} from ${req.socket.remoteAddress} (${why})`);
       res.statusCode = 401;
       res.end('unauthorized');
       return;

@@ -356,7 +356,9 @@ const sessionHandlers = {
           ? 'Session reaped after 15 min idle — send a message to resume.'
           : msg.reason === 'reauth'
             ? 'Reloaded to pick up the new credentials — send a message to resume.'
-            : 'Session archived.',
+            : msg.reason === 'shutdown'
+              ? 'The daemon restarted — send a message to resume.'
+              : 'Session archived.',
       });
       if (isCurrent) deps.renderSession();
       return;
