@@ -439,3 +439,31 @@ describe('jobStatus', () => {
     expect(jobStatus({ state: 'abandoned', steps: [] })).toBe('done');
   });
 });
+
+describe('stalled sessions (an API error ended the turn)', () => {
+  // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
+  const load = () => import('../../src/pwa/vm/tracked.js');
+  const step = { id: 's1', type: 'orchestrated', title: 'Fix it', state: 'running', phase: 'implement', sessionId: 'a', pr: { prUrl: 'u' } };
+  const job = (error: string, extra = {}) => ({ state: 'executing', steps: [step], live: live(false), stalls: [{ sessionId: 'a', error, at: 1, stepId: 's1', ...extra }] });
+
+  it('reads as needs-you, not as merely waiting', async () => {
+    const { jobStatus } = await load();
+    expect(jobStatus(job('rate_limit'))).toBe('needs-you');
+  });
+
+  it('an auth stall sends the user to sign in, and says it resumes on its own', async () => {
+    const { focusAction } = await load();
+    const fa = focusAction(job('authentication_failed'));
+    expect(fa.title).toBe('Claude needs re-authorizing');
+    expect(fa.description).toContain('Fix it');
+    expect(fa.cta).toEqual({ label: 'Sign in', action: 'claude-auth' });
+  });
+
+  it('any other stall offers a resume and names the error', async () => {
+    const { focusAction } = await load();
+    const fa = focusAction(job('rate_limit'));
+    expect(fa.cta).toEqual({ label: 'Resume', action: 'resume-stalled' });
+    expect(fa.description).toContain('a rate limit');
+    expect(focusAction({ ...job('overloaded'), stalls: [{ sessionId: 'o', error: 'overloaded', at: 1 }] }).description).toMatch(/^The planner/);
+  });
+});

@@ -546,6 +546,18 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.end(JSON.stringify({ stepId: stepId ?? null, job: jobQueue.get(m[1]!) ?? null }));
   });
 
+  // Continues every session an API error stopped on this job (see WorkEngine.resumeStalls).
+  // 409 when there was nothing stalled to resume — a double-tap, or a stall a sign-in already
+  // resumed on its own.
+  server.route('POST', '/api/work/jobs/:id/resume-stalled', (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/resume-stalled$/);
+    if (!m || !jobQueue.get(m[1]!)) { res.statusCode = 404; res.end('not found'); return; }
+    const resumed = engine.resumeStalls(m[1]!);
+    res.statusCode = resumed ? 200 : 409;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ resumed }));
+  });
+
   server.route('POST', '/api/work/jobs/:id/reset', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/reset$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }

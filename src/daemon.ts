@@ -15,7 +15,7 @@ import { handleMcpRequest, OUTPOST_MCP_TOOLS } from './mcp-server.js';
 import { discoverTailscaleEnv } from './tailscale.js';
 import { writeDaemonSettings, writeMcpConfig, generateSecret } from './settings-gen.js';
 import { JobQueue } from './work/work-queue.js';
-import { serializeJob } from './work/job-liveness.js';
+import { AUTH_STOP_ERRORS, serializeJob } from './work/job-liveness.js';
 import { JournalStore } from './storage/journal-store.js';
 import { LinearWriter } from './integrations/linear-writer.js';
 import { PrWatcher } from './integrations/pr-watcher.js';
@@ -287,6 +287,39 @@ async function main() {
 
   const stopTracker = new StopHookTracker({ thresholdMs: config.stopHookThresholdMs });
 
+  // The turn-end bookkeeping Stop and StopFailure share — an API error ends a turn as finally as a
+  // normal stop does. Mirrored onto the wire because the PWA's thinking strip is otherwise driven
+  // purely by the model's own stream, so a client that misses the turn's terminal event keeps
+  // spinning; it rides the event log, so a reconnect inside the replay window recovers it too.
+  // The governor slot is freed before any stale-Stop / handoff logic: that must run even on a
+  // stale Stop (which skips onSessionTurnEnded) and for orchestrator sessions (which
+  // onSessionTurnEnded early-returns on), or a queued follow-up round would deadlock behind the
+  // un-freed slot — and draining here lets any other job's queued launch fill it.
+  function endTurn(sessionId: string): void {
+    manager.markTurnEnded(sessionId);
+    manager.broadcast(sessionId, { type: 'daemon_turn_end' });
+    engine.releaseLaunchSlot(sessionId);
+    rebroadcastJobLiveness(sessionId);
+  }
+
+  // A session that couldn't authenticate — at startup (its stderr, via SessionManager) or
+  // mid-run (the StopFailure hook). Every session fails the same way once this lapses, so the
+  // notification is tagged and the flag is idempotent — a queue of jobs discovering it in turn
+  // produces one card, not one each.
+  function noteAuthFailure(sessionId: string, message: string): void {
+    const first = claudeLogin.failedSince() === null;
+    claudeLogin.noteFailure();
+    console.warn(`[auth] session ${sessionId} could not authenticate: ${message.trim()}`);
+    if (!first) return;
+    void pushSender.send({
+      title: 'Claude needs re-authorizing',
+      body: 'Sessions can\'t start until you sign in again. Tap to authorize from any device.',
+      tag: 'claude-auth',
+      data: { kind: 'claude-auth' },
+    });
+    try { notifyAll({ type: 'claude_auth_failed' }); } catch { /* pre-startup */ }
+  }
+
   // Declared ahead of the SessionManager they recycle, because the dependency runs both ways: a
   // finished login reloads live sessions, and a session dying on a lapsed credential is what
   // tells claudeLogin there is anything to repair.
@@ -295,6 +328,11 @@ async function main() {
     if (closed.length || deferred.length) {
       console.log(`[auth] re-authorized — reloaded ${closed.length} session(s), ${deferred.length} deferred to end of turn`);
     }
+    // Reloading only closes sessions; a job session whose turn died on the lapsed credential
+    // has nothing that would ever send it another prompt. Resume those explicitly — after the
+    // reload, so sendOrResume respawns them on the new credential.
+    const resumed = engine.resumeAuthStalls();
+    if (resumed) console.log(`[auth] re-authorized — resumed ${resumed} stalled job session(s)`);
   };
   const loginFlows = new McpLoginFlows(onReauthorized);
   const claudeLogin = new ClaudeLoginFlows(onReauthorized);
@@ -327,21 +365,7 @@ async function main() {
       // multiple child sessions) coalesces into a single PWA refresh.
       scheduleSessionsChangedBroadcast();
     },
-    // Every session fails the same way once this lapses, so the notification is tagged and the
-    // flag is idempotent — a queue of jobs discovering it in turn produces one card, not one each.
-    onAuthFailure: (sessionId, message) => {
-      const first = claudeLogin.failedSince() === null;
-      claudeLogin.noteFailure();
-      console.warn(`[auth] session ${sessionId} could not authenticate: ${message.trim()}`);
-      if (!first) return;
-      void pushSender.send({
-        title: 'Claude needs re-authorizing',
-        body: 'Sessions can\'t start until you sign in again. Tap to authorize from any device.',
-        tag: 'claude-auth',
-        data: { kind: 'claude-auth' },
-      });
-      try { notifyAll({ type: 'claude_auth_failed' }); } catch { /* pre-startup */ }
-    },
+    onAuthFailure: (sessionId, message) => noteAuthFailure(sessionId, message),
     onSessionExit: (sessionId, code) => {
       // Session-scoped allow rules die with the session's process.
       allowlist.clearSession(sessionId);
@@ -628,20 +652,8 @@ async function main() {
       if (!payload) throw new Error('invalid json body');
       const sessionId = payload.session_id;
       if (!sessionId) return;
-      manager.markTurnEnded(sessionId);
-      // Mirror that onto the wire. The PWA's thinking strip is otherwise driven purely by
-      // the model's own stream, so a client that misses the turn's terminal event keeps
-      // spinning; this rides the event log, so a reconnect inside the replay window
-      // recovers it too. Kept next to markTurnEnded so `working` and what clients believe
-      // can't drift — including on a stale Stop, which clears `working` all the same.
-      manager.broadcast(sessionId, { type: 'daemon_turn_end' });
-      // Free the governor slot this turn held BEFORE the stale-Stop / handoff logic below —
-      // this must run even on a stale Stop (which skips onSessionTurnEnded) and for orchestrator
-      // sessions (which onSessionTurnEnded early-returns on), or a queued follow-up round would
-      // deadlock behind the un-freed slot. Draining here also lets any other job's queued launch
-      // fill the freed slot.
-      engine.releaseLaunchSlot(sessionId);
-      rebroadcastJobLiveness(sessionId);
+      endTurn(sessionId);
+      engine.clearStall(sessionId);
       const { shouldNotify, turnDurationMs } = stopTracker.consume(sessionId);
       console.log(`[hook] stop session=${sessionId.slice(0,8)} durationMs=${turnDurationMs ?? 'n/a'} push=${shouldNotify}`);
       // A resume queued behind an in-flight turn (e.g. a fast spec approval dispatching
@@ -670,6 +682,35 @@ async function main() {
           ? `Turn took ${(turnDurationMs / 1000).toFixed(0)}s. Tap to continue.`
           : 'Tap to continue.',
         tag: `stop-${sessionId}`,
+        data: { kind: 'stop', sessionId },
+      });
+    },
+    // Fired by Claude Code INSTEAD of Stop when an API error ended the turn (auth, rate limit,
+    // overload, billing). Unregistered, every such turn left its session `working` forever: the
+    // job read Running, its governor slot stayed held, and a lapsed sign-in mid-run went
+    // unannounced because the CLI reports that one on stdout, not the stderr isAuthFailure reads.
+    onStopFailureHook: async (body) => {
+      const payload = parseJsonObject(body) as { session_id?: string; error?: string; error_details?: string } | null;
+      if (!payload) throw new Error('invalid json body');
+      const sessionId = payload.session_id;
+      if (!sessionId) return;
+      const error = payload.error ?? 'unknown';
+      endTurn(sessionId);
+      stopTracker.consume(sessionId);
+      console.warn(`[hook] stop-failure session=${sessionId.slice(0, 8)} error=${error}${payload.error_details ? ` (${payload.error_details})` : ''}`);
+      const auth = AUTH_STOP_ERRORS.has(error);
+      if (auth) noteAuthFailure(sessionId, payload.error_details ?? error);
+      // The trailing turn end of a round a queued resume already superseded — that resume is
+      // the live round now, so there is nothing to park.
+      if (engine.consumeStaleTurnStop(sessionId)) return;
+      // Auth already pushed its one card above; anything else gets its own, tagged per error so
+      // a rate limit hitting every running job at once lands as one notification.
+      if (!engine.onApiStop(sessionId, error) || auth) return;
+      const title = findSessionTitle(sessionId);
+      void pushSender.send({
+        title: `Stopped on an API error: ${error.replace(/_/g, ' ')}`,
+        body: `${title ? `${title} — ` : ''}open the job to resume it.`,
+        tag: `api-error-${error}`,
         data: { kind: 'stop', sessionId },
       });
     },

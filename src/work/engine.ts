@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { JobQueue } from './work-queue.js';
 import type { SessionManager } from '../session/session-manager.js';
@@ -22,6 +23,7 @@ import type {
   StepEvent,
   StepEventKind,
   WorkspaceRef,
+  SessionStall,
 } from './work-types.js';
 import { augmentEnvelopeWithLessons, buildActionCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry, type CatalogScope } from './envelope.js';
 import { readonlyView, workspaceError } from './workspace.js';
@@ -38,6 +40,7 @@ import { coalesceExternal, deliverImmediate } from '../steps/orchestrated-inbox.
 import { reconcile, validateDispositions } from './reconcile.js';
 import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
 import { appendJobEvent } from '../storage/job-event-log.js';
+import { AUTH_STOP_ERRORS, currentStalls } from './job-liveness.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ApprovalModeStore } from '../permissions/approval-mode.js';
 import type { InteractiveStore } from '../session/interactive-store.js';
@@ -382,6 +385,88 @@ export class WorkEngine {
   private cancelUnresolvedCheck(sessionId: string): void {
     const t = this.unresolvedTimers.get(sessionId);
     if (t) { clearTimeout(t); this.unresolvedTimers.delete(sessionId); }
+  }
+
+  // StopFailure: an API error ended this session's turn. Claude Code fires it INSTEAD of Stop,
+  // so before this was wired the session stayed `working` and its job read Running forever.
+  // Parks the session rather than failing its step — the turn died on credentials or capacity,
+  // not on the work, and the session's context is what a resume continues from. Returns false
+  // for a session that isn't a job's. Never arms the unresolved check, and cancels one a
+  // preceding Stop armed: that check would fail the step as "ended without submitting output".
+  onApiStop(sessionId: string, error: string): boolean {
+    this.cancelUnresolvedCheck(sessionId);
+    const role = this.roleBySession.get(sessionId);
+    if (!role) return false;
+    const stall: SessionStall = {
+      sessionId, error, at: this.ctx.now(),
+      ...(role.role !== 'orchestrator' ? { stepId: role.stepId } : {}),
+      ...(role.role === 'dispatch' ? { dispatchId: role.dispatchId } : {}),
+    };
+    this.mutate(role.jobId, (j) => this.appendEvent(
+      { ...j, stalls: [...currentStalls(j).filter((x) => x.sessionId !== sessionId), stall] },
+      { kind: 'session_stalled', who: 'session', stepId: stall.stepId, body: error },
+    ));
+    return true;
+  }
+
+  // A real turn end on a stalled session means somebody (usually the user, typing into it)
+  // already moved it on, so the stall no longer describes it.
+  clearStall(sessionId: string): void {
+    const jobId = this.roleBySession.get(sessionId)?.jobId;
+    const j = jobId ? this.opts.queue.get(jobId) : undefined;
+    if (!j?.stalls?.some((x) => x.sessionId === sessionId)) return;
+    this.mutate(j.id, (jj) => ({ ...jj, stalls: currentStalls(jj).filter((x) => x.sessionId !== sessionId) }));
+  }
+
+  // Continues each stalled session where it stopped, through the same warm resume its role
+  // already uses (a draft accept, a controller wake-up, a replan) — never a cold retry, which
+  // would throw the session's context away. `only` narrows which stalls; the rest stay parked.
+  // Returns how many resumed.
+  resumeStalls(jobId: string, only?: (st: SessionStall) => boolean, who: JobEvent['who'] = 'user'): number {
+    const j = this.opts.queue.get(jobId);
+    if (!j) return 0;
+    const live = currentStalls(j);
+    const picked = only ? live.filter(only) : live;
+    if (!picked.length) {
+      if ((j.stalls?.length ?? 0) !== live.length) this.mutate(jobId, (jj) => ({ ...jj, stalls: live }));
+      return 0;
+    }
+    this.mutate(jobId, (jj) => this.appendEvent(
+      { ...jj, stalls: live.filter((x) => !picked.includes(x)) },
+      { kind: 'session_resumed', who, body: [...new Set(picked.map((x) => x.error))].join(', ') },
+    ));
+    for (const st of picked) {
+      const s = st.stepId ? j.steps.find((x) => x.id === st.stepId) : undefined;
+      const resumed = !st.stepId ? this.resumeOrchestratorSession(jobId, st.sessionId)
+        : st.dispatchId ? this.dispatchResume(jobId, st.stepId, st.dispatchId)
+        : s?.type === 'orchestrated' ? this.resumeControllerRound(jobId, st.stepId, s.boundAction, undefined)
+        : this.dispatchActionResume(jobId, st.stepId);
+      void resumed.catch((e) => console.warn(`[work] resuming stalled session ${st.sessionId.slice(0, 8)} failed: ${(e as Error).message}`));
+    }
+    return picked.length;
+  }
+
+  // After a sign-in: every job's auth stalls resume on their own, which is what the sign-in
+  // card has always promised ("running sessions were reloaded") and nothing actually did.
+  resumeAuthStalls(): number {
+    let n = 0;
+    for (const j of this.opts.queue.list()) n += this.resumeStalls(j.id, (st) => AUTH_STOP_ERRORS.has(st.error), 'system');
+    return n;
+  }
+
+  // The orchestrator's envelope is still on disk at its fixed path, so re-invoking the action
+  // re-reads the same mode it was planning in. Rebinds role/action like replan does: both maps
+  // are in-memory and don't survive a daemon restart.
+  private async resumeOrchestratorSession(jobId: string, sessionId: string): Promise<void> {
+    const actionName = this.opts.queue.get(jobId)?.orchestratorAction ?? 'meta.orchestrate';
+    this.roleBySession.set(sessionId, { role: 'orchestrator', jobId });
+    this.bindAction(sessionId, actionName);
+    this.opts.sessionManager.sendOrResume(
+      sessionId,
+      this.orchestratorCwd(),
+      { type: 'user', message: { role: 'user', content: `/${actionName}` } },
+      { OUTPOST_ENVELOPE: join(this.ctx.jobsDir, jobId, 'orchestrator', 'envelope.json'), JOB_ID: jobId },
+    );
   }
 
   // The step behind `sessionId`, when a turn ending without a submit_* call would be a

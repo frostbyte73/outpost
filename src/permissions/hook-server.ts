@@ -13,6 +13,7 @@ export interface HookServerOpts {
   onPreToolHook: (body: string) => Promise<string>;
   onPostToolFailureHook: (body: string) => Promise<string>;
   onStopHook: (body: string) => Promise<void>;
+  onStopFailureHook: (body: string) => Promise<void>;
   onStatusLineHook: (body: string) => Promise<void>;
   onWorkPlanReady: (body: string) => Promise<void>;
   onWorkStepResolved: (body: string) => Promise<void>;
@@ -51,6 +52,7 @@ export class HookServer {
       '/hook/pretool',
       '/hook/posttoolfail',
       '/hook/stop',
+      '/hook/stop-failure',
       '/hook/statusline',
       '/work/plan-ready',
       '/work/step-resolved',
@@ -110,6 +112,10 @@ export class HookServer {
           res.end();
         } else if (url === '/hook/stop') {
           await this.opts.onStopHook(body);
+          res.statusCode = 204;
+          res.end();
+        } else if (url === '/hook/stop-failure') {
+          await this.opts.onStopFailureHook(body);
           res.statusCode = 204;
           res.end();
         } else if (url === '/work/plan-ready') {

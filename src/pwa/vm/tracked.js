@@ -1,7 +1,7 @@
 // Tracked-list view-model: buckets jobs by attention priority, and derives the
 // single "what should the user do next" focus action for a job's right rail.
 
-import { needsYou, stepNeedsYou, hasUnapprovedDraft, isTerminalStep, draftAwaitsUser } from './work-predicates.js';
+import { needsYou, stepNeedsYou, hasUnapprovedDraft, isTerminalStep, isTerminalJob, draftAwaitsUser } from './work-predicates.js';
 
 const NO_LIVE = { orchestrator: false, stepIds: [] };
 
@@ -81,7 +81,33 @@ function failedStep(job) {
   return (job.steps ?? []).find((s) => !s.cancelled && s.failure);
 }
 
+// Mirrors AUTH_STOP_ERRORS (src/work/job-liveness.ts): the stalls a sign-in resumes on its own.
+const AUTH_STOP_ERRORS = new Set(['authentication_failed', 'oauth_org_not_allowed']);
+const STOP_ERROR_LABEL = { rate_limit: 'a rate limit', overloaded: 'an overloaded API', billing_error: 'a billing error' };
+
+function stalledFocus(job, st) {
+  const step = st.stepId ? (job.steps ?? []).find((s) => s.id === st.stepId) : null;
+  const who = !st.stepId ? 'The planner' : st.dispatchId ? `A session dispatched by ${step?.title ?? 'a step'}` : (step?.title ?? 'A step');
+  if (AUTH_STOP_ERRORS.has(st.error)) {
+    return {
+      title: 'Claude needs re-authorizing',
+      description: `${who} stopped because Claude's sign-in lapsed. It picks up where it left off once you sign in again.`,
+      cta: { label: 'Sign in', action: 'claude-auth' },
+    };
+  }
+  const label = STOP_ERROR_LABEL[st.error] ?? `an API error (${String(st.error).replace(/_/g, ' ')})`;
+  return {
+    title: 'Stopped on an API error',
+    description: `${who} stopped on ${label}. Resuming continues the same session where it left off.`,
+    cta: { label: 'Resume', action: 'resume-stalled' },
+  };
+}
+
 export function focusAction(job) {
+  // First: nothing else on the job moves until this session does, and the job otherwise reads
+  // as merely idle.
+  const stall = job.stalls?.[0];
+  if (stall && !isTerminalJob(job)) return stalledFocus(job, stall);
   if (job.state === 'plan_pending_review') {
     return {
       title: 'Review the plan',

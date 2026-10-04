@@ -313,6 +313,8 @@ export type JobEventKind =
   | 'step_failed'
   | 'step_merged'
   | 'step_retried'
+  | 'session_stalled'
+  | 'session_resumed'
   | 'linear_state_written'
   | 'failed'
   | 'abandoned';
@@ -374,6 +376,19 @@ export interface PlanIteration {
   findings?: Finding;   // snapshot of the findings this rejected plan reasoned from
 }
 
+// A job session whose turn an API error ended (Claude Code's StopFailure hook: auth, rate limit,
+// overload, billing). The session is kept, not failed: it waits here until the user resumes it,
+// or, for an auth error, until they sign in again. Which session it was decides how it resumes —
+// no stepId is the orchestrator, a dispatchId is a controller's child. Only the entries
+// currentStalls (job-liveness.ts) keeps are live; the rest are stale and pruned on the next write.
+export interface SessionStall {
+  sessionId: string;
+  error: string;        // StopFailure's `error`, e.g. 'authentication_failed', 'rate_limit'
+  at: number;
+  stepId?: string;
+  dispatchId?: string;
+}
+
 export interface JobRecord {
   id: string;
   source: string;        // 'linear' | 'manual' | any external source id (e.g. a second job source)
@@ -417,6 +432,7 @@ export interface JobRecord {
   // regardless of token headroom or the concurrency slot budget. Absent = normal.
   highPriority?: boolean;
   failure?: { reason: string; at: number };
+  stalls?: SessionStall[];
   events?: JobEvent[];
   createdAt: number;
   updatedAt: number;
