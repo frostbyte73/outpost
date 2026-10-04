@@ -1110,6 +1110,12 @@ html[data-layout="mobile"] .tk-menu-item { padding: 11px 12px; }
 }
 .work-sync-btn:hover:not([disabled]) { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
 .work-sync-btn[disabled] { opacity: 0.5; cursor: progress; }
+/* The right-panel toggle in the job header. Its arrow follows the frame's own collapsed class,
+   so it never needs the detail (repainted only on job changes) to repaint for a collapse. Mobile
+   has no right panel to toggle. */
+.o-frame.context-collapsed .tk-rail-toggle .tk-rail-hide,
+.o-frame:not(.context-collapsed) .tk-rail-toggle .tk-rail-show { display: none; }
+html[data-layout="mobile"] .tk-rail-toggle { display: none; }
 
 .work-empty { color: var(--text-mute); padding: 24px 12px; text-align: center; font-style: italic; }
 .work-error { color: var(--danger); background: var(--danger-soft); padding: 12px; border-radius: var(--r-control); margin-bottom: 12px; display: flex; gap: 8px; justify-content: space-between; align-items: center; }
