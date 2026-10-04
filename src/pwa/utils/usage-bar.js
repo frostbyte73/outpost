@@ -77,9 +77,31 @@ function breakdownHtml(breakdown) {
 
 // Shared between the desktop sidebar-foot popover and the mobile header's usage
 // sheet — same content, different container chrome around it.
-export function usagePopoverHtml(au) {
+// The launch queue as one line under the meter: a pause holds every queued job at once, so it
+// belongs beside the usage that causes it, not only as a label on each job. Null when nothing waits.
+export function launchQueueParts(q) {
+  if (!q?.parked) return null;
+  const why = String(q.reason ?? '').replace(/^Waiting — /, '');
+  return {
+    head: `Paused · ${q.parked} waiting`,
+    why: q.opensAt ? `${why} · opens ${fmtResetAt(q.opensAt / 1000)}` : why,
+  };
+}
+
+export function launchQueueHtml(q) {
+  const p = launchQueueParts(q);
+  if (!p) return '';
+  return `
+    <div class="o-usage-queue">
+      <div class="o-usage-queue-head"><span>${escapeHtml(p.head)}</span><button type="button" class="o-usage-queue-run" data-run-all-queued>Run all</button></div>
+      <div class="o-usage-queue-why">${escapeHtml(p.why)}</div>
+    </div>`;
+}
+
+export function usagePopoverHtml(au, queue) {
   return `
     <div class="o-usage-pop-hdr"><h4>Account usage</h4></div>
+    ${launchQueueHtml(queue)}
     ${windowBlockHtml('5-hour window', au?.five_hour)}
     ${windowBlockHtml('Weekly window', au?.seven_day)}
     ${breakdownHtml(au?.breakdown)}

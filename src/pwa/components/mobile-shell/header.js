@@ -7,6 +7,7 @@
 // reads and action behavior stay in mobile-header.js.
 
 import { usage } from '../../state/usage.js';
+import { work } from '../../state/work.js';
 import { usageTier, clampPct, usagePopoverHtml } from '../../utils/usage-bar.js';
 import { fmtRemaining } from '../../utils/formatting.js';
 import { noteSheetOpen, noteSheetClose, pinSheetBelowHeader, makeSheetDismissible } from '../sheet-utils.js';
@@ -50,7 +51,7 @@ function openUsageSheet() {
       <span class="sheet-title">Usage</span>
       <button class="sheet-close" type="button" aria-label="Close">✕</button>
     </div>
-    <div class="m-usage-sheet-body">${usagePopoverHtml(usage.get().accountUsage)}</div>
+    <div class="m-usage-sheet-body">${usagePopoverHtml(usage.get().accountUsage, work.get().launchQueue)}</div>
   `;
   document.body.appendChild(backdrop);
   document.body.appendChild(sheet);
@@ -58,15 +59,19 @@ function openUsageSheet() {
   pinSheetBelowHeader(sheet);
   noteSheetOpen(close);
 
-  const unsubUsage = usage.subscribe(() => {
-    sheet.querySelector('.m-usage-sheet-body').innerHTML = usagePopoverHtml(usage.get().accountUsage);
-  });
+  const repaint = () => {
+    sheet.querySelector('.m-usage-sheet-body').innerHTML = usagePopoverHtml(usage.get().accountUsage, work.get().launchQueue);
+  };
+  const unsubUsage = usage.subscribe(repaint);
+  const unsubWork = work.subscribe(repaint);
+  sheet.addEventListener('click', (e) => { if (e.target.closest('[data-run-all-queued]')) void work.runAllQueued(); });
 
   function close() {
     backdrop.classList.remove('open');
     sheet.classList.remove('open');
     noteSheetClose();
     unsubUsage();
+    unsubWork();
     setTimeout(() => { backdrop.remove(); sheet.remove(); }, 380);
     usageSheetTeardown = null;
   }

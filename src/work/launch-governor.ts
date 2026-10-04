@@ -1,4 +1,4 @@
-import { evaluateHeadroom, type TokenUsageSnapshot } from '../schedules/headroom.js';
+import { evaluateJobBudget, nextOpening, type TokenUsageSnapshot } from '../schedules/headroom.js';
 
 export type LaunchPriority = 'queued' | 'immediate';
 
@@ -25,6 +25,16 @@ export interface LaunchGovernorDeps {
   onChange?: () => void;
 }
 
+// The queue as one app-wide fact, for the PWA's usage meter: per-job labels were the only place a
+// pause ever showed, so a queue holding six jobs read as six unrelated quirks. `opensAt` is the
+// earliest the budget gate lets work through if nothing more is spent (null while the hold is
+// slots, which free on a turn end rather than on a clock).
+export interface LaunchQueueSummary {
+  parked: number;
+  reason: string | null;
+  opensAt: number | null;
+}
+
 export type LaunchState =
   | { state: 'running' }
   | { state: 'queued'; reason: string }
@@ -44,7 +54,7 @@ export class LaunchGovernor {
   private headroom(): { ok: boolean; reason: string } {
     const snap = this.deps.getSnapshot();
     if (!snap) return { ok: true, reason: 'No usage data — headroom gate off' };
-    const d = evaluateHeadroom(snap, this.now());
+    const d = evaluateJobBudget(snap, this.now());
     return { ok: d.launch || d.code === 'no-data', reason: d.reason };
   }
 
@@ -95,6 +105,27 @@ export class LaunchGovernor {
 
   onUsageSnapshot(): void {
     this.drain();
+    // Still holding work: the reason and the opening estimate moved with the usage, even though
+    // nothing fired to emit for it.
+    if (this.parked.size > 0) this.emit();
+  }
+
+  summary(): LaunchQueueSummary {
+    if (this.parked.size === 0) return { parked: 0, reason: null, opensAt: null };
+    const slotsBusy = !this.slotOk();
+    const snap = this.deps.getSnapshot();
+    return {
+      parked: this.parked.size,
+      reason: this.queuedReason(),
+      opensAt: slotsBusy || this.headroom().ok ? null : nextOpening(evaluateJobBudget, snap, this.now()),
+    };
+  }
+
+  // Everything parked, now — the meter's "Run all". Snapshots first: fire() mutates the map.
+  forceFireAll(): number {
+    const all = [...this.parked.values()];
+    for (const req of all) this.fire(req);
+    return all.length;
   }
 
   forceFire(key: string): boolean {

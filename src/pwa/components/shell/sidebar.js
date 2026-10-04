@@ -4,8 +4,9 @@ import { work } from '../../state/work.js';
 import { sessions } from '../../state/sessions.js';
 import { schedulesStore, enabledScheduleCount } from '../../state/schedules.js';
 import { usage } from '../../state/usage.js';
-import { usageTier, clampPct, usagePopoverHtml } from '../../utils/usage-bar.js';
+import { usageTier, clampPct, usagePopoverHtml, launchQueueHtml } from '../../utils/usage-bar.js';
 import { fmtRemaining } from '../../utils/formatting.js';
+import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { needsYou, isTerminalJob } from '../../vm/work-predicates.js';
 
 // Sidebar taxonomy per the redesign spec: Cockpit / Tracked / Sessions /
@@ -72,6 +73,7 @@ export function mountSidebar(root) {
           <span class="o-usage-pct" id="sb-usage-7d-pct">&mdash;</span>
         </span>
       </button>
+      <div id="sb-usage-queue"></div>
     </div>
   `;
 
@@ -101,15 +103,23 @@ export function mountSidebar(root) {
   };
 
   const paintUsage = () => paintUsageWidget(root);
+  const queueEl = root.querySelector('#sb-usage-queue');
+  const paintQueue = () => setHtmlIfChanged(queueEl, launchQueueHtml(work.get().launchQueue));
+  // Delegated from the foot, so the popover's copy of the button (mounted elsewhere) is covered
+  // by its own listener in installUsagePopover.
+  root.querySelector('.o-sidebar-foot').addEventListener('click', (e) => {
+    if (e.target.closest('[data-run-all-queued]')) void work.runAllQueued();
+  });
 
   applyActive();
   applyCollapsed();
   paintCounts();
   paintUsage();
+  paintQueue();
 
   const unsubNav = nav.subscribe(() => { applyActive(); applyCollapsed(); });
   const unsubApprovals = approvals.subscribe(paintCounts);
-  const unsubWork = work.subscribe(paintCounts);
+  const unsubWork = work.subscribe(() => { paintCounts(); paintQueue(); });
   const unsubSessions = sessions.subscribe(paintCounts);
   const unsubSchedules = schedulesStore.subscribe(paintCounts);
   const unsubUsage = usage.subscribe(paintUsage);
@@ -180,7 +190,8 @@ function installUsagePopover(root) {
     popEl.className = 'o-usage-popover';
     popEl.setAttribute('role', 'dialog');
     popEl.setAttribute('aria-label', 'Usage detail');
-    popEl.innerHTML = usagePopoverHtml(usage.get().accountUsage);
+    popEl.innerHTML = usagePopoverHtml(usage.get().accountUsage, work.get().launchQueue);
+    popEl.addEventListener('click', (e) => { if (e.target.closest('[data-run-all-queued]')) void work.runAllQueued(); });
     host.appendChild(popEl);
     trigger.setAttribute('aria-expanded', 'true');
     setTimeout(() => {
@@ -190,8 +201,10 @@ function installUsagePopover(root) {
   }
 
   trigger.addEventListener('click', open);
-  const unsub = usage.subscribe(() => { if (popEl) popEl.innerHTML = usagePopoverHtml(usage.get().accountUsage); });
-  return () => { unsub(); close(); };
+  const repaint = () => { if (popEl) popEl.innerHTML = usagePopoverHtml(usage.get().accountUsage, work.get().launchQueue); };
+  const unsub = usage.subscribe(repaint);
+  const unsubWork = work.subscribe(repaint);
+  return () => { unsub(); unsubWork(); close(); };
 }
 
 function buildItem(item) {

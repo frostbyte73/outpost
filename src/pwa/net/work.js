@@ -44,6 +44,7 @@ export const workApi = {
   retryStep(id, stepId, note)      { return request(`${stepPath(id, stepId)}/retry`, { method: 'POST', body: JSON.stringify(note ? { note } : {}) }); },
   tickNow(id)                      { return request(`${jobPath(id)}/tick`, { method: 'POST', body: '{}' }); },
   rerunLatest(id)                  { return request(`${jobPath(id)}/rerun-latest`, { method: 'POST', body: '{}' }); },
+  runAllQueued()                   { return request('/launch-queue/run-all', { method: 'POST', body: '{}' }); },
   resetJob(id)                     { return request(`${jobPath(id)}/reset`, { method: 'POST', body: '{}' }); },
   syncNow()                        { return request('/sync', { method: 'POST', body: '{}' }); },
   syncJob(id)                      { return request(`${jobPath(id)}/sync`, { method: 'POST', body: '{}' }); },
