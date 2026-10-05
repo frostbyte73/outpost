@@ -41,6 +41,7 @@ function harness(record: Record<string, unknown> | undefined) {
     } as never,
     prWatcher: { noteChanged: () => undefined } as never,
     preferencesStore: { getEditorCommand: () => undefined } as never,
+    jobQueue: { get: () => undefined } as never,
   };
 }
 

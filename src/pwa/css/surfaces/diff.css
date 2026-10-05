@@ -413,6 +413,22 @@
   transition: border-color var(--dur-1) var(--ease);
 }
 .dr-commit-textarea:focus { outline: none; border-color: var(--accent); }
+.dr-commit-textarea.dr-pr-body { min-height: 140px; font-family: var(--font-body); font-size: 13px; }
+/* The PR's own title and description, shown only when the squash collapses several rounds
+   (needsPrDraft). Same field chrome as the commit message above it. */
+.dr-pr-draft { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.dr-pr-title {
+  font-family: var(--font-body); font-size: 13px; font-weight: 500; color: var(--text);
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-control);
+  padding: 7px 12px; transition: border-color var(--dur-1) var(--ease);
+}
+.dr-pr-title:focus { outline: none; border-color: var(--accent); }
+.dr-pr-redraft {
+  margin-left: auto; padding: 1px 8px; font: inherit; font-size: 11px; text-transform: none; letter-spacing: 0;
+  color: var(--accent); background: none; border: 1px solid var(--line); border-radius: var(--r-control); cursor: pointer;
+}
+.dr-pr-redraft:hover:not([disabled]) { border-color: var(--accent); }
+.dr-pr-redraft[disabled] { opacity: 0.5; cursor: progress; }
 .dr-commit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .dr-commit-target {
   font-size: 12px;

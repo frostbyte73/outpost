@@ -3,13 +3,14 @@ import type { Server } from '../server.js';
 import type { SessionStore } from '../session/session-store.js';
 import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
 import { diffBaseFor } from '../git/worktree-manager.js';
+import type { JobQueue } from '../work/work-queue.js';
 import type { WorkEngine } from '../work/engine.js';
 import type { PrWatcher } from '../integrations/pr-watcher.js';
 import {
   resolveSessionGitCwd, gitStatus, gitWorktreeChanges, gitLog, gitCommit, gitPush, gitPull, gitStage,
   gitDiscard, gitCreateBranch, gitOpenPr, gitFinalizeSquashMerge, gitFinalizeSquashToBranch,
-  gitFinalizeAppendToBranch, gitRemoteBranchExists, gitSquashMergeToBase,
-} from '../git/git-ops.js';
+  gitFinalizeAppendToBranch, gitRemoteBranchExists, gitSquashMergeToBase, gitCommitsSince, gitPrDraftContext } from '../git/git-ops.js';
+import { draftPrDescription } from '../git/pr-draft.js';
 import type { GitCommandResult } from '../git/git-ops.js';
 import { handleDiffRoute } from '../git/diff-endpoint.js';
 import { DEFAULT_EDITOR_COMMAND, openInEditor } from '../git/open-in-editor.js';
@@ -22,6 +23,7 @@ export interface GitRoutesDeps {
   engine: WorkEngine;
   prWatcher: PrWatcher;
   preferencesStore: PreferencesStore;
+  jobQueue: JobQueue;
 }
 
 // WorktreeManager.provision() gives a readonly (review/investigation) worktree an empty
@@ -51,7 +53,7 @@ function refuseIfReadonly(
 // Git endpoints resolve cwd to worktree path for worktree-backed sessions, else project cwd.
 // Write actions return a fresh status snapshot so the PWA can repaint without an extra round-trip.
 export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
-  const { sessionStore, worktreeManager, engine, prWatcher, preferencesStore } = deps;
+  const { sessionStore, worktreeManager, engine, prWatcher, preferencesStore, jobQueue } = deps;
 
   // Opens this session's checkout in the user's editor ON THE DAEMON HOST, which is the
   // only machine the files exist on. The button used to emit a `vscode://` deep link, which
@@ -113,8 +115,11 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       // Resolve through the engine first (session → stepId → record); fall back
       // to the direct lookup for plain worktree sessions keyed by their own id.
       const wt = engine.worktreeRecordForSession(m[1]!) ?? worktreeManager.get(m[1]!);
+      // commitsSinceBase is how many rounds already committed onto the branch: the overlay drafts a
+      // separate PR description only once there is more than one.
       const worktree = wt && !wt.archivedAt && wt.worktreePath
-        ? { branch: wt.branch, baseBranch: wt.baseBranch || 'main', parentCwd: wt.projectCwd }
+        ? { branch: wt.branch, baseBranch: wt.baseBranch || 'main', parentCwd: wt.projectCwd,
+            commitsSinceBase: await gitCommitsSince(wt.worktreePath, diffBaseFor(wt)) }
         : null;
       res.statusCode = 200;
       res.setHeader('content-type', 'application/json');
@@ -343,6 +348,33 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
     res.end(JSON.stringify({ ...result, status }));
   });
 
+  // Drafts the PR title and description for a squash-to-branch whose branch holds several rounds,
+  // from the job and the whole branch (every commit since base, plus the uncommitted diff) rather
+  // than from the last round's commit message. Read-only: it changes nothing in the worktree.
+  server.route('POST', '/api/sessions/:id/git/pr-draft', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/git\/pr-draft$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const sessionId = m[1]!;
+    const rec = engine.worktreeRecordForSession(sessionId) ?? worktreeManager.get(sessionId);
+    res.setHeader('content-type', 'application/json');
+    if (!rec || rec.archivedAt || !rec.worktreePath || isReadonlyRecord(rec)) {
+      res.statusCode = 400;
+      res.end(JSON.stringify({ error: 'a PR draft needs an active, writable worktree session' }));
+      return;
+    }
+    const git = await gitPrDraftContext(rec.worktreePath, diffBaseFor(rec));
+    if (!git) { res.statusCode = 500; res.end(JSON.stringify({ error: 'could not read the branch' })); return; }
+    const jobId = engine.jobIdForSession(sessionId);
+    try {
+      const draft = await draftPrDescription(jobId ? jobQueue.get(jobId) : undefined, git);
+      res.statusCode = 200;
+      res.end(JSON.stringify(draft));
+    } catch (err) {
+      res.statusCode = 502;
+      res.end(JSON.stringify({ error: (err as Error).message }));
+    }
+  });
+
   // Worktree-only. kind=merge-to-base squashes into baseBranch in the parent (optional push);
   // kind=squash-to-branch collapses to one commit, pushes a new branch, opens a PR via gh.
   server.route('POST', '/api/sessions/:id/git/finalize', async (req, res) => {
@@ -364,7 +396,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       res.end(JSON.stringify({ error: 'this session\'s workspace is a read-only checkout — finalize is not available' }));
       return;
     }
-    const payload = await readJsonObject<{ kind?: string; message?: string; newBranch?: string; push?: boolean }>(req, res);
+    const payload = await readJsonObject<{ kind?: string; message?: string; newBranch?: string; push?: boolean; prTitle?: string; prBody?: string }>(req, res);
     if (!payload) return;
     const message = typeof payload.message === 'string' ? payload.message : '';
     if (message.trim().length === 0) {
@@ -373,6 +405,14 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
     if (message.length > 5000) {
       res.statusCode = 400; res.end('message too long (5000 char max)'); return;
     }
+    // The PR's own text, when the overlay drafted one (several rounds on the branch). Absent, the
+    // squash publishes `message` via `gh pr create --fill`, which is right for a single round.
+    const prTitle = typeof payload.prTitle === 'string' ? payload.prTitle.trim() : '';
+    const prBody = typeof payload.prBody === 'string' ? payload.prBody.trim() : '';
+    if (prTitle.length > 200 || prBody.length > 20_000) {
+      res.statusCode = 400; res.end('PR title or description too long'); return;
+    }
+    const pr = prTitle ? { title: prTitle, body: prBody } : undefined;
     const baseBranch = rec.baseBranch && rec.baseBranch.length > 0 ? rec.baseBranch : 'main';
     if (payload.kind === 'merge-to-base') {
       const result = await gitFinalizeSquashMerge({
@@ -399,7 +439,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       if (!exists) engine.markPrOpening(sessionId);
       const result: GitCommandResult & { url?: string } = exists
         ? await gitFinalizeAppendToBranch({ worktreePath: rec.worktreePath, branch: payload.newBranch, baseBranch })
-        : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, baseRef: diffBaseFor(rec), newBranch: payload.newBranch, message });
+        : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, baseRef: diffBaseFor(rec), newBranch: payload.newBranch, message, ...(pr ? { pr } : {}) });
       if (!exists) engine.finishPrOpening(sessionId, result.ok ? result.url : undefined);
       // The PR head moved (or a new PR opened) — nudge the watcher so the owning step's
       // controller learns of it without waiting on the hourly sweep.

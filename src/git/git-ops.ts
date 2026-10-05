@@ -431,6 +431,50 @@ export interface FinalizeSquashToBranchOpts {
   baseRef?: string;
   newBranch: string;
   message: string;
+  // The PR's own title and description, when the branch holds more than one round: `message`
+  // is then only the last round's, and `gh pr create --fill` would publish it as if it described
+  // the whole branch. When given, the squash commit carries this text too, so the commit and the
+  // PR say the same thing.
+  pr?: { title: string; body: string };
+}
+
+// Commits on HEAD since `base` — how many rounds already committed onto this branch. Null when it
+// can't be counted (bad ref, git error).
+export async function gitCommitsSince(cwd: string, base: string): Promise<number | null> {
+  if (!BRANCH_NAME_RE.test(base)) return null;
+  const res = await runGit(cwd, ['rev-list', '--count', `${base}..HEAD`]);
+  const n = Number(res.stdout.trim());
+  return res.ok && Number.isInteger(n) ? n : null;
+}
+
+export interface PrDraftGitContext {
+  commits: string[];      // full messages, oldest first
+  stat: string;
+  diff: string;           // base → working tree, so an uncommitted last round is in it too
+  diffTruncated: boolean;
+  untracked: string[];
+  dirty: boolean;
+}
+
+// What a PR drafter needs to describe the whole branch rather than its last round.
+export async function gitPrDraftContext(cwd: string, base: string, maxDiff = 60_000): Promise<PrDraftGitContext | null> {
+  if (!BRANCH_NAME_RE.test(base)) return null;
+  const [log, stat, diff, untracked, status] = await Promise.all([
+    runGit(cwd, ['log', '--reverse', '--format=%B%x1e', `${base}..HEAD`]),
+    runGit(cwd, ['diff', '--stat', base]),
+    runGit(cwd, ['diff', base]),
+    runGit(cwd, ['ls-files', '--others', '--exclude-standard']),
+    runGit(cwd, ['status', '--porcelain']),
+  ]);
+  if (!log.ok || !diff.ok) return null;
+  return {
+    commits: log.stdout.split('\x1e').map((m) => m.trim()).filter(Boolean),
+    stat: stat.stdout.trim(),
+    diff: diff.stdout.slice(0, maxDiff),
+    diffTruncated: diff.stdout.length > maxDiff,
+    untracked: untracked.stdout.split('\n').map((l) => l.trim()).filter(Boolean),
+    dirty: status.stdout.trim().length > 0,
+  };
 }
 
 // Collapses commits since baseBranch, pushes to origin under newBranch, opens a PR.
@@ -454,14 +498,16 @@ export async function gitFinalizeSquashToBranch(opts: FinalizeSquashToBranchOpts
   // reset --soft rewinds HEAD to base leaving every diff staged; one commit collapses it.
   const reset = await runGit(opts.worktreePath, ['reset', '--soft', squashBase, '--']);
   if (!reset.ok) return reset;
-  const commit = await runGit(opts.worktreePath, ['commit', '-m', opts.message]);
+  const squashMessage = opts.pr ? `${opts.pr.title}\n\n${opts.pr.body}`.trim() : opts.message;
+  const commit = await runGit(opts.worktreePath, ['commit', '-m', squashMessage]);
   if (!commit.ok) return commit;
   const push = await runGit(opts.worktreePath, ['push', '-u', 'origin', `HEAD:refs/heads/${opts.newBranch}`]);
   if (!push.ok) return push;
   try {
     const { stdout, stderr } = await execFileP(
       'gh',
-      ['pr', 'create', '--head', opts.newBranch, '--base', opts.baseBranch, '--fill'],
+      ['pr', 'create', '--head', opts.newBranch, '--base', opts.baseBranch,
+        ...(opts.pr ? ['--title', opts.pr.title, '--body', opts.pr.body] : ['--fill'])],
       { cwd: opts.worktreePath, maxBuffer: MAX_BUFFER, timeout: 30_000 },
     );
     const url = stdout.toString().trim().split('\n').reverse().find((l) => l.startsWith('http')) ?? '';
