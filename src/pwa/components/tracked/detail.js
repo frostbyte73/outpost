@@ -6,6 +6,7 @@
 // wrapped above it) — there is no separate mobile job-detail view.
 
 import { work } from '../../state/work.js';
+import { nav } from '../../state/nav.js';
 import { prPatches } from '../../state/pr-patches.js';
 import { worktreeChanges } from '../../state/worktree-changes.js';
 import { renderPlanSection, toggleReplanComposer, submitReplan, toggleDiscardComposer, submitDiscard } from '../work/plan-section.js';
@@ -93,6 +94,7 @@ function renderHeader(job) {
               ${job.source === 'manual' ? `<button type="button" class="tk-menu-item danger" data-job-action="delete-job">Delete</button>` : ''}
             </div>
           </div>
+          <button class="work-sync-btn tk-rail-toggle" type="button" data-action="toggle-rail" title="Toggle right panel" aria-label="Toggle right panel"><span class="tk-rail-hide">»</span><span class="tk-rail-show">«</span></button>
         </div>
       </div>
       <div class="tk-meta">
@@ -479,6 +481,9 @@ export function renderTrackedDetail(root, jobId) {
 
   const syncBtn = root.querySelector('[data-action="sync-job"]');
   if (syncBtn) syncBtn.addEventListener('click', () => void work.syncJob(job.id));
+  // The same toggle the session view's header carries — shell/surfaces.js turns the store flag into
+  // .o-frame.context-collapsed, which is also what picks this button's arrow (tracked.css).
+  root.querySelector('[data-action="toggle-rail"]')?.addEventListener('click', () => nav.toggleContextCollapsed());
 
   root.querySelectorAll('[data-job-action]').forEach((el) => {
     el.addEventListener('click', (e) => {
