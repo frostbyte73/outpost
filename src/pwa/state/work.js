@@ -12,6 +12,8 @@ const initial = {
   filter: 'all',
   lastFetchedAt: 0,
   lastLinearSyncAt: null,
+  // The governor's app-wide queue (LaunchQueueSummary) — rides GET /api/work/jobs.
+  launchQueue: null,
 };
 
 const store = createStore(initial);
@@ -69,7 +71,8 @@ export const work = {
       const data = await workApi.listJobs();
       const jobs = Array.isArray(data?.jobs) ? data.jobs : [];
       const lastLinearSyncAt = typeof data?.lastLinearSyncAt === 'number' ? data.lastLinearSyncAt : null;
-      store.set((s) => ({ ...s, jobs, byId: indexJobs(jobs), loading: false, lastFetchedAt: Date.now(), lastLinearSyncAt }));
+      const launchQueue = data?.launchQueue ?? null;
+      store.set((s) => ({ ...s, jobs, byId: indexJobs(jobs), loading: false, lastFetchedAt: Date.now(), lastLinearSyncAt, launchQueue }));
     } catch (e) {
       store.set((s) => ({ ...s, loading: false, error: e.message }));
     }
@@ -132,6 +135,7 @@ export const work = {
   async resolveStep(id, stepId, payload) { return call(() => workApi.resolveStep(id, stepId, payload)); },
   async retryStep(id, stepId, note) { return call(() => workApi.retryStep(id, stepId, note)); },
   async rerunLatest(id)          { return call(() => workApi.rerunLatest(id)); },
+  async runAllQueued()           { return call(() => workApi.runAllQueued()); },
   async resetJob(id)             { return call(() => workApi.resetJob(id)); },
   // Launch a queued step now: force-fires its parked launch. No job/step payload comes
   // back (just `{launched}`) — the badge update rides the WS work_launch_changed refetch,

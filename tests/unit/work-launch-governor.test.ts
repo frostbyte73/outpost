@@ -222,3 +222,50 @@ describe('LaunchGovernor', () => {
     expect(changeCount()).toBe(6);
   });
 });
+
+describe('LaunchGovernor — app-wide queue summary', () => {
+  // 60% used with 4 days left projects to ~140%: the jobs' budget rule holds.
+  const overBudget: TokenUsageSnapshot = {
+    five_hour: { used_percentage: 10, resets_at: NOW_S + 3600 },
+    seven_day: { used_percentage: 60, resets_at: NOW_S + 4 * 86400 },
+  };
+
+  it('is empty while nothing waits', () => {
+    const { gov } = harness();
+    expect(gov.summary()).toEqual({ parked: 0, reason: null, opensAt: null });
+  });
+
+  it('counts what the budget holds, says why, and when it opens', () => {
+    const { gov, makeReq } = harness(overBudget, 4);
+    gov.submit(makeReq({ key: 'j1#a', sessionId: 'a' }));
+    gov.submit(makeReq({ key: 'j2#b', sessionId: 'b', jobId: 'j2' }));
+    const s = gov.summary();
+    expect(s.parked).toBe(2);
+    expect(s.reason).toContain('on course for');
+    expect(s.opensAt).toBeGreaterThan(NOW);
+  });
+
+  it('gives no opening time when the hold is busy slots (those free on a turn end, not a clock)', () => {
+    const { gov, makeReq } = harness(healthy, 1);
+    gov.submit(makeReq({ key: 'j1#a', sessionId: 'a' }));
+    gov.submit(makeReq({ key: 'j2#b', sessionId: 'b', jobId: 'j2' }));
+    expect(gov.summary()).toMatchObject({ parked: 1, reason: '1/1 slots busy', opensAt: null });
+  });
+
+  it('forceFireAll launches everything parked', () => {
+    const { gov, makeReq, fired } = harness(overBudget, 4);
+    gov.submit(makeReq({ key: 'j1#a', sessionId: 'a' }));
+    gov.submit(makeReq({ key: 'j2#b', sessionId: 'b', jobId: 'j2' }));
+    expect(gov.forceFireAll()).toBe(2);
+    expect(fired).toEqual(['a', 'b']);
+    expect(gov.summary().parked).toBe(0);
+  });
+
+  it('re-emits on a usage update while work still waits, so the meter\'s line stays current', () => {
+    const { gov, makeReq, changeCount } = harness(overBudget, 4);
+    gov.submit(makeReq({ key: 'j1#a', sessionId: 'a' }));
+    const before = changeCount();
+    gov.onUsageSnapshot();
+    expect(changeCount()).toBe(before + 1);
+  });
+});

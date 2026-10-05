@@ -366,6 +366,21 @@
 }
 .o-usage-pop-breakdown .val { text-align: right; font-variant-numeric: tabular-nums; color: var(--text); }
 
+/* Launch-queue line (launchQueueHtml): under the sidebar meter and atop both usage popovers.
+   A --warn left rail marks it as state, per DESIGN.md §10; only shown while something waits. */
+.o-usage-queue {
+  margin: 6px 0 2px; padding: 6px 8px 6px 10px;
+  border-left: 2px solid var(--warn); border-radius: var(--r-control);
+  background: var(--bg-elev); font-size: 11px; line-height: 1.35;
+}
+.o-usage-queue-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--text); font-weight: 500; }
+.o-usage-queue-why { margin-top: 2px; color: var(--text-mute); }
+.o-usage-queue-run {
+  flex: none; padding: 1px 8px; font: inherit; font-size: 11px; color: var(--accent);
+  background: none; border: 1px solid var(--line); border-radius: var(--r-control); cursor: pointer;
+}
+.o-usage-queue-run:hover { border-color: var(--accent); }
+
 /* ───── Mobile geometry deltas ───────────────────────────────────────────
    Denser spacing per mobile-cockpit-tracked.html: rows stack as discrete
    rounded cards (no border-collapse — each carries its own radius + a

@@ -117,7 +117,17 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     const jobs = jobQueue.list().map(serialize);
-    res.end(JSON.stringify({ jobs, lastLinearSyncAt: jobQueue.lastLinearSyncAt ?? null }));
+    // The queue rides the jobs list because the PWA already refetches it on every governor
+    // change (work_launch_changed), so the meter's paused line stays current for free.
+    res.end(JSON.stringify({ jobs, lastLinearSyncAt: jobQueue.lastLinearSyncAt ?? null, launchQueue: engine.launchQueueSummary() }));
+  });
+
+  // The usage meter's "Run all": every parked launch, past the budget gate and the slot cap —
+  // the queue-wide version of a step's own "Launch now".
+  server.route('POST', '/api/work/launch-queue/run-all', (_req, res) => {
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ launched: engine.launchAllQueued() }));
   });
 
   server.route('GET', '/api/work/jobs/:id', (req, res) => {

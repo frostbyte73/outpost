@@ -42,7 +42,7 @@ import type { ActionsStore } from '../storage/actions-store.js';
 import type { ApprovalModeStore } from '../permissions/approval-mode.js';
 import type { InteractiveStore } from '../session/interactive-store.js';
 import type { JournalStore } from '../storage/journal-store.js';
-import type { LaunchGovernor, LaunchState, LaunchPriority } from './launch-governor.js';
+import type { LaunchGovernor, LaunchState, LaunchPriority, LaunchQueueSummary } from './launch-governor.js';
 import {
   acceptDraft as acceptDraftImpl, denyDraft as denyDraftImpl, reviseDraft as reviseDraftImpl,
   submitDraft, type DraftDecisionResult, type DraftHost, type SubmitDraftResult,
@@ -777,6 +777,14 @@ export class WorkEngine {
 
   // Force-fires the specific parked launch for a job's orchestrator (no stepId) or a step
   // (stepId given), bypassing the headroom/slot gate. False if nothing was parked there.
+  launchQueueSummary(): LaunchQueueSummary {
+    return this.opts.governor?.summary() ?? { parked: 0, reason: null, opensAt: null };
+  }
+
+  launchAllQueued(): number {
+    return this.opts.governor?.forceFireAll() ?? 0;
+  }
+
   launchNow(jobId: string, stepId?: string): boolean {
     return this.opts.governor?.forceFire(stepId ? `${jobId}#${stepId}` : `${jobId}#orchestrator`) ?? false;
   }
