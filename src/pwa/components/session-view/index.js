@@ -210,7 +210,7 @@ function renderSlashPalette(dom, paletteState, onPick) {
 }
 
 function evaluatePaletteState(dom, paletteState, onChange) {
-  const text = dom.composer.textContent || '';
+  const text = dom.composer.innerText || '';
   const trimmed = text.trimStart();
   // Open only while the command token itself is being typed — once whitespace
   // follows it the user is writing arguments, and Enter must send rather than
@@ -531,7 +531,7 @@ function bindTranscriptHandlers(dom, sessionId) {
 function wireComposer(dom, sessionId, paletteState) {
   const saved = composerDraft.get(sessionId);
   if (saved) dom.composer.textContent = saved;
-  const armed = () => dom.send.classList.toggle('armed', dom.composer.textContent.trim().length > 0);
+  const armed = () => dom.send.classList.toggle('armed', dom.composer.innerText.trim().length > 0);
   const repaintPalette = () => renderSlashPalette(dom, paletteState, insertSlashCommand);
   const insertSlashCommand = (cmd) => {
     dom.composer.textContent = `${cmd} `;
@@ -544,7 +544,7 @@ function wireComposer(dom, sessionId, paletteState) {
     repaintPalette();
   };
   dom.composer.addEventListener('input', () => {
-    composerDraft.set(sessionId, dom.composer.textContent);
+    composerDraft.set(sessionId, dom.composer.innerText);
     armed();
     if (paletteState) evaluatePaletteState(dom, paletteState, repaintPalette);
   });
@@ -571,7 +571,8 @@ function wireComposer(dom, sessionId, paletteState) {
     clearComposer();
   };
   const send = () => {
-    const text = dom.composer.textContent.trim();
+    // innerText, not textContent: a typed newline is a <div>/<br>, which textContent drops
+    const text = dom.composer.innerText.trim();
     if (!text) return;
     // Only special while the preference is on — otherwise a message that happens to open
     // with "!" is a message, not a swallowed command. The daemon refuses either way.

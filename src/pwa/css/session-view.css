@@ -313,6 +313,7 @@ html[data-layout="desktop"] .sv-meter-region { display: none; }
   font-size: 14px;
   line-height: 1.4;
   outline: none;
+  white-space: pre-wrap;
 }
 /* 16px minimum on mobile so iOS Safari doesn't auto-zoom the page when the
    composer gains focus — same documented contract as the legacy .composer
