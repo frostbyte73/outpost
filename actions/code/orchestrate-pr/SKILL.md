@@ -57,6 +57,8 @@ cat "$OUTPOST_ENVELOPE"
 | `dispatches` | Every child you have fanned out: `id`, `action`, `brief`, `status`, `output`, `failure`. |
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `headRefOid`, `comments[]`. |
 | `gateApproved` | `true` once the user has approved a `gate` of yours. Absent until then (§3). |
+| `preapprovals` | What the user pre-approved for this step: `spec` (`gate`/`auto`/`skip`), `push`, `openPr`, `replies`, `merge`, and `landing` (`merged`/`approved`/`direct`). Always present; all-gated (`spec: "gate"`, every boolean `false`, `landing: "merged"`) is today's behaviour. See §3b. |
+| `baseBranch` | The branch your worktree was cut from — the `--base` of any PR you open, and the target of a `direct` landing. |
 | `gateFeedback` | Every note the user has attached to a gate, oldest first. |
 | `roundsSpent` | How many turns this attempt has taken. Informational — there is no cap. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
@@ -104,7 +106,7 @@ Your six moves:
 | `dispatch` | `{kind:"dispatch", dispatches:[{action, brief, inputs?, workspace?, retryOf?}]}` | Spawns one fresh child session per entry and parks you until all settle. Each child sees **only its brief** — no memo, no artifacts, no envelope of yours. |
 | `wait` | `{kind:"wait", wait:{reason, events?, untilAllDispatchesDone?}}` | Parks the step until one of `events` fires or all dispatches settle. `reason` is shown to the user. **You cannot arm a timer** — a wait carrying `resumeAt` is refused (§4). |
 | `gate` | `{kind:"gate", draft, question}` | Parks the step for the user, showing `draft` as the thing being approved. |
-| `resolve` | `{kind:"resolve", output}` | Step done — **the PR merged**. `output` is the summary the job keeps. Refused while `pr.prUrl` is set and `pr.prState` is not `merged` (§ Budgets). |
+| `resolve` | `{kind:"resolve", output}` | Step done — **the PR merged** (or, under `landing: "approved"`, approved and green). `output` is the summary the job keeps. Refused while `pr.prUrl` is set and `pr.prState` is not `merged` (§ Budgets), except for that landing. |
 | `fail` | `{kind:"fail", reason}` | Step failed. Only when nothing else can move it forward. |
 
 **Dispatched children are read-only; edits happen on your rounds.** The branch belongs to you
@@ -135,13 +137,14 @@ as part of its condition.
 
 | # | Where the step stands | No longer true once | Move | `phase` |
 |---|---|---|---|---|
-| 1 | No `artifacts.spec` | the spec round writes it | `self-round` as `code.spec` | `spec` |
-| 2 | `artifacts.spec` present, no `artifacts.implPlan`, `gateApproved` not `true` | you gate it and the user approves | `gate` with the spec text as `draft` | `spec` |
-| 3 | `artifacts.spec` present, no `artifacts.implPlan`, `gateApproved === true` | the plan round writes `implPlan` | `self-round` as `code.plan` | `plan` |
-| 4 | `artifacts.implPlan` present, no `artifacts.implementation` | the implement round writes `implementation` | `self-round` as `code.implement` | `implement` |
+| 1 | No `artifacts.spec`, `preapprovals.spec !== "skip"` | the spec round writes it | `self-round` as `code.spec` | `spec` |
+| 2 | `artifacts.spec` present, no `artifacts.implPlan`, `gateApproved` not `true`, `preapprovals.spec === "gate"` | you gate it and the user approves | `gate` with the spec text as `draft` | `spec` |
+| 3 | `artifacts.spec` present, no `artifacts.implPlan`, and `gateApproved === true` or `preapprovals.spec === "auto"` | the plan round writes `implPlan` | `self-round` as `code.plan` | `plan` |
+| 4 | No `artifacts.implementation`, and `artifacts.implPlan` present or `preapprovals.spec === "skip"` | the implement round writes `implementation` | `self-round` as `code.implement` | `implement` |
 | 5 | `artifacts.implementation` present, the current pass has no lenses out and no `artifacts.review` for it (§3a) | you dispatch them | `dispatch` the review lenses at your worktree | `review` |
 | 6 | Every lens dispatch for the current pass has settled, `artifacts.review` not yet written for it | this turn's submit writes `review` | synthesize **on this turn**, write `artifacts.review` | `review` |
 | 7 | `artifacts.review` reports blocking findings for pass *n*, `artifacts.reviewFixes` records no pass *n* | the fix round writes `reviewFixes` for pass *n* | `self-round` as `code.implement`, findings verbatim in `note` | `review` |
+| 8a | `artifacts.review` clean for the current pass (or the cap is spent), `preapprovals.push`, `preapprovals.landing !== "direct"`, the branch is not on origin | the push lands and `head-moved` wakes you | draft the commit and push yourself (§3b) | `implement` |
 | 8 | `artifacts.review` reports the current pass clean (or the cap is spent, §3a), no `pr.prUrl` | `pr.prUrl` appears (the watcher confirms the PR exists — whether you opened it or the user did by hand) | if the branch isn't pushed yet, `wait`; once it is, draft (or, once approved, run) opening the PR — see below | `implement` |
 | 9 | `pr.prUrl` present and `pr.prState === "merged"` | — (terminal) | `resolve` with a summary and the PR URL | `merged` |
 | 10 | `pr.prUrl` present and `pr.prState === "closed"` | — (terminal) | `fail` with "PR closed without merging" | `failed` |
@@ -150,6 +153,7 @@ as part of its condition.
 | 13 | Comments in `pr.comments` that are not yours, not answered, and not covered by `artifacts.draftedReplies` | the triage round drafts them | `self-round` as `code.triage-pr-comments` | `pr_comments` |
 | 14 | `artifacts.draftedReplies` holds `reply` drafts not listed in `artifacts.postedReplies` | the reply round posts them | `self-round` as `code.reply-pr-comments`, with the exact reply bodies in `note` | `pr_comments` |
 | 15 | `artifacts.draftedReplies` holds `edit` recommendations your memo does not record as applied | your memo records the fix round covered them | `self-round` as `code.fix-pr-comment` | `pr_comments` |
+| 15a | `preapprovals.landing === "approved"`, `pr.reviewState === "approved"`, `pr.ciState === "success"`, no comment in `pr.comments` that is not yours and not answered | — (terminal) | `resolve` with "approved; handed to the repo owner to merge" and the PR URL | `merged` |
 | 16 | `pr.ciState === "success"`, `pr.reviewState === "approved"`, and your memo does **not** record a `code.merge-pr` round that came back unable to merge on these same facts | the merge round merges (it `resolve`s the step itself) | `self-round` as `code.merge-pr` | `pr_open` |
 | 17 | Nothing above matches | a delivery wakes you | `wait` on `["ci","review-state","pr-state","pr-comments"]` | keep the current `phase` |
 
@@ -193,6 +197,37 @@ The happy path walks it once: 1 → 2 → 3 → 4 → 5 → 6 → (7 → 5 → 6
 11-15 → 16 → the merge round resolves the step. If you find yourself on a row you were on two
 turns ago with nothing new written, the row is missing its falsifier — say so in `memo` and
 take row 17 rather than running it again.
+
+### 3b. Pre-approvals
+
+`preapprovals` is the user's decision, made before the step ran, about which of their usual
+clicks they don't need. Nothing about it is yours to change, and nothing about it changes how
+you draft: you still draft every write via `mcp__outpost__submit_write_draft`. A draft the
+pre-approval covers simply comes back already approved — the call returns `autoApproved: true`;
+stop the turn as usual and you are resumed in the commit phase exactly as after a manual accept.
+A draft it doesn't cover (a call outside its scope, a merge whose fresh check failed) reaches the
+user like any other.
+
+- **`spec`** — `"auto"` drops row 2: write the spec, then plan from it without gating. `"skip"`
+  drops rows 1-3: implement straight from `goal` and `inputs.approach`. Under `"gate"` the daemon
+  refuses a `code.plan` or `code.implement` round until the user has approved the spec.
+- **`push`** — row 8a: once the review is clean, commit and push the branch yourself rather than
+  waiting for the user. Stage with `git add -A` first (a local call, not drafted), then one
+  draft of two calls, every value literal: `git commit -F /tmp/outpost-commit-<stepId>.txt` (the
+  message from `artifacts.commitMessage`, inline in the call's `files`) and
+  `git push -u origin <branch>`.
+- **`openPr`** — row 8's `gh pr create` is approved for you. Keep `--head <branch>` and
+  `--base <baseBranch>` explicit and never pass `--repo`; anything else makes it a normal draft.
+- **`replies`** — row 14's bound `code.reply-pr-comments` round posts without waiting.
+- **`merge`** — row 16's bound `code.merge-pr` round merges once the daemon re-reads the PR and
+  finds it approved, green, mergeable, at the same head, with nothing unanswered.
+- **`landing: "approved"`** — row 15a: the step is done when the PR is approved and green. A repo
+  owner merges it; do not bind `code.merge-pr`.
+- **`landing: "direct"`** — there is no PR. Once the review is clean (rows 5-7 still run), replace
+  rows 8 onward with: `git fetch origin`, `git rebase origin/<baseBranch>` (a conflict binds
+  `code.resolve-conflicts`), `git add -A`, then one draft of `git commit -F /tmp/…` and
+  `git push origin HEAD:<baseBranch>`, then `resolve`. A rejected push means the base moved:
+  rebase and redraft once, then `gate` with what happened.
 
 ### 3a. Rows 5-7 in detail — the review loop
 
@@ -545,8 +580,9 @@ here); `code.reply-pr-comments` and `code.post-pr-review` own posting comments (
 exact-body-verbatim discipline); `code.merge-pr` owns the merge (it carries the
 already-merged idempotency check that keeps a stale resume from asking to merge twice). Bind a
 round to the action that owns the write rather than drafting it yourself just because your
-grant now allows it. The one write that genuinely is yours is opening the PR (row 8) — nothing
-else in the catalog does that. If a rung seems to need a write no action covers and isn't row
+grant now allows it. The writes that genuinely are yours are opening the PR (row 8) and, when
+the user pre-approved it, the first commit-and-push of the branch (row 8a) and a `direct`
+landing (§3b) — nothing else in the catalog does those. If a rung seems to need a write no action covers and isn't row
 5's job either, that is a gap to `fail` or `wait` on and journal — not to draft around.
 
 ## 7. When a dispatch fails, choose deliberately between three responses

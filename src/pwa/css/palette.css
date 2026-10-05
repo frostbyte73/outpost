@@ -284,6 +284,17 @@ html[data-layout="desktop"] .o-palette {
   color: var(--danger);
 }
 
+.p-track-options { margin-top: 10px; }
+.p-track-options > summary { cursor: pointer; color: var(--text-dim); }
+.p-track-options[open] { display: flex; flex-direction: column; gap: 8px; }
+.p-track-options[open] > summary { margin-bottom: 4px; }
+.p-track-options select {
+  font: inherit; font-size: 13px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  padding: 6px 8px;
+}
+
 .p-foot {
   padding: 10px 18px;
   border-top: 1px solid var(--line);

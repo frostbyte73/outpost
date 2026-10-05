@@ -57,10 +57,10 @@ const openPr: PinnedCall = {
 };
 
 describe('drafting a PR that already exists', () => {
-  it('is refused, naming the PR the step already has', () => {
+  it('is refused, naming the PR the step already has', async () => {
     const h = harness(stepWith({ prUrl: 'https://github.com/livekit/egress/pull/1411', prState: 'open' }));
 
-    const res = submitDraft(h.host, 'j1', 's1', draft([openPr]));
+    const res = await submitDraft(h.host, 'j1', 's1', draft([openPr]));
 
     expect(res.ok).toBe(false);
     expect(res.ok === false && res.reason).toContain('egress/pull/1411');
@@ -68,17 +68,17 @@ describe('drafting a PR that already exists', () => {
     expect(h.step().state).toBe('running');
   });
 
-  it('still allows the row-8 draft the step is actually for', () => {
+  it('still allows the row-8 draft the step is actually for', async () => {
     const h = harness(stepWith(undefined));
 
-    expect(submitDraft(h.host, 'j1', 's1', draft([openPr]))).toEqual({ ok: true });
+    expect(await submitDraft(h.host, 'j1', 's1', draft([openPr]))).toEqual({ ok: true });
     expect(h.step().state).toBe('gate_pending_approval');
   });
 
-  it('leaves every other write against an open PR alone', () => {
+  it('leaves every other write against an open PR alone', async () => {
     const h = harness(stepWith({ prUrl: 'https://github.com/livekit/egress/pull/1411', prState: 'open' }));
     const merge: PinnedCall = { id: 'c1', label: 'merge', bash: 'gh pr merge 1411 --squash' };
 
-    expect(submitDraft(h.host, 'j1', 's1', draft([merge]))).toEqual({ ok: true });
+    expect(await submitDraft(h.host, 'j1', 's1', draft([merge]))).toEqual({ ok: true });
   });
 });

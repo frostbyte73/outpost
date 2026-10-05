@@ -25,7 +25,7 @@ function makeEngine() {
       spawnDetached(sessionId: string) { spawned.push(sessionId); },
       send() {}, isWorking() { return false; }, sendOrResume() {},
     } as never,
-    worktreeManager: { provision: async () => ({ path: dir }) } as never,
+    worktreeManager: { get: () => undefined, provision: async () => ({ path: dir }) } as never,
     linearWriter: { setState: async () => undefined } as never,
     actionsStore: {} as never,
     actionRegistry: { getAction: () => ({ frontmatter: { outpost: { runner: 'claude' } } }) } as never,

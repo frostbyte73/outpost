@@ -4,6 +4,7 @@ import { validateCronExpr, type Scheduler } from '../schedules/scheduler.js';
 import type { Trigger, What } from '../schedules/types.js';
 import type { TokenStatus } from '../schedules/token-scheduler.js';
 import { readJsonBody } from './util.js';
+import { parsePlanReview, parsePreapprovals } from '../work/preapprovals.js';
 
 // Rejects a schedule/patch before it ever reaches store.create()/update() — an unvalidated
 // cron expr persisted to disk gets re-armed by scheduler.start() on every daemon restart,
@@ -84,7 +85,7 @@ function idFromUrl(url: string | undefined, suffix: string): string | null {
 // store.update's `{...cur, ...patch}` spread stops a client from smuggling in `builtin`
 // (would flag a user schedule undeletable and let its script bypass assertKnownCwd) or
 // `id`/`createdAt` (would desync the store's id-keyed map / persisted metadata).
-const SCHEDULE_UPDATE_KEYS = ['name', 'enabled', 'trigger', 'what', 'guards', 'routing'] as const;
+const SCHEDULE_UPDATE_KEYS = ['name', 'enabled', 'trigger', 'what', 'guards', 'routing', 'preapprovals', 'planReview'] as const;
 
 function pickScheduleUpdate(body: Record<string, unknown>): ScheduleUpdate {
   const patch: ScheduleUpdate = {};
@@ -118,6 +119,10 @@ export function registerSchedulesRoutes(server: Server, deps: SchedulesRoutesDep
     if (triggerError) { res.statusCode = 400; res.end(triggerError); return; }
     const whatError = validateWhat(body.what);
     if (whatError) { res.statusCode = 400; res.end(whatError); return; }
+    const pre = parsePreapprovals(body.preapprovals);
+    if (!pre.ok) { res.statusCode = 400; res.end(pre.error); return; }
+    const review = parsePlanReview(body.planReview);
+    if (!review.ok) { res.statusCode = 400; res.end(review.error); return; }
     const schedule = store.create({
       name: body.name.trim(),
       enabled: body.enabled ?? true,
@@ -125,6 +130,8 @@ export function registerSchedulesRoutes(server: Server, deps: SchedulesRoutesDep
       what: body.what,
       guards: body.guards ?? [],
       routing: body.routing ?? {},
+      ...(pre.value ? { preapprovals: pre.value } : {}),
+      ...(review.value ? { planReview: review.value } : {}),
     });
     scheduler.onScheduleChanged(schedule.id);
     notifyChanged();
@@ -146,6 +153,16 @@ export function registerSchedulesRoutes(server: Server, deps: SchedulesRoutesDep
     if (patch.what) {
       const whatError = validateWhat(patch.what);
       if (whatError) { res.statusCode = 400; res.end(whatError); return; }
+    }
+    if ('preapprovals' in patch) {
+      const pre = parsePreapprovals(patch.preapprovals);
+      if (!pre.ok) { res.statusCode = 400; res.end(pre.error); return; }
+      patch.preapprovals = pre.value;
+    }
+    if ('planReview' in patch) {
+      const review = parsePlanReview(patch.planReview);
+      if (!review.ok) { res.statusCode = 400; res.end(review.error); return; }
+      patch.planReview = review.value;
     }
     const schedule = store.update(id, patch);
     if (!schedule) { res.statusCode = 404; res.end('schedule not found'); return; }

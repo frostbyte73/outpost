@@ -21,7 +21,7 @@ function step(over: Partial<OrchestratedStep> = {}): OrchestratedStep {
     id: 's1', title: 't', description: 'd', type: 'orchestrated',
     controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
     dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
-    state: 'running', createdAt: 0, updatedAt: 0, ...over,
+    state: 'running', createdAt: 0, updatedAt: 0, specApprovedAt: 1, ...over,
   } as OrchestratedStep;
 }
 

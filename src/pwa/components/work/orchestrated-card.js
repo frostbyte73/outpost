@@ -32,7 +32,9 @@ import { work } from '../../state/work.js';
 import { orchestratedRows } from '../../vm/tracked.js';
 import { actionCategory, actionDisplayName, actionIconHtml } from './action-icon.js';
 import { hasPrBlock, renderPrBlockHtml, wirePrBlockActions } from './pr-block.js';
-import { renderWriteDraft, wireWriteDraft } from './write-draft-card.js';
+import { renderAutoApprovedDraft, renderWriteDraft, wireWriteDraft } from './write-draft-card.js';
+import { readPreapprovalsControl, renderPreapprovalsControl, wirePreapprovalsControl, clearPreapprovalsScope } from './preapprovals-control.js';
+import { effective, summaryLabel } from '../../vm/preapprovals.js';
 import { isReplyDraft } from './reply-draft.js';
 import { renderMarkdown } from '../../markdown.js';
 import { wireOverflowMenu } from '../../utils/overflow-menu.js';
@@ -101,6 +103,27 @@ function metaRowHtml(s, vm) {
   const menu = overflowHtml(vm);
   if (!bits.length && !menu) return '';
   return `<div class="tl-ident">${bits.join('')}<span class="tl-ident-spacer"></span>${menu}</div>`;
+}
+
+function preapprovalsHtml(job, s) {
+  if (s.state === 'resolved' || s.state === 'failed' || s.cancelled) return '';
+  const value = effective(job?.preapprovals, s.preapprovals);
+  return `
+    <details class="orc-preapprovals orc-preapprovals-${domId(s.id)}">
+      <summary><span class="o-microhead">Pre-approvals</span> <span class="orc-preapprovals-label">${escapeHtml(summaryLabel(value))}</span></summary>
+      <div class="orc-preapprovals-body">
+        ${renderPreapprovalsControl(value, { name: s.id })}
+        <div class="step-actions">
+          <button type="button" class="o-btn o-btn--primary" data-orc-preapprovals="save">Save</button>
+        </div>
+      </div>
+    </details>`;
+}
+
+// Only the daemon's own approvals: the user already saw every draft they approved by hand.
+function autoApprovedHtml(s) {
+  const auto = (s.drafts ?? []).filter((d) => d.approvedBy === 'preapproval');
+  return auto.map(renderAutoApprovedDraft).join('');
 }
 
 function overflowHtml(vm) {
@@ -295,7 +318,9 @@ export function renderOrchestratedCard(step, { job } = {}) {
   return `
     <div class="orc-card">
       ${metaRowHtml(step, vm)}
+      ${preapprovalsHtml(job, step)}
       ${record.trim() ? `<div class="orc-record">${record}</div>` : ''}
+      ${autoApprovedHtml(step)}
       ${gateHtml(vm)}
       ${gateActionsHtml(vm)}
       ${vm.controllerDraft && !replyDraft ? renderWriteDraft(vm.controllerDraft) : ''}
@@ -345,6 +370,18 @@ function wireTrail(card) {
   });
 }
 
+function wireStepPreapprovals(card, job, step) {
+  const scope = `step:${job.id}:${step.id}`;
+  wirePreapprovalsControl(card, scope);
+  card.querySelector('[data-orc-preapprovals="save"]')?.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const fs = card.querySelector('.orc-preapprovals fieldset.o-preapprovals');
+    if (!fs) return;
+    void work.setStepPreapprovals(job.id, step.id, readPreapprovalsControl(fs))
+      .then(() => clearPreapprovalsScope(scope));
+  });
+}
+
 export function wireOrchestratedCard(el, step, { job } = {}) {
   const card = el.querySelector('.orc-card');
   if (!card) return;
@@ -354,6 +391,7 @@ export function wireOrchestratedCard(el, step, { job } = {}) {
   }
   wireOverflowMenu(card);
   wireTrail(card);
+  wireStepPreapprovals(card, job, step);
   wireBriefs(card, vm);
 
   // The controller's own draft and each dispatch's are self-contained cards (their own

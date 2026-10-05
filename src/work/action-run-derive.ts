@@ -176,8 +176,9 @@ function verdictEvents(key: RunKey, prev: Step, next: Step, at: number): RunEven
     return [{ t: 'verdict', key, round, outcome: 'revised', at, feedbackChars: note.length }];
   }
   const approvedBefore = new Set(draftsForRaiser(prev, p.raisedBy).filter((d) => d.approvedAt).map((d) => d.id));
-  const newlyApproved = forRaiserNext.some((d) => d.approvedAt && !approvedBefore.has(d.id));
-  return [{ t: 'verdict', key, round, outcome: newlyApproved ? 'accepted' : 'denied', at }];
+  const fresh = forRaiserNext.find((d) => d.approvedAt && !approvedBefore.has(d.id));
+  const outcome: ActionRunOutcome = !fresh ? 'denied' : fresh.approvedBy === 'preapproval' ? 'auto-accepted' : 'accepted';
+  return [{ t: 'verdict', key, round, outcome, at }];
 }
 
 function orchestratorEvents(prev: JobRecord | undefined, next: JobRecord, opts: DeriveOpts): RunEvent[] {

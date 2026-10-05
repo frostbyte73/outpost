@@ -155,8 +155,20 @@ function isLegacyOpenPr(s: Step): boolean {
 }
 
 export function migrateJob(job: JobRecord): JobRecord {
-  if (!job.steps.some(isLegacyOpenPr)) return job;
-  const steps: Step[] = job.steps.map((s) =>
-    isLegacyOpenPr(s) ? migrateOpenPrStep(s as unknown as Record<string, unknown>) : s);
-  return { ...job, steps };
+  const steps: Step[] = job.steps.some(isLegacyOpenPr)
+    ? job.steps.map((s) => isLegacyOpenPr(s) ? migrateOpenPrStep(s as unknown as Record<string, unknown>) : s)
+    : job.steps;
+  return migrateSpecGate(steps === job.steps ? job : { ...job, steps });
+}
+
+// One-shot: a step whose spec was rewritten after the cutover must be re-gated, not re-stamped.
+function migrateSpecGate(job: JobRecord): JobRecord {
+  if (job.specGateMigrated) return job;
+  const steps = job.steps.map((s) => {
+    if (s.type !== 'orchestrated' || s.specApprovedAt !== undefined) return s;
+    const a = s.artifacts ?? {};
+    const past = a.implPlan || a.implementation || (s.gateApproved && a.spec);
+    return past ? { ...s, specApprovedAt: s.updatedAt } : s;
+  });
+  return { ...job, steps, specGateMigrated: true };
 }

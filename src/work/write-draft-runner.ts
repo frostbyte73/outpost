@@ -4,6 +4,8 @@ import type { JobRecord, Step } from './work-types.js';
 import { isTerminalStep as isTerminal } from '../steps/index.js';
 import { confirmationsRequired } from '../permissions/dangerous-writes.js';
 import { duplicatePrCreate } from '../steps/orchestrated-policy.js';
+import { anyPreapproved, effectivePreapprovals } from './preapprovals.js';
+import { classifyDraft, prNumberOf } from './preapproval-classify.js';
 import {
   extractFileReferences, hashFileContents, sameRaiser, writeFileContents,
   type DraftRaisedBy, type PinnedCall, type WriteDraft,
@@ -15,7 +17,7 @@ export interface DraftHost {
   getJob(jobId: string): JobRecord | undefined;
   getStep(jobId: string, stepId: string): Step | undefined;
   mutateStep(jobId: string, stepId: string, fn: (s: Step) => Step): void;
-  appendStepEvent(jobId: string, stepId: string, who: 'user' | 'session', body: string): void;
+  appendStepEvent(jobId: string, stepId: string, who: 'user' | 'session' | 'system', body: string): void;
   // Resumes whichever session actually owns this draft's next turn — an ActionStep's own
   // session, an orchestrated step's controller, or the specific dispatch that raised it.
   // Routing by raiser matters: dispatchActionResume is a no-op for anything but an ActionStep.
@@ -32,6 +34,8 @@ export interface DraftHost {
   notifyControllerDenied(jobId: string, stepId: string, feedback: string): void;
   declineStep(jobId: string, stepId: string, reason: string): void;
   journal(action: string, jobId: string, stepId: string, outcome: string, lesson: string): void;
+  // Undefined means the PR is ready to merge; a string names the unmet condition.
+  mergeReadiness?(jobId: string, stepId: string, prNumber: number, sha: string): Promise<string | undefined>;
 }
 
 // accept/revise/deny's shared "resolve a PENDING draft by id, or explain precisely why not"
@@ -59,7 +63,7 @@ function replaceDraft(step: Step, draftId: string, fn: (d: WriteDraft) => WriteD
 // can't currently accept one (already terminal, wrong dispatch state, ...) needs a real
 // failure back, not a silent no-op it can't distinguish from success — a call denied here
 // would otherwise hang waiting for a decision the daemon never parked.
-export type SubmitDraftResult = { ok: true } | { ok: false; reason: string };
+export type SubmitDraftResult = { ok: true; autoApproved?: boolean } | { ok: false; reason: string };
 
 // Same shape as SubmitDraftResult, same reason: the HTTP routes (accept/revise/deny) need to
 // tell a refused decision apart from a no-op success too, rather than answering 200 with
@@ -68,10 +72,10 @@ export type SubmitDraftResult = { ok: true } | { ok: false; reason: string };
 // route) because most refusal reasons here ARE a state conflict, not a missing resource.
 export type DraftDecisionResult = { ok: true } | { ok: false; reason: string; status?: 404 | 409 };
 
-export function submitDraft(
+export async function submitDraft(
   host: DraftHost, jobId: string, stepId: string,
   incoming: Omit<WriteDraft, 'id' | 'requestedAt'>,
-): SubmitDraftResult {
+): Promise<SubmitDraftResult> {
   const step = host.getStep(jobId, stepId);
   if (!step) return { ok: false, reason: `no step ${stepId} on job ${jobId}` };
   if (isTerminal(step)) return { ok: false, reason: 'step is already terminal' };
@@ -141,7 +145,52 @@ export function submitDraft(
   });
 
   host.appendStepEvent(jobId, stepId, 'session', `${incoming.action} — draft ready for your approval`);
+  if (await tryAutoApprove(host, jobId, stepId, draft.id)) return { ok: true, autoApproved: true };
   return { ok: true };
+}
+
+// Controllers only: a dispatch is a read-only child, and no pre-approval covers an action step's writes.
+async function tryAutoApprove(host: DraftHost, jobId: string, stepId: string, draftId: string): Promise<boolean> {
+  const step = host.getStep(jobId, stepId);
+  const draft = step?.drafts?.find((d) => d.id === draftId);
+  if (step?.type !== 'orchestrated' || !draft || draft.raisedBy.kind !== 'controller') return false;
+  if (step.workspace.kind !== 'writable') return false;
+  const pre = effectivePreapprovals(host.getJob(jobId)?.preapprovals, step.preapprovals);
+  if (!anyPreapproved(pre)) return false;
+
+  const coverage = classifyDraft(draft.calls, {
+    pre,
+    branch: step.workspace.branch,
+    baseBranch: step.baseBranch,
+    prNumber: prNumberOf(step.pr?.prUrl),
+    commentIds: new Set((step.pr?.comments ?? []).flatMap((c) => c.commentId === undefined ? [] : [c.commentId])),
+  });
+  let miss = coverage.covered ? undefined : coverage.reason;
+  if (coverage.covered && coverage.mergeSha) miss = await mergeMiss(host, jobId, stepId, step.pr?.prUrl, coverage.mergeSha);
+  if (miss === undefined && coverage.covered) {
+    const res = await acceptDraft(host, jobId, stepId, draftId, draft.calls, {
+      approvedBy: 'preapproval',
+      event: `auto-approved (${coverage.settings.join(', ')}): ${describeCalls(draft.calls)}`,
+    });
+    if (res.ok) return true;
+    miss = res.reason;
+  }
+  const reason = miss;
+  host.mutateStep(jobId, stepId, (s) => replaceDraft(s, draftId, (d) => ({ ...d, autoApproveMiss: reason })));
+  return false;
+}
+
+async function mergeMiss(
+  host: DraftHost, jobId: string, stepId: string, prUrl: string | undefined, sha: string,
+): Promise<string | undefined> {
+  const n = prNumberOf(prUrl);
+  if (n === undefined || !host.mergeReadiness) return 'merge readiness could not be checked';
+  try {
+    const blocker = await host.mergeReadiness(jobId, stepId, n, sha);
+    return blocker === undefined ? undefined : `not ready to merge: ${blocker}`;
+  } catch (e) {
+    return `merge readiness check failed: ${(e as Error).message ?? e}`;
+  }
 }
 
 // The terminal-step check below is duplicated (identically) at the top of acceptDraft,
@@ -151,6 +200,7 @@ export function submitDraft(
 // obviously need — each call site should read as "refuse if terminal, THEN look up the draft."
 export async function acceptDraft(
   host: DraftHost, jobId: string, stepId: string, draftId: string, calls: PinnedCall[],
+  opts: { approvedBy?: 'preapproval'; event?: string } = {},
 ): Promise<DraftDecisionResult> {
   const step = host.getStep(jobId, stepId);
   if (!step) return { ok: false, reason: `no step ${stepId} on job ${jobId}`, status: 404 };
@@ -267,6 +317,8 @@ export async function acceptDraft(
       ...d,
       calls: pinned,
       ...(skippedCalls.length ? { skippedCalls } : {}),
+      ...(opts.approvedBy ? { approvedBy: opts.approvedBy } : {}),
+      autoApproveMiss: undefined,
       approvedAt: at,
     })), updatedAt: at };
     if (draft.raisedBy.kind === 'dispatch') {
@@ -281,9 +333,9 @@ export async function acceptDraft(
     return { ...withDraft, state: 'running' as const };
   });
 
-  host.appendStepEvent(jobId, stepId, 'user', skippedCalls.length
+  host.appendStepEvent(jobId, stepId, opts.approvedBy ? 'system' : 'user', opts.event ?? (skippedCalls.length
     ? `approved ${pinned.length} of ${calls.length} calls; skipped ${describeCalls(skippedCalls)}`
-    : 'approved the write payload');
+    : 'approved the write payload'));
   host.resumeRaiser(jobId, stepId, draft.raisedBy, draft.action);
   return { ok: true };
 }

@@ -24,7 +24,7 @@ function makeEngine(unresolvedGraceMs?: number) {
       resumed.push({ sessionId, content: msg.message.content });
     },
   } as never;
-  const worktreeManager = { provision: async () => ({ path: dir }) } as never;
+  const worktreeManager = { get: () => undefined, provision: async () => ({ path: dir }) } as never;
   const linearWriter = { setState: async () => undefined } as never;
   // bindAction() no-ops without an actionsStore, so the harness must configure one for
   // the binding to take, exactly as the real daemon does for every step session.

@@ -182,3 +182,32 @@ describe('migrateJob', () => {
     expect(migrateJob(once)).toEqual(once);
   });
 });
+
+describe('the spec-gate cutover', () => {
+  const now = 1000;
+  const orc = (over: Partial<OrchestratedStep>): OrchestratedStep => ({
+    id: 's', type: 'orchestrated', title: 't', description: '', controller: 'code.orchestrate-pr', goal: 'g',
+    workspace: { kind: 'none' }, dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+    state: 'running', createdAt: now, updatedAt: now, ...over,
+  });
+  const job = (steps: OrchestratedStep[], over: Partial<JobRecord> = {}): JobRecord => ({
+    id: 'j', source: 'manual', title: 't', description: '', state: 'executing', steps, createdAt: now, updatedAt: now, ...over,
+  });
+  const stamped = (j: JobRecord) => (j.steps as OrchestratedStep[]).map((s) => s.specApprovedAt);
+
+  it('stamps steps already past the spec, once, and marks the job', () => {
+    const out = migrateJob(job([
+      orc({ id: 'a', artifacts: { spec: 'S' }, gateApproved: true }),
+      orc({ id: 'b', artifacts: { implPlan: 'P' } }),
+      orc({ id: 'c', artifacts: { implementation: 'I' } }),
+      orc({ id: 'd', artifacts: { spec: 'S' } }),
+    ]));
+    expect(stamped(out)).toEqual([now, now, now, undefined]);
+    expect(out.specGateMigrated).toBe(true);
+  });
+
+  it('never runs again on a job already past the cutover', () => {
+    const out = migrateJob(job([orc({ artifacts: { spec: 'S', implPlan: 'P' } })], { specGateMigrated: true }));
+    expect(stamped(out)).toEqual([undefined]);
+  });
+});

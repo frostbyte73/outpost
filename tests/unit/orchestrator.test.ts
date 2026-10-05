@@ -785,6 +785,7 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     // throws for any dispatch whose workspace isn't {kind:'none'}. This regresses that.
     const provisionedIds: string[] = [];
     const worktreeManager = {
+      get: () => undefined,
       provision: async (id: string, workspace: { kind: string }) => {
         provisionedIds.push(id);
         return { path: workspace.kind === 'none' ? null : '/tmp/fake-worktree' };
@@ -828,6 +829,7 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     const holderByBranch = new Map<string, string>();
     const seen: Array<{ id: string; workspace: WorkspaceRef }> = [];
     const worktreeManager = {
+      get: () => undefined,
       provision: async (id: string, workspace: WorkspaceRef) => {
         seen.push({ id, workspace });
         if (workspace.kind === 'none') return { path: null };
@@ -863,6 +865,7 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     // controller's own resume-round provision call (its step workspace is `{kind:'none'}`)
     // must keep succeeding, or this test would conflate a dispatch failure with a step failure.
     const worktreeManager = {
+      get: () => undefined,
       provision: async (_id: string, workspace: { kind: string }) => {
         if (workspace.kind === 'none') return { path: null };
         throw new Error('git blew up');

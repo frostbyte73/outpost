@@ -35,7 +35,7 @@ interface GhPrView {
 // status/conclusion/detailsUrl) or a StatusContext (legacy commit status —
 // context/state/targetUrl). `gh pr view --json statusCheckRollup` returns the
 // full node for each, so we read whichever set of fields is present.
-interface GhCheckRollup {
+export interface GhCheckRollup {
   name?: string;
   workflowName?: string;
   status?: string;
@@ -46,7 +46,7 @@ interface GhCheckRollup {
   targetUrl?: string;
 }
 
-function checkStateOf(c: GhCheckRollup): CiCheck['state'] {
+export function checkStateOf(c: GhCheckRollup): CiCheck['state'] {
   const conclusion = (c.conclusion ?? '').toUpperCase();
   if (conclusion) {
     if (conclusion === 'SUCCESS' || conclusion === 'NEUTRAL') return 'success';
@@ -216,7 +216,7 @@ function commentsWorthWaking(fresh: PrComment[], viewer: string | undefined): bo
 
 // GitHub spells a bot's login `name[bot]` in some payloads and `name` in others, and casing is
 // not significant. Only ever compared against another normalized login.
-function normalizeLogin(login: string): string {
+export function normalizeLogin(login: string): string {
   return login.toLowerCase().replace(/\[bot\]$/, '');
 }
 

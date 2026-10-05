@@ -10,6 +10,7 @@ import { discardScheduleDraft } from '../../net/schedules.js';
 import { renderTriggerCard } from './trigger-card.js';
 import { renderWhatCard } from './what-card.js';
 import { renderRoutingCard } from './routing-card.js';
+import { renderPreapprovalsCard } from './preapprovals-card.js';
 import { renderRunsCard } from './runs-card.js';
 import { wireOverflowMenu } from '../../utils/overflow-menu.js';
 
@@ -482,6 +483,7 @@ export function renderDetail(mount, deps) {
     body.appendChild(renderTriggerCard(schedule, detail, editState, repaint, onSave));
     body.appendChild(renderWhatCard(schedule, detail, editState, repaint, onSave));
     body.appendChild(renderRoutingCard(schedule, detail, editState, repaint, onSave));
+    body.appendChild(renderPreapprovalsCard(schedule, editState, repaint, onSave));
     body.appendChild(renderRunsCard(schedule, detail));
     mount.appendChild(body);
   }

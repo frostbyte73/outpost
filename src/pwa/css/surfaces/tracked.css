@@ -395,6 +395,14 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 .wd-head { font-weight: 600; color: var(--warn); overflow-wrap: anywhere; }
 .wd-feedbacks { display: flex; flex-direction: column; gap: 4px; }
 .wd-feedback { font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
+.wd-miss { font-size: 12px; color: var(--text-dim); overflow-wrap: anywhere; }
+.wd-card--auto { background: var(--bg-elev-2); border-left-color: var(--ok); }
+.wd-card--auto .wd-head { color: var(--text); font-weight: 500; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wd-ran { margin: 0; font-family: var(--font-mono); font-size: 12px; color: var(--text-dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+.orc-preapprovals > summary { cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 8px; font-size: 12px; }
+.orc-preapprovals > summary::-webkit-details-marker { display: none; }
+.orc-preapprovals-label { color: var(--text-dim); }
+.orc-preapprovals-body { display: flex; flex-direction: column; gap: 10px; padding-top: 10px; }
 .wd-calls { display: flex; flex-direction: column; gap: 10px; }
 .wd-call {
   margin: 0;

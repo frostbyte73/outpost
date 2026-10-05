@@ -47,7 +47,7 @@ function makeEngine(over: Record<string, unknown> = {}) {
     isWorking() { return false; },
     sendOrResume(sessionId: string) { resumed.push(sessionId); },
   } as never;
-  const worktreeManager = { provision: async () => ({ path: dir }) } as never;
+  const worktreeManager = { get: () => undefined, provision: async () => ({ path: dir }) } as never;
   const linearWriter = { setState: async () => undefined } as never;
   const engine = new WorkEngine({
     queue, sessionManager, worktreeManager, linearWriter,
@@ -464,7 +464,7 @@ describe('WriteDraft — a submit against a terminal step is a no-op', () => {
     }));
     // Refused, not silently swallowed — this is the MCP tool's only signal to a session
     // that its draft was never parked and it must not wait for a decision.
-    const result = engine.onWriteDraftReady(jobId, 'g1', {
+    const result = await engine.onWriteDraftReady(jobId, 'g1', {
       action: 'write.linear-issue', raisedBy: { kind: 'step' }, summary: 's', calls: CALLS,
     });
     expect(result).toEqual({ ok: false, reason: 'step is already terminal' });
@@ -480,7 +480,7 @@ describe('WriteDraft — a submit against a terminal step is a no-op', () => {
     queue.mutate(jobId, (j) => ({
       ...j, steps: j.steps.map((s) => s.id === 'g1' ? { ...s, state: 'declined' } as Step : s),
     }));
-    const result = engine.onWriteDraftReady(jobId, 'g1', {
+    const result = await engine.onWriteDraftReady(jobId, 'g1', {
       action: 'write.linear-issue', raisedBy: { kind: 'step' }, summary: 's', calls: CALLS,
     });
     expect(result).toEqual({ ok: false, reason: 'step is already terminal' });
@@ -647,12 +647,12 @@ describe('WriteDraft — orchestrated steps: raiser coercion, pin isolation, den
   // parked: flipping a queued dispatch to `awaiting_approval` leaves nothing that can ever
   // spawn it (the launch's own `run()` requires `status === 'queued'`), so accept/revise/deny
   // all dead-end and `untilAllDispatchesDone` never clears.
-  it('refuses a submit_write_draft naming a dispatch that has not spawned yet (status: queued)', () => {
+  it('refuses a submit_write_draft naming a dispatch that has not spawned yet (status: queued)', async () => {
     const { engine, queue } = makeEngine();
     const jobId = seedOrchestratedJob(queue, engine, [orchestratedStep('o1', 'code.orchestrate-pr', [
       { id: 'dA', action: 'code.implement', brief: 'b', status: 'queued', attempts: 0 },
     ])]);
-    const result = engine.onWriteDraftReady(jobId, 'o1', {
+    const result = await engine.onWriteDraftReady(jobId, 'o1', {
       action: 'code.implement', raisedBy: { kind: 'dispatch', dispatchId: 'dA' }, summary: 's', calls: CALLS,
     });
     expect(result).toEqual({ ok: false, reason: 'dispatch dA is not a running child (status: queued)' });
@@ -906,7 +906,7 @@ describe('WriteDraft — orchestrated steps: raiser coercion, pin isolation, den
   // exactly like spawnDispatchSession's own provision guard.
   it('a throwing provision on dispatch resume fails the dispatch instead of rejecting', async () => {
     const { engine, queue } = makeEngine({
-      worktreeManager: { provision: async () => { throw new Error('git blew up'); } } as never,
+      worktreeManager: { get: () => undefined, provision: async () => { throw new Error('git blew up'); } } as never,
     });
     const dispSessionId = 'sess-dA';
     const jobId = seedOrchestratedJob(queue, engine, [orchestratedStep('o1', 'code.orchestrate-pr', [

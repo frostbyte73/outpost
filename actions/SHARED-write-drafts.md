@@ -103,6 +103,11 @@ new, not a requirement for every file-referencing call.
 
 ## Three outcomes, one resume each
 
+Accept can come from the daemon as well as the user. When the user pre-approved this kind of
+write for the step, `submit_write_draft` returns `autoApproved: true` instead of parking for
+them. Nothing changes for you: stop the turn as usual, and you are resumed in the commit phase
+exactly as if they had clicked Accept.
+
 - **Accept.** You resume with `writeGate.phase === "commit"` and `writeGate.approvedCalls` —
   the calls the user approved, possibly edited, narrowed to whichever are still unconsumed.
   The verdict is **per call**, so a draft of several calls can come back partly approved:

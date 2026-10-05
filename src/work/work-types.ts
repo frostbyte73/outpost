@@ -15,6 +15,19 @@ export type WorkspaceRef =
   | { kind: 'readonly'; repoCwd: string; ref?: string }
   | { kind: 'writable'; repoCwd: string; branch: string };
 
+export type SpecMode = 'gate' | 'auto' | 'skip';
+export type Landing = 'merged' | 'approved' | 'direct';
+
+// Absent fields are gated. Only user HTTP routes write this; a planner writes `proposedPreapprovals`.
+export interface Preapprovals {
+  spec?: SpecMode;
+  push?: boolean;
+  openPr?: boolean;
+  replies?: boolean;
+  merge?: boolean;
+  landing?: Landing;
+}
+
 export interface PrComment {
   id: string;
   author: string;
@@ -290,6 +303,11 @@ export interface OrchestratedStep extends StepBase {
   // — otherwise a stale sub-action from an earlier round would outlive it and mislabel a later
   // draft. Absent before the first resume; a cold spawn is always bound to `controller`.
   boundAction?: string;
+  preapprovals?: Preapprovals;
+  proposedPreapprovals?: Preapprovals;
+  // Resolved from the worktree at provision; the classifier never takes a base from a draft.
+  baseBranch?: string;
+  specApprovedAt?: number;
   iterations?: IterationRecord[];
   reviewComments?: ReviewComment[];
   draftedReplies?: DraftedReply[];
@@ -332,6 +350,7 @@ type ProposedFields<S extends Step> = Omit<
   S,
   'id' | 'state' | 'sessionId' | 'events' | 'failure' | 'createdAt' | 'updatedAt' | 'workspace'
   | 'dispatches' | 'inbox' | 'roundsSpent' | 'consecutiveSelfRounds'
+  | 'preapprovals' | 'baseBranch' | 'specApprovedAt'
 > & {
   keepId?: string;
   workspace?: S['workspace'];
@@ -432,6 +451,9 @@ export interface JobRecord {
   // Bypasses the token-launch queue: a high-priority job's launches fire immediately,
   // regardless of token headroom or the concurrency slot budget. Absent = normal.
   highPriority?: boolean;
+  preapprovals?: Preapprovals;
+  planReview?: 'gate' | 'auto';
+  specGateMigrated?: true;
   failure?: { reason: string; at: number };
   stalls?: SessionStall[];
   events?: JobEvent[];

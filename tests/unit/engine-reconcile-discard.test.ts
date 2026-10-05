@@ -23,7 +23,7 @@ function makeEngine() {
         resumed.push({ sessionId, text: (msg as { message: { content: string } }).message.content, env });
       },
     } as never,
-    worktreeManager: { provision: async () => ({ path: dir }) } as never,
+    worktreeManager: { get: () => undefined, provision: async () => ({ path: dir }) } as never,
     linearWriter: { setState: async () => undefined } as never,
     actionsStore: {} as never,
     actionRegistry,

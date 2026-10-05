@@ -12,6 +12,8 @@ import { planIsLive } from '../../vm/work-predicates.js';
 import { renderFinding } from './finding.js';
 import { orchestratorStepShim } from '../tracked/session-mounts.js';
 import { actionCategory, actionDisplayName } from './action-icon.js';
+import { readPreapprovalsControl, renderPreapprovalsControl, wirePreapprovalsControl } from './preapprovals-control.js';
+import { loosened } from '../../vm/preapprovals.js';
 
 const diagramUrl = (j) => `/api/work/jobs/${encodeURIComponent(j.id)}/diagram.svg`;
 
@@ -52,7 +54,7 @@ export function renderReconciliation(j) {
   const dropSet = new Set(recon.drops ?? []);
   const cancelled = current.filter((s) => dropSet.has(s.id));
 
-  const proposedRows = recon.proposed.map((p) => {
+  const proposedRows = recon.proposed.map((p, i) => {
     const kind = diffKindFor(p, current);
     const glyph = kind === 'done' ? '✓ done' : kind === 'keep' ? '✓ keep' : kind === 'patch' ? '~ patch' : '+ add';
     const prior = p.keepId ? current.find((s) => s.id === p.keepId) : null;
@@ -73,6 +75,7 @@ export function renderReconciliation(j) {
         <div>
           <div class="step-title">${escapeHtml(p.title ?? p.goal ?? '')}</div>
           <div class="delta"><span class="key">${escapeHtml(key)}</span> · ${escapeHtml(delta)}</div>
+          ${kind === 'done' ? '' : stepPreapprovalsHtml(j, p, prior ?? null, p.keepId ? p.keepId : `#${i}`)}
         </div>
       </div>
     `;
@@ -165,16 +168,25 @@ function planApproveButton(j) {
   return `<button class="o-btn o-btn--primary" type="button" data-job-action="approve-plan">Approve plan</button>`;
 }
 
+// Seeded from the planner's proposal; only the user's Approve makes it real.
+function stepPreapprovalsHtml(j, proposed, current, name) {
+  if (proposed?.type !== 'orchestrated') return '';
+  const proposal = proposed.proposedPreapprovals;
+  const value = current?.preapprovals ?? proposal ?? j.preapprovals;
+  return `<div class="plan-row-preapprovals">${renderPreapprovalsControl(value, { name, loosened: loosened(proposal, j.preapprovals) })}</div>`;
+}
+
 // One compact index row per step: two-digit index, type-mono chip, title.
 // Deliberately no session mounts / PR blocks / outputs — those belong to the
 // timeline, the single full-step renderer.
-function planIndexRow(s, i) {
+function planIndexRow(j, s, i) {
   return `
     <div class="plan-row">
       <span class="plan-row-idx">${String(i + 1).padStart(2, '0')}</span>
       ${typeChip(s)}
       <span class="plan-row-title">${escapeHtml(s.title ?? s.goal ?? '')}</span>
     </div>
+    ${j.state === 'plan_pending_review' ? stepPreapprovalsHtml(j, s, s, s.id) : ''}
   `;
 }
 
@@ -282,13 +294,27 @@ export function renderPlanSection(j, { timelineHtml = '', editing = false } = {}
                      <textarea id="launch-context-input" class="field-textarea launch-context-textarea" placeholder="Priorities, constraints, where to look — passed to the planner when you launch."></textarea>
                      <div class="work-empty">No plan yet. Click "Launch orchestrator" to start.</div>
                    </div>`)
-            : steps.map(planIndexRow).join('')}
+            : steps.map((s, i) => planIndexRow(j, s, i)).join('')}
         </div>
         ${foot}
         ${replanComposer}
       </div>
     </section>
   `;
+}
+
+// Plan cards only: a running step's card carries its own control under the same step id.
+export function wirePlanPreapprovals(root, scope) {
+  root.querySelectorAll('.plan-card').forEach((card) => wirePreapprovalsControl(card, scope));
+}
+
+// Keyed the way the daemon expects: step id, or `#<index>` for a step an amendment adds.
+export function collectPlanPreapprovals(root) {
+  const out = {};
+  for (const fs of root.querySelectorAll('.plan-card fieldset.o-preapprovals')) {
+    if (fs.dataset.name) out[fs.dataset.name] = readPreapprovalsControl(fs);
+  }
+  return Object.keys(out).length ? out : undefined;
 }
 
 export function toggleReplanComposer(root, open) {

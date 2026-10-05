@@ -12,6 +12,8 @@ export class SkipRun extends Error {}
 export interface CreateJobInput {
   title: string;
   what: What;
+  preapprovals?: ScheduleRecord['preapprovals'];
+  planReview?: ScheduleRecord['planReview'];
 }
 
 export interface SpawnSkillSessionInput {
@@ -276,7 +278,11 @@ export class Scheduler {
     const what = schedule.what;
     if (resolveSpawnMode(what) === 'job') {
       if (!this.deps.spawn.createJob) throw new Error('createJob dependency not wired');
-      const result = await this.deps.spawn.createJob({ title: `Scheduled: ${schedule.name}`, what });
+      const result = await this.deps.spawn.createJob({
+        title: `Scheduled: ${schedule.name}`, what,
+        ...(schedule.preapprovals ? { preapprovals: schedule.preapprovals } : {}),
+        ...(schedule.planReview ? { planReview: schedule.planReview } : {}),
+      });
       return { jobId: result.jobId };
     }
     // Session mode is only reachable for a non-`code.*` skill (see resolveSpawnMode).

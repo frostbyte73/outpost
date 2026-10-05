@@ -34,6 +34,12 @@ describe('buildScorecard rates', () => {
     expect(sc.outcomes.failed).toBe(1);
   });
 
+  it('leaves auto-accepted rounds out of every rate', () => {
+    const sc = card([run({ outcome: 'auto-accepted' }), run({ outcome: 'denied' })]);
+    expect(sc.outcomes['auto-accepted']).toBe(1);
+    expect(sc.acceptRate).toBe(0);
+  });
+
   it('counts merged as a success', () => {
     const sc = card([run({ round: 'implement', outcome: 'merged', attempt: 1 })]);
     expect(sc.acceptRate).toBe(1);

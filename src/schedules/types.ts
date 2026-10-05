@@ -1,5 +1,7 @@
 // Shared data shapes for the Schedules subsystem. Kept dependency-free (no imports from
 // src/work or src/integrations) so this cluster can be unit-tested and wired independently.
+// The one type-only import below is erased at compile time and adds no runtime coupling.
+import type { Preapprovals } from '../work/work-types.js';
 
 export type Trigger =
   | { kind: 'cron'; expr: string; tz?: string }
@@ -69,6 +71,8 @@ export interface ScheduleRecord {
   what: What;
   guards: Guard[];
   routing: Routing;
+  preapprovals?: Preapprovals;
+  planReview?: 'gate' | 'auto';
   builtin?: boolean;
   createdAt: number;
   updatedAt: number;

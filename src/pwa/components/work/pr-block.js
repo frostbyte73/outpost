@@ -7,7 +7,7 @@ import { groupThreads, renderThreadCard } from './thread-card.js';
 import {
   isReplyDraft, renderReplyCallHtml, replyAcceptLabel, replyCallsByComment, wireReplyDraft,
 } from './reply-draft.js';
-import { draftDecisionHtml, draftEvidenceHtml, draftFeedbackHtml } from './write-draft-card.js';
+import { draftDecisionHtml, draftEvidenceHtml, draftFeedbackHtml, draftMissHtml } from './write-draft-card.js';
 import { openDiffForStep } from '../../app-bridge.js';
 import { prPatches } from '../../state/pr-patches.js';
 import { isThreadCollapsed, setThreadCollapsed } from '../../state/thread-collapse.js';
@@ -244,6 +244,7 @@ export function renderPrBlockHtml(job, s, { replyDraft } = {}) {
     <div class="wd-card wd-card--replies" data-draft-id="${escapeHtml(pendingReplies.id)}">
       <div class="wd-head">⚠ ${escapeHtml(pendingReplies.summary)}</div>
       <div class="wd-subhead">Edit any reply in place, or ignore the ones that don't need one. Nothing is posted until you accept.</div>
+      ${draftMissHtml(pendingReplies)}
       ${draftFeedbackHtml(pendingReplies)}
       ${threadsHtml}
       ${unclaimedHtml ? `<div class="wd-calls pr-reply-unclaimed">${unclaimedHtml}</div>` : ''}

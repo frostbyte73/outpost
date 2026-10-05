@@ -5,6 +5,7 @@ import type { JournalEntry } from '../storage/journal-store.js';
 import type { ActionRegistry } from '../actions/registry.js';
 import type { ActionDef } from '../actions/types.js';
 import type { WriteGatePayload } from './write-draft.js';
+import type { EffectivePreapprovals } from './preapprovals.js';
 
 export interface StepTypeCatalogEntry {
   type: Step['type'];
@@ -179,6 +180,8 @@ export interface OrchestratedEnvelope extends StepEnvelopeBase {
   delivered?: InboxItem[];
   dispatches?: Array<Pick<Dispatch, 'id' | 'action' | 'brief' | 'status' | 'output' | 'failure'>>;
   pr?: PrFacts;
+  preapprovals: EffectivePreapprovals;
+  baseBranch?: string;
   // resolveGate drops the gate-resolved marker from the inbox once delivered, so these are
   // the only durable record of what the user said to a voluntary `gate` move — approve
   // (gateApproved) and decline (gateFeedback) alike.

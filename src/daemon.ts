@@ -23,6 +23,7 @@ import { PrFilePatches } from './integrations/pr-file-patches.js';
 import { UserPrsWatcher } from './integrations/user-prs-watcher.js';
 import { ReviewIntake } from './integrations/review-intake.js';
 import { WorkEngine } from './work/engine.js';
+import { sessionGrantRefusal } from './work/preapprovals.js';
 import { checkPlanDiagram } from './work/plan-diagram.js';
 import { LaunchGovernor } from './work/launch-governor.js';
 import type { JobRecord } from './work/work-types.js';
@@ -921,7 +922,7 @@ async function main() {
         // actionForStep(jobId, stepId) alone would resolve `stepId` (the PARENT orchestrated
         // step) to `s.controller`, mislabeling every dispatched-child draft.
         const action = engine.actionForStep(jobId, stepId, dispatchId) ?? 'unknown';
-        const result = engine.onWriteDraftReady(jobId, stepId, {
+        const result = await engine.onWriteDraftReady(jobId, stepId, {
           action,
           raisedBy: dispatchId
             ? { kind: 'dispatch', dispatchId }
@@ -934,6 +935,12 @@ async function main() {
         // handleOne's catch in mcp-server.ts) is how the calling session learns its draft was
         // refused instead of hanging or writing blind on a phantom "ok".
         if (!result.ok) throw new Error(`submit_write_draft refused: ${result.reason}`);
+        if (result.autoApproved) {
+          return {
+            ok: true, autoApproved: true,
+            note: 'Pre-approved by the user — stop this turn; you will be resumed in the commit phase to run it.',
+          };
+        }
         // Only notify once the draft is actually accepted and parked — never on a refusal
         // above. submitDraft (write-draft-runner.ts) silently coerces a step-less
         // `{kind:'step'}` raiser to `{kind:'controller'}` for an orchestrated step; mirror
@@ -967,6 +974,8 @@ async function main() {
         return { ok: true };
       },
       create_job: async (a) => {
+        const refusal = sessionGrantRefusal(a);
+        if (refusal) throw new Error(`create_job refused: ${refusal}`);
         const r = engine.createExternalJob({
           source: String(a.source),
           title: String(a.title),

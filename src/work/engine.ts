@@ -17,6 +17,7 @@ import type {
   OrchestratedStep,
   PlanIteration,
   PrFacts,
+  Preapprovals,
   ProposedStep,
   Step,
   StepAttempt,
@@ -50,6 +51,9 @@ import {
   acceptDraft as acceptDraftImpl, denyDraft as denyDraftImpl, reviseDraft as reviseDraftImpl,
   submitDraft, type DraftDecisionResult, type DraftHost, type SubmitDraftResult,
 } from './write-draft-runner.js';
+import { readMergeReadiness } from './merge-readiness.js';
+import { clampToCeiling, describePreapprovals, effectivePreapprovals } from './preapprovals.js';
+import { runGh as defaultRunGh, type RunGh } from '../integrations/gh-cli.js';
 import {
   currentDraftForRaiser, matchPinnedCall, writeGateFor,
   type DraftRaisedBy, type PinnedCall, type WriteDraft,
@@ -202,6 +206,7 @@ export interface WorkEngineOpts {
   writeActionMeta?: (sessionId: string, meta: { action: string; title: string }) => void;
   // Overrides UNRESOLVED_GRACE_MS (tests).
   unresolvedGraceMs?: number;
+  runGh?: RunGh;
 }
 
 type SessionRole =
@@ -772,6 +777,8 @@ export class WorkEngine {
     id?: string;
     autoPlan?: boolean;
     highPriority?: boolean;
+    preapprovals?: Preapprovals;
+    planReview?: 'gate' | 'auto';
   }): JobRecord {
     const id = input.id ?? this.ctx.newId();
     const now = this.ctx.now();
@@ -783,6 +790,9 @@ export class WorkEngine {
       description: input.description,
       externalRef: input.externalRef,
       ...(input.highPriority ? { highPriority: true } : {}),
+      ...(input.preapprovals ? { preapprovals: input.preapprovals } : {}),
+      ...(input.planReview ? { planReview: input.planReview } : {}),
+      specGateMigrated: true,
       state: 'planning',
       steps: [],
       events: [{ id: this.ctx.newId(), at: now, kind: 'created', who: input.source === 'linear' ? 'linear-poller' : 'user' }],
@@ -1107,6 +1117,10 @@ export class WorkEngine {
         },
         steps,
       }, { kind: 'plan_posted', who: 'orchestrator', body: `${steps.length} steps proposed` }));
+      if (j.planReview === 'auto') {
+        this.mutate(jobId, (jj) => ({ ...jj, steps: jj.steps.map((s) => this.autoApprovedPreapprovals(jj, s)) }));
+        this.onPlanApproved(jobId, undefined, 'system');
+      }
       return;
     }
     // Amendment path: every non-cancelled step needs a disposition. The check
@@ -1125,10 +1139,22 @@ export class WorkEngine {
       },
       pendingReconciliation: { proposed, drops: drops ?? [], feedback: feedback ?? '', proposedAt: this.ctx.now() },
     }, { kind: 'plan_posted', who: 'orchestrator', body: 'amendment proposed' }));
+    if (j.planReview === 'auto') this.onReconciliationApproved(jobId, undefined, { auto: true });
   }
 
-  onPlanApproved(jobId: string): void {
-    this.mutate(jobId, (j) => this.appendEvent({ ...j, state: 'executing' }, { kind: 'plan_approved', who: 'user' }));
+  // With nobody to approve the plan, a proposal may only tighten what the step already has.
+  private autoApprovedPreapprovals(job: JobRecord, s: Step): Step {
+    if (s.type !== 'orchestrated' || !s.proposedPreapprovals) return s;
+    const ceiling = effectivePreapprovals(job.preapprovals, s.preapprovals);
+    return { ...s, preapprovals: { ...s.preapprovals, ...clampToCeiling(s.proposedPreapprovals, ceiling) } };
+  }
+
+  onPlanApproved(jobId: string, stepPreapprovals?: Record<string, Preapprovals>, who: 'user' | 'system' = 'user'): void {
+    this.mutate(jobId, (j) => this.appendEvent({
+      ...j,
+      state: 'executing',
+      steps: stepPreapprovals ? j.steps.map((s) => withUserPreapprovals(s, stepPreapprovals[s.id])) : j.steps,
+    }, { kind: 'plan_approved', who }));
     void this.tickOne(jobId);
   }
 
@@ -1216,7 +1242,9 @@ export class WorkEngine {
     void this.spawnOrchestratorSession(jobId, 'replan', envelopePath, actionName, { userInitiated: true });
   }
 
-  onReconciliationApproved(jobId: string): void {
+  onReconciliationApproved(
+    jobId: string, stepPreapprovals?: Record<string, Preapprovals>, opts: { auto?: boolean } = {},
+  ): void {
     const j = this.opts.queue.get(jobId);
     if (!j || !j.pendingReconciliation) return;
     const recon = reconcile(j.steps, j.pendingReconciliation.proposed, j.pendingReconciliation.drops);
@@ -1227,16 +1255,20 @@ export class WorkEngine {
     // matched, so kept[i] slides off the proposal at i as soon as one added step sits
     // ahead of it — which sank every insertion to the end of the plan.
     const keptById = new Map(recon.kept.map((k) => [k.stepId, k]));
-    const proposedOrdered: Step[] = j.pendingReconciliation.proposed.map((p) => {
+    const proposedOrdered: Step[] = j.pendingReconciliation.proposed.map((p, i) => {
       const kept = p.keepId ? keptById.get(p.keepId) : undefined;
       if (kept) {
         const cur = byId.get(kept.stepId)!;
         // validateDispositions refuses a patch or a drop against a completed step, but a
         // reconciliation proposed before that guard existed can still be sitting on disk.
         if (cur.state === 'resolved') return cur;
-        return { ...cur, ...kept.patch, updatedAt: this.ctx.now() } as Step;
+        const patched = { ...cur, ...kept.patch, updatedAt: this.ctx.now() } as Step;
+        const proposal = p.type === 'orchestrated' ? p.proposedPreapprovals : undefined;
+        const withProposal = proposal && patched.type === 'orchestrated' ? { ...patched, proposedPreapprovals: proposal } : patched;
+        return opts.auto ? this.autoApprovedPreapprovals(j, withProposal) : withUserPreapprovals(withProposal, stepPreapprovals?.[cur.id]);
       }
-      return this.materialize(p);
+      const fresh = this.materialize(p);
+      return opts.auto ? this.autoApprovedPreapprovals(j, fresh) : withUserPreapprovals(fresh, stepPreapprovals?.[`#${i}`]);
     });
 
     const cancelledTail: Step[] = j.steps
@@ -1257,7 +1289,7 @@ export class WorkEngine {
       steps,
       pendingReconciliation: undefined,
       state: 'executing',
-    }, { kind: 'plan_reconciled', who: 'user' }));
+    }, { kind: 'plan_reconciled', who: opts.auto ? 'system' : 'user' }));
     void this.tickOne(jobId);
   }
 
@@ -1543,7 +1575,14 @@ export class WorkEngine {
       declineStep: (jobId, stepId, reason) => this.declineStep(jobId, stepId, reason),
       journal: (action, jobId, stepId, outcome, lesson) =>
         this.opts.journalStore?.append({ action, jobId, stepId, outcome, lesson, at: this.ctx.now() }),
+      mergeReadiness: (jobId, stepId, prNumber, sha) => this.mergeReadiness(jobId, stepId, prNumber, sha),
     };
+  }
+
+  private async mergeReadiness(jobId: string, stepId: string, prNumber: number, sha: string): Promise<string | undefined> {
+    const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+    if (s?.type !== 'orchestrated' || s.workspace.kind !== 'writable') return 'not a writable PR step';
+    return readMergeReadiness(this.opts.runGh ?? defaultRunGh, s.workspace.repoCwd, prNumber, sha, s.pr?.comments);
   }
 
   // Delivers a WriteDraft denial to the controller. While the step is still parked at the gate
@@ -1595,7 +1634,7 @@ export class WorkEngine {
   // user's decision — acceptDraft/reviseDraft/denyDraft drive the next turn. Returns the
   // outcome (rather than swallowing it, as before) so the MCP handler can tell the calling
   // session its draft was refused instead of reporting success regardless.
-  onWriteDraftReady(jobId: string, stepId: string, draft: Omit<WriteDraft, 'id' | 'requestedAt'>): SubmitDraftResult {
+  onWriteDraftReady(jobId: string, stepId: string, draft: Omit<WriteDraft, 'id' | 'requestedAt'>): Promise<SubmitDraftResult> {
     return submitDraft(this.draftHost(), jobId, stepId, draft);
   }
 
@@ -1982,6 +2021,11 @@ export class WorkEngine {
 
   private orchestratedHost(): OrchestratedHost {
     return {
+      preapprovalsFor: (jobId, stepId) => {
+        const j = this.opts.queue.get(jobId);
+        const s = j?.steps.find((x) => x.id === stepId);
+        return effectivePreapprovals(j?.preapprovals, s?.type === 'orchestrated' ? s.preapprovals : undefined);
+      },
       getStep: (jobId, stepId) => {
         const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
         return s?.type === 'orchestrated' ? s : undefined;
@@ -2235,6 +2279,7 @@ export class WorkEngine {
       this.onStepFailed(jobId, stepId, `workspace provision failed: ${reason}`, { journal: false });
       return;
     }
+    this.stampBaseBranch(jobId, stepId);
     const cwd = ws.path ?? this.orchestratorCwd();
     this.submitLaunch({
       key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: boundAction, label: boundAction,
@@ -2525,6 +2570,24 @@ export class WorkEngine {
   // Patches an existing step's editable fields; refuses a mid-turn session and a
   // terminal/cancelled step — same editability rule cancelStepManually and the PWA's
   // stepIsEditable() enforce. Only fields applicable to the step's own type are applied.
+  // From the worktree the daemon cut, never from a session: the classifier trusts it as `--base`.
+  private stampBaseBranch(jobId: string, stepId: string): void {
+    const base = this.opts.worktreeManager.get(stepId)?.baseBranch;
+    const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+    if (!base || s?.type !== 'orchestrated' || s.baseBranch === base) return;
+    this.mutateStep(jobId, stepId, (st) => (st.type === 'orchestrated' ? { ...st, baseBranch: base } : st));
+  }
+
+  setStepPreapprovals(jobId: string, stepId: string, value: Preapprovals | undefined): boolean {
+    const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+    if (s?.type !== 'orchestrated' || isTerminalStep(s)) return false;
+    this.mutateStep(jobId, stepId, (st) => withUserPreapprovals({ ...st, updatedAt: this.ctx.now() }, value ?? {}));
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'user', stepId, body: `pre-approvals set: ${describePreapprovals(value)}`,
+    }));
+    return true;
+  }
+
   editStepManually(jobId: string, stepId: string, patch: StepEditPatch): boolean {
     const j = this.opts.queue.get(jobId);
     if (!j) return false;
@@ -2810,6 +2873,7 @@ export class WorkEngine {
       this.onStepFailed(jobId, stepId, `workspace provision failed: ${reason}`, { journal: false });
       return;
     }
+    this.stampBaseBranch(jobId, stepId);
     const cwd = ws.path ?? this.orchestratorCwd();
     const actionName = actionNameForStep(s);
     // The step handler wrote the envelope; splice in recent lessons for the action
@@ -2890,8 +2954,7 @@ export class WorkEngine {
           throw new Error(`unknown action ${JSON.stringify(p.action)} — not in registry`);
         }
         const ws = p.workspace ?? { kind: 'none' as const };
-        const { keepId: _, ...rest } = p;
-        return { ...rest, id, workspace: ws, state: initialStateForType('action'), createdAt: now, updatedAt: now } as Step;
+        return { ...proposableFields(p), id, workspace: ws, state: initialStateForType('action'), createdAt: now, updatedAt: now } as Step;
       }
       case 'orchestrated': {
         // Same boundary check the action branch gets: a typo'd controller materializes fine,
@@ -2900,16 +2963,32 @@ export class WorkEngine {
         if (this.opts.actionRegistry && !this.opts.actionRegistry.getAction(p.controller)) {
           throw new Error(`unknown controller ${JSON.stringify(p.controller)} — not in registry`);
         }
-        const { keepId: _, ...rest } = p;
         return {
-          ...rest, id, workspace: p.workspace ?? { kind: 'none' as const },
+          ...proposableFields(p), id, workspace: p.workspace ?? { kind: 'none' as const },
           state: initialStateForType('orchestrated'),
           dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
           createdAt: now, updatedAt: now,
-        } as OrchestratedStep;
+        } as unknown as OrchestratedStep;
       }
     }
   }
+}
+
+// `value` absent leaves the step alone; an empty object clears it back to inheriting the job.
+function withUserPreapprovals(s: Step, value: Preapprovals | undefined): Step {
+  if (s.type !== 'orchestrated' || value === undefined) return s;
+  return { ...s, preapprovals: Object.keys(value).length ? value : undefined };
+}
+
+// Everything else on a step is daemon or user state; letting a plan seed it grants what nobody approved.
+const PROPOSABLE: Record<Step['type'], readonly string[]> = {
+  action: ['type', 'title', 'description', 'parallelGroup', 'workspace', 'goal', 'inputs', 'approach', 'risks', 'action', 'forwardOutput'],
+  orchestrated: ['type', 'title', 'description', 'parallelGroup', 'workspace', 'goal', 'inputs', 'approach', 'risks', 'controller', 'proposedPreapprovals'],
+};
+
+function proposableFields(p: ProposedStep): Record<string, unknown> {
+  const src = p as unknown as Record<string, unknown>;
+  return Object.fromEntries(PROPOSABLE[p.type].filter((k) => src[k] !== undefined).map((k) => [k, src[k]]));
 }
 
 // Human-friendly soak duration for the wait event body ("1h", "90m", "45s").

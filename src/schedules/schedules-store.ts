@@ -28,9 +28,11 @@ export interface CreateScheduleInput {
   what: What;
   guards: Guard[];
   routing: Routing;
+  preapprovals?: ScheduleRecord['preapprovals'];
+  planReview?: ScheduleRecord['planReview'];
 }
 
-export type ScheduleUpdate = Partial<Pick<ScheduleRecord, 'name' | 'enabled' | 'trigger' | 'what' | 'guards' | 'routing'>>;
+export type ScheduleUpdate = Partial<Pick<ScheduleRecord, 'name' | 'enabled' | 'trigger' | 'what' | 'guards' | 'routing' | 'preapprovals' | 'planReview'>>;
 
 export interface StartRunInput {
   id?: string;
@@ -86,6 +88,8 @@ export class SchedulesStore {
       what: normalizeWhat(input.what),
       guards: input.guards,
       routing: input.routing,
+      ...(input.preapprovals ? { preapprovals: input.preapprovals } : {}),
+      ...(input.planReview ? { planReview: input.planReview } : {}),
       createdAt: now,
       updatedAt: now,
     };

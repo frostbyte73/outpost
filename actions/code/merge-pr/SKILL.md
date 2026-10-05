@@ -105,13 +105,19 @@ mcp__outpost__submit_write_draft({
   summary: "Merge PR #<n> (<strategy>) and delete branch <branch>",
   evidence: "<the gh pr view output from Step 2, or a short note on why it's landable>",
   calls: [
-    { label: "merge", bash: "gh pr merge <PR_NUMBER> --squash" },
+    { label: "merge", bash: "gh pr merge <PR_NUMBER> --squash --match-head-commit <HEAD_SHA>" },
     { label: "delete-branch", bash: "git push origin --delete -- \"<branch>\"" }
   ]
 })
 ```
 
+`<HEAD_SHA>` is `pr.headRefOid` from the envelope, all 40 characters. It makes GitHub refuse the
+merge if anything was pushed after the head you are merging — so what merges is what went green
+and got approved — and it is what lets a user's `merge` pre-approval cover this draft at all.
+
 (`<branch>` above is a placeholder — substitute the real value `$BRANCH` printed in Step 1.
+Never draft the variable itself: `"$BRANCH"` hides the operand from the approval card and from
+the pre-approval check, so the draft always waits for the user.
 Draft the literal branch name, not a realistic-looking one: this call is destructive, and a
 placeholder that reads as a real branch is a hazard to copy verbatim by mistake.)
 
@@ -148,7 +154,7 @@ pass/fail in Step 4's report.
 exact calls the user approved, unchanged.
 
 ```bash
-gh pr merge <PR_NUMBER> --squash
+gh pr merge <PR_NUMBER> --squash --match-head-commit <HEAD_SHA>
 ```
 
 (Skip this one if Step 2 already found the PR merged and you only drafted the delete.) If it

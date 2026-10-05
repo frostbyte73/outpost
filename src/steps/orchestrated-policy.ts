@@ -1,5 +1,6 @@
 import type { NextMove, OrchestratedStep } from '../work/work-types.js';
 import { workspaceError } from '../work/workspace.js';
+import { GATED_PREAPPROVALS, type EffectivePreapprovals } from '../work/preapprovals.js';
 
 // Counts UNPRODUCTIVE self-rounds in a row — ones that neither moved `phase` nor changed the
 // content of any artifact (see isProductive in orchestrated-runner). A productive round is
@@ -30,9 +31,10 @@ export type PolicyVerdict =
 // the branch is expected to merge it, while `code.orchestrate-review` works readonly against
 // somebody else's PR and settles on a verdict it could never merge — guarding that would strand
 // every review step. A step with no `prUrl` never opened one and is free to resolve.
-function unmergedOwnPr(step: OrchestratedStep): string | undefined {
+function unmergedOwnPr(step: OrchestratedStep, pre: EffectivePreapprovals): string | undefined {
   if (step.workspace?.kind !== 'writable') return undefined;
   if (step.boundAction === MERGE_ACTION) return undefined;
+  if (pre.landing === 'approved' && step.pr?.reviewState === 'approved' && step.pr?.ciState === 'success') return undefined;
   const pr = step.pr;
   if (!pr?.prUrl || pr.prState === 'merged' || pr.prState === undefined) return undefined;
   return pr.prUrl;
@@ -58,6 +60,17 @@ export function duplicatePrCreate(
   return pr.prUrl;
 }
 
+export const SPEC_GATED_ACTIONS: readonly string[] = ['code.plan', 'code.implement'];
+
+// Steps already past the spec before this existed are stamped once at load (jobs-migrate.ts).
+function specGateBlocks(step: OrchestratedStep, pre: EffectivePreapprovals, action: string): boolean {
+  return pre.spec === 'gate' && SPEC_GATED_ACTIONS.includes(action) && step.specApprovedAt === undefined;
+}
+
+const SPEC_GATE_REASON = 'the spec has not been approved, and this step gates its spec. Write it with a '
+  + '`code.spec` round if you have not, then `gate` it with the spec as `draft`; plan and implement '
+  + 'once the user approves.';
+
 export function briefKey(action: string, brief: string): string {
   let h = 5381;
   for (let i = 0; i < brief.length; i++) h = ((h << 5) + h + brief.charCodeAt(i)) | 0;
@@ -69,6 +82,7 @@ export function briefKey(action: string, brief: string): string {
 // genuinely progressing round: the counter only ever gates rounds with nothing to show.
 export function validateNext(
   step: OrchestratedStep, move: NextMove, info: ActionInfo, productive = false,
+  pre: EffectivePreapprovals = GATED_PREAPPROVALS,
 ): PolicyVerdict {
   // `.failure` is checked alongside `state` — a failure that arrived without (yet) flipping
   // `state` to 'failed' is still terminal; see the matching guard in applyMove.
@@ -76,7 +90,7 @@ export function validateNext(
     return { kind: 'reject', reason: `step is already ${step.failure ? 'failed' : step.state}` };
   }
   if (move.kind === 'resolve') {
-    const unmerged = unmergedOwnPr(step);
+    const unmerged = unmergedOwnPr(step, pre);
     if (unmerged) {
       return {
         kind: 'reject',
@@ -104,6 +118,7 @@ export function validateNext(
       if (!info.sideEffects(move.action)) {
         return { kind: 'reject', reason: `unknown action ${JSON.stringify(move.action)}` };
       }
+      if (specGateBlocks(step, pre, move.action)) return { kind: 'reject', reason: SPEC_GATE_REASON };
     }
     return { kind: 'allow', move };
   }
@@ -122,6 +137,7 @@ export function validateNext(
       if (!info.sideEffects(d.action)) {
         return { kind: 'reject', reason: `unknown action ${JSON.stringify(d.action)}` };
       }
+      if (specGateBlocks(step, pre, d.action)) return { kind: 'reject', reason: SPEC_GATE_REASON };
       // A malformed ref is a dead end past this point: provision() throws on a readonly with no
       // repoCwd, and treats any *unknown* kind as readonly — so a typo silently downgrades the
       // child to a detached checkout instead of being refused.

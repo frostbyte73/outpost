@@ -461,3 +461,21 @@ html[data-layout="mobile"] .o-menu-body {
 }
 html[data-layout="mobile"] .o-menu-body[hidden] { display: none; }
 html[data-layout="mobile"] .o-menu-body > * { width: 100%; text-align: left; }
+
+/* ── Pre-approvals control (job creation, plan review, running step, schedules) ── */
+.o-preapprovals { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.o-preapprovals-row { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 8px 16px; font-size: 13px; }
+.o-preapprovals-row .k { color: var(--text-dim); }
+.o-preapprovals select {
+  font: inherit; font-size: 13px;
+  background: var(--bg); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  padding: 6px 8px;
+  transition: border-color var(--dur-1) var(--ease);
+}
+.o-preapprovals select:focus { outline: none; border-color: var(--accent); }
+.o-preapprovals-writes { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.o-preapprovals-writes label { display: inline-flex; align-items: center; gap: 6px; color: var(--text); }
+.o-preapprovals [data-loosened="true"] { color: var(--warn); }
+.o-preapprovals [data-loosened="true"] select { border-color: var(--warn); }
+html[data-layout="mobile"] .o-preapprovals-row { grid-template-columns: 1fr; gap: 4px; }

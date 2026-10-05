@@ -59,7 +59,7 @@ function harness(provision: () => Promise<{ path: string | null }> = async () =>
       sendOrResume(sessionId: string) { resumed.push(sessionId); },
       close: async () => {},
     } as never,
-    worktreeManager: { provision: async () => { provisionCalls++; return provision(); } } as never,
+    worktreeManager: { get: () => undefined, provision: async () => { provisionCalls++; return provision(); } } as never,
     linearWriter: { setState: async () => undefined } as never,
     actionsStore: {} as never,
     actionRegistry,

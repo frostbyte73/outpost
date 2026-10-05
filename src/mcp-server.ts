@@ -108,7 +108,7 @@ function jsonResponse(status: number, body: unknown): McpResponse {
 export const OUTPOST_MCP_TOOLS: McpTool[] = [
   {
     name: 'submit_plan',
-    description: 'Post the orchestrator\'s ordered, typed plan to the daemon. Call once per orchestrator run, right after printing the preview. `steps` follows the shape in the stepTypeCatalog / actionCatalog fields of your envelope. In `mode: "replan"`, every non-cancelled step in `currentSteps` must have a disposition — either a proposed step with matching `keepId` or an entry in `drops`. Omission is rejected. Pass `findings` when you investigated up front so the user sees your evidence at approval.',
+    description: 'Post the orchestrator\'s ordered, typed plan to the daemon. Call once per orchestrator run, right after printing the preview. `steps` follows the shape in the stepTypeCatalog / actionCatalog fields of your envelope. In `mode: "replan"`, every non-cancelled step in `currentSteps` must have a disposition — either a proposed step with matching `keepId` or an entry in `drops`. Omission is rejected. Pass `findings` when you investigated up front so the user sees your evidence at approval. An orchestrated step may carry `proposedPreapprovals` ({spec?: gate|auto|skip, push?, openPr?, replies?, merge?, landing?: merged|approved|direct}); it is a proposal the user edits and approves, never a grant.',
     inputSchema: {
       type: 'object',
       required: ['jobId', 'mode', 'steps'],

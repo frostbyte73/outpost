@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SchedulesStore, type CreateScheduleInput } from '../../src/schedules/schedules-store.js';
-import { Scheduler, SkipRun, type SchedulerDeps } from '../../src/schedules/scheduler.js';
+import { Scheduler, SkipRun, type CreateJobInput, type SchedulerDeps } from '../../src/schedules/scheduler.js';
 import type { GuardProviders } from '../../src/schedules/guards.js';
 import type { RoutingDeps } from '../../src/schedules/routing.js';
 import type { What } from '../../src/schedules/types.js';
@@ -225,6 +225,20 @@ describe('Scheduler — run-now / guards / spawn dispatch', () => {
     expect(promptRun!.refs).toEqual({ jobId: 'job-prompt' });
     expect(seen.map((w) => w.kind)).toEqual(['prompt']);
     expect(sessionCalled).toBe(false);
+  });
+
+  it('hands the schedule\'s pre-approvals to every job it spawns', async () => {
+    const store = new SchedulesStore(tmpPath());
+    store.create({
+      ...input({ trigger: { kind: 'event', descriptor: 'q' }, what: { kind: 'prompt', prompt: 'bump deps', cwd: '/repo' } }),
+      preapprovals: { push: true, openPr: true }, planReview: 'auto',
+    });
+    const seen: CreateJobInput[] = [];
+    const scheduler = makeScheduler(store, {
+      spawn: { createJob: (i) => { seen.push(i); return { jobId: 'job-q' }; } },
+    });
+    await scheduler.registerEventFiring('q');
+    expect(seen[0]).toMatchObject({ preapprovals: { push: true, openPr: true }, planReview: 'auto' });
   });
 
   it('dispatches a script schedule inline via runScript, never spawning a job', async () => {

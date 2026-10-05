@@ -23,7 +23,7 @@ function makeEngine(governor?: unknown) {
   } as never;
   const engine = new WorkEngine({
     queue, sessionManager,
-    worktreeManager: { provision: async () => ({ path: dir }) } as never,
+    worktreeManager: { get: () => undefined, provision: async () => ({ path: dir }) } as never,
     linearWriter: { setState: async () => undefined } as never,
     actionsStore: {} as never,
     jobsDir: join(dir, 'jobs'),

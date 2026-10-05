@@ -15,6 +15,8 @@ import { readJobEvents } from '../storage/job-event-log.js';
 import { parseDraftCalls } from '../work/write-draft.js';
 import { d2ThemeFor, renderDiagram, themeOverrides } from '../work/plan-diagram.js';
 import type { DraftDecisionResult } from '../work/write-draft-runner.js';
+import { parsePlanReview, parsePreapprovals } from '../work/preapprovals.js';
+import type { Preapprovals } from '../work/work-types.js';
 
 export interface JobsRoutesDeps {
   jobQueue: JobQueue;
@@ -226,14 +228,22 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs', async (req, res) => {
-    const payload = await readJsonObject<{ title?: string; description?: string; externalUrl?: string }>(req, res);
+    const payload = await readJsonObject<{
+      title?: string; description?: string; externalUrl?: string; preapprovals?: unknown; planReview?: unknown;
+    }>(req, res);
     if (!payload) return;
     if (typeof payload.title !== 'string' || !payload.title.trim()) { res.statusCode = 400; res.end('title required'); return; }
+    const pre = parsePreapprovals(payload.preapprovals);
+    if (!pre.ok) { res.statusCode = 400; res.end(pre.error); return; }
+    const review = parsePlanReview(payload.planReview);
+    if (!review.ok) { res.statusCode = 400; res.end(review.error); return; }
     const j = engine.createJob({
       source: 'manual',
       title: payload.title.trim(),
       description: payload.description ?? '',
       externalRef: payload.externalUrl ? { url: payload.externalUrl } : undefined,
+      ...(pre.value ? { preapprovals: pre.value } : {}),
+      ...(review.value ? { planReview: review.value } : {}),
     });
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
@@ -270,13 +280,16 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/approve$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const id = m[1]!;
-    const payload = await readJsonObject<{ gate?: string; stepId?: string; note?: string }>(req, res);
+    const payload = await readJsonObject<{ gate?: string; stepId?: string; note?: string; stepPreapprovals?: unknown }>(req, res);
     if (!payload) return;
     try {
       switch (payload.gate) {
-        case 'plan':
-          engine.onPlanApproved(id);
+        case 'plan': {
+          const perStep = parseStepPreapprovals(payload.stepPreapprovals);
+          if (typeof perStep === 'string') { res.statusCode = 400; res.end(perStep); return; }
+          engine.onPlanApproved(id, perStep);
           break;
+        }
         case 'wait':
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           engine.resumeWait(id, payload.stepId, payload.note);
@@ -391,10 +404,14 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
   });
 
-  server.route('POST', '/api/work/jobs/:id/reconciliation/apply', (req, res) => {
+  server.route('POST', '/api/work/jobs/:id/reconciliation/apply', async (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/reconciliation\/apply$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    engine.onReconciliationApproved(m[1]!);
+    const payload = await readJsonObject<{ stepPreapprovals?: unknown }>(req, res);
+    if (!payload) return;
+    const perStep = parseStepPreapprovals(payload.stepPreapprovals);
+    if (typeof perStep === 'string') { res.statusCode = 400; res.end(perStep); return; }
+    engine.onReconciliationApproved(m[1]!, perStep);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
@@ -451,6 +468,21 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
       res.statusCode = 409;
       res.end('step cannot be edited (already running, resolved, merged, or cancelled)');
       return;
+    }
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ job: jobQueue.get(m[1]!) ?? null }));
+  });
+
+  server.route('PUT', '/api/work/jobs/:id/steps/:stepId/preapprovals', async (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/preapprovals$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const payload = await readJsonObject<{ preapprovals?: unknown }>(req, res);
+    if (!payload) return;
+    const pre = parsePreapprovals(payload.preapprovals);
+    if (!pre.ok) { res.statusCode = 400; res.end(pre.error); return; }
+    if (!engine.setStepPreapprovals(m[1]!, m[2]!, pre.value)) {
+      res.statusCode = 409; res.end('only a live orchestrated step has pre-approvals'); return;
     }
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
@@ -639,4 +671,17 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
       res.statusCode = 502; res.end(`sync error: ${(e as Error).message}`);
     }
   });
+}
+
+// Keyed by step id, or `#<index>` for a step an amendment adds. An error string on any bad entry.
+function parseStepPreapprovals(raw: unknown): Record<string, Preapprovals> | undefined | string {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'object' || Array.isArray(raw)) return 'stepPreapprovals must be an object';
+  const out: Record<string, Preapprovals> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const parsed = parsePreapprovals(value);
+    if (!parsed.ok) return `${key}: ${parsed.error}`;
+    out[key] = parsed.value ?? {};
+  }
+  return out;
 }

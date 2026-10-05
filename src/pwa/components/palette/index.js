@@ -33,6 +33,7 @@ import { sendUserMessage, sessionWsReadyState } from '../session-view/session-ws
 import { openAddProjectSheet } from '../cwd-picker.js';
 import { registerBackHandler } from '../mobile-shell/history.js';
 import { escapeHtml } from '../../util.js';
+import { clearPreapprovalsScope, readPreapprovalsControl, renderPreapprovalsControl, wirePreapprovalsControl } from '../work/preapprovals-control.js';
 
 const RECENT_LIMIT = 5;
 const PREFS_KEY = 'outpost:palette:v1';
@@ -468,6 +469,16 @@ function step2Html() {
         <button type="button" class="p-launch-btn o-btn o-btn--default" data-launch="track">Track</button>
         <button type="button" class="p-launch-btn o-btn o-btn--default" data-launch="schedule">Schedule</button>
       </div>
+      <details class="p-track-options">
+        <summary class="o-microhead">Track options</summary>
+        ${renderPreapprovalsControl(undefined, { name: 'track' })}
+        <label class="o-preapprovals-row"><span class="k">Plan review</span>
+          <select data-track="plan-review">
+            <option value="gate">Ask me to approve the plan</option>
+            <option value="auto">Pre-approved — run it</option>
+          </select>
+        </label>
+      </details>
       <div class="p-launch-error" id="p-launch-error" hidden></div>
     </div>
     <div class="p-foot">
@@ -532,6 +543,7 @@ function renderStep2() {
   bindCwdBar(modalEl.querySelector('#p-cwd-bar'));
   bindPromptArea();
   modalEl.querySelector('.model-chip')?.addEventListener('click', cycleModel);
+  wirePreapprovalsControl(modalEl, 'palette');
   modalEl.querySelector('.p-launch-row')?.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-launch]');
     if (!btn) return;
@@ -886,7 +898,14 @@ async function launchTrack() {
     const description = prompt ? `${prompt}\n\n---\n${metaLines.join('\n')}` : metaLines.join('\n');
 
     try {
-      const res = await work.createJob({ title, description });
+      const fs = modalEl?.querySelector('.p-track-options fieldset.o-preapprovals');
+      const planReview = modalEl?.querySelector('[data-track="plan-review"]')?.value;
+      const res = await work.createJob({
+        title, description,
+        ...(fs ? { preapprovals: readPreapprovalsControl(fs) } : {}),
+        ...(planReview === 'auto' ? { planReview } : {}),
+      });
+      clearPreapprovalsScope('palette');
       if (res?.job?.id) {
         nav.select('tracked', res.job.id);
         closePalette();

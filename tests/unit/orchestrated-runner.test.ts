@@ -5,13 +5,14 @@ import {
 import { MAX_CONSECUTIVE_SELF_ROUNDS } from '../../src/steps/orchestrated-policy.js';
 import { EXTERNAL_QUIET_MS } from '../../src/steps/orchestrated-inbox.js';
 import type { InboxItem, OrchestratedStep } from '../../src/work/work-types.js';
+import { effectivePreapprovals } from '../../src/work/preapprovals.js';
 
 function step(over: Partial<OrchestratedStep> = {}): OrchestratedStep {
   return {
     id: 's1', title: 't', description: 'd', type: 'orchestrated',
     controller: 'code.orchestrate-pr', workspace: { kind: 'none' }, goal: 'g',
     dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
-    state: 'running', createdAt: 0, updatedAt: 0, sessionId: 'sess1', ...over,
+    state: 'running', createdAt: 0, updatedAt: 0, sessionId: 'sess1', specApprovedAt: 1, ...over,
   } as OrchestratedStep;
 }
 
@@ -34,6 +35,7 @@ function host(initial: OrchestratedStep, working = false) {
         'code.review-diff': 'none', 'code.spec': 'none', 'code.plan': 'none',
       } as Record<string, 'none' | 'worktree-edit' | 'external-write'>)[a],
     },
+    preapprovalsFor: () => effectivePreapprovals(),
     newId: () => `n${++ids}`,
     now: () => clock,
   };

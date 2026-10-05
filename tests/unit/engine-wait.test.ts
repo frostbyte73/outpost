@@ -24,7 +24,7 @@ function makeEngine() {
     spawnDetached(sessionId: string) { spawned.push(sessionId); },
     send() {}, isWorking() { return false; }, sendOrResume() {},
   } as never;
-  const worktreeManager = { provision: async () => ({ path: dir }) } as never;
+  const worktreeManager = { get: () => undefined, provision: async () => ({ path: dir }) } as never;
   const linearWriter = { setState: async () => undefined } as never;
   const engine = new WorkEngine({
     queue, sessionManager, worktreeManager, linearWriter,

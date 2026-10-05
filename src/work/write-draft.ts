@@ -106,6 +106,9 @@ export interface WriteDraft {
   feedback?: string[];
   requestedAt: number;
   approvedAt?: number;
+  approvedBy?: 'user' | 'preapproval';
+  // Why a draft on a step with pre-approvals still reached the user.
+  autoApproveMiss?: string;
 }
 
 // submit_write_draft's `calls` boundary check. The MCP tool's inputSchema is advisory —

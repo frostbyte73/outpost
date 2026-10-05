@@ -80,6 +80,7 @@ export function allowlistRuleCount(allowlist) {
 
 const OUTCOME_TONE = {
   accepted: 'ok',
+  'auto-accepted': 'info',
   merged: 'ok',
   revised: 'warn',
   submitted: 'info',

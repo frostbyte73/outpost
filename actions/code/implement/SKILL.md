@@ -62,6 +62,8 @@ Treat `goal`/`approach` as your spec and `risks` as sanity-checks.
 
 An approved design spec (`envelope.spec`) and a task-by-task implementation plan (`envelope.implPlan`) precede this round — you authored both earlier in this same session (spec round, then plan round), and the user already approved the spec at its gate. Execute the plan task-by-task as **uncommitted** working-tree edits; it's the primary driver for Step 2, ahead of `$WORK_APPROACH`. If a plan step no longer fits reality once you look at the actual files (an API moved, a file doesn't exist, a task was based on a stale assumption), adapt and note why in your final summary — don't silently deviate.
 
+**Unless the user pre-approved skipping them.** When the envelope's `preapprovals.spec` is `"skip"`, there is no spec and no plan — the user judged this change routine enough not to need either. Work from `goal` and `inputs.approach`, keep the change to exactly what the goal names, and say in your summary what you changed and why. When it is `"auto"`, the spec and plan exist but the user didn't review the spec; treat them as your own draft rather than as something approved.
+
 Quickly read what's there before touching anything. Do this even if `$WORK_APPROACH` is detailed — the investigator was read-only and worked from a partial view; you're the one whose diff has to land.
 
 - `git status` and `git log -3 --oneline` — confirm you're on a fresh worktree branch off `main` with no surprises.

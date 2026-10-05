@@ -9,7 +9,11 @@ import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
 import { prPatches } from '../../state/pr-patches.js';
 import { worktreeChanges } from '../../state/worktree-changes.js';
-import { renderPlanSection, toggleReplanComposer, submitReplan, toggleDiscardComposer, submitDiscard } from '../work/plan-section.js';
+import {
+  renderPlanSection, toggleReplanComposer, submitReplan, toggleDiscardComposer, submitDiscard,
+  collectPlanPreapprovals, wirePlanPreapprovals,
+} from '../work/plan-section.js';
+import { clearPreapprovalsScope } from '../work/preapprovals-control.js';
 import { planIsLive } from '../../vm/work-predicates.js';
 import { renderTimelineStep, wireTimelineStep, computeGroupPositions } from '../work/step-card.js';
 import { openAddStepDialog } from '../work/add-step-dialog.js';
@@ -487,12 +491,19 @@ export function renderTrackedDetail(root, jobId) {
   // .o-frame.context-collapsed, which is also what picks this button's arrow (tracked.css).
   root.querySelector('[data-action="toggle-rail"]')?.addEventListener('click', () => nav.toggleContextCollapsed());
 
+  const planScope = `plan:${job.id}`;
+  wirePlanPreapprovals(root, planScope);
   root.querySelectorAll('[data-job-action]').forEach((el) => {
     el.addEventListener('click', (e) => {
       const action = el.getAttribute('data-job-action');
       if (el.closest('summary')) { e.preventDefault(); e.stopPropagation(); }
-      if (action === 'approve-plan') void work.approve(job.id, { gate: 'plan' });
-      else if (action === 'recon-apply') void work.applyReconciliation(job.id);
+      if (action === 'approve-plan') {
+        void work.approve(job.id, { gate: 'plan', stepPreapprovals: collectPlanPreapprovals(root) })
+          .then(() => clearPreapprovalsScope(planScope));
+      } else if (action === 'recon-apply') {
+        void work.applyReconciliation(job.id, collectPlanPreapprovals(root))
+          .then(() => clearPreapprovalsScope(planScope));
+      }
       else if (action === 'recon-discard') toggleDiscardComposer(root, true);
       else if (action === 'recon-discard-cancel') toggleDiscardComposer(root, false);
       else if (action === 'recon-discard-submit') void submitDiscard(root, job.id);

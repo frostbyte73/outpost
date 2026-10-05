@@ -94,6 +94,23 @@ describe('deriveRunEvents — action steps', () => {
     ]);
   });
 
+  // A pre-approval says nothing about whether the user liked the payload, so it must not count
+  // as their acceptance in the scorecard the improvement loop reads.
+  it('scores a draft the daemon approved under a pre-approval as auto-accepted', () => {
+    const draft1: WriteDraft = {
+      id: 'd1', action: 'write.linear-comment', raisedBy: { kind: 'step' },
+      summary: 's', calls: [], requestedAt: 0,
+    };
+    const gated = (over: Partial<ActionStep> = {}) => action({ action: 'write.linear-comment', ...over });
+    const drafted = gated({ state: 'gate_pending_approval', drafts: [draft1] });
+    const approved = gated({ state: 'running', drafts: [{ ...draft1, approvedAt: NOW, approvedBy: 'preapproval', calls: [] }] });
+    expect(diff(drafted, approved)).toMatchObject([
+      { t: 'close', outcome: 'submitted' },
+      { t: 'verdict', round: 'draft', outcome: 'auto-accepted' },
+      { t: 'open', round: 'commit' },
+    ]);
+  });
+
   it('denies a first draft outright: one close, then a denied verdict, no open', () => {
     const draft1: WriteDraft = {
       id: 'd1', action: 'write.linear-comment', raisedBy: { kind: 'step' },

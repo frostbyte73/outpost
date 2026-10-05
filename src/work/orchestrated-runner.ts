@@ -3,6 +3,7 @@ import {
   coalesceExternal, deliverImmediate, drainForDelivery, externalHoldUntil, shouldDeliver,
 } from '../steps/orchestrated-inbox.js';
 import type { Dispatch, InboxItem, NextMove, OrchestratedStep, WatchedEvent } from './work-types.js';
+import type { EffectivePreapprovals } from './preapprovals.js';
 
 export interface OrchestratedHost {
   getStep(jobId: string, stepId: string): OrchestratedStep | undefined;
@@ -20,6 +21,7 @@ export interface OrchestratedHost {
   // a later call replaces an earlier one.
   scheduleDelivery(jobId: string, stepId: string, at: number): void;
   actionInfo: ActionInfo;
+  preapprovalsFor(jobId: string, stepId: string): EffectivePreapprovals;
   newId(): string;
   now(): number;
 }
@@ -51,6 +53,7 @@ function recordProgress(s: OrchestratedStep, p: ProgressPayload): OrchestratedSt
     ...(p.phase !== undefined ? { phase: p.phase } : {}),
     // Merge, don't replace: one round must not clobber an earlier round's artifact.
     ...(p.artifacts ? { artifacts: { ...(s.artifacts ?? {}), ...p.artifacts } } : {}),
+    ...(p.artifacts?.spec !== undefined && p.artifacts.spec !== s.artifacts?.spec ? { specApprovedAt: undefined } : {}),
   };
 }
 
@@ -81,7 +84,7 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
   const productive = isProductive(step, p);
   host.mutateStep(jobId, stepId, (s) => recordProgress(s, p));
 
-  const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, host.actionInfo, productive);
+  const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, host.actionInfo, productive, host.preapprovalsFor(jobId, stepId));
 
   if (verdict.kind === 'reject') {
     // One corrective turn. A controller that violates policy twice running (with no accepted
@@ -202,6 +205,7 @@ export function resolveGate(
     // approve's yes survives in gateApproved — both outlive the transient gate-resolved
     // item below, which the next inbox delivery overwrites in lastDelivered.
     ...(approved ? { gateApproved: true } : {}),
+    ...(approved && s.artifacts?.spec && !s.artifacts?.implPlan ? { specApprovedAt: host.now() } : {}),
     ...(feedback ? { gateFeedback: [...(s.gateFeedback ?? []), feedback] } : {}),
     inbox: [...s.inbox, item],
   }));

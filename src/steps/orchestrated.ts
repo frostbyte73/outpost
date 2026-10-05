@@ -2,6 +2,7 @@ import { buildActionCatalog, writeEnvelope, type OrchestratedEnvelope } from '..
 import { shouldDeliver } from './orchestrated-inbox.js';
 import { currentDraftForRaiser, writeGateFor } from '../work/write-draft.js';
 import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
+import { effectivePreapprovals } from '../work/preapprovals.js';
 import type { StepHandler } from './types.js';
 
 function previousFindings(job: JobRecord, selfId: string) {
@@ -88,6 +89,8 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
         ...(d.failure !== undefined ? { failure: d.failure } : {}),
       })),
       pr: s.pr,
+      preapprovals: effectivePreapprovals(job.preapprovals, s.preapprovals),
+      ...(s.baseBranch ? { baseBranch: s.baseBranch } : {}),
       ...(s.gateApproved !== undefined ? { gateApproved: s.gateApproved } : {}),
       ...(s.gateFeedback !== undefined ? { gateFeedback: s.gateFeedback } : {}),
       job: {

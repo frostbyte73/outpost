@@ -20,6 +20,8 @@ import { randomUUID } from 'node:crypto';
 export type ActionRunOutcome =
   | 'submitted'
   | 'accepted'
+  // Approved by a user pre-approval, not by the user looking at it — never a success or a denial.
+  | 'auto-accepted'
   | 'revised'
   | 'denied'
   | 'merged'

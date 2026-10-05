@@ -60,7 +60,7 @@ function mountRoutes(): void {
     allowlist, allowlistPath, actionsStore, actionsStorePath,
     projectAllowlistDir: join(root, 'project-allowlists'),
     projectRegistry: { list: () => [] },
-    worktreeManager: { list: () => [] },
+    worktreeManager: { get: () => undefined, list: () => [] },
   } as unknown as MetaRoutesDeps);
   putRule = routes.get('PUT /api/allowlist/rules/:id')! as (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   deleteRule = routes.get('DELETE /api/allowlist/rules/:id')! as (req: IncomingMessage, res: ServerResponse) => void;

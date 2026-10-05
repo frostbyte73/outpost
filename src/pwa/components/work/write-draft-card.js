@@ -237,6 +237,24 @@ export function draftDecisionHtml(draft, { deny = true, acceptLabel = 'Accept' }
     </div>`;
 }
 
+// Which call fell outside the pre-approval: tells the user whether to approve or widen it.
+export function draftMissHtml(draft) {
+  if (!draft.autoApproveMiss) return '';
+  return `<div class="wd-miss">Not auto-approved: ${escapeHtml(draft.autoApproveMiss)}</div>`;
+}
+
+// Read-only: what the daemon approved under a pre-approval and the session then ran.
+export function renderAutoApprovedDraft(draft) {
+  const calls = draft.calls
+    .map((c) => `<pre class="wd-ran">${escapeHtml(c.bash ?? c.tool?.name ?? '')}</pre>`)
+    .join('');
+  return `
+    <div class="wd-card wd-card--auto" data-draft-id="${escapeHtml(draft.id)}">
+      <div class="wd-head"><span class="o-pill ok">pre-approved</span> ${escapeHtml(draft.action)} — ${escapeHtml(draft.summary)}</div>
+      <div class="wd-calls">${calls}</div>
+    </div>`;
+}
+
 // Pure render — no DOM reads, only the draft. `ctx` is currently unused by the body (the
 // header's attribution comes straight off `draft.action`, which the daemon already
 // resolves to the DISPATCHED action's own name for a dispatch-raised draft — see
@@ -246,6 +264,7 @@ export function renderWriteDraft(draft, ctx = {}) {
   return `
     <div class="wd-card" data-draft-id="${escapeHtml(draft.id)}">
       <div class="wd-head">⚠ ${escapeHtml(draft.action)} wants to ${escapeHtml(draft.summary)}</div>
+      ${draftMissHtml(draft)}
       ${draftFeedbackHtml(draft)}
       <div class="wd-calls">${draft.calls.map((c, i) => callHtml(draft.id, c, i)).join('')}</div>
       ${draftEvidenceHtml(draft)}

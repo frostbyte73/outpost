@@ -115,6 +115,8 @@ export function createSpawnDeps(opts: SpawnDepsOpts): SchedulerSpawnDeps {
         title: input.title,
         description: describeJob(input.what, projectRegistry, worktreeManager),
         autoPlan: true,
+        ...(input.preapprovals ? { preapprovals: input.preapprovals } : {}),
+        ...(input.planReview ? { planReview: input.planReview } : {}),
       });
       return { jobId: job.id };
     },
