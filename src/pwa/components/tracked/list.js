@@ -5,25 +5,34 @@
 import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
 import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
-import { trackedRows, jobLaunchBadge } from '../../vm/tracked.js';
-import { jobTone, ago, stepDots, launchPillClass } from '../work/ticket-row.js';
+import { trackedRows, jobLaunchBadge, jobStatus } from '../../vm/tracked.js';
+import { ago, stepDots, launchPillClass } from '../work/ticket-row.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
-const TONE_ICON = { gate: 'warn', danger: 'hot', ok: 'ok', accent: 'busy', active: 'busy', mute: 'idle' };
+// Shape and colour both differ per status, so it doesn't rest on colour alone; only `running`
+// pulses (DESIGN.md §8 — the pulse is reserved for what's genuinely live).
+const STATUS_ICON = {
+  running: { glyph: '●', cls: 'busy', label: 'Running' },
+  'needs-you': { glyph: '●', cls: 'warn', label: 'Needs you' },
+  failed: { glyph: '●', cls: 'hot', label: 'Failed' },
+  queued: { glyph: '◌', cls: 'busy', label: 'Queued' },
+  waiting: { glyph: '◐', cls: 'idle', label: 'Waiting' },
+  backlog: { glyph: '○', cls: 'idle', label: 'Backlog' },
+  done: { glyph: '●', cls: 'ok', label: 'Done' },
+};
 
 function rowHtml(j) {
-  const tone = jobTone(j);
+  const kind = jobStatus(j);
+  const status = STATUS_ICON[kind];
   const ref = j.externalRef?.issueIdentifier ?? '';
-  // "Running" is already implied by the row landing in the Running group / active
-  // icon tone — only the queued case (parked behind the token queue) is news the
-  // compact row can't otherwise convey, so that's the only badge shown here.
+  // The icon says queued; the pill says why (which token window it's waiting on).
   const badge = jobLaunchBadge(j);
   const queuedPill = badge?.kind === 'queued'
     ? `<span class="o-pill ${launchPillClass(badge.kind)}">${escapeHtml(badge.label)}</span>` : '';
   return `
     <button type="button" class="o-row lr-row" data-job-id="${escapeHtml(j.id)}">
-      <span class="o-row-icon ${TONE_ICON[tone] ?? 'idle'}">●</span>
+      <span class="o-row-icon ${status.cls} tracked-status" data-status="${kind}" title="${status.label}" aria-label="${status.label}">${status.glyph}</span>
       <span class="tracked-row-body">
         <div class="o-row-title">${ref ? `<span class="o-ref">${escapeHtml(ref)}</span>` : ''}${escapeHtml(j.title ?? '(untitled)')}</div>
         <div class="o-row-sub">${stepDots(j)}${queuedPill}</div>

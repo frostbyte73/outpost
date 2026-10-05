@@ -411,3 +411,31 @@ describe('jobLaunchBadge / stepLaunchBadge', () => {
     expect(isHighPriority({ id: 'j2' })).toBe(false);
   });
 });
+
+describe('jobStatus', () => {
+  // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
+  const load = () => import('../../src/pwa/vm/tracked.js');
+  const step = { id: 's1', type: 'orchestrated', state: 'running', phase: 'pr_open', sessionId: 'a', pr: { prUrl: 'u' } };
+
+  it('tells running, parked, queued and needs-you apart for executing jobs', async () => {
+    const { jobStatus } = await load();
+    const base = { state: 'executing', steps: [step] };
+    expect(jobStatus({ ...base, live: live(false, ['s1']) })).toBe('running');
+    expect(jobStatus({ ...base, live: live(false) })).toBe('waiting');
+    expect(jobStatus({ ...base, live: live(false), launchStatus: { job: { state: 'queued', reason: '5h window' } } })).toBe('queued');
+    expect(jobStatus({ state: 'plan_pending_review', steps: [step], live: live(false) })).toBe('needs-you');
+  });
+
+  it('keeps implement-awaiting-push as needs-you, which jobTone never caught', async () => {
+    const { jobStatus } = await load();
+    const s = { ...step, phase: 'implement', pr: undefined };
+    expect(jobStatus({ state: 'executing', steps: [s], live: live(false) })).toBe('needs-you');
+  });
+
+  it('marks backlog, failed and done', async () => {
+    const { jobStatus } = await load();
+    expect(jobStatus({ state: 'planning', steps: [] })).toBe('backlog');
+    expect(jobStatus({ state: 'failed', steps: [] })).toBe('failed');
+    expect(jobStatus({ state: 'abandoned', steps: [] })).toBe('done');
+  });
+});

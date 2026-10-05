@@ -29,27 +29,34 @@ export function implementAwaitingPush(j) {
     && !s.pr?.prUrl && s.sessionId && !liveIds.has(s.id));
 }
 
+// One status per job — what the tracked row's icon shows, and what trackedGroups buckets on.
+// `queued` is a `waiting` job the token queue is holding back from launching; the groups fold
+// it into Waiting, the row icon keeps it apart.
+export function jobStatus(j) {
+  if (j.state === 'done' || j.state === 'abandoned') return 'done';
+  // A failed job is terminal but actionable (Retry) — the ball is in the user's court.
+  if (j.state === 'failed') return 'failed';
+  if (isBacklog(j)) return 'backlog';
+  // Running wins over needs-you: a job leaves Running only once its sessions complete.
+  if (hasLiveSession(j)) return 'running';
+  if (needsYou(j) || implementAwaitingPush(j)) return 'needs-you';
+  if (jobLaunchBadge(j)?.kind === 'queued') return 'queued';
+  return 'waiting';
+}
+
 export function trackedGroups(jobs = []) {
-  const running = [], needsYouJobs = [], waiting = [], backlog = [], done = [];
-  for (const j of jobs) {
-    if (j.state === 'done' || j.state === 'abandoned') { done.push(j); continue; }
-    // A failed job is terminal but actionable (Retry) — the ball is in the user's court.
-    if (j.state === 'failed') { needsYouJobs.push(j); continue; }
-    if (isBacklog(j)) { backlog.push(j); continue; }
-    // Running wins over needs-you: a job leaves Running only once its sessions complete.
-    if (hasLiveSession(j)) { running.push(j); continue; }
-    if (needsYou(j) || implementAwaitingPush(j)) { needsYouJobs.push(j); continue; }
-    waiting.push(j);
-  }
-  return { running, needsYou: needsYouJobs, waiting, backlog, done };
+  const g = { running: [], needsYou: [], waiting: [], backlog: [], done: [] };
+  const bucket = { done: 'done', failed: 'needsYou', backlog: 'backlog', running: 'running', 'needs-you': 'needsYou', queued: 'waiting', waiting: 'waiting' };
+  for (const j of jobs) g[bucket[jobStatus(j)]].push(j);
+  return g;
 }
 
 // The tracked column's own ordering: one flat list of everything still live, most
 // recently active first, with Done kept as its own group. Bucketing the live jobs by
 // attention (Running / Needs you / Waiting / Backlog) sank the job the user was actually
 // working on to the bottom of the column the moment it parked on CI or a dispatch, since
-// "Waiting" sits under both groups above it. The row's tone icon still carries the
-// needs-you signal (jobTone), so the split was buying ordering, not information.
+// "Waiting" sits under both groups above it. The groups were also the only thing telling
+// running from parked from queued, so the row icon now carries that instead (jobStatus).
 export function trackedRows(jobs = []) {
   const active = [], done = [];
   for (const j of jobs) {
