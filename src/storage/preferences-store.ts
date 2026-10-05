@@ -39,6 +39,11 @@ export class PreferencesStore {
     return Number.isInteger(raw) && (raw as number) >= 1 ? (raw as number) : 1;
   }
 
+  // The user's pause on the job launch queue. Absent reads as running.
+  getLaunchQueuePaused(): boolean {
+    return (this.get() as { launchQueuePaused?: unknown }).launchQueuePaused === true;
+  }
+
   // `!` in the composer runs whatever the user types with no allowlist and no approval card
   // (see session/shell-exec.ts), so it stays off until turned on in Settings > Permissions.
   // Absent reads as off — an older preferences.json must not grant it.

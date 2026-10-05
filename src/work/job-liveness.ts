@@ -1,4 +1,5 @@
-import type { JobRecord } from './work-types.js';
+import type { JobRecord, SessionStall } from './work-types.js';
+import { isTerminalStep } from '../steps/index.js';
 import type { LaunchState } from './launch-governor.js';
 
 export interface JobLiveness {
@@ -28,6 +29,27 @@ export interface JobLaunchStatus {
 // token-launch-queue governor's running/queued/idle view) snapshots.
 export type JobWithLiveness = JobRecord & { live: JobLiveness; launchStatus: JobLaunchStatus };
 
+// StopFailure errors that a fresh sign-in repairs. These resume on their own after re-auth; every
+// other stall waits for the user, since retrying into a rate limit or a billing error just stalls
+// again.
+export const AUTH_STOP_ERRORS = new Set(['authentication_failed', 'oauth_org_not_allowed']);
+
+// The stalls that still describe a session the job is waiting on: that session is still the
+// orchestrator's / step's / dispatch's current one, and what owns it hasn't settled. A retry, a
+// cold respawn, a resolve or a cancel all leave the recorded entry behind, so this — not the raw
+// field — is what the PWA shows and what a resume acts on.
+export function currentStalls(job: JobRecord): SessionStall[] {
+  if (job.state === 'done' || job.state === 'failed' || job.state === 'abandoned') return [];
+  return (job.stalls ?? []).filter((st) => {
+    if (!st.stepId) return job.orchestratorSessionId === st.sessionId;
+    const s = job.steps.find((x) => x.id === st.stepId);
+    if (!s || isTerminalStep(s)) return false;
+    if (!st.dispatchId) return s.sessionId === st.sessionId;
+    const d = s.type === 'orchestrated' ? s.dispatches.find((x) => x.id === st.dispatchId) : undefined;
+    return d?.status === 'running' && d.sessionId === st.sessionId;
+  });
+}
+
 export function withLiveness(
   job: JobRecord,
   isActive: (sessionId?: string) => boolean,
@@ -54,6 +76,7 @@ export function withLiveness(
   }
   return {
     ...job,
+    stalls: currentStalls(job),
     live: {
       orchestrator: isActive(job.orchestratorSessionId),
       stepIds,

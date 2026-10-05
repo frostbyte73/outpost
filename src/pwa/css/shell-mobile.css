@@ -156,6 +156,10 @@ html[data-layout="mobile"] .m-usage-bar {
 html[data-layout="mobile"] .m-usage-fill { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
 html[data-layout="mobile"] .m-usage-fill.warn { background: var(--warn); }
 html[data-layout="mobile"] .m-usage-fill.hot  { background: var(--danger); }
+/* The window holding the job queue (heldWindow): the queue's paused --warn, over any tier. */
+html[data-layout="mobile"] .m-usage-row.is-held .m-usage-fill { background: var(--warn); }
+html[data-layout="mobile"] .m-usage-row.is-held .m-usage-lbl,
+html[data-layout="mobile"] .m-usage-row.is-held .m-usage-pct { color: var(--warn); }
 html[data-layout="mobile"] .m-usage-pct {
   min-width: 1.8em;
   text-align: right;

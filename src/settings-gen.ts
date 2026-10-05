@@ -58,6 +58,8 @@ export function writeDaemonSettings(opts: DaemonSettingsOpts): void {
       // PostToolUse event at all.
       PostToolUseFailure: [loopbackHook(opts.hookPort, '/hook/posttoolfail', 30)],
       Stop: [loopbackHook(opts.hookPort, '/hook/stop', 30)],
+      // Fires instead of Stop when an API error ended the turn — without it that turn never ends.
+      StopFailure: [loopbackHook(opts.hookPort, '/hook/stop-failure', 30)],
     },
     statusLine: {
       type: 'command',

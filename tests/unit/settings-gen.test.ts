@@ -53,6 +53,17 @@ describe('writeDaemonSettings', () => {
     expect(hook.timeout).toBe(30);
   });
 
+  // Claude Code fires StopFailure INSTEAD of Stop when an API error ends the turn — unregistered,
+  // that turn never ends as far as the daemon knows.
+  it('registers a StopFailure hook pointing at /hook/stop-failure on the same loopback port', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'set-'));
+    const path = join(dir, 'daemon-settings.json');
+    writeDaemonSettings({ outPath: path, hookPort: 8444 });
+    const hook = JSON.parse(readFileSync(path, 'utf8')).hooks.StopFailure[0].hooks[0];
+    expect(hook.url).toBe('http://127.0.0.1:8444/hook/stop-failure');
+    expect(hook.headers['X-Daemon-Auth']).toBe('$DAEMON_AUTH');
+  });
+
   it('does not embed mcpServers in the settings file (Claude Code ignores it there)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'set-'));
     const path = join(dir, 'daemon-settings.json');

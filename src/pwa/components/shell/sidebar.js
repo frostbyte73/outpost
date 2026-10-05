@@ -4,14 +4,14 @@ import { work } from '../../state/work.js';
 import { sessions } from '../../state/sessions.js';
 import { schedulesStore, enabledScheduleCount } from '../../state/schedules.js';
 import { usage } from '../../state/usage.js';
-import { usageTier, clampPct, usagePopoverHtml, launchQueueHtml } from '../../utils/usage-bar.js';
+import { usageTier, clampPct, usagePopoverHtml, queueActionFor, queueToggle, queueTag, heldWindow } from '../../utils/usage-bar.js';
 import { fmtRemaining } from '../../utils/formatting.js';
 import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { needsYou, isTerminalJob } from '../../vm/work-predicates.js';
 
 // Sidebar taxonomy per the redesign spec: Cockpit / Tracked / Sessions /
 // Schedules, a Library group (Skills / Runs history), Settings pinned at the
-// foot with the account-usage widget beneath it. Replaces activity-rail.js's
+// foot with the job queue's pause/resume beneath it, then the account-usage widget. Replaces activity-rail.js's
 // 4-item icon-only nav.
 //
 // Tier math + popover markup live in utils/usage-bar.js — the mobile header's
@@ -52,7 +52,7 @@ export function mountSidebar(root) {
   root.setAttribute('role', 'navigation');
   root.setAttribute('aria-label', 'Sidebar');
   root.innerHTML = `
-    <div class="o-sidebar-brand"><span class="o-sidebar-dot" aria-hidden="true"></span><span class="o-sidebar-word">Outpost</span></div>
+    <div class="o-sidebar-brand"><span class="o-sidebar-dot" aria-hidden="true"></span><span class="o-sidebar-word">Outpost</span><span class="o-sidebar-queue" hidden></span></div>
     <nav class="o-sidebar-top" aria-label="Surfaces"></nav>
     <div class="o-sidebar-section">Library</div>
     <nav class="o-sidebar-lib" aria-label="Library"></nav>
@@ -60,6 +60,11 @@ export function mountSidebar(root) {
       <button type="button" class="o-sidebar-item" id="sb-settings" data-surface="settings">
         <span class="o-sidebar-icon">${iconSettings()}</span>
         <span class="o-sidebar-label">Settings</span>
+      </button>
+      <button type="button" class="o-sidebar-item" id="sb-queue" data-queue-action="pause">
+        <span class="o-sidebar-icon"></span>
+        <span class="o-sidebar-label"></span>
+        <span class="o-sidebar-count o-badge" hidden></span>
       </button>
       <button type="button" class="o-usage" id="sb-usage" aria-haspopup="true" aria-expanded="false" aria-label="Account usage">
         <span class="o-usage-row">
@@ -73,7 +78,6 @@ export function mountSidebar(root) {
           <span class="o-usage-pct" id="sb-usage-7d-pct">&mdash;</span>
         </span>
       </button>
-      <div id="sb-usage-queue"></div>
     </div>
   `;
 
@@ -103,12 +107,37 @@ export function mountSidebar(root) {
   };
 
   const paintUsage = () => paintUsageWidget(root);
-  const queueEl = root.querySelector('#sb-usage-queue');
-  const paintQueue = () => setHtmlIfChanged(queueEl, launchQueueHtml(work.get().launchQueue));
-  // Delegated from the foot, so the popover's copy of the button (mounted elsewhere) is covered
-  // by its own listener in installUsagePopover.
+  const tagEl = root.querySelector('.o-sidebar-queue');
+  const queueBtn = root.querySelector('#sb-queue');
+  // A nav item, not a surface: it carries data-queue-action, so the foot's delegated click below
+  // handles it like the status line's own buttons, and applyActive never marks it current.
+  const paintQueue = () => {
+    const q = work.get().launchQueue;
+    // Paused, the brand dot takes --warn too — in the collapsed rail it is all that's left.
+    const tag = queueTag(q);
+    tagEl.hidden = !tag;
+    tagEl.textContent = tag?.text ?? '';
+    tagEl.title = tag?.title ?? '';
+    if (tag) tagEl.dataset.tone = tag.tone;
+    root.classList.toggle('is-queue-paused', !!q?.paused);
+    paintFavicon(root);
+    queueBtn.hidden = !q;
+    if (!q) return;
+    const t = queueToggle(q);
+    queueBtn.dataset.queueAction = t.action;
+    queueBtn.title = t.title;
+    queueBtn.setAttribute('aria-label', t.title);
+    queueBtn.classList.toggle('is-paused', t.paused);
+    setHtmlIfChanged(queueBtn.querySelector('.o-sidebar-icon'), t.icon);
+    queueBtn.querySelector('.o-sidebar-label').textContent = t.label;
+    const badge = queueBtn.querySelector('.o-sidebar-count');
+    badge.hidden = !q.parked;
+    badge.textContent = q.parked ? String(q.parked > 99 ? '99+' : q.parked) : '';
+  };
+  // Delegated from the foot for the queue nav item, which carries its action as data-queue-action.
   root.querySelector('.o-sidebar-foot').addEventListener('click', (e) => {
-    if (e.target.closest('[data-run-all-queued]')) void work.runAllQueued();
+    const a = queueActionFor(e.target);
+    if (a) void work.queueAction(a);
   });
 
   applyActive();
@@ -119,29 +148,57 @@ export function mountSidebar(root) {
 
   const unsubNav = nav.subscribe(() => { applyActive(); applyCollapsed(); });
   const unsubApprovals = approvals.subscribe(paintCounts);
-  const unsubWork = work.subscribe(() => { paintCounts(); paintQueue(); });
+  const unsubWork = work.subscribe(() => { paintCounts(); paintQueue(); paintUsage(); });
   const unsubSessions = sessions.subscribe(paintCounts);
   const unsubSchedules = schedulesStore.subscribe(paintCounts);
   const unsubUsage = usage.subscribe(paintUsage);
   const teardownPopover = installUsagePopover(root);
+  // Theme, light/dark, and a system-mode flip all land as one of these two attributes.
+  const themeObs = new MutationObserver(() => paintFavicon(root));
+  themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-mode'] });
   schedulesStore.load();
 
   return () => {
     unsubNav(); unsubApprovals(); unsubWork(); unsubSessions(); unsubSchedules();
-    unsubUsage(); teardownPopover();
+    unsubUsage(); teardownPopover(); themeObs.disconnect();
   };
+}
+
+// The tab's favicon is the brand dot: same gradient, same --warn when the queue is paused.
+// Colours come from the dot's own computed vars so every theme and mode follows for free.
+function paintFavicon(root) {
+  const dot = root.querySelector('.o-sidebar-dot');
+  if (!dot) return;
+  const cs = getComputedStyle(dot);
+  const v = (name) => cs.getPropertyValue(name).trim();
+  const paused = root.classList.contains('is-queue-paused');
+  const a = paused ? v('--warn') : v('--accent');
+  const b = paused ? a : (v('--accent-2') || a);
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><circle cx="8" cy="8" r="7" fill="url(#g)"/></svg>`;
+  const href = `data:image/svg+xml,${encodeURIComponent(svg)}`;
+  let link = document.querySelector('link[rel="icon"]');
+  if (!link) {
+    link = document.createElement('link');
+    link.rel = 'icon';
+    link.type = 'image/svg+xml';
+    document.head.appendChild(link);
+  }
+  if (link.href !== href) link.href = href;
 }
 
 // ── Account-usage widget: two compact bars (5h / weekly) + a detail popover.
 // Tier math + popover markup are shared via utils/usage-bar.js.
 function paintUsageWidget(root) {
   const au = usage.get().accountUsage;
-  paintBar(root, '5h', au?.five_hour?.used_percentage, au?.five_hour?.resets_at, '5h');
-  paintBar(root, '7d', au?.seven_day?.used_percentage, au?.seven_day?.resets_at, '7d');
+  const held = heldWindow(work.get().launchQueue);
+  paintBar(root, '5h', au?.five_hour?.used_percentage, au?.five_hour?.resets_at, '5h', held === 'five_hour');
+  paintBar(root, '7d', au?.seven_day?.used_percentage, au?.seven_day?.resets_at, '7d', held === 'seven_day');
 }
 
-function paintBar(root, key, pct, resetsAt, staticLabel) {
+// `held`: this window is what's keeping the job queue back — the row takes the paused --warn.
+function paintBar(root, key, pct, resetsAt, staticLabel, held) {
   const fill = root.querySelector(`#sb-usage-${key}-fill`);
+  fill?.closest('.o-usage-row')?.classList.toggle('is-held', held);
   const pctEl = root.querySelector(`#sb-usage-${key}-pct`);
   const lblEl = root.querySelector(`#sb-usage-${key}-lbl`);
   // Label shows time-until-reset when known, falling back to the window's static label.
@@ -191,7 +248,7 @@ function installUsagePopover(root) {
     popEl.setAttribute('role', 'dialog');
     popEl.setAttribute('aria-label', 'Usage detail');
     popEl.innerHTML = usagePopoverHtml(usage.get().accountUsage, work.get().launchQueue);
-    popEl.addEventListener('click', (e) => { if (e.target.closest('[data-run-all-queued]')) void work.runAllQueued(); });
+    popEl.addEventListener('click', (e) => { const a = queueActionFor(e.target); if (a) void work.queueAction(a); });
     host.appendChild(popEl);
     trigger.setAttribute('aria-expanded', 'true');
     setTimeout(() => {

@@ -1,6 +1,10 @@
 import { evaluateJobBudget, nextOpening, type TokenUsageSnapshot } from '../schedules/headroom.js';
 
-export type LaunchPriority = 'queued' | 'immediate';
+// `user` is an explicit click (Launch orchestrator, replan, redraft) and always fires. `immediate`
+// (a high-priority job, a reactive round like fix-ci) skips the budget and the slot cap but not a
+// pause — pausing means "start nothing on your own", and those are still the daemon's own starts.
+// `queued` waits on all three.
+export type LaunchPriority = 'queued' | 'immediate' | 'user';
 
 export interface LaunchRequest {
   key: string;
@@ -19,6 +23,10 @@ export interface LaunchRequest {
 }
 
 export interface LaunchGovernorDeps {
+  // The user's pause (Settings-free, from the usage meter). Read through deps rather than held
+  // here so it persists in preferences.json and survives a daemon restart.
+  isPaused?: () => boolean;
+  setPaused?: (paused: boolean) => void;
   getSnapshot: () => TokenUsageSnapshot | undefined;
   getConcurrency: () => number;
   now?: () => number;
@@ -30,10 +38,24 @@ export interface LaunchGovernorDeps {
 // earliest the budget gate lets work through if nothing more is spent (null while the hold is
 // slots, which free on a turn end rather than on a clock).
 export interface LaunchQueueSummary {
+  paused: boolean;
   parked: number;
+  // Turns holding a slot right now, and the configured cap. `active` can exceed `slots`: a user
+  // launch and an `immediate` take a slot without waiting for one.
+  active: number;
+  slots: number;
   reason: string | null;
   opensAt: number | null;
+  // Which usage window the budget gate is closed on, whether or not anything is parked behind it —
+  // the meter tints that window's bar. Still reported while the user ignores it, so the popover
+  // can say what is being ignored.
+  blocker: UsageWindow | null;
+  // Until when (epoch ms) the user told the queue to launch past the budget gate. Null when not.
+  ignoreBudgetUntil: number | null;
 }
+
+export type UsageWindow = 'five_hour' | 'seven_day';
+const BLOCKER: Partial<Record<string, UsageWindow>> = { 'five-hour-ceiling': 'five_hour', 'over-budget': 'seven_day' };
 
 export type LaunchState =
   | { state: 'running' }
@@ -44,6 +66,10 @@ export class LaunchGovernor {
   private parked = new Map<string, LaunchRequest>();
   private active = new Map<string, string>();
   private evaluating = false;
+  // In memory on purpose: an override is an hour long, and a daemon bounce re-closing the gate
+  // early is the safe side to err on.
+  private ignoreBudgetUntil = 0;
+  private ignoreTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private deps: LaunchGovernorDeps) {}
 
@@ -51,19 +77,55 @@ export class LaunchGovernor {
     return this.deps.now?.() ?? Date.now();
   }
 
-  private headroom(): { ok: boolean; reason: string } {
+  private budget(): { ok: boolean; reason: string; blocker: UsageWindow | null } {
     const snap = this.deps.getSnapshot();
-    if (!snap) return { ok: true, reason: 'No usage data — headroom gate off' };
+    if (!snap) return { ok: true, reason: 'No usage data — headroom gate off', blocker: null };
     const d = evaluateJobBudget(snap, this.now());
-    return { ok: d.launch || d.code === 'no-data', reason: d.reason };
+    return { ok: d.launch || d.code === 'no-data', reason: d.reason, blocker: d.launch ? null : BLOCKER[d.code] ?? null };
+  }
+
+  private ignoringBudget(): boolean {
+    return this.now() < this.ignoreBudgetUntil;
+  }
+
+  private headroom(): { ok: boolean; reason: string } {
+    const b = this.budget();
+    return b.ok || !this.ignoringBudget() ? b : { ok: true, reason: 'Usage limit ignored' };
   }
 
   private slotOk(): boolean {
     return this.active.size < this.deps.getConcurrency();
   }
 
-  private canLaunchQueued(): boolean {
-    return this.headroom().ok && this.slotOk();
+  private paused(): boolean {
+    return this.deps.isPaused?.() ?? false;
+  }
+
+  private canLaunch(req: LaunchRequest): boolean {
+    if (req.priority === 'user') return true;
+    if (this.paused()) return false;
+    return req.priority === 'immediate' || (this.headroom().ok && this.slotOk());
+  }
+
+  setPaused(paused: boolean): void {
+    if (paused === this.paused()) return;
+    this.deps.setPaused?.(paused);
+    this.emit();
+    if (!paused) this.drain();
+  }
+
+  // The meter's "Ignore for 1h": the budget gate stays open until `ms` from now; 0 restores it.
+  // Slots and a pause still hold — this is about usage only.
+  ignoreBudget(ms: number): void {
+    clearTimeout(this.ignoreTimer);
+    this.ignoreBudgetUntil = ms > 0 ? this.now() + ms : 0;
+    // Expiry re-closes the gate, which fires nothing, so only the meter needs telling.
+    if (ms > 0) {
+      this.ignoreTimer = setTimeout(() => this.emit(), ms);
+      this.ignoreTimer.unref?.();
+    }
+    this.emit();
+    if (ms > 0) this.drain();
   }
 
   private fire(req: LaunchRequest): void {
@@ -84,12 +146,7 @@ export class LaunchGovernor {
   }
 
   submit(req: LaunchRequest): void {
-    if (req.priority === 'immediate') {
-      this.parked.delete(req.key);
-      this.fire(req);
-      return;
-    }
-    if (this.canLaunchQueued()) {
+    if (this.canLaunch(req)) {
       this.fire(req);
     } else {
       this.parked.set(req.key, req);
@@ -111,13 +168,23 @@ export class LaunchGovernor {
   }
 
   summary(): LaunchQueueSummary {
-    if (this.parked.size === 0) return { parked: 0, reason: null, opensAt: null };
+    const paused = this.paused();
+    const occupancy = {
+      active: this.active.size,
+      slots: this.deps.getConcurrency(),
+      blocker: this.budget().blocker,
+      ignoreBudgetUntil: this.ignoringBudget() ? this.ignoreBudgetUntil : null,
+    };
+    if (this.parked.size === 0) return { paused, parked: 0, reason: null, opensAt: null, ...occupancy };
     const slotsBusy = !this.slotOk();
     const snap = this.deps.getSnapshot();
     return {
+      paused,
+      ...occupancy,
       parked: this.parked.size,
       reason: this.queuedReason(),
-      opensAt: slotsBusy || this.headroom().ok ? null : nextOpening(evaluateJobBudget, snap, this.now()),
+      // A pause has no clock to open on, and neither do busy slots (they free on a turn end).
+      opensAt: paused || slotsBusy || this.headroom().ok ? null : nextOpening(evaluateJobBudget, snap, this.now()),
     };
   }
 
@@ -182,6 +249,7 @@ export class LaunchGovernor {
 
   // Bare reason — the "Queued — " prefix is added once by the PWA (vm/tracked.js).
   private queuedReason(): string {
+    if (this.paused()) return 'Job queue paused';
     if (!this.slotOk()) return `${this.active.size}/${this.deps.getConcurrency()} slots busy`;
     return this.headroom().reason;
   }
@@ -190,11 +258,15 @@ export class LaunchGovernor {
     if (this.evaluating) return;
     this.evaluating = true;
     try {
-      while (this.parked.size > 0 && this.canLaunchQueued()) {
-        const [next] = [...this.parked.values()].sort(
-          (a, b) => (b.jobInProgress ? 1 : 0) - (a.jobInProgress ? 1 : 0) || a.enqueuedAt - b.enqueuedAt,
-        );
-        this.fire(next!); // guarded by parked.size > 0 above
+      // Whatever may go now, in order: an `immediate` held only by a pause goes first and past
+      // the budget, then in-progress jobs before new ones, then FIFO.
+      for (;;) {
+        const next = [...this.parked.values()].filter((r) => this.canLaunch(r)).sort(
+          (a, b) => (a.priority === 'immediate' ? 0 : 1) - (b.priority === 'immediate' ? 0 : 1)
+            || (b.jobInProgress ? 1 : 0) - (a.jobInProgress ? 1 : 0) || a.enqueuedAt - b.enqueuedAt,
+        )[0];
+        if (!next) break;
+        this.fire(next);
       }
     } finally {
       this.evaluating = false;

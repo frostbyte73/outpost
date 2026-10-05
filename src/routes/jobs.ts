@@ -123,6 +123,32 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.end(JSON.stringify({ jobs, lastLinearSyncAt: jobQueue.lastLinearSyncAt ?? null, launchQueue: engine.launchQueueSummary() }));
   });
 
+  // The usage meter's Pause / Resume. Paused, the daemon starts nothing on its own — only an
+  // explicit click (Launch, replan, Run all, a step's Launch now) still fires. Turns already
+  // running finish. Resuming drains whatever the pause held.
+  server.route('POST', '/api/work/launch-queue/pause', (_req, res) => {
+    engine.setLaunchQueuePaused(true);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(engine.launchQueueSummary()));
+  });
+  server.route('POST', '/api/work/launch-queue/resume', (_req, res) => {
+    engine.setLaunchQueuePaused(false);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(engine.launchQueueSummary()));
+  });
+
+  // The usage popover's "Ignore for 1h" on the window holding the queue, and its undo. Body
+  // `{ignore: false}` restores the gate; anything else opens it for an hour.
+  server.route('POST', '/api/work/launch-queue/ignore-budget', async (req, res) => {
+    const body = await readJsonBody<{ ignore?: unknown }>(req);
+    engine.ignoreLaunchBudget(body?.ignore === false ? 0 : 60 * 60_000);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(engine.launchQueueSummary()));
+  });
+
   // The usage meter's "Run all": every parked launch, past the budget gate and the slot cap —
   // the queue-wide version of a step's own "Launch now".
   server.route('POST', '/api/work/launch-queue/run-all', (_req, res) => {
@@ -564,6 +590,18 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.statusCode = stepId ? 200 : 409;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ stepId: stepId ?? null, job: jobQueue.get(m[1]!) ?? null }));
+  });
+
+  // Continues every session an API error stopped on this job (see WorkEngine.resumeStalls).
+  // 409 when there was nothing stalled to resume — a double-tap, or a stall a sign-in already
+  // resumed on its own.
+  server.route('POST', '/api/work/jobs/:id/resume-stalled', (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/resume-stalled$/);
+    if (!m || !jobQueue.get(m[1]!)) { res.statusCode = 404; res.end('not found'); return; }
+    const resumed = engine.resumeStalls(m[1]!);
+    res.statusCode = resumed ? 200 : 409;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ resumed }));
   });
 
   server.route('POST', '/api/work/jobs/:id/reset', async (req, res) => {

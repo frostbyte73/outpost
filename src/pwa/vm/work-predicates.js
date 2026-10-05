@@ -111,6 +111,9 @@ export function isTerminalJob(j) {
 export function needsYou(j) {
   if (isTerminalJob(j)) return false;
   if (j.state === 'plan_pending_review') return true;
+  // A session an API error stopped (already filtered to the live ones by the daemon's
+  // currentStalls). It waits for a resume, or for a sign-in on an auth error.
+  if (j.stalls?.length) return true;
   const driven = new Set(j.live?.interactiveSessionIds ?? []);
   return (j.steps ?? []).some((s) => !s.cancelled && stepNeedsYou(s, driven));
 }

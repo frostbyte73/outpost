@@ -48,6 +48,7 @@ function makeOpts(): HookServerOpts {
     onPreToolHook: async (body) => { guarded(body); return '{}'; },
     onPostToolFailureHook: async (body) => { guarded(body); return '{}'; },
     onStopHook: async (body) => { guarded(body); },
+    onStopFailureHook: async (body) => { guarded(body); },
     onStatusLineHook: async (body) => { guarded(body); },
     onWorkPlanReady: async (body) => { guarded(body); },
     onWorkStepResolved: async (body) => { guarded(body); },
@@ -159,7 +160,7 @@ describe('the real hook callbacks guard their bodies', () => {
   const daemon = readFileSync(`${srcDir}daemon.ts`, 'utf8');
 
   const BODY_CALLBACKS = [
-    'onStatusLineHook', 'onStopHook', 'onPreToolHook', 'onPostToolFailureHook',
+    'onStatusLineHook', 'onStopHook', 'onStopFailureHook', 'onPreToolHook', 'onPostToolFailureHook',
     'onWorkPlanReady', 'onWorkStepResolved', 'onWorkStepFailed', 'onWorkJournal',
   ];
 
