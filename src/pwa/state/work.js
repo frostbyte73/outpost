@@ -137,6 +137,17 @@ export const work = {
   async rerunLatest(id)          { return call(() => workApi.rerunLatest(id)); },
   async resumeStalled(id)        { return call(() => workApi.resumeStalled(id)); },
   async runAllQueued()           { return call(() => workApi.runAllQueued()); },
+  // One entry point for the queue line's buttons (utils/usage-bar.js queueActionFor). The WS
+  // work_launch_changed refetch repaints the line; the immediate reload just saves the wait.
+  async queueAction(action) {
+    const fn = {
+      'run-all': workApi.runAllQueued, pause: workApi.pauseQueue, resume: workApi.resumeQueue,
+      'ignore-budget': () => workApi.ignoreQueueBudget(true), 'restore-budget': () => workApi.ignoreQueueBudget(false),
+    }[action];
+    if (!fn) return;
+    await call(() => fn());
+    await this.loadAll();
+  },
   async resetJob(id)             { return call(() => workApi.resetJob(id)); },
   // Launch a queued step now: force-fires its parked launch. No job/step payload comes
   // back (just `{launched}`) — the badge update rides the WS work_launch_changed refetch,

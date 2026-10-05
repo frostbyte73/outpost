@@ -9,7 +9,7 @@ import type { OrchestratedStep, ProposedStep } from '../../src/work/work-types.j
 
 // StopFailure (an API error ended the turn) parks the session instead of failing the step, and a
 // resume continues the SAME session through its role's warm path. Harness as engine-turn-end's.
-function makeEngine() {
+function makeEngine(governor?: unknown) {
   const dir = mkdtempSync(join(tmpdir(), 'engine-api-stop-'));
   const queue = new JobQueue(dir);
   const resumed: Array<{ sessionId: string; content: string; env?: Record<string, string> }> = [];
@@ -30,6 +30,7 @@ function makeEngine() {
     newId: (() => { let n = 0; return () => `id-${++n}`; })(),
     now: () => 1,
     unresolvedGraceMs: 5,
+    ...(governor ? { governor: governor as never } : {}),
   });
   const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
   const proposed: ProposedStep = {
@@ -106,5 +107,20 @@ describe('WorkEngine — sessions an API error stopped', () => {
   it('ignores a session that is not a job\'s', () => {
     const { engine } = makeEngine();
     expect(engine.onApiStop('someone-elses', 'rate_limit')).toBe(false);
+  });
+});
+
+// A paused queue holds the daemon's own starts. The planner's resume after a sign-in is one of
+// those; the user's Resume click is not.
+describe('WorkEngine — a stalled planner resumes through the launch governor', () => {
+  it('as the user\'s launch on a click, as a queued one after a sign-in', () => {
+    const priorities: string[] = [];
+    const governor = { submit: (r: { priority: string }) => { priorities.push(r.priority); }, describe: () => ({ state: 'idle' }), turnEnded() {} };
+    const { engine, jobId } = makeEngine(governor);
+    engine.onApiStop('orch-1', 'authentication_failed');
+    engine.resumeAuthStalls();
+    engine.onApiStop('orch-1', 'overloaded');
+    engine.resumeStalls(jobId);
+    expect(priorities).toEqual(['queued', 'user']);
   });
 });

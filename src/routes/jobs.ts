@@ -122,6 +122,32 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.end(JSON.stringify({ jobs, lastLinearSyncAt: jobQueue.lastLinearSyncAt ?? null, launchQueue: engine.launchQueueSummary() }));
   });
 
+  // The usage meter's Pause / Resume. Paused, the daemon starts nothing on its own — only an
+  // explicit click (Launch, replan, Run all, a step's Launch now) still fires. Turns already
+  // running finish. Resuming drains whatever the pause held.
+  server.route('POST', '/api/work/launch-queue/pause', (_req, res) => {
+    engine.setLaunchQueuePaused(true);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(engine.launchQueueSummary()));
+  });
+  server.route('POST', '/api/work/launch-queue/resume', (_req, res) => {
+    engine.setLaunchQueuePaused(false);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(engine.launchQueueSummary()));
+  });
+
+  // The usage popover's "Ignore for 1h" on the window holding the queue, and its undo. Body
+  // `{ignore: false}` restores the gate; anything else opens it for an hour.
+  server.route('POST', '/api/work/launch-queue/ignore-budget', async (req, res) => {
+    const body = await readJsonBody<{ ignore?: unknown }>(req);
+    engine.ignoreLaunchBudget(body?.ignore === false ? 0 : 60 * 60_000);
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify(engine.launchQueueSummary()));
+  });
+
   // The usage meter's "Run all": every parked launch, past the budget gate and the slot cap —
   // the queue-wide version of a step's own "Launch now".
   server.route('POST', '/api/work/launch-queue/run-all', (_req, res) => {

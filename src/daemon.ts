@@ -437,6 +437,8 @@ async function main() {
   const launchGovernor = new LaunchGovernor({
     getSnapshot: () => latestAccountUsage ?? undefined,
     getConcurrency: () => preferencesStore.getLaunchConcurrency(),
+    isPaused: () => preferencesStore.getLaunchQueuePaused(),
+    setPaused: (paused) => { preferencesStore.merge({ launchQueuePaused: paused }); },
     onChange: () => notifyLaunchStatesChanged(),
   });
   const engine = new WorkEngine({

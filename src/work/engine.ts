@@ -437,7 +437,7 @@ export class WorkEngine {
     ));
     for (const st of picked) {
       const s = st.stepId ? j.steps.find((x) => x.id === st.stepId) : undefined;
-      const resumed = !st.stepId ? this.resumeOrchestratorSession(jobId, st.sessionId)
+      const resumed = !st.stepId ? this.resumeOrchestratorSession(jobId, st.sessionId, who === 'user')
         : st.dispatchId ? this.dispatchResume(jobId, st.stepId, st.dispatchId)
         : s?.type === 'orchestrated' ? this.resumeControllerRound(jobId, st.stepId, s.boundAction, undefined)
         : this.dispatchActionResume(jobId, st.stepId);
@@ -457,16 +457,25 @@ export class WorkEngine {
   // The orchestrator's envelope is still on disk at its fixed path, so re-invoking the action
   // re-reads the same mode it was planning in. Rebinds role/action like replan does: both maps
   // are in-memory and don't survive a daemon restart.
-  private async resumeOrchestratorSession(jobId: string, sessionId: string): Promise<void> {
+  // Through the governor like every other daemon-started turn, so an automatic resume (after a
+  // sign-in) waits out a paused queue; the user's own Resume click fires regardless.
+  private async resumeOrchestratorSession(jobId: string, sessionId: string, userInitiated: boolean): Promise<void> {
     const actionName = this.opts.queue.get(jobId)?.orchestratorAction ?? 'meta.orchestrate';
-    this.roleBySession.set(sessionId, { role: 'orchestrator', jobId });
-    this.bindAction(sessionId, actionName);
-    this.opts.sessionManager.sendOrResume(
-      sessionId,
-      this.orchestratorCwd(),
-      { type: 'user', message: { role: 'user', content: `/${actionName}` } },
-      { OUTPOST_ENVELOPE: join(this.ctx.jobsDir, jobId, 'orchestrator', 'envelope.json'), JOB_ID: jobId },
-    );
+    this.submitLaunch({
+      key: `${jobId}#orchestrator`, jobId, sessionId, action: actionName, label: 'resume',
+      ...(userInitiated ? { userInitiated: true } : {}),
+      run: () => {
+        this.roleBySession.set(sessionId, { role: 'orchestrator', jobId });
+        this.bindAction(sessionId, actionName);
+        this.opts.sessionManager.sendOrResume(
+          sessionId,
+          this.orchestratorCwd(),
+          { type: 'user', message: { role: 'user', content: `/${actionName}` } },
+          { OUTPOST_ENVELOPE: join(this.ctx.jobsDir, jobId, 'orchestrator', 'envelope.json'), JOB_ID: jobId },
+        );
+        return true;
+      },
+    });
   }
 
   // The step behind `sessionId`, when a turn ending without a submit_* call would be a
@@ -849,8 +858,8 @@ export class WorkEngine {
     const gov = this.opts.governor;
     if (!gov) { o.run(); return; }  // no governor wired (unit harnesses) → fire synchronously
     const job = this.opts.queue.get(o.jobId);
-    const priority: LaunchPriority =
-      (o.userInitiated || job?.highPriority || isReactiveAction(o.action)) ? 'immediate' : 'queued';
+    const priority: LaunchPriority = o.userInitiated ? 'user'
+      : (job?.highPriority || isReactiveAction(o.action)) ? 'immediate' : 'queued';
     const jobInProgress = !!job && job.steps.some((s) => !!s.sessionId || handlerFor(s).isResolved(s));
     gov.submit({
       key: o.key, jobId: o.jobId, stepId: o.stepId, sessionId: o.sessionId,
@@ -863,7 +872,15 @@ export class WorkEngine {
   // Force-fires the specific parked launch for a job's orchestrator (no stepId) or a step
   // (stepId given), bypassing the headroom/slot gate. False if nothing was parked there.
   launchQueueSummary(): LaunchQueueSummary {
-    return this.opts.governor?.summary() ?? { parked: 0, reason: null, opensAt: null };
+    return this.opts.governor?.summary() ?? { paused: false, parked: 0, reason: null, opensAt: null, active: 0, slots: 0, blocker: null, ignoreBudgetUntil: null };
+  }
+
+  setLaunchQueuePaused(paused: boolean): void {
+    this.opts.governor?.setPaused(paused);
+  }
+
+  ignoreLaunchBudget(ms: number): void {
+    this.opts.governor?.ignoreBudget(ms);
   }
 
   launchAllQueued(): number {

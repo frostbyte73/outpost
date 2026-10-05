@@ -61,6 +61,10 @@ html[data-layout="desktop"] .o-usage-fill {
 html[data-layout="desktop"] .o-usage-fill.warn { background: var(--warn); }
 html[data-layout="desktop"] .o-usage-fill.hot  { background: var(--danger); }
 html[data-layout="desktop"] .o-usage-pct { text-align: right; font-weight: 500; color: var(--text); }
+/* The window holding the job queue (heldWindow): the queue's paused --warn, over any tier. */
+html[data-layout="desktop"] .o-usage-row.is-held .o-usage-fill { background: var(--warn); }
+html[data-layout="desktop"] .o-usage-row.is-held .o-usage-label,
+html[data-layout="desktop"] .o-usage-row.is-held .o-usage-pct { color: var(--warn); }
 
 /* Anchored to the bottom-left of .o-shell-body (which is position:relative),
    opening upward from the sidebar-foot usage trigger. */
@@ -111,6 +115,7 @@ html[data-layout="desktop"] .o-sidebar {
 }
 html[data-layout="desktop"] .o-sidebar.is-collapsed { flex-basis: 56px; }
 html[data-layout="desktop"] .o-sidebar.is-collapsed .o-sidebar-word,
+html[data-layout="desktop"] .o-sidebar.is-collapsed .o-sidebar-queue,
 html[data-layout="desktop"] .o-sidebar.is-collapsed .o-sidebar-label,
 html[data-layout="desktop"] .o-sidebar.is-collapsed .o-sidebar-count,
 html[data-layout="desktop"] .o-sidebar.is-collapsed .o-sidebar-section {
@@ -124,6 +129,16 @@ html[data-layout="desktop"] .o-sidebar-brand {
   color: var(--text);
   letter-spacing: -0.01em;
 }
+/* The job queue's one-word state beside the wordmark: a nano machine tag (§3.2), dim when the
+   budget holds launches, --warn when the user paused it. Paused also tints the dot, which is all
+   the collapsed rail keeps of the brand row. */
+html[data-layout="desktop"] .o-sidebar-queue {
+  font-family: var(--font-mono); font-size: 10px; font-weight: 500;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  color: var(--text-dim); cursor: default;
+}
+html[data-layout="desktop"] .o-sidebar-queue[data-tone="paused"] { color: var(--warn); }
+html[data-layout="desktop"] .o-sidebar.is-queue-paused .o-sidebar-dot { background: var(--warn); }
 html[data-layout="desktop"] .o-sidebar-dot {
   width: 9px; height: 9px; border-radius: 50%;
   background: linear-gradient(135deg, var(--accent), var(--accent-2, var(--accent)));
@@ -163,6 +178,12 @@ html[data-layout="desktop"] .o-sidebar-foot .o-usage {
   margin-top: 8px;
 }
 html[data-layout="desktop"] .o-sidebar.is-collapsed .o-usage { display: none; }
+/* The job queue's pause/resume sits in the foot as an ordinary nav item. `display: flex` above
+   would beat the [hidden] it carries before the daemon has reported the queue. Paused, the play
+   icon takes --warn like any state-carrying icon (DESIGN.md §9), so the collapsed rail still
+   shows it. */
+html[data-layout="desktop"] .o-sidebar-item[hidden] { display: none; }
+html[data-layout="desktop"] .o-sidebar-item.is-paused .o-sidebar-icon { color: var(--warn); opacity: 1; }
 
 /* ── Frame: list · detail · context ──────────────────────────────────── */
 html[data-layout="desktop"] .o-frame {
