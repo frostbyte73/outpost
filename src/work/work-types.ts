@@ -360,6 +360,7 @@ export interface FindingVerdict {
 // read.investigate's output (mirrored, not shared — the repo has no $ref loader).
 export interface Finding {
   summary?: string;     // 50-200 char exec summary of the plan; required on submit, absent on older plans
+  diagram?: string;     // d2 source; compiled at submit, rendered on demand by GET /api/work/jobs/:id/diagram.svg
   findings: string;     // primary markdown writeup
   evidence?: FindingEvidence[];
   verdict?: FindingVerdict;

@@ -336,6 +336,7 @@ mcp__outpost__submit_plan({
   findings: {                       // optional — your up-front investigation
     summary: "Ticket's bug is real but already fixed in agents-js 1.7.0; plan posts that finding back on the ticket.",  // 50-200 chars, always visible
     findings: "## The ticket\n…markdown…\n\n## The code path\n…",
+    diagram: "direction: right\n…d2 source…",   // optional — only when the plan changes a flow; see below
     evidence: [ { kind: "repo-file", source: "session.go:142", summary: "…" } ],
     verdict: { kind: "service-bug", confidence: 0.8 },   // only when you reached a classification
     caveats: [ "…" ]
@@ -346,6 +347,8 @@ mcp__outpost__submit_plan({
 `findings` is the investigation you ran in Step 4 — the same shape as `read.investigate`'s output. It's shown to the user at plan approval and persisted for audit. Include it whenever you verified anything; omit only for trivially-routable jobs.
 
 **`findings.summary` is required whenever you pass `findings`: 50-200 characters.** It is the exec summary of the plan — what the job really is and what the plan does about it — and it is the only part of the investigation the user sees without expanding anything. The PWA folds every `##` section of `findings.findings` into its own collapsed disclosure, so the summary must stand on its own: no "see below". The daemon rejects a summary outside 50-200 characters; count before you submit. Then write `findings.findings` as one `##` section per topic (the ticket, each code path, linked PRs, related issues, prior art).
+
+**`findings.diagram` is optional, and absent is the default.** It is d2 source that the PWA renders under the summary. Before you decide, run `cat ~/.outpost/actions/SHARED-d2-diagrams.md`: it says when a diagram earns its place and how to draw it. Most plans do not need one. The daemon compiles the source on `submit_plan`. A compile error comes back as the tool error with d2's line and column, so fix the source and submit again.
 
 The tool returns `{ok: true}` on accept. On rejection you'll get a JSON-RPC error with the daemon's reason — surface it in chat and don't retry blindly. The old bash+curl+jq path is gone; do NOT try to shell out to `/work/plan-ready`.
 

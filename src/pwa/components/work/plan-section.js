@@ -13,6 +13,8 @@ import { renderFinding } from './finding.js';
 import { orchestratorStepShim } from '../tracked/session-mounts.js';
 import { actionCategory, actionDisplayName } from './action-icon.js';
 
+const diagramUrl = (j) => `/api/work/jobs/${encodeURIComponent(j.id)}/diagram.svg`;
+
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
 // The type chip carries the action's own name (the category prefix is dropped —
@@ -97,7 +99,7 @@ export function renderReconciliation(j) {
         <span class="label o-microhead">Plan amendment</span>
         ${recon.feedback ? `<span class="feedback">"${escapeHtml(recon.feedback)}"</span>` : ''}
       </div>
-      ${renderFinding(j.plan?.findings)}
+      ${renderFinding(j.plan?.findings, 'Investigation', diagramUrl(j))}
       <div class="step-list">
         ${proposedRows}
         ${cancelledRows}
@@ -223,7 +225,7 @@ export function renderPlanSection(j, { timelineHtml = '', editing = false } = {}
 
   // Rendered *below* the live orchestrator feed — it's the completed rationale. renderFinding
   // keeps only the verdict open and folds every other topic away on its own.
-  const findings = renderFinding(j.plan?.findings, 'Investigation');
+  const findings = renderFinding(j.plan?.findings, 'Investigation', diagramUrl(j));
   // A step-review runs the orchestrator on top of an executing plan, so its feed
   // appears above a timeline that stays put. Say which step it's reviewing —
   // otherwise a live planner feed mid-execution reads as an unexplained replan.

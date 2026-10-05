@@ -33,6 +33,17 @@ describe('renderFinding', () => {
     expect(html).toContain('s.conn is nil');
   });
 
+  it('renders the diagram in the current theme + mode only when the finding has one and the caller gives a URL', () => {
+    const url = '/api/work/jobs/j1/diagram.svg';
+    document.documentElement.dataset.theme = 'plasma';
+    document.documentElement.dataset.mode = 'dark';
+    document.documentElement.style.setProperty('--bg', '#0a0610');
+    const html = renderFinding({ ...finding, diagram: 'a -> b' }, 'Investigation', url);
+    expect(html).toContain(`src="${url}?theme=plasma&amp;bg=%230a0610&amp;`);
+    expect(renderFinding({ ...finding, diagram: 'a -> b' })).not.toContain('plan-diagram');
+    expect(renderFinding(finding, 'Investigation', url)).not.toContain('plan-diagram');
+  });
+
   it('uses a custom label when given, defaulting to Investigation', () => {
     expect(renderFinding(finding)).toContain('>Investigation<');
     expect(renderFinding(finding, 'Findings')).toContain('>Findings<');
