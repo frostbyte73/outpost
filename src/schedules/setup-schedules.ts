@@ -55,6 +55,13 @@ export function seedBuiltinSchedules(store: SchedulesStore, homeDir: string): vo
     trigger: { kind: 'cron', expr: '*/10 * * * *' },
     what: { kind: 'native', handler: 'user-prs-watcher' },
   });
+  // Seeded enabled: it reads the PR-review preferences each fire and does nothing while both are off
+  store.ensureBuiltin({
+    id: 'review-intake',
+    name: 'PR review intake',
+    trigger: { kind: 'cron', expr: '*/10 * * * *' },
+    what: { kind: 'native', handler: 'review-intake' },
+  });
   // Daily rather than hourly: the warning window is two days wide, so a once-a-day sweep still
   // gives two chances to act, and re-authorizing is a deliberate errand — not something worth
   // interrupting for more often than that.

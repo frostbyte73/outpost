@@ -23,6 +23,7 @@ export const SETTINGS_SECTIONS = [
       { key: 'mcp', label: 'MCP connections', icon: '◈' },
       { key: 'notifications', label: 'Notifications', icon: '✉' },
       { key: 'projects', label: 'Projects', icon: '▣' },
+      { key: 'pr-reviews', label: 'PR reviews', icon: '⇄' },
     ],
   },
   {

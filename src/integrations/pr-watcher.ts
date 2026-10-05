@@ -356,7 +356,9 @@ export class PrWatcher {
 
   async syncJob(jobId: string): Promise<void> {
     const j = this.opts.queue.get(jobId);
-    if (!j) return;
+    if (!j || j.state === 'abandoned') return;
+    // An unapproved plan has no controller to wake, and its readonly repoCwd may not be cloned yet
+    if ((j.state === 'planning' || j.state === 'plan_pending_review') && !j.steps.some((s) => s.sessionId)) return;
     for (const s of j.steps) {
       if (s.type !== 'orchestrated') continue;
       if (s.cancelled || s.state === 'resolved' || s.state === 'failed') {

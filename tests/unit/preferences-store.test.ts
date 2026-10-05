@@ -79,4 +79,24 @@ describe('PreferencesStore', () => {
       expect(new PreferencesStore(path).getLaunchConcurrency()).toBe(3);
     });
   });
+
+  describe('getPrReviewIntake', () => {
+    it('defaults to both modes off', () => {
+      expect(new PreferencesStore(newPath()).getPrReviewIntake()).toEqual({ repos: [], reviewRequested: false });
+    });
+
+    it('drops malformed values', () => {
+      const s = new PreferencesStore(newPath());
+      s.merge({ prReviewIntake: 'yes' });
+      expect(s.getPrReviewIntake()).toEqual({ repos: [], reviewRequested: false });
+      s.merge({ prReviewIntake: { repos: 'a/b', reviewRequested: 'true' } });
+      expect(s.getPrReviewIntake()).toEqual({ repos: [], reviewRequested: false });
+    });
+
+    it('keeps valid repos, lowercased and deduped', () => {
+      const s = new PreferencesStore(newPath());
+      s.merge({ prReviewIntake: { repos: ['Frostbyte73/Outpost', 'frostbyte73/outpost', 'nope', 3, ' a.b/c_d '], reviewRequested: true } });
+      expect(s.getPrReviewIntake()).toEqual({ repos: ['frostbyte73/outpost', 'a.b/c_d'], reviewRequested: true });
+    });
+  });
 });

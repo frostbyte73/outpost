@@ -3,6 +3,13 @@ import { dirname } from 'node:path';
 
 export type PreferencesBlob = Record<string, unknown>;
 
+export interface PrReviewIntake {
+  repos: string[];
+  reviewRequested: boolean;
+}
+
+const REPO_RE = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
 // Schema-light client-preferences store synced across devices. The daemon does
 // not enumerate individual preferences — it stores an opaque JSON object and
 // only guarantees it is a plain object. Per-key validation lives on the client.
@@ -43,6 +50,20 @@ export class PreferencesStore {
   getEditorCommand(): string | undefined {
     const raw = (this.get() as { editorCommand?: unknown }).editorCommand;
     return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+  }
+
+  // Off unless opted into — which PRs get reviewed is entirely per-user
+  getPrReviewIntake(): PrReviewIntake {
+    const raw = (this.get() as { prReviewIntake?: unknown }).prReviewIntake;
+    const o = raw && typeof raw === 'object' && !Array.isArray(raw)
+      ? raw as { repos?: unknown; reviewRequested?: unknown }
+      : {};
+    const repos = Array.isArray(o.repos)
+      ? [...new Set(o.repos
+          .filter((r): r is string => typeof r === 'string' && REPO_RE.test(r.trim()))
+          .map((r) => r.trim().toLowerCase()))]
+      : [];
+    return { repos, reviewRequested: o.reviewRequested === true };
   }
 
   private load(): void {

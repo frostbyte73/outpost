@@ -17,16 +17,16 @@ describe('seedBuiltinSchedules', () => {
     else process.env.LINEAR_API_TOKEN = originalToken;
   });
 
-  it('seeds the six builtins once and is idempotent', () => {
+  it('seeds the seven builtins once and is idempotent', () => {
     delete process.env.LINEAR_API_TOKEN;
     const store = new SchedulesStore(tmpPath());
     seedBuiltinSchedules(store, '/tmp');
     const ids = store.list().map((s) => s.id).sort();
     expect(ids).toEqual([
-      'action-improver', 'claude-updater', 'linear', 'mcp-expiry', 'pr-watcher', 'user-prs-watcher',
+      'action-improver', 'claude-updater', 'linear', 'mcp-expiry', 'pr-watcher', 'review-intake', 'user-prs-watcher',
     ]);
     seedBuiltinSchedules(store, '/tmp');
-    expect(store.list().length).toBe(6); // no duplicates
+    expect(store.list().length).toBe(7); // no duplicates
   });
 
   it('seeds the improver enabled, token-opportunistic, debounced daily and repo-less', () => {

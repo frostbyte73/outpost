@@ -66,10 +66,12 @@ function primaryRepo(job) {
   return null;
 }
 
+const SOURCE_LABELS = { manual: 'Manual', 'pr-review': 'PR review' };
+
 function renderHeader(job) {
   const extId = job.externalRef?.issueIdentifier ?? '';
   const url = job.externalRef?.url ?? '';
-  const sourceLabel = job.source === 'manual' ? 'Manual' : 'Linear';
+  const sourceLabel = SOURCE_LABELS[job.source] ?? 'Linear';
   const tone = jobTone(job);
   const label = (job.state === 'planning' && !job.orchestratorSessionId) ? 'Todo' : (STATE_LABEL[job.state] ?? job.state);
   const repo = primaryRepo(job);

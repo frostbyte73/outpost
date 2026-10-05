@@ -29,6 +29,7 @@ import { renderPermissions } from '../permissions/index.js';
 import { emptyState } from '../shell/placeholder.js';
 import { detailShell, block } from './detail-shell.js';
 import { renderHotkeys } from './hotkeys.js';
+import { renderPrReviews } from './pr-reviews.js';
 
 const MODEL_LABELS = { default: 'Daemon default', fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
 // Shell launchers, not app names — each is what that editor installs on PATH for exactly
@@ -392,6 +393,7 @@ const SECTION_RENDERERS = {
   editor: renderEditor,
   permissions: renderPermissions,
   projects: renderProjects,
+  'pr-reviews': renderPrReviews,
   mcp: renderMcp,
   'claude-account': renderClaudeAuth,
   notifications: renderNotifications,

@@ -64,6 +64,17 @@ function loadLaunchConcurrency() {
 function loadShellCommands() {
   return localStorage.getItem('cr:shellCommands') === 'true';
 }
+const DEFAULT_PR_REVIEW_INTAKE = { repos: [], reviewRequested: false };
+function validPrReviewIntake(v) {
+  return v && typeof v === 'object' && Array.isArray(v.repos)
+    && v.repos.every((r) => typeof r === 'string') && typeof v.reviewRequested === 'boolean';
+}
+function loadPrReviewIntake() {
+  try {
+    const v = JSON.parse(localStorage.getItem('cr:prReviewIntake') ?? 'null');
+    return validPrReviewIntake(v) ? v : DEFAULT_PR_REVIEW_INTAKE;
+  } catch { return DEFAULT_PR_REVIEW_INTAKE; }
+}
 
 const store = createStore({
   theme: loadTheme(),
@@ -73,6 +84,7 @@ const store = createStore({
   editorCommand: loadEditorCommand(),
   launchConcurrency: loadLaunchConcurrency(),
   shellCommands: loadShellCommands(),
+  prReviewIntake: loadPrReviewIntake(),
   acceptEdits: false,
   modePopoverOpen: false,
   pushPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
@@ -131,6 +143,12 @@ function applyShellCommands(v) {
   store.set((s) => (s.shellCommands === v ? s : { ...s, shellCommands: v }));
 }
 
+function applyPrReviewIntake(v) {
+  if (!validPrReviewIntake(v)) return;
+  try { localStorage.setItem('cr:prReviewIntake', JSON.stringify(v)); } catch {}
+  store.set((s) => ({ ...s, prReviewIntake: v }));
+}
+
 register({ key: 'theme', apply: applyTheme, current: () => store.get().theme });
 register({ key: 'mode', apply: applyMode, current: () => store.get().mode });
 register({ key: 'defaultApprovalMode', apply: applyDefaultApprovalMode, current: () => store.get().defaultApprovalMode });
@@ -138,6 +156,7 @@ register({ key: 'defaultModel', apply: applyDefaultModel, current: () => store.g
 register({ key: 'editorCommand', apply: applyEditorCommand, current: () => store.get().editorCommand });
 register({ key: 'launchConcurrency', apply: applyLaunchConcurrency, current: () => store.get().launchConcurrency });
 register({ key: 'shellCommands', apply: applyShellCommands, current: () => store.get().shellCommands });
+register({ key: 'prReviewIntake', apply: applyPrReviewIntake, current: () => store.get().prReviewIntake });
 
 export const settings = {
   get: store.get,
@@ -171,6 +190,10 @@ export const settings = {
   setShellCommands(v) {
     applyShellCommands(!!v);
     push('shellCommands', store.get().shellCommands);
+  },
+  setPrReviewIntake(v) {
+    applyPrReviewIntake(v);
+    push('prReviewIntake', store.get().prReviewIntake);
   },
   applyLaunchConcurrency,
   setAcceptEdits(v) {

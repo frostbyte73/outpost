@@ -180,6 +180,7 @@ src/
     known-cwd.ts           # is this caller-supplied path one the daemon already knows? gate for spawn/shell-out
   integrations/          # external polling
     linear-{api,writer}.ts, pr-watcher.ts, user-prs-watcher.ts, usage-{poller,ledger}.ts
+    review-intake.ts       # PRs by others → one review job each, plan generated without the planner
     gh-cli.ts              # the shared `gh` shell-out both PR integrations run through
     pr-file-patches.ts     # per-file PR diffs, fetched on demand + cached by head sha (NOT persisted
                            # onto the job); what lets a review comment render inside its hunk

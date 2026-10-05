@@ -21,6 +21,7 @@ import { LinearWriter } from './integrations/linear-writer.js';
 import { PrWatcher } from './integrations/pr-watcher.js';
 import { PrFilePatches } from './integrations/pr-file-patches.js';
 import { UserPrsWatcher } from './integrations/user-prs-watcher.js';
+import { ReviewIntake } from './integrations/review-intake.js';
 import { WorkEngine } from './work/engine.js';
 import { LaunchGovernor } from './work/launch-governor.js';
 import type { JobRecord } from './work/work-types.js';
@@ -501,6 +502,14 @@ async function main() {
   }).runOnce());
   nativeHandlers.register('pr-watcher', () => prWatcher.runOnce());
   nativeHandlers.register('user-prs-watcher', () => userPrsWatcher.runOnce());
+  const reviewIntake = new ReviewIntake({
+    settings: () => preferencesStore.getPrReviewIntake(),
+    projects: () => projectRegistry.list().map((p) => p.cwd),
+    homeDir: homedir(),
+    createExternalJob: (input) => engine.createExternalJob(input),
+    postPlan: (jobId, steps) => engine.onPlanReady(jobId, 'initial', steps),
+  });
+  nativeHandlers.register('review-intake', () => reviewIntake.runOnce());
 
   const server = new Server({
     httpPort: config.httpPort,
