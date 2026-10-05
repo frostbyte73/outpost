@@ -28,6 +28,13 @@ describe('settings store', () => {
     expect(document.documentElement.getAttribute('data-mode')).toBe('light');
   });
 
+  it('setMode("system") stores system but applies a concrete mode', () => {
+    settings.setMode('system');
+    expect(localStorage.getItem('cr:mode')).toBe('system');
+    expect(settings.get().mode).toBe('system');
+    expect(['light', 'dark']).toContain(document.documentElement.getAttribute('data-mode'));
+  });
+
   it('setDefaultApprovalMode persists', () => {
     settings.setDefaultApprovalMode('plan');
     expect(localStorage.getItem('cr:defaultApprovalMode')).toBe('plan');
@@ -38,8 +45,8 @@ describe('settings store', () => {
     expect(VALID_THEMES).toHaveLength(9);
   });
 
-  it('VALID_MODES is [light, dark]', () => {
-    expect(VALID_MODES).toEqual(['light', 'dark']);
+  it('VALID_MODES is [light, dark, system]', () => {
+    expect(VALID_MODES).toEqual(['light', 'dark', 'system']);
   });
 
   it('setTheme pushes to the daemon (debounced PATCH includes theme)', async () => {

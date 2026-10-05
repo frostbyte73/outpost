@@ -692,7 +692,7 @@ html[data-layout="mobile"] .settings-detail-lede { margin-top: 2px; }
     /* Mode segmented control. Two equal-width tabs, the active one in accent. */
     .mode-toggle {
       display: grid;
-      grid-template-columns: 1fr 1fr;
+      grid-template-columns: 1fr 1fr 1fr;
       border: 1px solid var(--line);
       border-radius: var(--r-control);
       overflow: hidden;
@@ -726,6 +726,10 @@ html[data-layout="mobile"] .settings-detail-lede { margin-top: 2px; }
     }
     .mode-toggle button[data-mode="light"] .glyph {
       background: linear-gradient(90deg, currentColor 50%, transparent 50%);
+      border: 1px solid currentColor;
+    }
+    .mode-toggle button[data-mode="system"] .glyph {
+      background: transparent;
       border: 1px solid currentColor;
     }
 
