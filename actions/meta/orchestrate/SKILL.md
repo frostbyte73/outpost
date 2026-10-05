@@ -87,7 +87,7 @@ the deployment config repo.
 
 If `mode === "replan"`, read `userFeedback` first — it overrides everything else. Then read the `output` on any resolved steps in `currentSteps` — those are usually why the user reopened the orchestrator, and they're what lets you extend a previously partial plan.
 
-Else read `job.description`. For Linear-sourced jobs, this is the issue body. If the body is light, pull the full ticket from Linear. Read the UUID out of the envelope first, then **type it into the query literally**:
+Else read `job.description`. For Linear-sourced jobs, this is the issue body — and it is never the whole ticket. **Always pull the full ticket from Linear**, however complete the body looks: the context that changes the plan usually sits in a linked PR, a blocking issue, or a comment, not in the body. Read the UUID out of the envelope first, then **type it into the query literally**:
 
 ```bash
 jq -r '.job.externalRef.linearUuid' "$OUTPOST_ENVELOPE"
@@ -97,8 +97,19 @@ jq -r '.job.externalRef.linearUuid' "$OUTPOST_ENVELOPE"
 curl -s -X POST https://api.linear.app/graphql \
   -H "Authorization: $LINEAR_API_TOKEN" \
   -H 'content-type: application/json' \
-  -d '{"query":"query { issue(id: \"<LINEAR_UUID>\") { title description labels { nodes { name } } comments { nodes { body createdAt } } children { nodes { identifier title } } } }"}'
+  -d '{"query":"query { issue(id: \"<LINEAR_UUID>\") { identifier title description url state { name } labels { nodes { name } } attachments { nodes { title subtitle url sourceType } } comments(first: 100) { nodes { body createdAt user { name } } } parent { identifier title state { name } description } children { nodes { identifier title state { name } } } relations { nodes { type relatedIssue { identifier title state { name } } } } inverseRelations { nodes { type issue { identifier title state { name } } } } } }"}'
 ```
+
+`relations` are this issue's own edges (`blocks`, `related`, `duplicate`, `similar`); `inverseRelations` are the same edges seen from the other end, so an inverse `blocks` means **this issue is blocked by** that one. `issue(id:)` also takes an identifier, so a related issue is one more query of the same shape with `\"ENG-456\"` in place of the UUID.
+
+Then work through what came back, in this order:
+
+1. **Linked PRs first.** Collect every GitHub PR URL — `attachments` with `sourceType` `github` (or a `/pull/` URL), plus any PR URL in the description, the comments, an attachment's `subtitle` (a Slack attachment carries the whole message, links included), or a related issue. Read each with `gh pr view <url> --json state,title,body,headRefName,baseRefName,files,reviewDecision,comments`. A linked PR changes the job's shape before anything else does: an **open** PR means the work is already in flight — plan around that branch (continue it, or review it as a code-review job) rather than cutting a parallel fix. A **merged** PR means the fix may already be shipped — check what it actually changed before assuming the ticket is still open work. A **closed, unmerged** PR is a rejected approach — find out why in its review comments before proposing the same thing.
+2. **Related issues.** Read the parent, the children, and every relation. A parent carries the larger goal and its constraints. An open **blocked by** issue means this job may not be actionable yet — say so in `risks`, don't plan around the blocker as if it were gone. A **duplicate** may already hold the root cause, the discussion, or the PR. For each related issue that bears on the plan, query it in full (description, comments, attachments) the same way — one level deep, not the whole graph.
+3. **Comments, all of them, in order.** They hold the repro steps, scope changes, decisions, and "tried X, it didn't work" that the body predates. A later comment overrides an earlier one and the body. Comments are context and leads, not findings — Step 4 still verifies the claims a step rests on.
+4. **Every other link** — in the body, the comments, and the attachments: Datadog, Grafana, Sentry, Slack threads, Notion docs, other repos. Open each one that a step could rest on with the matching `pull` tool (`ToolSearch` for the MCP). Step 4 makes a log/metric link mandatory; this is the same rule for the rest.
+
+Record in `findings` which PRs, related issues, and links you read and what each changed, so the user can see the plan was built on the whole ticket.
 
 This is the only network write you have, and it is granted as one narrow shape. The `-d` value must be a **single-quoted literal** whose `query` is a GraphQL *query* — no `$(…)`, no backticks, no `$VAR`, no `@file`, and the words `mutation` and `subscription` are refused outright. That is deliberate and it is what makes "strictly read-only" true rather than aspirational: an opaque body is both an arbitrary Linear write (`issueDelete`) and a way to read a local file onto the network. The same applies to `-H` values — a header is a body by another name.
 
@@ -167,6 +178,7 @@ A claim is load-bearing if a plan step rests on it. Each one ships with a citati
 
 Before composing, confirm for every claim a step will rest on:
 
+- Linear job — read every linked PR, every related/blocking issue, and every comment (Step 1)?
 - Traced the real code path, not just the named file?
 - If the ticket links logs / references an incident / has log-shaped evidence — opened it?
 - Verified version/API/state claims against a live ref, not a stale checkout?
