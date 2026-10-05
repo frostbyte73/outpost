@@ -60,7 +60,7 @@ gh run view <run-id> --log-failed
 ## Step 3 — Diagnose, fix, and stage
 
 Fix the root cause in the code — not the CI config, unless the config is clearly the
-bug. Use your knowledge of why this code exists. Run the relevant tests/build locally
+bug. Read `cat ~/.outpost/actions/SHARED-lean-code.md` first. A red check names a symptom, so grep every caller of the code you change. Use your knowledge of why this code exists. Run the relevant tests/build locally
 to confirm the fix (the same command the failing check runs, e.g. `npm run test:unit`,
 `npx tsc --noEmit`, `mage`, `go test ./...`). Once it's confirmed, stage it:
 
