@@ -2,6 +2,7 @@ import { mountSidebar } from './sidebar.js';
 import { mountSurfaceFrame } from './surfaces.js';
 import { installKeyboard } from './keyboard.js';
 import { installTitleObserver } from './title-observer.js';
+import { installHistory } from './history.js';
 
 // Desktop shell root: a single [sidebar | frame] row. Replaces the old
 // activity-rail / list-rail / workspace(pane-tree) / usage-strip mount (D1 of
@@ -46,6 +47,7 @@ export function mountShell(root) {
   // installed once and left running across layout flips by design.
   installKeyboard();
   installTitleObserver();
+  installHistory();
 }
 
 export function unmountShell(root) {
