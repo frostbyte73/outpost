@@ -66,7 +66,7 @@
       "^mage proto$",
       "^npx tsc --noEmit$",
       "^npm (test|run|install|ci)(\\s|$)",
-      "^(yarn|pnpm) (install|run|test|add|remove)(\\s|$)",
+      "^(yarn|pnpm) (install|run|test|add|remove|lint|format)(\\s|$)",
       "^go (test|build|vet)(\\s|$)",
       "^go get(\\s|$)",
       "^go mod (tidy|download)(\\s|$)",
