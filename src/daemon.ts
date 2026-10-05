@@ -948,7 +948,7 @@ async function main() {
       vapidPublicKey: vapid.publicKey,
     },
   });
-  registerGitRoutes(server, { sessionStore, worktreeManager, engine, prWatcher, preferencesStore });
+  registerGitRoutes(server, { sessionStore, worktreeManager, engine, prWatcher, preferencesStore, jobQueue });
   registerProjectsRoutes(server, { sessionStore, projectRegistry });
   registerJobsRoutes(server, { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, jobsDir: join(RUNTIME_DIR, 'jobs'), interactive });
   registerPushRoutes(server, { pushStore, pushSender, userPrsWatcher });

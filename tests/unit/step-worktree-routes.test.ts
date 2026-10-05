@@ -98,6 +98,7 @@ describe('POST /api/sessions/:id/git/discard — step-keyed worktrees', () => {
       } as never,
       prWatcher: {} as never,
       preferencesStore: { getEditorCommand: () => undefined } as never,
+      jobQueue: { get: () => undefined } as never,
     });
     await server.listen();
 

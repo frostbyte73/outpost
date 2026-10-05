@@ -105,7 +105,93 @@ function defaultCommit(ctx, status) {
     openPr: !(ctx?.step?.pr?.prUrl || status?.prUrl),
     mergeMode: 'squash-to-branch',
     newBranch: base === currentBranch || !currentBranch ? suggested : currentBranch,
+    // The PR's own title/description, used only once the squash collapses several rounds (see
+    // needsPrDraft). prDraft: idle → drafting → ready | error.
+    prTitle: '',
+    prBody: '',
+    prDraft: 'idle',
+    prError: '',
   };
+}
+
+// ── PR draft, for a branch several rounds committed to ────────────────────
+// How many rounds this squash collapses: the commits already on the branch since its base, plus
+// the uncommitted round the button commits first. Up to one, the commit box's message already
+// describes the whole branch and `gh pr create --fill` publishes it. Past one, that message is
+// only the last round's, so the PR gets its own title and description, drafted by Claude from the
+// job and the whole branch (POST git/pr-draft).
+function squashRounds(s) {
+  return (s?.worktree?.commitsSinceBase ?? 0) + (s?.clean ? 0 : 1);
+}
+
+function needsPrDraft() {
+  const s = sourceCtl.status;
+  const c = diffState.commit;
+  return Boolean(s?.worktree) && c.mergeMode === 'squash-to-branch' && c.openPr && !s?.prUrl && squashRounds(s) >= 2;
+}
+
+// Per session, keyed on the branch state it was drafted from, so reopening the overlay on an
+// unchanged branch doesn't spend another draft.
+const prDraftCache = new Map();
+const prDraftKey = (s) => `${s?.worktree?.commitsSinceBase ?? 0}:${s?.clean ? 'clean' : 'dirty'}`;
+
+function ensurePrDraft() {
+  const sessionId = diffState.ctx?.sessionId;
+  const c = diffState.commit;
+  if (!sessionId || !c || c.prDraft !== 'idle' || !needsPrDraft()) return;
+  const cached = prDraftCache.get(sessionId);
+  if (cached && cached.key === prDraftKey(sourceCtl.status)) {
+    Object.assign(c, { prTitle: cached.title, prBody: cached.body, prDraft: 'ready' });
+    return;
+  }
+  void draftPr(sessionId);
+}
+
+async function draftPr(sessionId) {
+  const c = diffState.commit;
+  const key = prDraftKey(sourceCtl.status);
+  c.prDraft = 'drafting';
+  c.prError = '';
+  paintPrDraft();
+  try {
+    const r = await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/git/pr-draft`, { method: 'POST' });
+    const body = await r.json().catch(() => null);
+    if (diffState.commit !== c) return; // the overlay moved on to another session meanwhile
+    if (!r.ok || !body?.title) throw new Error(body?.error || `HTTP ${r.status}`);
+    // Text the user already started typing wins over the draft.
+    if (!c.prTitle.trim()) c.prTitle = body.title;
+    if (!c.prBody.trim()) c.prBody = body.body;
+    c.prDraft = 'ready';
+    prDraftCache.set(sessionId, { key, title: body.title, body: body.body });
+  } catch (err) {
+    if (diffState.commit !== c) return;
+    c.prDraft = 'error';
+    c.prError = String(err?.message ?? err);
+  }
+  paintPrDraft();
+}
+
+function prDraftStatus(c) {
+  if (c.prDraft === 'drafting') return '◐ drafting with Claude…';
+  if (c.prDraft === 'error') return 'draft failed';
+  if (c.prDraft === 'ready') return `◐ drafted from ${squashRounds(sourceCtl.status)} rounds`;
+  return '';
+}
+
+// A finished draft fills the fields in place rather than repainting the dialog, which would take
+// focus out of whatever the user is typing meanwhile. Falls back to a repaint when the fields
+// aren't on screen yet (or anymore).
+function paintPrDraft() {
+  const c = diffState.commit;
+  const title = document.querySelector('.dr-pr-draft .dr-pr-title');
+  if (!title) { renderFooter(); renderCommitSheet(); return; }
+  const body = document.querySelector('.dr-pr-draft .dr-pr-body');
+  if (document.activeElement !== title) title.value = c.prTitle;
+  if (body && document.activeElement !== body) body.value = c.prBody;
+  const status = document.querySelector('.dr-pr-draft .dr-pr-status');
+  if (status) { status.textContent = prDraftStatus(c); status.title = c.prError; }
+  const redraft = document.querySelector('.dr-pr-draft .dr-pr-redraft');
+  if (redraft) redraft.disabled = c.prDraft === 'drafting';
 }
 
 function slugify(s) {
@@ -968,6 +1054,8 @@ function computePrimaryLabel({ ignoreReview = false } = {}) {
 // both hosts render the identical controls (D2). Reads the live commit draft +
 // git status; produces no listeners (see wireCommitDialogEvents).
 function buildCommitDialogHtml() {
+  // Starts (or restores from cache) the PR draft the moment the dialog shows PR fields.
+  ensurePrDraft();
   const s = sourceCtl.status;
   const busy = getGitBusy(diffState.ctx?.sessionId);
   const commit = diffState.commit;
@@ -1001,16 +1089,28 @@ function buildCommitDialogHtml() {
       ? `<a class="dr-pr-open o-pill code" href="${escapeHtml(s.prUrl)}" target="_blank" rel="noopener">PR already open ↗</a>`
       : `<label class="dr-checkbox"><input type="checkbox" id="dr-openpr" ${commit.openPr ? 'checked' : ''}>Open PR to main</label>`)
     : '';
+  const prDraft = needsPrDraft();
+  const prBlock = prDraft ? `
+    <div class="dr-pr-draft">
+      <div class="dr-commit-label o-microhead">
+        Pull request
+        <span class="dr-auto dr-pr-status" title="${escapeHtml(commit.prError)}">${escapeHtml(prDraftStatus(commit))}</span>
+        <button type="button" class="dr-pr-redraft" ${commit.prDraft === 'drafting' ? 'disabled' : ''}>Redraft</button>
+      </div>
+      <input class="dr-pr-title" id="dr-pr-title" maxlength="200" placeholder="PR title" spellcheck="false" autocomplete="off" value="${escapeHtml(commit.prTitle)}">
+      <textarea class="dr-commit-textarea dr-pr-body" id="dr-pr-body" maxlength="20000" placeholder="PR description">${escapeHtml(commit.prBody)}</textarea>
+    </div>` : '';
   return `
     <div class="dr-commit-msg">
       <div class="dr-commit-label o-microhead">
-        Commit message
+        ${prDraft ? 'Commit message · this round' : 'Commit message'}
         ${commit.autoFilled ? '<span class="dr-auto">◐ drafted</span>' : ''}
         <span class="dr-commit-hint">⌘E edit · ⌘R regenerate</span>
       </div>
       <textarea class="dr-commit-textarea" id="dr-commit-textarea" maxlength="5000"
         placeholder="Describe the change…">${escapeHtml(commit.message)}</textarea>
     </div>
+    ${prBlock}
     <div class="dr-commit-actions">
       ${mergeToggle}
       <div class="dr-commit-target">→ ${branchChip}</div>
@@ -1034,6 +1134,15 @@ function wireCommitDialogEvents(root, { onCommit }) {
   root.querySelector('#dr-push')?.addEventListener('change', (e) => { diffState.commit.push = e.target.checked; onCommit.rerender(); });
   root.querySelector('#dr-openpr')?.addEventListener('change', (e) => { diffState.commit.openPr = e.target.checked; onCommit.rerender(); });
   root.querySelector('#dr-new-branch')?.addEventListener('input', (e) => { diffState.commit.newBranch = e.target.value; });
+  root.querySelector('#dr-pr-title')?.addEventListener('input', (e) => { diffState.commit.prTitle = e.target.value; });
+  root.querySelector('#dr-pr-body')?.addEventListener('input', (e) => { diffState.commit.prBody = e.target.value; });
+  root.querySelector('.dr-pr-redraft')?.addEventListener('click', () => {
+    const sessionId = diffState.ctx?.sessionId;
+    if (!sessionId) return;
+    diffState.commit.prTitle = '';
+    diffState.commit.prBody = '';
+    void draftPr(sessionId);
+  });
   // Non-worktree branch switch: fires on Enter/blur (change), not per-keystroke,
   // so create-branch runs once with the final name. A no-op name just repaints
   // (restoring the current branch); runSourceAction re-fetches status + re-renders,
@@ -1422,6 +1531,12 @@ async function runCommitAction() {
   }
 
   if (!message) { setSourceFeedback('err', 'Commit message required.'); return; }
+  // Decided before the round's own commit below, which turns "dirty" into one more commit.
+  const pr = needsPrDraft() ? { prTitle: commit.prTitle.trim(), prBody: commit.prBody.trim() } : null;
+  if (pr && !pr.prTitle) {
+    setSourceFeedback('err', commit.prDraft === 'drafting' ? 'The PR description is still drafting.' : 'PR title required.');
+    return;
+  }
   if (!s.clean && !(await doCommit(sessionId, message))) return;
 
   if (commit.mergeMode === 'merge-to-base') {
@@ -1431,7 +1546,7 @@ async function runCommitAction() {
   if (commit.openPr && !s.prUrl) {
     const newBranch = commit.newBranch.trim();
     if (!newBranch) { setSourceFeedback('err', 'Branch name required.'); return; }
-    await doFinalize(sessionId, { kind: 'squash-to-branch', message, newBranch });
+    await doFinalize(sessionId, { kind: 'squash-to-branch', message, newBranch, ...(pr ?? {}) });
     return;
   }
   // "Open PR" unchecked on squash-to-branch: finalize's squash-to-branch endpoint
