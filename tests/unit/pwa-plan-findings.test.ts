@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
-import { renderFinding } from '../../src/pwa/components/work/finding.js';
+import { renderFinding, splitTopics } from '../../src/pwa/components/work/finding.js';
 // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
 import { renderPlanSection } from '../../src/pwa/components/work/plan-section.js';
 // @ts-expect-error PWA modules are plain JS; tests import them at runtime.
@@ -38,12 +38,25 @@ describe('renderFinding', () => {
     expect(renderFinding(finding, 'Findings')).toContain('>Findings<');
   });
 
-  it('renders as a collapsible <details> when asked, open by default', () => {
-    const open = renderFinding(finding, 'Investigation', { collapsible: true });
-    expect(open).toMatch(/<details class="plan-findings tl-findings" open>/);
-    expect(open).toContain('tl-findings-caret');
-    const closed = renderFinding(finding, 'Investigation', { collapsible: true, open: false });
-    expect(closed).not.toMatch(/tl-findings" open>/);
+  it('shows only the summary and folds every topic, evidence and caveats', () => {
+    const html = renderFinding({
+      ...finding,
+      summary: 'Nil conn on close crashes the session; guard it and add a regression test.',
+      findings: 'Lead line.\n\n## Verdict\nShip it.\n\n## The code\nTraced it.',
+    });
+    const open = html.slice(0, html.indexOf('<details'));
+    expect(open).toContain('class="finding-summary"');
+    expect(open).toContain('guard it and add a regression test');
+    expect(open).not.toContain('Lead line.');
+    expect(open).not.toContain('Ship it.');
+    expect(html).not.toMatch(/<details[^>]* open/);
+    for (const t of ['Overview', 'Verdict', 'The code', 'Evidence (1)', 'Caveats (1)']) expect(html).toContain(`>${t}<`);
+    expect(html).toContain('data-details-key="finding-topic-evidence"');
+  });
+
+  it('splits one level deeper when the top level holds a single heading', () => {
+    const { topics } = splitTopics('## What I verified\nIntro.\n### A\na\n### B\nb');
+    expect(topics.map((t: { title: string }) => t.title)).toEqual(['A', 'B']);
   });
 });
 
@@ -65,17 +78,13 @@ describe('renderPlanSection findings', () => {
     expect(html).not.toContain('plan-findings');
   });
 
-  it('renders the investigation as collapsible, below the live orchestrator feed', () => {
-    const html = renderPlanSection({
-      ...base,
-      orchestratorSessionId: 'sess-1',
-      plan: { ...base.plan, findings: finding },
-    });
-    expect(html).toContain('<details class="plan-findings tl-findings"');
+  it('drops a finished orchestrator feed but keeps a running one above the investigation', () => {
+    const job = { ...base, orchestratorSessionId: 'sess-1', plan: { ...base.plan, findings: finding } };
+    expect(renderPlanSection(job)).not.toContain('orchestrator-inline-session-mount--replan');
+    const html = renderPlanSection({ ...job, state: 'executing', reviewingStepId: 's1' });
     const feedAt = html.indexOf('orchestrator-inline-session-mount--replan');
-    const investigationAt = html.indexOf('plan-findings tl-findings');
     expect(feedAt).toBeGreaterThanOrEqual(0);
-    expect(feedAt).toBeLessThan(investigationAt);
+    expect(feedAt).toBeLessThan(html.indexOf('plan-findings'));
   });
 });
 

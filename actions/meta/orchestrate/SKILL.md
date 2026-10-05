@@ -334,7 +334,8 @@ mcp__outpost__submit_plan({
   steps: [ /* your steps array, native JSON — the schema tool call handles all encoding */ ],
   drops: [ /* replan-only: ids of currentSteps to remove; omit or [] otherwise */ ],
   findings: {                       // optional — your up-front investigation
-    findings: "## What I verified\n…markdown…",
+    summary: "Ticket's bug is real but already fixed in agents-js 1.7.0; plan posts that finding back on the ticket.",  // 50-200 chars, always visible
+    findings: "## The ticket\n…markdown…\n\n## The code path\n…",
     evidence: [ { kind: "repo-file", source: "session.go:142", summary: "…" } ],
     verdict: { kind: "service-bug", confidence: 0.8 },   // only when you reached a classification
     caveats: [ "…" ]
@@ -343,6 +344,8 @@ mcp__outpost__submit_plan({
 ```
 
 `findings` is the investigation you ran in Step 4 — the same shape as `read.investigate`'s output. It's shown to the user at plan approval and persisted for audit. Include it whenever you verified anything; omit only for trivially-routable jobs.
+
+**`findings.summary` is required whenever you pass `findings`: 50-200 characters.** It is the exec summary of the plan — what the job really is and what the plan does about it — and it is the only part of the investigation the user sees without expanding anything. The PWA folds every `##` section of `findings.findings` into its own collapsed disclosure, so the summary must stand on its own: no "see below". The daemon rejects a summary outside 50-200 characters; count before you submit. Then write `findings.findings` as one `##` section per topic (the ticket, each code path, linked PRs, related issues, prior art).
 
 The tool returns `{ok: true}` on accept. On rejection you'll get a JSON-RPC error with the daemon's reason — surface it in chat and don't retry blindly. The old bash+curl+jq path is gone; do NOT try to shell out to `/work/plan-ready`.
 

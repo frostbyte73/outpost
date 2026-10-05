@@ -359,6 +359,7 @@ export interface FindingVerdict {
 // at the approval decision and auditable afterward. Same shape as
 // read.investigate's output (mirrored, not shared — the repo has no $ref loader).
 export interface Finding {
+  summary?: string;     // 50-200 char exec summary of the plan; required on submit, absent on older plans
   findings: string;     // primary markdown writeup
   evidence?: FindingEvidence[];
   verdict?: FindingVerdict;

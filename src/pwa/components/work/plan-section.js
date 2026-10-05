@@ -10,6 +10,7 @@
 import { work } from '../../state/work.js';
 import { planIsLive } from '../../vm/work-predicates.js';
 import { renderFinding } from './finding.js';
+import { orchestratorStepShim } from '../tracked/session-mounts.js';
 import { actionCategory, actionDisplayName } from './action-icon.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -220,11 +221,9 @@ export function renderPlanSection(j, { timelineHtml = '', editing = false } = {}
     </div>
   `;
 
-  // Collapsible, and rendered *below* the live orchestrator feed — it's the completed
-  // rationale, supporting context to the feed's live activity. Once the job is
-  // executing/done it collapses by default; during planning/review it stays open
-  // so the investigation is front-and-center while the plan is being reviewed.
-  const findings = renderFinding(j.plan?.findings, 'Investigation', { collapsible: true, open: !live });
+  // Rendered *below* the live orchestrator feed — it's the completed rationale. renderFinding
+  // keeps only the verdict open and folds every other topic away on its own.
+  const findings = renderFinding(j.plan?.findings, 'Investigation');
   // A step-review runs the orchestrator on top of an executing plan, so its feed
   // appears above a timeline that stays put. Say which step it's reviewing —
   // otherwise a live planner feed mid-execution reads as an unexplained replan.
@@ -232,7 +231,9 @@ export function renderPlanSection(j, { timelineHtml = '', editing = false } = {}
   const reviewNote = reviewIdx >= 0
     ? `<div class="plan-review-note o-microhead">Reviewing step ${String(reviewIdx + 1).padStart(2, '0')} before continuing</div>`
     : '';
-  const replanMount = orchestratorLive && steps.length > 0
+  // Only while a run is in flight. A finished run's feed is just a "✓ Finished" chip, and the
+  // session stays one click away under "Sessions on this job".
+  const replanMount = orchestratorLive && steps.length > 0 && orchestratorStepShim(j) === null
     ? `${reviewNote}<div class="orchestrator-inline-session-mount orchestrator-inline-session-mount--replan" data-session-id="${escapeHtml(j.orchestratorSessionId)}" data-job-id="${escapeHtml(j.id)}"></div>`
     : '';
   const foot = (awaitingLaunch || noPlanYet) ? '' : `

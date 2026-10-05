@@ -399,7 +399,9 @@ describe('Orchestrator — rerunLatest', () => {
   });
 });
 
+const SUMMARY = 'Nil conn on close crashes the session; guard it in session.go and add a regression test.';
 const sampleFinding = {
+  summary: SUMMARY,
   findings: '## Verified\nNPE reproduces at session.go:142.',
   evidence: [{ kind: 'repo-file', source: 'session.go:142', summary: 'nil deref' }],
 } as const;
@@ -438,7 +440,7 @@ describe('Orchestrator.onPlanReady — findings', () => {
     const postedAt = queue.get(job.id)!.plan!.postedAt;
     const stepId = queue.get(job.id)!.steps[0]!.id;
 
-    const nextFinding = { findings: '## Updated\nAlso affects worker.go.' } as Finding;
+    const nextFinding = { summary: SUMMARY, findings: '## Updated\nAlso affects worker.go.' } as Finding;
     const keep: ProposedStep = { ...first, keepId: stepId };
     engine.onPlanReady(job.id, 'replan', [keep], [], 'more', nextFinding);
 
@@ -446,6 +448,19 @@ describe('Orchestrator.onPlanReady — findings', () => {
     expect(j.pendingReconciliation).toBeTruthy();
     expect(j.plan?.findings).toEqual(nextFinding);
     expect(j.plan?.postedAt).toBe(postedAt);
+  });
+
+  it('refuses findings whose summary is missing or outside 50-200 characters', () => {
+    const { engine } = makeEngine();
+    const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    const proposed: ProposedStep = {
+      type: 'orchestrated', controller: 'code.orchestrate-pr', title: 't', description: 'd', goal: 'g',
+      workspace: { kind: 'writable', repoCwd: '/tmp', branch: 'feat/x' },
+    };
+    for (const summary of [undefined, 'too short', 'x'.repeat(201)]) {
+      expect(() => engine.onPlanReady(job.id, 'initial', [proposed], undefined, undefined, { ...sampleFinding, summary } as unknown as Finding))
+        .toThrow(/findings\.summary must be 50-200 characters/);
+    }
   });
 
   it('snapshots findings into the rejected iteration', () => {
