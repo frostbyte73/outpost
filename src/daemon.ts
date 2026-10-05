@@ -1246,6 +1246,26 @@ async function main() {
 
   await server.listen();
   await hookServer.listen();
+
+  // A restart signals only this process — tsx watch on a file change, launchctl kickstart, a
+  // bootout. Unhandled, every Claude child outlived it mid-turn, still holding this run's
+  // per-launch secret, and the next run 401'd its hooks (whose PreToolUse misses are not
+  // blocking — see hook-server.ts) until the turn ended. Closing them first keeps "the
+  // sessions die with the daemon", which reconcileInterruptedSteps relies on to resume them.
+  // The timer is the backstop if a close hangs; SIGKILL on the daemon still skips all of this,
+  // which is why the pretool route fails closed on its own.
+  let shuttingDown = false;
+  const shutdown = (signal: NodeJS.Signals): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    setTimeout(() => process.exit(0), 8000).unref();
+    void manager.closeAll('shutdown').then((n) => {
+      console.log(`[daemon] ${signal} — closed ${n} session(s), exiting`);
+      process.exit(0);
+    });
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
   if (config.httpPort !== null) {
     console.log(`[daemon] listening on http://127.0.0.1:${config.httpPort}`);
   }

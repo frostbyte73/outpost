@@ -10,9 +10,10 @@ export type SessionModel = 'sonnet' | 'opus' | 'haiku' | 'fable';
 // Why the daemon itself is tearing a session down, threaded into daemon_proc_exit
 // so the PWA can tell a graceful shutdown from a crash. 'idle' = reaped for
 // inactivity (resumable on the next message); 'archived' = worktree/step gone;
-// 'reauth' = recycled to pick up a credential that was just re-authorized.
+// 'reauth' = recycled to pick up a credential that was just re-authorized;
+// 'shutdown' = the daemon itself is exiting (resumable once it is back).
 // Absent on the exit event means the subprocess died on its own → a real crash.
-export type SessionCloseReason = 'idle' | 'archived' | 'reauth';
+export type SessionCloseReason = 'idle' | 'archived' | 'reauth' | 'shutdown';
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 // Replay window sized to survive iOS backgrounding the PWA.
@@ -291,6 +292,14 @@ export class SessionManager {
     const s = this.active.get(sessionId);
     if (!s) return 'idle';
     return s.clients.size > 0 ? 'foreground' : 'background';
+  }
+
+  // Every live session, at once — the daemon's shutdown. Each close escalates SIGTERM → SIGKILL
+  // after 5s, so this settles within that whatever the sessions are doing.
+  async closeAll(reason: SessionCloseReason): Promise<number> {
+    const ids = [...this.active.keys()];
+    await Promise.all(ids.map((id) => this.close(id, reason)));
+    return ids.length;
   }
 
   async close(sessionId: string, reason: SessionCloseReason = 'archived'): Promise<void> {

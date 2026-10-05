@@ -127,7 +127,7 @@ function allowResp(): HookResponse {
   return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
 }
 
-function denyResp(reason: string): HookResponse {
+export function denyResp(reason: string): HookResponse {
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
