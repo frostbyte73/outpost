@@ -75,13 +75,13 @@ If `$WORK_APPROACH` references specific files, `Read` them now. If anything in t
 
 ## Step 2 — Implement
 
-Apply `$WORK_APPROACH`. Use TDD where it makes sense (a test first, then the change, then the test passes), especially for backend logic and bug fixes. For UI tweaks or config changes, manual verification is fine.
+Apply `$WORK_APPROACH`. Use TDD where it makes sense (a test first, then the change, then the test passes), especially for backend logic and bug fixes. For UI tweaks or config changes, manual verification is fine. Either way, a test has to pin logic you wrote — see the Tests section of `SHARED-style.md`.
 
 When the approach is ambiguous, exercise judgment — you're the implementer, and the human reviews the diff before it merges. If you discover the approach is wrong (the file doesn't look how the investigator described, an API has changed, a dependency is missing), do the thing that solves the goal and note the deviation in your final summary. Don't paper over it.
 
-Match the repo's existing conventions, then apply the house-style rules and the repo's `CLAUDE.md`/`AGENTS.md` you read in Step 1. Read a few neighboring files for tone before adding new ones — comment style, naming, error handling, where tests live. The common failure mode is over-commenting: if you find yourself writing `// fetch user` above `user := getUser()` or restating a function's name in its doc comment, delete it. Likewise resist adding helpers, options structs, or interfaces "in case someone needs them" — three similar lines beat a premature abstraction.
+Match the repo's existing conventions and the `CLAUDE.md`/`AGENTS.md` you read in Step 1. Read a few neighboring files for tone before adding new ones — comment style, naming, error handling, where tests live.
 
-Read `cat ~/.outpost/actions/SHARED-lean-code.md` before your first edit. It is the reuse-first ladder and the root-cause rule for every change you make here.
+Read `cat ~/.outpost/actions/SHARED-lean-code.md` and `cat ~/.outpost/actions/SHARED-style.md` before your first edit. The first is the reuse-first ladder and the root-cause rule; the second is the bar for comments and tests, which is where a diff most often reads as machine-written.
 
 Don't expand scope. A bug fix fixes the bug; it doesn't refactor the surrounding function. If you spot something else worth changing while you're in there, mention it in your final summary — don't bundle it into the diff.
 
@@ -117,20 +117,27 @@ addressed pass 2
 Also refresh `artifacts.implementation` so it describes the code as it now stands, and write a
 `commitMessage` for this round's diff as usual.
 
-## Step 3 — Self-review the diff
+## Step 3 — Self-review the diff, then check it against `SHARED-style.md`
 
 This is a hygiene pass over your own work, not the review — a fresh session does that in
-rows 5-7 above, because you cannot catch what you were already wrong about. Keep it cheap and
-don't treat it as the thing that makes the diff ready.
+rows 5-7 above, because you cannot catch what you were already wrong about. It does not make
+the diff ready, but it is what keeps the comments and tests out of the reviewer's way.
 
-Before finishing, read your own working-tree diff (`git diff`) end-to-end. Things to actively look for:
+Read your own working-tree diff (`git diff`, plus any untracked files) end-to-end. Look for:
 
-- Stray debug prints, commented-out code, or `// removed: previously did X` epitaphs (the house style forbids these).
-- Comments that restate code, name-restate functions, or narrate task history (`// fix for ENG-123`). Delete them — context belongs in the PR description, not in code.
-- Half-finished slices, dead branches you added "just in case", or backwards-compat wrappers inside a repo the owner controls.
+- Stray debug prints, commented-out code, half-finished slices, dead branches added "just in case".
 - Files you didn't mean to touch (auto-format sweeps that touched unrelated files, accidental dependency bumps). Revert anything off-target with `git checkout -- <path>` — that's a working-tree reset, not a ref change, and is fine.
 
-A 30-second review here saves the user from having to do it themselves.
+Then **re-open `SHARED-style.md` — every round, including a review-fix round** — and walk the
+diff hunk by hunk against it. Something read once at the start is something you write past by
+the third round. Run its write-then-cut procedure on every comment in the diff, including the
+ones you feel good about, and hold every new test to its Tests section: delete a test that pins
+a library, a getter, or the implementation's own shape.
+
+Report the pass in **`artifacts.styleCheck`**, not in `memo` — the controller overwrites
+`memo` on its next turn, while `artifacts` persist. First line `round <roundsSpent> — clean` or
+`round <roundsSpent> — corrected`, then which rules you corrected (or "none"), so a clean pass
+reads as checked rather than skipped and a stale one reads as stale.
 
 ## Step 4 — Report the round
 
@@ -152,6 +159,7 @@ mcp__outpost__submit_step_progress({
   memo: "<what you changed, any deviation from the plan and why, what to look for in review>",
   artifacts: {
     implementation: "<the same summary as markdown: files touched, what each change does, deviations, what you could not finish>",
+    styleCheck: "round <roundsSpent> — clean|corrected\n<the SHARED-style.md pass from Step 3: rules corrected, or none>",
     commitMessage: "<subject line, then a blank line, then a short body>"
   },
   next: { kind: "self-round" }

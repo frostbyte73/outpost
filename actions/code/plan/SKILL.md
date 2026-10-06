@@ -72,7 +72,7 @@ For each task, write:
 - **Test intent** — what behavior gets pinned down and how (unit test file + what it asserts, or manual verification steps for UI/config changes that don't lend themselves to a unit test). Match this repo's existing test conventions (vitest for backend `src/`, playwright for e2e) rather than inventing a new pattern.
 - **Verification** — the exact command(s) to run to confirm the task's slice works before moving on (e.g., `npx vitest run src/foo.test.ts`, `npx tsc --noEmit`, a manual repro).
 
-Read `cat ~/.outpost/actions/SHARED-lean-code.md` before you write the tasks, and hold each task against it. A task that the codebase, the standard library, or an installed dependency already covers becomes a reuse, not new code. A task with no current need gets cut.
+Read `cat ~/.outpost/actions/SHARED-lean-code.md` and the Tests section of `cat ~/.outpost/actions/SHARED-style.md` before you write the tasks, and hold each task against them. A task's test intent names logic the change adds; a task with none says "no new test" rather than inventing one. A task that the codebase, the standard library, or an installed dependency already covers becomes a reuse, not new code. A task with no current need gets cut.
 
 Order tasks so dependencies flow forward. If two tasks are genuinely independent (touch disjoint files, no shared types), say so — the implementer can interleave them, but don't force a false ordering.
 

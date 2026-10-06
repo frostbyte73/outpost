@@ -53,7 +53,7 @@ If `diffRange` is absent, run `git status` + `git diff` to see the changes — t
 
 `diffRange` exists for reviewing a PR's worktree, which is a clean detached checkout with no uncommitted changes — reviewing `git diff` there finds nothing and this action would report "no issues" on a diff it never looked at. The caller is expected to pass the three-dot form, `<merge-base>...<head>`, not `<base>..<head>` (two dots). Three dots is "what this branch actually changed since it forked" — `git diff A...B` *means* `git diff $(git merge-base A B) B`. That expansion is the semantics, not a recipe: `git merge-base` is not in this action's grant and running it is denied, so write the three dots and let git find the base itself. Two dots would also pull in every commit that landed on the base branch after the fork, and you'd flag someone else's code as if the PR author wrote it.
 
-Read CLAUDE.md (and any `AGENTS.md`) to ground the review in conventions before you flag style issues.
+Read CLAUDE.md (and any `AGENTS.md`) to ground the review in conventions before you flag style issues, then `cat ~/.outpost/actions/SHARED-style.md` — the bar for comments and tests where the repo's own files are silent.
 
 ### First, does the code do what it was supposed to do?
 
@@ -68,12 +68,12 @@ When `context.spec` or `context.implPlan` is set, that is the first pass and the
 Then scan the diff for:
 
 - Stray debug prints / commented-out code / "// removed: previously did X" epitaphs.
-- Comments that restate code, name-restate functions, or narrate task history (`// fix for ENG-123`).
+- Comments that fail `SHARED-style.md`'s bar: restating code, name-restating functions, narrating mechanism or task history (`// fix for ENG-123`), or running past one line on internal code. Name each one; "too many comments" is not actionable.
 - Half-finished slices, dead branches added "just in case", backwards-compat wrappers inside a repo the owner controls.
 - Files touched off-target (auto-format sweeps, accidental dependency bumps).
 - Bugs (off-by-one, missed null cases, race conditions, resource leaks) — these get `severity: "error"`.
 - Error paths: failures swallowed, errors wrapped without context the caller lacks, a `panic`/`throw` where the case is recoverable.
-- Tests that assert on mocks rather than behavior, and behavior changed with no test touched at all.
+- Tests that assert on mocks rather than behavior, tests that pin a library or the implementation's own shape, and behavior changed with no test touched at all.
 
 Be sparing with `severity: "error"` — reserve it for things that would actively break. Most lint-style findings are `info` or `warn`.
 

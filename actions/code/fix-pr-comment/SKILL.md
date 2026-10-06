@@ -48,7 +48,7 @@ COMMENTS=$(jq -c '.pr.comments // []' "$OUTPOST_ENVELOPE")
 
 ## Step 2 — Edit files
 
-Make the minimum change that addresses the reviewer's concern. Read `cat ~/.outpost/actions/SHARED-lean-code.md` first. A comment names one call site, so grep every caller of the code you change. Same constraints as the implementer:
+Make the minimum change that addresses the reviewer's concern. Read `cat ~/.outpost/actions/SHARED-lean-code.md` and `cat ~/.outpost/actions/SHARED-style.md` first. A comment names one call site, so grep every caller of the code you change. Same constraints as the implementer:
 
 - Edit files in place; never `git add` / `git commit` / `git push`.
 - Never run `gh pr comment` / `gh pr review` / any GitHub mutation. Replies are a separate path — `code.reply-pr-comments` posts them, on a round the user approves separately.
@@ -63,6 +63,12 @@ git fetch origin && git diff origin/main..HEAD
 ```
 
 If the edit is non-trivial and could regress something, run the project's own tests.
+
+Then re-open `SHARED-style.md` and walk this round's `git diff` against it: write-then-cut on
+every comment you added, and no test that pins a library or the implementation's own shape. A
+reviewer who asked for a fix and got back a new doc block is a second comment on the PR.
+Report the pass in `artifacts.styleCheck` — first line `round <roundsSpent> — clean|corrected`,
+then which rules you corrected, or "none".
 
 ## Step 3 — Submit the edit result
 
@@ -83,7 +89,10 @@ mcp__outpost__submit_step_progress({
   stepId: "<$STEP_ID>",
   phase: "pr_comments",
   memo: "<which comments you addressed and the edit each got>",
-  artifacts: { commitMessage: "<subject line, then a blank line, then a short body>" },
+  artifacts: {
+    styleCheck: "round <roundsSpent> — clean|corrected\n<rules corrected, or none>",
+    commitMessage: "<subject line, then a blank line, then a short body>"
+  },
   next: { kind: "self-round" }
 })
 ```

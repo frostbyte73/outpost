@@ -60,9 +60,11 @@ gh run view <run-id> --log-failed
 ## Step 3 — Diagnose, fix, and stage
 
 Fix the root cause in the code — not the CI config, unless the config is clearly the
-bug. Read `cat ~/.outpost/actions/SHARED-lean-code.md` first. A red check names a symptom, so grep every caller of the code you change. Use your knowledge of why this code exists. Run the relevant tests/build locally
+bug. Read `cat ~/.outpost/actions/SHARED-lean-code.md` and `cat ~/.outpost/actions/SHARED-style.md` first. A red check names a symptom, so grep every caller of the code you change. Use your knowledge of why this code exists. Run the relevant tests/build locally
 to confirm the fix (the same command the failing check runs, e.g. `npm run test:unit`,
-`npx tsc --noEmit`, `mage`, `go test ./...`). Once it's confirmed, stage it:
+`npx tsc --noEmit`, `mage`, `go test ./...`). Then re-open `SHARED-style.md` and walk your
+`git diff` against it — write-then-cut on every comment you added, and fix a failing test by
+fixing the code or the assertion, not by adding tests around it. Once it's confirmed, stage it:
 
 ```bash
 git add -A

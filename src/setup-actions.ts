@@ -24,6 +24,7 @@ export function ensureActionsInstalled(
 function installActions(srcDir: string, dstDir: string, skillsDir: string): string[] {
   mkdirSync(dstDir, { recursive: true });
   if (existsSync(srcDir)) {
+    installSharedDocs(srcDir, dstDir);
     for (const category of safeReaddir(srcDir)) {
       const srcCat = join(srcDir, category);
       if (!isDir(srcCat)) continue;
@@ -59,6 +60,19 @@ function installActions(srcDir: string, dstDir: string, skillsDir: string): stri
   // actions dropped from the repo are handled by the registry's tolerant load + explicit
   // cleanup instead. pruneStaleActions is kept as a manual utility (see its tests).
   return symlinkActionsToSkills(dstDir, skillsDir);
+}
+
+// SHARED-*.md are overwritten every boot, unlike actions: no proposal flow edits them,
+// so the repo copy is always the current one.
+function installSharedDocs(srcDir: string, dstDir: string): void {
+  for (const f of safeReaddir(srcDir)) {
+    if (!f.startsWith('SHARED-') || !f.endsWith('.md')) continue;
+    try {
+      cpSync(join(srcDir, f), join(dstDir, f));
+    } catch (e) {
+      console.warn(`[work] could not install ${f}: ${(e as Error).message}`);
+    }
+  }
 }
 
 // After a repo action dir disappears (e.g. renamed), remove the stale copy under
