@@ -54,7 +54,7 @@ export function runShellCommand(command: string, cwd: string): Promise<ShellRun>
   return new Promise((resolve) => {
     // Login shell so the command sees the PATH the user would get in a terminal — launchd
     // strips the shell environment from the daemon, so a bare `zsh -c` misses homebrew.
-    const proc = spawn(process.env.SHELL || '/bin/zsh', ['-lc', command], {
+    const proc = spawn(process.env.SHELL || '/bin/sh', ['-lc', command], {
       cwd,
       timeout: TIMEOUT_MS,
       killSignal: 'SIGKILL',

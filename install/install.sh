@@ -3,6 +3,10 @@
 # restarts if it crashes. Run from anywhere; the script resolves paths via $0.
 set -euo pipefail
 
+if [[ "$(uname)" != "Darwin" ]]; then
+  exec "$(dirname "$0")/install-systemd.sh" "$@"
+fi
+
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 # Label is per-user so multiple installs on a shared box don't collide. Override
 # with OUTPOST_PLIST_LABEL if you want something specific (e.g. an org prefix).

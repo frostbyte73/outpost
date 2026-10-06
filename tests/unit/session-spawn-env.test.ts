@@ -27,7 +27,7 @@ const { SessionManager } = await import('../../src/session/session-manager.js');
 const { SessionStore } = await import('../../src/session/session-store.js');
 
 const STEP_ENV = {
-  OUTPOST_ENVELOPE: '/Users/dc/.outpost/jobs/CS-2068/steps/19531999/envelope.json',
+  OUTPOST_ENVELOPE: '/Users/testuser/.outpost/jobs/CS-2068/steps/19531999/envelope.json',
   JOB_ID: 'CS-2068',
   STEP_ID: '19531999',
   STEP_TYPE: 'orchestrated',

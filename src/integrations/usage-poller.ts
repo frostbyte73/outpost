@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { readClaudeCredentials } from './claude-credentials.js';
 
 // Snapshot shape matches the `rate_limits` slot of claude's statusLine JSON so the PWA can
 // reuse its existing meter render path. resets_at is unix epoch *seconds* (claude's
@@ -12,16 +12,15 @@ export interface UsagePollerOpts {
   onSnapshot: (snap: AccountUsageSnapshot) => void;
   // Test seams.
   fetch?: typeof fetch;
-  readToken?: () => string | null;
+  readToken?: () => Promise<string | null>;
 }
 
-const KEYCHAIN_SERVICE = 'Claude Code-credentials';
 const USAGE_URL = 'https://api.anthropic.com/api/oauth/usage';
 
 const MIN_INTERVAL_SEC = 30;
 const MAX_INTERVAL_SEC = 300;
 const RAMP_UTIL = 90; // % utilization at which we hit MIN_INTERVAL_SEC
-const NO_TOKEN_RETRY_SEC = 600; // re-check keychain every 10min in case claude logs in later
+const NO_TOKEN_RETRY_SEC = 600; // re-check credentials every 10min in case claude logs in later
 const MAX_ERROR_BACKOFF = 8; // ×interval; with 5min base that's a 40min cap
 const RETRY_AFTER_CAP_SEC = 3600; // don't let a server-sent Retry-After stall the poller >1h
 
@@ -47,7 +46,7 @@ export class UsagePoller {
   private lastError: string | null = null;
   private readonly opts: UsagePollerOpts;
   private readonly fetchImpl: typeof fetch;
-  private readonly readToken: () => string | null;
+  private readonly readToken: () => Promise<string | null>;
 
   constructor(opts: UsagePollerOpts) {
     this.opts = opts;
@@ -90,7 +89,7 @@ export class UsagePoller {
   // of seconds until the next automatic run should fire. Never schedules itself — the
   // caller decides whether to re-arm (tick does; runNow doesn't).
   private async pollOnce(): Promise<number> {
-    const token = this.readToken();
+    const token = await this.readToken();
     if (!token) {
       // Claude CLI not authenticated via OAuth (API-key billing, or signed out). Keep
       // checking on a long cadence so a later login is picked up without a daemon restart.
@@ -176,14 +175,6 @@ function isoToEpochSeconds(iso: string | undefined): number {
   return Number.isFinite(t) ? Math.floor(t / 1000) : 0;
 }
 
-function defaultReadToken(): string | null {
-  try {
-    const out = execFileSync('security', ['find-generic-password', '-s', KEYCHAIN_SERVICE, '-w'], {
-      stdio: ['ignore', 'pipe', 'ignore'],
-    });
-    const parsed = JSON.parse(String(out).trim()) as { claudeAiOauth?: { accessToken?: string } };
-    return parsed.claudeAiOauth?.accessToken ?? null;
-  } catch {
-    return null;
-  }
+async function defaultReadToken(): Promise<string | null> {
+  return (await readClaudeCredentials())?.claudeAiOauth?.accessToken ?? null;
 }

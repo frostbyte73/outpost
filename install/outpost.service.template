@@ -1,0 +1,14 @@
+[Unit]
+Description=Outpost daemon
+After=network-online.target
+
+[Service]
+WorkingDirectory=__PROJECT_ROOT__
+ExecStart=__NODE_PATH__ __TSX_PATH__ __PROJECT_ROOT__/src/daemon.ts
+Environment=PATH=__PATH__
+Environment=NODE_PATH=__PROJECT_ROOT__/node_modules
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target
