@@ -471,6 +471,7 @@ html[data-layout="mobile"] .o-menu-body > * { width: 100%; text-align: left; }
   background: var(--bg); color: var(--text);
   border: 1px solid var(--line); border-radius: var(--r-control);
   padding: 6px 8px;
+  justify-self: start; max-width: 100%;
   transition: border-color var(--dur-1) var(--ease);
 }
 .o-preapprovals select:focus { outline: none; border-color: var(--accent); }

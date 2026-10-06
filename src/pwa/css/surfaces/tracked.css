@@ -184,7 +184,9 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   .plan-row { display: grid; grid-template-columns: subgrid; }
   .plan-row .type-mono { justify-self: start; }
 }
-.plan-row + .plan-row { border-top: 1px solid var(--line-soft); }
+.plan-row + .plan-row,
+.plan-row-preapprovals + .plan-row { border-top: 1px solid var(--line-soft); }
+.plan-row-preapprovals { padding: 4px 16px 12px; min-width: 0; }
 .plan-row-idx {
   font-family: var(--font-mono);
   font-size: 10px;
