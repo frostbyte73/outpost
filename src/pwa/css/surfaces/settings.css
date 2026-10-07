@@ -70,6 +70,12 @@ html[data-layout="desktop"] .o-frame-list.settings-nav-col {
 .settings-loading { color: var(--text-dim); font-size: 12px; }
 .settings-note { color: var(--text-dim); font-size: 12px; margin: 8px 0 0; }
 
+.settings-preapprovals-legend { display: grid; grid-template-columns: 140px 1fr; gap: 6px 16px; margin: 0; font-size: 13px; }
+.settings-preapprovals-legend dt { color: var(--text); }
+.settings-preapprovals-legend dd { margin: 0; color: var(--text-dim); }
+html[data-layout="mobile"] .settings-preapprovals-legend { grid-template-columns: 1fr; gap: 2px; }
+html[data-layout="mobile"] .settings-preapprovals-legend dd { margin-bottom: 8px; }
+
 /* ── Permission groups ────────────────────────────────────────────────── */
 .permgroup-card {
   padding: 0;

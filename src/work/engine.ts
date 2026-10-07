@@ -54,6 +54,7 @@ import {
 import { readMergeReadiness } from './merge-readiness.js';
 import { clampToCeiling, describePreapprovals, effectivePreapprovals } from './preapprovals.js';
 import { runGh as defaultRunGh, type RunGh } from '../integrations/gh-cli.js';
+import { gitMergingFromBase } from '../git/git-ops.js';
 import {
   currentDraftForRaiser, matchPinnedCall, writeGateFor,
   type DraftRaisedBy, type PinnedCall, type WriteDraft,
@@ -207,6 +208,7 @@ export interface WorkEngineOpts {
   // Overrides UNRESOLVED_GRACE_MS (tests).
   unresolvedGraceMs?: number;
   runGh?: RunGh;
+  preapprovalDefaults?: () => Preapprovals | undefined;
 }
 
 type SessionRole =
@@ -536,6 +538,7 @@ export class WorkEngine {
       now: opts.now ?? (() => Date.now()),
       actionRegistry: opts.actionRegistry,
       isInteractive: (id) => opts.interactive?.isInteractive(id) ?? false,
+      preapprovalDefaults: opts.preapprovalDefaults,
     };
   }
 
@@ -1145,7 +1148,7 @@ export class WorkEngine {
   // With nobody to approve the plan, a proposal may only tighten what the step already has.
   private autoApprovedPreapprovals(job: JobRecord, s: Step): Step {
     if (s.type !== 'orchestrated' || !s.proposedPreapprovals) return s;
-    const ceiling = effectivePreapprovals(job.preapprovals, s.preapprovals);
+    const ceiling = effectivePreapprovals(this.opts.preapprovalDefaults?.(), job.preapprovals, s.preapprovals);
     return { ...s, preapprovals: { ...s.preapprovals, ...clampToCeiling(s.proposedPreapprovals, ceiling) } };
   }
 
@@ -1576,6 +1579,11 @@ export class WorkEngine {
       journal: (action, jobId, stepId, outcome, lesson) =>
         this.opts.journalStore?.append({ action, jobId, stepId, outcome, lesson, at: this.ctx.now() }),
       mergeReadiness: (jobId, stepId, prNumber, sha) => this.mergeReadiness(jobId, stepId, prNumber, sha),
+      preapprovalDefaults: () => this.opts.preapprovalDefaults?.(),
+      mergingFromBase: (stepId, base) => {
+        const path = this.opts.worktreeManager.get(stepId)?.worktreePath;
+        return path ? gitMergingFromBase(path, base) : Promise.resolve(false);
+      },
     };
   }
 
@@ -2024,7 +2032,7 @@ export class WorkEngine {
       preapprovalsFor: (jobId, stepId) => {
         const j = this.opts.queue.get(jobId);
         const s = j?.steps.find((x) => x.id === stepId);
-        return effectivePreapprovals(j?.preapprovals, s?.type === 'orchestrated' ? s.preapprovals : undefined);
+        return effectivePreapprovals(this.opts.preapprovalDefaults?.(), j?.preapprovals, s?.type === 'orchestrated' ? s.preapprovals : undefined);
       },
       getStep: (jobId, stepId) => {
         const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);

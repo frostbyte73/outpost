@@ -89,7 +89,7 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
         ...(d.failure !== undefined ? { failure: d.failure } : {}),
       })),
       pr: s.pr,
-      preapprovals: effectivePreapprovals(job.preapprovals, s.preapprovals),
+      preapprovals: effectivePreapprovals(ctx.preapprovalDefaults?.(), job.preapprovals, s.preapprovals),
       ...(s.baseBranch ? { baseBranch: s.baseBranch } : {}),
       ...(s.gateApproved !== undefined ? { gateApproved: s.gateApproved } : {}),
       ...(s.gateFeedback !== undefined ? { gateFeedback: s.gateFeedback } : {}),

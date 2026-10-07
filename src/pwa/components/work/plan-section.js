@@ -13,7 +13,8 @@ import { renderFinding } from './finding.js';
 import { orchestratorStepShim } from '../tracked/session-mounts.js';
 import { actionCategory, actionDisplayName } from './action-icon.js';
 import { readPreapprovalsControl, renderPreapprovalsControl, wirePreapprovalsControl } from './preapprovals-control.js';
-import { loosened } from '../../vm/preapprovals.js';
+import { effective, loosened } from '../../vm/preapprovals.js';
+import { settings } from '../../state/settings.js';
 
 const diagramUrl = (j) => `/api/work/jobs/${encodeURIComponent(j.id)}/diagram.svg`;
 
@@ -172,8 +173,9 @@ function planApproveButton(j) {
 function stepPreapprovalsHtml(j, proposed, current, name) {
   if (proposed?.type !== 'orchestrated') return '';
   const proposal = proposed.proposedPreapprovals;
-  const value = current?.preapprovals ?? proposal ?? j.preapprovals;
-  return `<div class="plan-row-preapprovals">${renderPreapprovalsControl(value, { name, loosened: loosened(proposal, j.preapprovals) })}</div>`;
+  const global = settings.get().preapprovalDefaults;
+  const value = current?.preapprovals ?? effective(global, j.preapprovals, proposal);
+  return `<div class="plan-row-preapprovals">${renderPreapprovalsControl(value, { name, loosened: loosened(proposal, global, j.preapprovals) })}</div>`;
 }
 
 // One compact index row per step: two-digit index, type-mono chip, title.

@@ -11,8 +11,8 @@ describe('preapprovals vm', () => {
   });
 
   it('matches the daemon presets from the spec', () => {
-    expect(PRESETS.routine).toEqual({ spec: 'skip', push: true, openPr: true, replies: true, merge: false, landing: 'approved' });
-    expect(PRESETS.personal).toEqual({ spec: 'auto', push: true, openPr: false, replies: false, merge: false, landing: 'direct' });
+    expect(PRESETS.routine).toEqual({ spec: 'skip', push: true, openPr: true, replies: true, merge: false, syncBase: false, landing: 'approved' });
+    expect(PRESETS.personal).toEqual({ spec: 'auto', push: true, openPr: false, replies: false, merge: false, syncBase: false, landing: 'direct' });
   });
 
   it('marks what a proposal loosens past the job settings', () => {

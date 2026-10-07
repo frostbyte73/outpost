@@ -83,12 +83,14 @@ mcp__outpost__submit_write_draft({
   evidence: "<which files conflicted and how you reconciled each — plus `git diff --staged` if it's not too large>",
   calls: [
     { label: "commit", bash: "git commit --no-edit" },
-    { label: "push", bash: "git push" }
+    { label: "push", bash: "git push origin <branch>" }
   ]
 })
 ```
 
-Git's default merge message (no `-m`) is what gets committed — don't compose your own. If
+Git's default merge message (no `-m`) is what gets committed — don't compose your own. Spell
+both calls exactly as shown with the branch name literal — a `syncBase` pre-approval covers
+only these two forms. If
 `boundNote` says not to push, draft only the `commit` call. Then stop. If
 `writeGate.feedback` is non-empty (the user wants a different resolution — every round,
 oldest first), redo the reconciliation as it asks, re-stage, and draft again.

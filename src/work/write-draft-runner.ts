@@ -1,4 +1,4 @@
-import type { JobRecord, Step } from './work-types.js';
+import type { JobRecord, Preapprovals, Step } from './work-types.js';
 // A submit against a step that's already done is a stale or duplicate call; re-parking it
 // would resurrect a terminal step and re-ask the user about something already settled.
 import { isTerminalStep as isTerminal } from '../steps/index.js';
@@ -36,6 +36,8 @@ export interface DraftHost {
   journal(action: string, jobId: string, stepId: string, outcome: string, lesson: string): void;
   // Undefined means the PR is ready to merge; a string names the unmet condition.
   mergeReadiness?(jobId: string, stepId: string, prNumber: number, sha: string): Promise<string | undefined>;
+  preapprovalDefaults?(): Preapprovals | undefined;
+  mergingFromBase?(stepId: string, baseBranch: string): Promise<boolean>;
 }
 
 // accept/revise/deny's shared "resolve a PENDING draft by id, or explain precisely why not"
@@ -155,13 +157,17 @@ async function tryAutoApprove(host: DraftHost, jobId: string, stepId: string, dr
   const draft = step?.drafts?.find((d) => d.id === draftId);
   if (step?.type !== 'orchestrated' || !draft || draft.raisedBy.kind !== 'controller') return false;
   if (step.workspace.kind !== 'writable') return false;
-  const pre = effectivePreapprovals(host.getJob(jobId)?.preapprovals, step.preapprovals);
+  const pre = effectivePreapprovals(host.preapprovalDefaults?.(), host.getJob(jobId)?.preapprovals, step.preapprovals);
   if (!anyPreapproved(pre)) return false;
 
+  const mergeFromBase = step.baseBranch && host.mergingFromBase
+    ? await host.mergingFromBase(stepId, step.baseBranch).catch(() => false)
+    : false;
   const coverage = classifyDraft(draft.calls, {
     pre,
     branch: step.workspace.branch,
     baseBranch: step.baseBranch,
+    mergeFromBase,
     prNumber: prNumberOf(step.pr?.prUrl),
     commentIds: new Set((step.pr?.comments ?? []).flatMap((c) => c.commentId === undefined ? [] : [c.commentId])),
   });

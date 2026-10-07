@@ -76,6 +76,13 @@ function loadPrReviewIntake() {
   } catch { return DEFAULT_PR_REVIEW_INTAKE; }
 }
 
+function loadPreapprovalDefaults() {
+  try {
+    const v = JSON.parse(localStorage.getItem('cr:preapprovalDefaults') ?? 'null');
+    return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+  } catch { return {}; }
+}
+
 const store = createStore({
   theme: loadTheme(),
   mode: loadMode(),
@@ -85,6 +92,7 @@ const store = createStore({
   launchConcurrency: loadLaunchConcurrency(),
   shellCommands: loadShellCommands(),
   prReviewIntake: loadPrReviewIntake(),
+  preapprovalDefaults: loadPreapprovalDefaults(),
   acceptEdits: false,
   modePopoverOpen: false,
   pushPermission: typeof Notification === 'undefined' ? 'unsupported' : Notification.permission,
@@ -149,6 +157,13 @@ function applyPrReviewIntake(v) {
   store.set((s) => ({ ...s, prReviewIntake: v }));
 }
 
+// The daemon validates and enforces these; the mirror only seeds the Settings form and step cards.
+function applyPreapprovalDefaults(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return;
+  try { localStorage.setItem('cr:preapprovalDefaults', JSON.stringify(v)); } catch {}
+  store.set((s) => ({ ...s, preapprovalDefaults: v }));
+}
+
 register({ key: 'theme', apply: applyTheme, current: () => store.get().theme });
 register({ key: 'mode', apply: applyMode, current: () => store.get().mode });
 register({ key: 'defaultApprovalMode', apply: applyDefaultApprovalMode, current: () => store.get().defaultApprovalMode });
@@ -157,6 +172,7 @@ register({ key: 'editorCommand', apply: applyEditorCommand, current: () => store
 register({ key: 'launchConcurrency', apply: applyLaunchConcurrency, current: () => store.get().launchConcurrency });
 register({ key: 'shellCommands', apply: applyShellCommands, current: () => store.get().shellCommands });
 register({ key: 'prReviewIntake', apply: applyPrReviewIntake, current: () => store.get().prReviewIntake });
+register({ key: 'preapprovalDefaults', apply: applyPreapprovalDefaults, current: () => store.get().preapprovalDefaults });
 
 export const settings = {
   get: store.get,
@@ -194,6 +210,10 @@ export const settings = {
   setPrReviewIntake(v) {
     applyPrReviewIntake(v);
     push('prReviewIntake', store.get().prReviewIntake);
+  },
+  setPreapprovalDefaults(v) {
+    applyPreapprovalDefaults(v);
+    push('preapprovalDefaults', store.get().preapprovalDefaults);
   },
   applyLaunchConcurrency,
   setAcceptEdits(v) {

@@ -19,6 +19,7 @@ export const SETTINGS_SECTIONS = [
       { key: 'model-defaults', label: 'Model defaults', icon: '◇' },
       { key: 'editor', label: 'External editor', icon: '✎' },
       { key: 'permissions', label: 'Permissions', icon: '◉' },
+      { key: 'pre-approvals', label: 'Pre-approvals', icon: '✓' },
       { key: 'claude-account', label: 'Claude account', icon: '✦' },
       { key: 'mcp', label: 'MCP connections', icon: '◈' },
       { key: 'notifications', label: 'Notifications', icon: '✉' },

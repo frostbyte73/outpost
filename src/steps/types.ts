@@ -1,4 +1,4 @@
-import type { JobRecord, Step } from '../work/work-types.js';
+import type { JobRecord, Preapprovals, Step } from '../work/work-types.js';
 import type { ActionRegistry } from '../actions/registry.js';
 
 export type Action =
@@ -25,6 +25,7 @@ export interface HandlerCtx {
   // Is this session one the user has taken the wheel on? Optional for the same reason as
   // actionRegistry — a test ctx need not supply it, and absent reads as "on autopilot".
   isInteractive?: (sessionId: string) => boolean;
+  preapprovalDefaults?: () => Preapprovals | undefined;
 }
 
 export interface StepHandler<S extends Step> {

@@ -8,7 +8,7 @@ import type { PinnedCall, WriteDraft } from '../../src/work/write-draft.js';
 
 const SHA = 'b'.repeat(40);
 
-function harness(step: Step, jobPre?: Preapprovals, readiness?: string | Error) {
+function harness(step: Step, jobPre?: Preapprovals, readiness?: string | Error, global?: { pre?: Preapprovals; merging?: boolean }) {
   let cur: Step = step;
   const resumeRaiser = vi.fn();
   const events: string[] = [];
@@ -31,6 +31,8 @@ function harness(step: Step, jobPre?: Preapprovals, readiness?: string | Error) 
       if (readiness instanceof Error) throw readiness;
       return readiness;
     },
+    preapprovalDefaults: () => global?.pre,
+    mergingFromBase: async () => global?.merging ?? false,
   };
   return { host, step: () => cur, resumeRaiser, events };
 }
@@ -59,6 +61,23 @@ describe('a step with no pre-approvals', () => {
     expect(h.step().state).toBe('gate_pending_approval');
     expect(h.step().drafts![0]!.approvedAt).toBeUndefined();
     expect(h.step().drafts![0]!.autoApproveMiss).toBeUndefined();
+  });
+});
+
+describe('a merge from the base under the Settings default', () => {
+  const calls: PinnedCall[] = [
+    { id: 'm1', label: 'commit', bash: 'git commit --no-edit' },
+    { id: 'm2', label: 'push', bash: 'git push origin deps/bump-ws' },
+  ];
+
+  it('is auto-approved while the merge is in progress', async () => {
+    const h = harness(step(), undefined, undefined, { pre: { syncBase: true }, merging: true });
+    expect(await submitDraft(h.host, 'j1', 's1', draft(calls, 'code.resolve-conflicts'))).toEqual({ ok: true, autoApproved: true });
+  });
+
+  it('reaches the user when the job turns syncBase off', async () => {
+    const h = harness(step(), { syncBase: false }, undefined, { pre: { syncBase: true }, merging: true });
+    expect(await submitDraft(h.host, 'j1', 's1', draft(calls, 'code.resolve-conflicts'))).toEqual({ ok: true });
   });
 });
 

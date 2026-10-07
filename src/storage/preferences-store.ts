@@ -1,5 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { parsePreapprovals } from '../work/preapprovals.js';
+import type { Preapprovals } from '../work/work-types.js';
 
 export type PreferencesBlob = Record<string, unknown>;
 
@@ -69,6 +71,12 @@ export class PreferencesStore {
           .map((r) => r.trim().toLowerCase()))]
       : [];
     return { repos, reviewRequested: o.reviewRequested === true };
+  }
+
+  // Settings-level pre-approvals under every job's own. Anything unparseable reads as gated.
+  getPreapprovalDefaults(): Preapprovals | undefined {
+    const parsed = parsePreapprovals((this.get() as { preapprovalDefaults?: unknown }).preapprovalDefaults);
+    return parsed.ok ? parsed.value : undefined;
   }
 
   private load(): void {

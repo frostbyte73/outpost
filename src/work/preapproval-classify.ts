@@ -4,7 +4,7 @@ import { writeFindings } from '../permissions/dangerous-writes.js';
 import { isValidTmpFilePath, type PinnedCall } from './write-draft.js';
 import type { EffectivePreapprovals } from './preapprovals.js';
 
-export type PreapprovalSetting = 'push' | 'openPr' | 'replies' | 'merge';
+export type PreapprovalSetting = 'push' | 'openPr' | 'replies' | 'merge' | 'syncBase';
 
 export interface ClassifyContext {
   pre: EffectivePreapprovals;
@@ -12,6 +12,8 @@ export interface ClassifyContext {
   baseBranch?: string;
   prNumber?: number;
   commentIds: ReadonlySet<number>;
+  // Read from the worktree by the daemon: an uncommitted merge of origin/<baseBranch> is in progress.
+  mergeFromBase?: boolean;
 }
 
 export type DraftCoverage =
@@ -58,7 +60,8 @@ function parseFlags(args: string[], allowed: Record<string, boolean>): { flags: 
   return { flags, positional };
 }
 
-function commitShape(rest: string[]): Shape {
+function commitShape(rest: string[], ctx: ClassifyContext): Shape {
+  if (ctx.mergeFromBase && rest.length === 1 && rest[0] === '--no-edit') return { setting: 'syncBase', expects: [] };
   const p = parseFlags(rest, { '-m': true, '--message': true, '-F': true, '--file': true });
   if (!p || p.positional.length) return { miss: 'only `git commit -m` / `-F /tmp/…` is pre-approvable' };
   const file = p.flags.get('-F') ?? p.flags.get('--file');
@@ -78,7 +81,7 @@ function pushShape(rest: string[], ctx: ClassifyContext): Shape {
       ? { setting: 'merge', expects: ['delete-ref'] }
       : { miss: `deletes ${ref}, not this step's branch` };
   }
-  if (ref === ctx.branch || ref === `HEAD:${ctx.branch}`) return { setting: 'push', expects: [] };
+  if (ref === ctx.branch || ref === `HEAD:${ctx.branch}`) return { setting: ctx.mergeFromBase ? 'syncBase' : 'push', expects: [] };
   if (ctx.baseBranch && ref === `HEAD:${ctx.baseBranch}` && ctx.pre.landing === 'direct') {
     return { setting: 'push', expects: ['default-branch'] };
   }
@@ -133,7 +136,7 @@ function apiReplyShape(rest: string[], ctx: ClassifyContext): Shape {
 
 function shapeOf(argv: string[], ctx: ClassifyContext): Shape {
   const [prog, sub, ...rest] = argv;
-  if (prog === 'git' && sub === 'commit') return commitShape(rest);
+  if (prog === 'git' && sub === 'commit') return commitShape(rest, ctx);
   if (prog === 'git' && sub === 'push') return pushShape(rest, ctx);
   if (prog === 'gh' && sub === 'pr' && rest[0] === 'create') return prCreateShape(rest.slice(1), ctx);
   if (prog === 'gh' && sub === 'pr' && rest[0] === 'comment') return prCommentShape(rest.slice(1), ctx);
@@ -148,7 +151,9 @@ function classifyCall(call: PinnedCall, ctx: ClassifyContext): Shape {
   if (!clauses || clauses.length !== 1) return { miss: 'compound commands are never pre-approved' };
   const shape = shapeOf(clauseArgv(clauses[0]!.text), ctx);
   if ('miss' in shape) return shape;
-  if (!ctx.pre[shape.setting]) return { miss: `needs the ${shape.setting} pre-approval` };
+  // `push` already covers any commit + push to the step's own branch, a merge from base included.
+  const granted = ctx.pre[shape.setting] || (shape.setting === 'syncBase' && ctx.pre.push);
+  if (!granted) return { miss: `needs the ${shape.setting} pre-approval` };
   const unexpected = writeFindings(call.bash).filter((f) => !shape.expects.includes(f.code));
   if (unexpected.length) return { miss: unexpected.map((f) => f.message).join(' ') };
   return shape;

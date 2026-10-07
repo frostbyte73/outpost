@@ -447,6 +447,16 @@ export async function gitCommitsSince(cwd: string, base: string): Promise<number
   return res.ok && Number.isInteger(n) ? n : null;
 }
 
+// True while an uncommitted merge of `origin/<base>` is in progress in this worktree.
+export async function gitMergingFromBase(cwd: string, base: string): Promise<boolean> {
+  if (!BRANCH_NAME_RE.test(base)) return false;
+  const [merging, origin] = await Promise.all([
+    runGit(cwd, ['rev-parse', '-q', '--verify', 'MERGE_HEAD']),
+    runGit(cwd, ['rev-parse', '-q', '--verify', `refs/remotes/origin/${base}^{commit}`]),
+  ]);
+  return merging.ok && origin.ok && merging.stdout.trim() === origin.stdout.trim();
+}
+
 export interface PrDraftGitContext {
   commits: string[];      // full messages, oldest first
   stat: string;

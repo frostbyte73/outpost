@@ -29,6 +29,7 @@
 // Everything is still its own stacked row. Never one crammed eyebrow line.
 
 import { work } from '../../state/work.js';
+import { settings } from '../../state/settings.js';
 import { orchestratedRows } from '../../vm/tracked.js';
 import { actionCategory, actionDisplayName, actionIconHtml } from './action-icon.js';
 import { hasPrBlock, renderPrBlockHtml, wirePrBlockActions } from './pr-block.js';
@@ -107,7 +108,7 @@ function metaRowHtml(s, vm) {
 
 function preapprovalsHtml(job, s) {
   if (s.state === 'resolved' || s.state === 'failed' || s.cancelled) return '';
-  const value = effective(job?.preapprovals, s.preapprovals);
+  const value = effective(settings.get().preapprovalDefaults, job?.preapprovals, s.preapprovals);
   return `
     <details class="orc-preapprovals orc-preapprovals-${domId(s.id)}">
       <summary><span class="o-microhead">Pre-approvals</span> <span class="orc-preapprovals-label">${escapeHtml(summaryLabel(value))}</span></summary>

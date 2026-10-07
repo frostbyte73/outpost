@@ -22,7 +22,7 @@ const job = {
 describe('the controller envelope', () => {
   it('carries the effective pre-approvals and the base branch', () => {
     const env = orchestratedHandler.buildEnvelope(step, job, { actionRegistry: undefined } as never) as OrchestratedEnvelope;
-    expect(env.preapprovals).toEqual({ spec: 'gate', push: true, openPr: false, replies: false, merge: false, landing: 'approved' });
+    expect(env.preapprovals).toEqual({ spec: 'gate', push: true, openPr: false, replies: false, merge: false, syncBase: false, landing: 'approved' });
     expect(env.baseBranch).toBe('main');
   });
 });

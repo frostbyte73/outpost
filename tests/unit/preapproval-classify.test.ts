@@ -56,6 +56,30 @@ describe('a setting that is off', () => {
   });
 });
 
+describe('a merge from the base', () => {
+  const sync = effectivePreapprovals({ syncBase: true });
+  const draft = [call('git commit --no-edit', 0), call('git push origin deps/bump-ws', 1)];
+
+  it('covers the commit + push under syncBase while the merge is in progress', () => {
+    expect(classifyDraft(draft, ctx({ pre: sync, mergeFromBase: true }))).toEqual({ covered: true, settings: ['syncBase'] });
+  });
+
+  it('is also covered by push', () => {
+    expect(classifyDraft(draft, ctx({ pre: effectivePreapprovals({ push: true }), mergeFromBase: true }))).toMatchObject({ covered: true });
+  });
+
+  it('covers nothing when no merge from the base is in progress', () => {
+    expect(classifyDraft(draft, ctx({ pre: sync, mergeFromBase: false }))).toMatchObject({ covered: false });
+    expect(classifyDraft([call(covered.commitM)], ctx({ pre: sync }))).toMatchObject({ covered: false });
+  });
+
+  it('does not stretch to another branch, a bare push, or a commit with other flags', () => {
+    for (const bash of ['git push origin main', 'git push', 'git commit --no-edit --allow-empty']) {
+      expect(classifyDraft([call(bash)], ctx({ pre: sync, mergeFromBase: true }))).toMatchObject({ covered: false });
+    }
+  });
+});
+
 describe('near misses', () => {
   const misses: Record<string, string> = {
     'another branch': 'git push origin some/other-branch',

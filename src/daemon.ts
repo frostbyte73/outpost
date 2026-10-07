@@ -456,6 +456,7 @@ async function main() {
     actionRegistry,
     governor: launchGovernor,
     writeActionMeta: (id, meta) => sessionStore.writeActionMeta(id, meta),
+    preapprovalDefaults: () => preferencesStore.getPreapprovalDefaults(),
   });
   const runsStore = new RunsStore(join(RUNTIME_DIR, 'runs.jsonl'));
   const usageLedger = new UsageLedger(join(RUNTIME_DIR, 'usage-ledger.json'));

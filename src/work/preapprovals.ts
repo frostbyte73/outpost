@@ -7,16 +7,17 @@ export interface EffectivePreapprovals {
   openPr: boolean;
   replies: boolean;
   merge: boolean;
+  syncBase: boolean;
   landing: Landing;
 }
 
 export const GATED_PREAPPROVALS: EffectivePreapprovals = {
-  spec: 'gate', push: false, openPr: false, replies: false, merge: false, landing: 'merged',
+  spec: 'gate', push: false, openPr: false, replies: false, merge: false, syncBase: false, landing: 'merged',
 };
 
 const SPEC_ORDER: readonly SpecMode[] = ['gate', 'auto', 'skip'];
 const LANDING_ORDER: readonly Landing[] = ['merged', 'approved', 'direct'];
-const BOOL_KEYS = ['push', 'openPr', 'replies', 'merge'] as const;
+const BOOL_KEYS = ['push', 'openPr', 'replies', 'merge', 'syncBase'] as const;
 const KEYS: ReadonlyArray<keyof Preapprovals> = ['spec', ...BOOL_KEYS, 'landing'];
 
 function defined(p: Preapprovals | undefined): Preapprovals {
@@ -25,8 +26,9 @@ function defined(p: Preapprovals | undefined): Preapprovals {
   return out as Preapprovals;
 }
 
-export function effectivePreapprovals(jobPre?: Preapprovals, stepPre?: Preapprovals): EffectivePreapprovals {
-  return { ...GATED_PREAPPROVALS, ...defined(jobPre), ...defined(stepPre) };
+// `globalPre` is the user's Settings default; anything the job or step sets wins over it.
+export function effectivePreapprovals(globalPre?: Preapprovals, jobPre?: Preapprovals, stepPre?: Preapprovals): EffectivePreapprovals {
+  return { ...GATED_PREAPPROVALS, ...defined(globalPre), ...defined(jobPre), ...defined(stepPre) };
 }
 
 export function anyPreapproved(e: EffectivePreapprovals): boolean {

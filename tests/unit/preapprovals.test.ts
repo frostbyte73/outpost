@@ -6,16 +6,20 @@ import {
 
 describe('effectivePreapprovals', () => {
   it('is fully gated when nothing is set', () => {
-    expect(effectivePreapprovals(undefined, undefined)).toEqual(GATED_PREAPPROVALS);
+    expect(effectivePreapprovals(undefined, undefined, undefined)).toEqual(GATED_PREAPPROVALS);
   });
 
-  it('lets a step field override the job default, field by field', () => {
-    const e = effectivePreapprovals({ push: true, openPr: true, landing: 'approved' }, { openPr: false, spec: 'auto' });
-    expect(e).toEqual({ spec: 'auto', push: true, openPr: false, replies: false, merge: false, landing: 'approved' });
+  it('layers settings, then job, then step, field by field', () => {
+    const e = effectivePreapprovals(
+      { syncBase: true, push: true },
+      { push: false, openPr: true, landing: 'approved' },
+      { openPr: false, spec: 'auto' },
+    );
+    expect(e).toEqual({ spec: 'auto', push: false, openPr: false, replies: false, merge: false, syncBase: true, landing: 'approved' });
   });
 
-  it('ignores explicitly-undefined step fields instead of re-gating the job value', () => {
-    expect(effectivePreapprovals({ push: true }, { push: undefined }).push).toBe(true);
+  it('ignores explicitly-undefined fields instead of re-gating the layer below', () => {
+    expect(effectivePreapprovals({ push: true }, { push: undefined }, { push: undefined }).push).toBe(true);
   });
 });
 

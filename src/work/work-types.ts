@@ -25,6 +25,7 @@ export interface Preapprovals {
   openPr?: boolean;
   replies?: boolean;
   merge?: boolean;
+  syncBase?: boolean;
   landing?: Landing;
 }
 

@@ -1,6 +1,7 @@
 import type { Server } from '../server.js';
 import type { PreferencesStore } from '../storage/preferences-store.js';
 import { readJsonBody } from './util.js';
+import { parsePreapprovals } from '../work/preapprovals.js';
 
 export interface PreferencesRoutesDeps {
   preferencesStore: PreferencesStore;
@@ -22,6 +23,14 @@ export function registerPreferencesRoutes(server: Server, deps: PreferencesRoute
       res.statusCode = 400;
       res.end('expected a JSON object');
       return;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'preapprovalDefaults')) {
+      const pre = parsePreapprovals(body.preapprovalDefaults);
+      if (!pre.ok) {
+        res.statusCode = 400;
+        res.end(pre.error);
+        return;
+      }
     }
     const merged = preferencesStore.merge(body);
     // Other devices only need to hear about keys the daemon itself acts on —

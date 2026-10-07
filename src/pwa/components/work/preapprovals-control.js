@@ -4,7 +4,13 @@ import { PRESETS, effective, presetOf } from '../../vm/preapprovals.js';
 const PRESET_LABELS = { gated: 'Gated', routine: 'Routine', personal: 'Personal', custom: 'Custom' };
 const SPEC_LABELS = { gate: 'Ask me to approve it', auto: 'Write it, don’t ask', skip: 'Skip spec and plan' };
 const LANDING_LABELS = { merged: 'PR merged', approved: 'PR approved + green', direct: 'Pushed to base, no PR' };
-const WRITES = [['push', 'Commit + push'], ['openPr', 'Open the PR'], ['replies', 'Reply to comments'], ['merge', 'Merge']];
+export const WRITES = [
+  ['push', 'Commit + push', 'Any commit and push to the step’s own branch'],
+  ['openPr', 'Open the PR', 'Opening the PR from the step’s branch onto its base'],
+  ['replies', 'Reply to comments', 'Replies on the step’s own PR'],
+  ['merge', 'Merge', 'Merging the PR once it’s approved, green and at the same head'],
+  ['syncBase', 'Merge base in', 'Committing and pushing a merge of origin/<base> — conflict fixes included'],
+];
 
 function options(labels, selected) {
   return Object.entries(labels)
@@ -26,7 +32,7 @@ export function renderPreapprovalsControl(value, { name, loosened = [] } = {}) {
       </label>
       <div class="o-preapprovals-row"><span class="k">Don’t ask before</span>
         <div class="o-preapprovals-writes">
-          ${WRITES.map(([k, l]) => `<label${flag(k)}><input type="checkbox" data-pre="${k}"${e[k] ? ' checked' : ''}> ${escapeHtml(l)}</label>`).join('')}
+          ${WRITES.map(([k, l, hint]) => `<label${flag(k)} title="${escapeHtml(hint)}"><input type="checkbox" data-pre="${k}"${e[k] ? ' checked' : ''}> ${escapeHtml(l)}</label>`).join('')}
         </div>
       </div>
       <label class="o-preapprovals-row"${flag('landing')}><span class="k">Done when</span>
@@ -43,6 +49,7 @@ export function readPreapprovalsControl(fieldset) {
     openPr: get('openPr').checked,
     replies: get('replies').checked,
     merge: get('merge').checked,
+    syncBase: get('syncBase').checked,
     landing: get('landing').value,
   };
 }
