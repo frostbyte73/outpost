@@ -14,14 +14,14 @@ import type { JobRecord, OrchestratedStep, PrFacts } from '../../src/work/work-t
 
 const URL = 'https://github.com/livekit/egress/pull/1411';
 
-function makeEngine() {
+function makeEngine(linearWriter: object = { setState: async () => undefined }) {
   const dir = mkdtempSync(join(tmpdir(), 'engine-pr-opening-'));
   const queue = new JobQueue(dir);
   const engine = new WorkEngine({
     queue,
     sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {} } as never,
     worktreeManager: { get: () => undefined, provision: async () => ({ path: dir }) } as never,
-    linearWriter: { setState: async () => undefined } as never,
+    linearWriter: linearWriter as never,
     actionsStore: {} as never,
     actionRegistry: { getAction: () => undefined, gatedFor: () => undefined, listActions: () => [] } as never,
     jobsDir: join(dir, 'jobs'),
@@ -92,3 +92,27 @@ describe('the daemon opening a PR on the user\'s behalf', () => {
     expect(prOf(queue, jobId).isOpeningPr).toBe(false);
   });
 });
+
+// A PR opened for a Linear ticket's job lands on that ticket as an attachment. Nothing ticks the
+// job on a watcher sweep, so recording a new URL is what triggers the write.
+describe('a new PR on a Linear job', () => {
+  it('is linked on the ticket once, as soon as its URL is recorded', async () => {
+    const linked: Array<[string, string]> = [];
+    const { engine, queue } = makeEngine({
+      setState: async () => undefined,
+      linkPr: async (uuid: string, url: string) => { linked.push([uuid, url]); },
+    });
+    const jobId = seed(engine, queue);
+    queue.mutate(jobId, (j): JobRecord => ({ ...j, source: 'linear', externalRef: { url: 'https://linear.app/o/issue/CLT-1', issueIdentifier: 'CLT-1', linearUuid: 'uuid-1' } }));
+
+    engine.finishPrOpening('sess1', URL);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(linked).toEqual([['uuid-1', URL]]);
+    expect(queue.get(jobId)!.linearLinkedPrs).toEqual([URL]);
+
+    await engine.tick(jobId);
+    expect(linked).toHaveLength(1);
+  });
+});
+

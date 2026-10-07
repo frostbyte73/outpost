@@ -444,6 +444,8 @@ export interface JobRecord {
   // re-firing while the review runs.
   reviewingStepId?: string;
   linearStateMarked?: { inProgress?: boolean; inReview?: boolean; done?: boolean };
+  // PR URLs already attached to the Linear ticket (lifecycle.ts's link-linear-pr).
+  linearLinkedPrs?: string[];
   linearStatusDirty?: boolean;
   linearCommentId?: string;
   // Set on jobs created via "promote to tracked" (POST /api/work/jobs/from-session/:id) —

@@ -9,7 +9,8 @@ import { handlerFor } from '../steps/index.js';
 export type JobTransition =
   | { kind: 'mark-done' }
   | { kind: 'mark-failed' }
-  | { kind: 'mark-linear-state'; state: 'inProgress' | 'inReview' | 'done' };
+  | { kind: 'mark-linear-state'; state: 'inProgress' | 'inReview' | 'done' }
+  | { kind: 'link-linear-pr'; prUrl: string };
 
 function allStepsResolved(j: JobRecord): boolean {
   if (j.steps.length === 0) return false;
@@ -41,8 +42,14 @@ export function owesStepReview(j: JobRecord): string | null {
   return null;
 }
 
-function linearReady(j: JobRecord): j is JobRecord & { externalRef: { linearUuid: string } } {
-  return j.source === 'linear' && !!j.externalRef?.linearUuid;
+// The ticket a Linear job writes to. The hourly intake script sends only the identifier
+// (`CLT-2995`), never the UUID, so the identifier has to do: LinearWriter resolves it.
+export function linearIssueRef(j: JobRecord): string | undefined {
+  return j.source === 'linear' ? (j.externalRef?.linearUuid ?? j.externalRef?.issueIdentifier) : undefined;
+}
+
+function linearReady(j: JobRecord): boolean {
+  return !!linearIssueRef(j);
 }
 
 // The ticket moves to "in review" once every PR-bearing step actually has its PR up.
@@ -55,11 +62,29 @@ function allPrsAreRemote(steps: OrchestratedStep[]): boolean {
   return steps.every((s) => s.pr?.prState === 'open' || s.pr?.prState === 'merged');
 }
 
+// Every PR a step of this job opened goes onto the ticket as an attachment, once
+// (`linearLinkedPrs` records what landed). Only writable steps: a review step's PR is
+// somebody else's. Every state but abandoned, because a failed job's PR is still the ticket's
+// PR, and a PR that merges on the tick that finishes the job still owes its link.
+function unlinkedPrs(j: JobRecord): JobTransition[] {
+  if (!linearReady(j) || j.state === 'abandoned') return [];
+  const linked = new Set(j.linearLinkedPrs ?? []);
+  const urls = new Set(prBearingSteps(j)
+    .filter((s) => s.workspace.kind === 'writable')
+    .map((s) => s.pr?.prUrl)
+    .filter((u): u is string => !!u && !linked.has(u)));
+  return [...urls].map((prUrl) => ({ kind: 'link-linear-pr', prUrl }));
+}
+
 // Pure decision: given a job record, what job-level transitions are needed?
 // Caller is responsible for executing them in order. Returning multiple
 // transitions in one call is fine — they don't conflict (e.g. you can mark a
 // job done AND mark Linear done in the same tick).
 export function decideJobTransitions(j: JobRecord): JobTransition[] {
+  return [...stateTransitions(j), ...unlinkedPrs(j)];
+}
+
+function stateTransitions(j: JobRecord): JobTransition[] {
   if (j.state === 'failed' || j.state === 'abandoned') return [];
 
   // An already-done job still owes Linear its done-write if the write hasn't landed:

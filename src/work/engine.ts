@@ -39,7 +39,7 @@ import {
 } from './orchestrated-runner.js';
 import { coalesceExternal, deliverImmediate } from '../steps/orchestrated-inbox.js';
 import { reconcile, validateDispositions } from './reconcile.js';
-import { decideJobTransitions, owesStepReview } from '../jobs/lifecycle.js';
+import { decideJobTransitions, owesStepReview, linearIssueRef } from '../jobs/lifecycle.js';
 import { appendJobEvent } from '../storage/job-event-log.js';
 import { AUTH_STOP_ERRORS, currentStalls } from './job-liveness.js';
 import type { ActionsStore } from '../storage/actions-store.js';
@@ -709,7 +709,7 @@ export class WorkEngine {
         this.mutate(jobId, (jj) => this.appendEvent({ ...jj, state: 'failed' }, { kind: 'state_changed', who: 'orchestrator', body: 'halted: a step failed' }));
         markedFailed = true;
       } else if (t.kind === 'mark-linear-state') {
-        const linearUuid = j.externalRef?.linearUuid;
+        const linearUuid = linearIssueRef(j);
         if (!linearUuid) continue;
         // setState is idempotent; await + retry on next tick beats the optimistic mark.
         try {
@@ -717,6 +717,16 @@ export class WorkEngine {
           this.mutate(jobId, (jj) => ({ ...jj, linearStateMarked: { ...jj.linearStateMarked, [t.state]: true } }));
         } catch (e) {
           console.warn(`[work] Linear setState(${jobId}, ${t.state}) failed; will retry next tick: ${(e as Error).message}`);
+        }
+      } else if (t.kind === 'link-linear-pr') {
+        const linearUuid = linearIssueRef(j);
+        if (!linearUuid) continue;
+        try {
+          await this.opts.linearWriter.linkPr(linearUuid, t.prUrl);
+          this.mutate(jobId, (jj) => (jj.linearLinkedPrs ?? []).includes(t.prUrl)
+            ? jj : { ...jj, linearLinkedPrs: [...(jj.linearLinkedPrs ?? []), t.prUrl] });
+        } catch (e) {
+          console.warn(`[work] Linear linkPr(${jobId}, ${t.prUrl}) failed; will retry next tick: ${(e as Error).message}`);
         }
       }
     }
@@ -2712,6 +2722,10 @@ export class WorkEngine {
       }
       : s);
     this.mutate(jobId, (j) => ({ ...j, linearStatusDirty: true }));
+    // A PR the step didn't have before owes the Linear ticket its link (and maybe the move to In
+    // Review). Nothing else ticks the job on a watcher sweep, so this is what gets it written now
+    // rather than whenever the job next happens to move.
+    if (facts.prUrl && (step?.type !== 'orchestrated' || step.pr?.prUrl !== facts.prUrl)) void this.tickOne(jobId);
   }
 
   // Bracket the daemon's own `gh pr create` (the git routes' two PR-opening buttons) on
