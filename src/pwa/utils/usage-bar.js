@@ -103,7 +103,8 @@ function breakdownHtml(breakdown) {
 // sheet — same content, different container chrome around it.
 // What a hold on the job launch queue means — how many wait, why, when it opens — for the
 // wordmark tag's tooltip (queueTag). Null while it just runs, or before the daemon has reported
-// the queue at all.
+// the queue at all. Full slots are not a hold: work waiting on a turn to end is the queue running
+// as configured, so only the budget gate (heldWindow) earns the word.
 export function launchQueueParts(q) {
   if (!q) return null;
   const waiting = q.parked ? `${q.parked} waiting` : null;
@@ -114,7 +115,7 @@ export function launchQueueParts(q) {
       runAll: !!q.parked,
     };
   }
-  if (!q.parked) return null;
+  if (!q.parked || !heldWindow(q)) return null;
   const why = String(q.reason ?? '').replace(/^Waiting — /, '');
   return {
     state: 'held', head: `Held · ${waiting}`,

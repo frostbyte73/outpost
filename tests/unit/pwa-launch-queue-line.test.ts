@@ -10,7 +10,7 @@ describe('launchQueueParts — what a hold means', () => {
   });
 
   it('says how many a budget hold keeps, why and when it opens', () => {
-    const p = launchQueueParts({ paused: false, parked: 6, reason: 'Waiting — 7d on course for 140% by reset (60% used, 4d left)', opensAt: Date.now() + 4 * 3600_000 });
+    const p = launchQueueParts({ paused: false, parked: 6, reason: 'Waiting — 7d on course for 140% by reset (60% used, 4d left)', opensAt: Date.now() + 4 * 3600_000, blocker: 'seven_day' });
     expect(p.head).toBe('Held · 6 waiting');
     expect(p.why).toMatch(/^7d on course for 140% by reset \(60% used, 4d left\) · opens in [34]h/);
   });
@@ -56,9 +56,14 @@ describe('queueTag — the word beside the sidebar wordmark', () => {
   it('reads paused for the user\'s pause, and held when the budget keeps launches back', () => {
     expect(queueTag({ paused: true, parked: 2, reason: 'Job queue paused', opensAt: null }))
       .toEqual({ text: 'paused', tone: 'paused', title: 'Job queue paused · 2 waiting' });
-    const held = queueTag({ paused: false, parked: 4, reason: 'Waiting — 7d on course for 95% by reset (50% used, 3d left)', opensAt: null });
+    const held = queueTag({ paused: false, parked: 4, reason: 'Waiting — 7d on course for 95% by reset (50% used, 3d left)', opensAt: null, blocker: 'seven_day' });
     expect(held).toMatchObject({ text: 'held', tone: 'held' });
     expect(held!.title).toBe('Held · 4 waiting — 7d on course for 95% by reset (50% used, 3d left)');
+  });
+
+  it('says nothing when only the slots are full, or the budget is being ignored', () => {
+    expect(queueTag({ paused: false, parked: 3, reason: '2/2 slots busy', opensAt: null, active: 2, slots: 2, blocker: null })).toBeNull();
+    expect(queueTag({ paused: false, parked: 3, reason: 'Usage limit ignored', opensAt: null, blocker: 'seven_day', ignoreBudgetUntil: Date.now() + 3600_000 })).toBeNull();
   });
 });
 
