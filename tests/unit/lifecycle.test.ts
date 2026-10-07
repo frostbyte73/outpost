@@ -92,3 +92,49 @@ describe('decideJobTransitions (post-overhaul)', () => {
     }
   });
 });
+
+describe('decideJobTransitions — PR links on the Linear ticket', () => {
+  const URL_A = 'https://github.com/o/r/pull/1';
+  const URL_B = 'https://github.com/o/r/pull/2';
+  function prStep(id: string, prUrl: string | undefined, over: Record<string, unknown> = {}): Step {
+    return {
+      id, type: 'orchestrated', controller: 'code.orchestrate-pr', title: id, description: '', goal: '',
+      state: 'waiting', workspace: { kind: 'writable', repoCwd: '/r', branch: id },
+      dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      ...(prUrl ? { pr: { prUrl, prState: 'open' } } : {}),
+      createdAt: 1, updatedAt: 1, ...over,
+    } as Step;
+  }
+  const linear = { source: 'linear' as const, externalRef: { linearUuid: 'uuid-1' } } as Partial<JobRecord>;
+  const links = (j: JobRecord) => decideJobTransitions(j).filter((t) => t.kind === 'link-linear-pr');
+
+  it('links every PR a writable step opened, once', () => {
+    const j = job([prStep('a', URL_A), prStep('b', URL_B), prStep('c', undefined)], linear);
+    expect(links(j)).toEqual([
+      { kind: 'link-linear-pr', prUrl: URL_A },
+      { kind: 'link-linear-pr', prUrl: URL_B },
+    ]);
+    expect(links({ ...j, linearLinkedPrs: [URL_A] })).toEqual([{ kind: 'link-linear-pr', prUrl: URL_B }]);
+  });
+
+  // What the hourly intake script actually writes: no UUID, only the identifier.
+  it('works from the issue identifier alone', () => {
+    const j = job([prStep('a', URL_A)], { source: 'linear', externalRef: { url: 'u', issueIdentifier: 'CLT-1' } });
+    expect(links(j)).toEqual([{ kind: 'link-linear-pr', prUrl: URL_A }]);
+    expect(decideJobTransitions(j)).toContainEqual({ kind: 'mark-linear-state', state: 'inProgress' });
+  });
+
+  it("skips a review step's PR, a cancelled step, and a job not from Linear", () => {
+    const review = prStep('a', URL_A, { workspace: { kind: 'readonly', repoCwd: '/r' } });
+    expect(links(job([review], linear))).toEqual([]);
+    expect(links(job([prStep('a', URL_A, { cancelled: true })], linear))).toEqual([]);
+    expect(links(job([prStep('a', URL_A)]))).toEqual([]);
+  });
+
+  it('still links on a failed or done job, never on an abandoned one', () => {
+    const steps = [prStep('a', URL_A)];
+    expect(links(job(steps, { ...linear, state: 'failed' }))).toHaveLength(1);
+    expect(links(job(steps, { ...linear, state: 'done', linearStateMarked: { done: true } }))).toHaveLength(1);
+    expect(links(job(steps, { ...linear, state: 'abandoned' }))).toEqual([]);
+  });
+});

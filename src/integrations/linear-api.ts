@@ -4,7 +4,9 @@
 const ENDPOINT = 'https://api.linear.app/graphql';
 
 export class LinearError extends Error {
-  constructor(public readonly status: number, message: string) {
+  // Linear flags a request it will never accept, however often it's sent ("This URL has already
+  // been linked with CLT-1923."), as `extensions.userError`. A retry can't fix one of those.
+  constructor(public readonly status: number, message: string, public readonly userError = false) {
     super(message);
     this.name = 'LinearError';
   }
@@ -27,9 +29,11 @@ export async function linearQuery<T>(
     const text = await res.text().catch(() => '');
     throw new LinearError(res.status, `linear http ${res.status}: ${text.slice(0, 200)}`);
   }
-  const body = await res.json() as { data?: T; errors?: Array<{ message: string }> };
+  type GqlError = { message: string; extensions?: { userError?: boolean; userPresentableMessage?: string } };
+  const body = await res.json() as { data?: T; errors?: GqlError[] };
   if (body.errors?.length) {
-    throw new LinearError(200, `linear graphql: ${body.errors.map((e) => e.message).join('; ')}`);
+    const msg = body.errors.map((e) => e.extensions?.userPresentableMessage ?? e.message).join('; ');
+    throw new LinearError(200, `linear graphql: ${msg}`, body.errors.every((e) => e.extensions?.userError));
   }
   if (body.data === undefined) throw new LinearError(200, 'linear graphql: no data field');
   return body.data;

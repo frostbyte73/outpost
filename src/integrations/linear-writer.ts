@@ -1,4 +1,4 @@
-import { linearQuery as defaultQuery } from './linear-api.js';
+import { linearQuery as defaultQuery, LinearError } from './linear-api.js';
 import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
 
 type QueryFn = typeof defaultQuery;
@@ -83,14 +83,14 @@ export class LinearWriter {
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
-  async setState(linearUuid: string, state: 'inProgress' | 'inReview' | 'done'): Promise<void> {
+  // `issueRef` is the issue's UUID or its identifier (`CLT-2995`): jobs from the intake script
+  // carry only the identifier. `issue(id:)` reads either, so each write resolves the UUID first
+  // and the mutations only ever see a UUID.
+  async setState(issueRef: string, state: 'inProgress' | 'inReview' | 'done'): Promise<void> {
+    const { id: linearUuid, states } = await this.fetchIssue(issueRef);
     // An explicit override wins; otherwise resolve against the issue's own team so
     // the mapping is correct regardless of which team the ticket lives in.
-    let stateId = this.opts.stateIds?.[state] ?? '';
-    if (!stateId) {
-      const states = await this.fetchTeamStates(linearUuid);
-      stateId = resolveStateId(states, state) ?? '';
-    }
+    const stateId = this.opts.stateIds?.[state] || resolveStateId(states, state) || '';
     // No matching column (e.g. a team with no review stage) → nothing to do. This
     // is a permanent no-op, not a failure, so we return rather than throwing and
     // stalling the orchestrator's per-tick retry.
@@ -103,12 +103,33 @@ export class LinearWriter {
     });
   }
 
-  private async fetchTeamStates(linearUuid: string): Promise<WorkflowState[]> {
-    const data = await this.query<{ issue: { team: { states: { nodes: WorkflowState[] } } } }>(
-      `query ($id: String!) { issue(id: $id) { team { states { nodes { id name type } } } } }`,
-      { id: linearUuid },
+  // attachmentLinkURL, not attachmentCreate: a workspace with Linear's GitHub integration gets
+  // the rich PR attachment (status, checks, review state) for a GitHub URL; one without it gets
+  // a plain link. It is NOT idempotent: a URL the ticket already holds (linked by hand, or by
+  // Linear's own GitHub integration) is refused outright, so check first.
+  async linkPr(issueRef: string, prUrl: string): Promise<void> {
+    const { id: linearUuid, attachmentUrls } = await this.fetchIssue(issueRef);
+    if (attachmentUrls.includes(prUrl)) return;
+    await this.withRetry(async () => {
+      await this.query<{ attachmentLinkURL: { success: boolean } }>(
+        `mutation ($issueId: String!, $url: String!) { attachmentLinkURL(issueId: $issueId, url: $url) { success } }`,
+        { issueId: linearUuid, url: prUrl },
+      );
+    });
+  }
+
+  private async fetchIssue(issueRef: string): Promise<{ id: string; states: WorkflowState[]; attachmentUrls: string[] }> {
+    const data = await this.query<{ issue: {
+      id: string; team: { states: { nodes: WorkflowState[] } }; attachments: { nodes: Array<{ url: string }> };
+    } }>(
+      `query ($id: String!) { issue(id: $id) { id team { states { nodes { id name type } } } attachments { nodes { url } } } }`,
+      { id: issueRef },
     );
-    return data.issue.team.states.nodes;
+    return {
+      id: data.issue.id,
+      states: data.issue.team.states.nodes,
+      attachmentUrls: data.issue.attachments.nodes.map((a) => a.url),
+    };
   }
 
   async upsertStatusComment(j: JobRecord): Promise<string> {
@@ -137,6 +158,9 @@ export class LinearWriter {
       try {
         return await fn();
       } catch (e) {
+        // Sleeping on a refusal also stalls every job behind this one: the startup tick walks the
+        // queue one job at a time, and the delays add up to an hour and a half.
+        if (e instanceof LinearError && e.userError) throw e;
         lastErr = e;
         if (i === RETRY_DELAYS_MS.length) break;
         await this.sleep(RETRY_DELAYS_MS[i]!);

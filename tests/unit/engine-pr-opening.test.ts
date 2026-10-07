@@ -14,14 +14,14 @@ import type { JobRecord, OrchestratedStep, PrFacts } from '../../src/work/work-t
 
 const URL = 'https://github.com/livekit/egress/pull/1411';
 
-function makeEngine() {
+function makeEngine(linearWriter: object = { setState: async () => undefined }) {
   const dir = mkdtempSync(join(tmpdir(), 'engine-pr-opening-'));
   const queue = new JobQueue(dir);
   const engine = new WorkEngine({
     queue,
     sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {} } as never,
     worktreeManager: { get: () => undefined, provision: async () => ({ path: dir }) } as never,
-    linearWriter: { setState: async () => undefined } as never,
+    linearWriter: linearWriter as never,
     actionsStore: {} as never,
     actionRegistry: { getAction: () => undefined, gatedFor: () => undefined, listActions: () => [] } as never,
     jobsDir: join(dir, 'jobs'),
@@ -90,5 +90,50 @@ describe('the daemon opening a PR on the user\'s behalf', () => {
     engine.reconcileInterruptedSteps();
 
     expect(prOf(queue, jobId).isOpeningPr).toBe(false);
+  });
+});
+
+// A PR opened for a Linear ticket's job lands on that ticket as an attachment. Nothing ticks the
+// job on a watcher sweep, so recording a new URL is what triggers the write.
+describe('a new PR on a Linear job', () => {
+  it('is linked on the ticket once, as soon as its URL is recorded', async () => {
+    const linked: Array<[string, string]> = [];
+    const { engine, queue } = makeEngine({
+      setState: async () => undefined,
+      linkPr: async (uuid: string, url: string) => { linked.push([uuid, url]); },
+    });
+    const jobId = seed(engine, queue);
+    queue.mutate(jobId, (j): JobRecord => ({ ...j, source: 'linear', externalRef: { url: 'https://linear.app/o/issue/CLT-1', issueIdentifier: 'CLT-1', linearUuid: 'uuid-1' } }));
+
+    engine.finishPrOpening('sess1', URL);
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(linked).toEqual([['uuid-1', URL]]);
+    expect(queue.get(jobId)!.linearLinkedPrs).toEqual([URL]);
+
+    await engine.tick(jobId);
+    expect(linked).toHaveLength(1);
+  });
+
+  // The writer retries a transient failure for up to an hour and a half. Awaited in the tick,
+  // that held the startup tick, which walks the queue one job at a time, for every job behind it.
+  it('a slow Linear write holds neither the tick nor a second copy of itself', async () => {
+    const calls: string[] = [];
+    let finish!: () => void;
+    const { engine, queue } = makeEngine({
+      setState: (_: string, state: string) => { calls.push(state); return new Promise<void>((r) => { finish = r; }); },
+      linkPr: async () => undefined,
+    });
+    const jobId = seed(engine, queue);
+    queue.mutate(jobId, (j): JobRecord => ({ ...j, source: 'linear', externalRef: { url: 'u', issueIdentifier: 'CLT-1' } }));
+
+    await engine.tick(jobId);
+    await engine.tick(jobId);
+    expect(calls).toEqual(['inProgress']);
+    expect(queue.get(jobId)!.linearStateMarked?.inProgress).toBeUndefined();
+
+    finish();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(queue.get(jobId)!.linearStateMarked?.inProgress).toBe(true);
   });
 });
