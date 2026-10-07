@@ -5,7 +5,7 @@
 import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
 import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
-import { trackedRows, jobLaunchBadge, jobStatus } from '../../vm/tracked.js';
+import { trackedRows, jobLaunchBadge, jobStatus, jobStepStatus } from '../../vm/tracked.js';
 import { ago, stepDots, launchPillClass } from '../work/ticket-row.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -22,9 +22,25 @@ const STATUS_ICON = {
   done: { glyph: '●', cls: 'ok', label: 'Done' },
 };
 
+// Tones a step status can carry (vm/tracked.js's statusOf), mapped onto .o-row-icon's state
+// classes. Untoned statuses rest at `idle` like any parked row.
+const STEP_TONE_CLS = { ok: 'ok', warn: 'warn' };
+
+// A parked job says what it is parked on — "→ Ready to merge", "✗ CI failing" — rather than a
+// generic half-circle. Only for waiting / needs-you: a running job's pulse, and the terminal
+// and queued icons, already say the truer thing.
+function stepStatusFor(j, kind) {
+  return kind === 'waiting' || kind === 'needs-you' ? jobStepStatus(j) : null;
+}
+
 function rowHtml(j) {
   const kind = jobStatus(j);
-  const status = STATUS_ICON[kind];
+  const step = stepStatusFor(j, kind);
+  const status = step
+    ? { glyph: step.glyph, cls: STEP_TONE_CLS[step.tone] ?? (kind === 'needs-you' ? 'warn' : 'idle'), label: step.text }
+    : STATUS_ICON[kind];
+  const stepLabel = step
+    ? `<span class="tracked-step-status ${status.cls}" title="${escapeHtml(step.detail ?? step.text)}">${escapeHtml(step.text)}</span>` : '';
   const ref = j.externalRef?.issueIdentifier ?? '';
   // The icon says queued; the pill says why (which token window it's waiting on).
   const badge = jobLaunchBadge(j);
@@ -32,10 +48,10 @@ function rowHtml(j) {
     ? `<span class="o-pill ${launchPillClass(badge.kind)}">${escapeHtml(badge.label)}</span>` : '';
   return `
     <button type="button" class="o-row lr-row" data-job-id="${escapeHtml(j.id)}">
-      <span class="o-row-icon ${status.cls} tracked-status" data-status="${kind}" title="${status.label}" aria-label="${status.label}">${status.glyph}</span>
+      <span class="o-row-icon ${status.cls} tracked-status" data-status="${kind}" title="${escapeHtml(status.label)}" aria-label="${escapeHtml(status.label)}">${escapeHtml(status.glyph)}</span>
       <span class="tracked-row-body">
         <div class="o-row-title">${ref ? `<span class="o-ref">${escapeHtml(ref)}</span>` : ''}${escapeHtml(j.title ?? '(untitled)')}</div>
-        <div class="o-row-sub">${stepDots(j)}${queuedPill}</div>
+        <div class="o-row-sub">${stepDots(j)}${stepLabel}${queuedPill}</div>
       </span>
       <span class="o-row-time">${ago(j.updatedAt)}</span>
     </button>

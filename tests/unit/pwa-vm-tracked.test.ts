@@ -233,6 +233,57 @@ describe('orchestratedRows', () => {
     expect(orchestratedRows(step({ state: 'running', dispatches })).statusKind).toBe('parked');
   });
 
+  // The PR watcher's facts pick the label, glyph and tone; the controller's prose drops to the
+  // tooltip. "PR #2029 is ready to merge." reads as ready only to a human.
+  describe('status from the PR facts', () => {
+    const parkedOn = (pr: object, o = {}) => orchestratedRows(step({
+      state: 'waiting', waitingOn: { reason: 'PR #2029 is ready to merge.' }, workspace: { kind: 'writable' },
+      pr: { prUrl: 'https://github.com/o/r/pull/2029', prState: 'open', ...pr }, ...o,
+    }));
+    const pick = (vm: any) => [vm.statusGlyph, vm.statusTone, vm.statusLine];
+
+    it.each([
+      [{ prState: 'merged' }, ['✓', 'ok', 'Merged']],
+      [{ prState: 'closed' }, ['⊘', null, 'PR closed']],
+      [{ mergeable: 'conflicting', ciState: 'success', reviewState: 'approved' }, ['≠', 'warn', 'Merge conflicts']],
+      [{ ciState: 'failure', reviewState: 'approved' }, ['✗', 'warn', 'CI failing']],
+      [{ ciState: 'success', reviewState: 'changes_requested' }, ['✎', 'warn', 'Changes requested']],
+      [{ ciState: 'success', reviewState: 'approved', mergeable: 'unknown' }, ['→', 'ok', 'Ready to merge']],
+      [{ reviewState: 'approved' }, ['→', 'ok', 'Ready to merge']],
+      [{ ciState: 'pending', reviewState: 'approved' }, ['◌', null, 'CI running']],
+      [{ ciState: 'success', reviewState: 'review_required' }, ['⏸', null, 'Awaiting review']],
+      [{}, ['⏸', null, 'PR open']],
+    ])('%j → %j', (pr, want) => {
+      expect(pick(parkedOn(pr))).toEqual(want);
+    });
+
+    it('keeps the controller sentence as the detail', () => {
+      expect(parkedOn({ ciState: 'success', reviewState: 'approved' }).statusDetail).toBe('PR #2029 is ready to merge.');
+    });
+
+    it('a stall and a pending approval outrank the PR', () => {
+      const green = { ciState: 'success', reviewState: 'approved' };
+      expect(pick(parkedOn(green, { stall: { sessionId: 'a', error: 'rate_limit', at: 1 } })))
+        .toEqual(['!', 'warn', 'Stopped on an API error (rate limit)']);
+      const gated = parkedOn(green, { state: 'gate_pending_approval', gate: { draft: 'd', question: 'Merge it?', requestedAt: 1 } });
+      expect(pick(gated)).toEqual(['?', 'warn', 'Needs your approval']);
+      expect(gated.statusDetail).toBe('Merge it?');
+    });
+
+    it("a reviewer's PR facts aren't its status, except that it merged or closed", () => {
+      const review = { workspace: { kind: 'readonly' }, phase: 'watching' };
+      expect(pick(parkedOn({ ciState: 'success', reviewState: 'approved' }, review)))
+        .toEqual(['⏸', null, 'PR #2029 is ready to merge.']);
+      expect(pick(parkedOn({ prState: 'merged' }, review))).toEqual(['✓', 'ok', 'Merged']);
+    });
+
+    it('no PR yet, parked on the branch landing, reads as waiting for push', () => {
+      const vm = orchestratedRows(step({ state: 'waiting', waitingOn: { reason: 'Push it', events: ['head-moved', 'pr-state'] } }));
+      expect(pick(vm)).toEqual(['↑', null, 'Waiting for push']);
+      expect(vm.statusDetail).toBe('Push it');
+    });
+  });
+
   it('marks the newest artifact only while the step is still moving', () => {
     const artifacts = { spec: '# S', implPlan: '# P' };
     expect(orchestratedRows(step({ memo: 'm', artifacts })).artifactRows.map((a: any) => a.latest))

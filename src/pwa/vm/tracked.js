@@ -301,6 +301,11 @@ function markResolvedInfo(s) {
 // the dispatch it's currently running is off doing, or — with nothing more specific to say —
 // the phase it's in. Null when there's nothing to report.
 //
+// Where the step's own facts answer that (a stall, a pending approval, what the PR watcher
+// recorded), they pick the label, glyph and tone, and the controller's `waitingOn.reason` drops
+// to `detail`. Prose free-text can't carry a glyph — "PR #2029 is ready to merge." reads as
+// ready only to a human — so it labels a step only when nothing structured describes it.
+//
 // This is what the inline feed shows in place of a transcript tail once the controller's own
 // session goes quiet, in the same slot a finished action step shows "✓ Finished in 10m37s"
 // (components/work/session-terminal-chip.js). It had its own row above the feed, which meant
@@ -320,10 +325,20 @@ function statusOf(s) {
   // An API error ended the turn: the step still reads `running`, which would otherwise paint
   // "Picking up a PR update" with animated dots over a session that will never move on its own.
   // `stall` is attached per session by tracked/session-mounts.js from the job's live stalls.
-  if (s.stall) return { kind: 'parked', text: stallText(s.stall) };
-  if (s.state === 'waiting') return { kind: 'parked', text: s.waitingOn?.reason ?? 'Waiting' };
+  if (s.stall) return parked('!', 'warn', stallText(s.stall));
+  if (s.state === 'gate_pending_approval' || hasUnapprovedDraft(s)) {
+    return parked('?', 'warn', 'Needs your approval', s.gate?.question);
+  }
+  const reason = s.waitingOn?.reason;
+  if (s.state === 'waiting') {
+    const pr = prStatusOf(s);
+    if (pr) return { ...pr, kind: 'parked', detail: reason ?? null };
+    // Row 8: implemented, no PR, parked until the branch lands on origin.
+    if (!s.pr?.prUrl && s.waitingOn?.events?.includes('head-moved')) return parked('↑', null, 'Waiting for push', reason);
+    return parked('⏸', null, reason ?? 'Waiting');
+  }
   const running = (s.dispatches ?? []).find((d) => d.status === 'running');
-  if (running?.brief) return { kind: 'parked', text: running.brief };
+  if (running?.brief) return parked('»', null, running.brief);
   // A `running` step with nothing streaming is mid-resume, NOT parked. Delivering an inbox
   // item sets `state: 'running'` and clears `waitingOn` (drainForDelivery) the instant it
   // lands, while resumeControllerRound still has a worktree to provision and the launch
@@ -331,9 +346,52 @@ function statusOf(s) {
   // what made review comments sent from the git view read as "nothing happened": the feed
   // painted "⏸ Implement", which is character-for-character what a step parked for an hour
   // shows. Say what actually just happened instead.
-  if (s.state === 'running') return { kind: 'starting', text: resumingTextOf(s) };
+  if (s.state === 'running') return { kind: 'starting', text: resumingTextOf(s), glyph: null, tone: null, detail: null };
+  const pr = prStatusOf(s);
+  if (pr) return { ...pr, kind: 'parked', detail: null };
   const phase = phaseLabelOf(s);
-  return phase ? { kind: 'parked', text: phase } : null;
+  return phase ? parked('⏸', null, phase) : null;
+}
+
+// The job-list row's version of statusOf: one step speaks for the job. A step that needs the
+// user (stalled, or holding an approval) wins, else the first open controller. Action steps
+// carry no PR facts and no controller sentence, so they have nothing to add here. Only the
+// `parked` kind: a step that is mid-resume reads as Running on the row already.
+export function jobStepStatus(job) {
+  const stallFor = (s) => job.stalls?.find((st) => st.sessionId === s.sessionId);
+  const open = (job.steps ?? []).filter((s) => s.type === 'orchestrated' && !s.cancelled && !isTerminalStep(s) && s.sessionId);
+  const step = open.find((s) => stallFor(s) || s.state === 'gate_pending_approval' || hasUnapprovedDraft(s)) ?? open[0];
+  if (!step) return null;
+  const st = statusOf({ ...step, stall: stallFor(step) });
+  return st?.kind === 'parked' ? st : null;
+}
+
+function parked(glyph, tone, text, detail = null) {
+  return { kind: 'parked', glyph, tone, text, detail: detail && detail !== text ? detail : null };
+}
+
+// What the PR itself says, read off the watcher's facts rather than the controller's prose, in
+// the order code.orchestrate-pr's ladder (SKILL.md §3) acts on them: a conflict blocks CI, a red
+// check blocks review, and only green + approved is ready. `mergeable: 'unknown'` is common and
+// flaps on an idle PR, so readiness asks only that it isn't conflicting. Not covered: unanswered
+// comments, which need the daemon's own GitHub identity to tell yours from theirs and the step
+// doesn't carry it.
+function prStatusOf(s) {
+  const pr = s.pr;
+  if (!pr?.prUrl) return null;
+  if (pr.prState === 'merged') return { glyph: '✓', tone: 'ok', text: 'Merged' };
+  if (pr.prState === 'closed') return { glyph: '⊘', tone: null, text: 'PR closed' };
+  // code.orchestrate-review watches somebody else's PR: its road to merge isn't this step's
+  // status, its own review phases are.
+  if (s.workspace?.kind === 'readonly') return null;
+  if (pr.mergeable === 'conflicting') return { glyph: '≠', tone: 'warn', text: 'Merge conflicts' };
+  if (pr.ciState === 'failure') return { glyph: '✗', tone: 'warn', text: 'CI failing' };
+  if (pr.reviewState === 'changes_requested') return { glyph: '✎', tone: 'warn', text: 'Changes requested' };
+  // No CI at all leaves ciState unset; an approval is then all a merge waits on.
+  if (pr.reviewState === 'approved' && (pr.ciState ?? 'success') === 'success') return { glyph: '→', tone: 'ok', text: 'Ready to merge' };
+  if (pr.ciState === 'pending') return { glyph: '◌', tone: null, text: 'CI running' };
+  if (pr.reviewState === 'review_required') return { glyph: '⏸', tone: null, text: 'Awaiting review' };
+  return { glyph: '⏸', tone: null, text: 'PR open' };
 }
 
 // `lastDelivered` is what drainForDelivery handed this round (persisted on the step so a cold
@@ -385,6 +443,9 @@ export function orchestratedRows(step) {
   return {
     statusLine: status?.text ?? null,
     statusKind: status?.kind ?? null,
+    statusGlyph: status?.glyph ?? null,
+    statusTone: status?.tone ?? null,
+    statusDetail: status?.detail ?? null,
     dispatchRows: (s.dispatches ?? []).map((d) => ({
       id: d.id,
       action: d.action,

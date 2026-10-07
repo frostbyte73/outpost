@@ -7,6 +7,17 @@
 
 /* ── List column ──────────────────────────────────────────────────────── */
 .tracked-row-body { min-width: 0; }
+/* The parked step's status beside the step dots. A controller's own sentence can land here
+   when no fact applies, so it truncates rather than growing the row. */
+.tracked-step-status {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tracked-step-status.ok   { color: var(--ok); }
+.tracked-step-status.warn { color: var(--warn); }
 .tracked-status[data-status="running"] { animation: tracked-pulse var(--pulse) ease-in-out infinite; }
 @keyframes tracked-pulse { 50% { opacity: 0.4; } }
 @media (prefers-reduced-motion: reduce) { .tracked-status[data-status="running"] { animation: none; } }
