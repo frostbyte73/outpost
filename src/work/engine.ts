@@ -39,7 +39,7 @@ import {
 } from './orchestrated-runner.js';
 import { coalesceExternal, deliverImmediate } from '../steps/orchestrated-inbox.js';
 import { reconcile, validateDispositions } from './reconcile.js';
-import { decideJobTransitions, owesStepReview, linearIssueRef } from '../jobs/lifecycle.js';
+import { decideJobTransitions, owesStepReview, linearIssueRef, type JobTransition } from '../jobs/lifecycle.js';
 import { appendJobEvent } from '../storage/job-event-log.js';
 import { AUTH_STOP_ERRORS, currentStalls } from './job-liveness.js';
 import type { ActionsStore } from '../storage/actions-store.js';
@@ -240,6 +240,7 @@ export class WorkEngine {
   // hook meanwhile. Failing on the Stop edge killed spec rounds that went on to submit
   // minutes later, so the check now waits for the session to actually fall silent.
   private readonly unresolvedTimers = new Map<string, NodeJS.Timeout>();
+  private readonly linearInFlight = new Set<string>();
 
   actionForSession(sessionId: string): string | undefined {
     return this.actionBySession.get(sessionId);
@@ -657,6 +658,25 @@ export class WorkEngine {
     }
   }
 
+  // Linear writes run off the tick. The writer retries a transient failure for up to an hour and
+  // a half, and an awaited write held this job's own reaping — and, on the startup tick, which
+  // walks the queue one job at a time, every job behind it — for that long. `linearInFlight`
+  // keeps a tick that lands mid-retry from starting the same write twice. Nothing is marked until
+  // a write lands, so one that finally fails is simply re-emitted by a later tick.
+  private syncLinear(jobId: string, issue: string, t: Extract<JobTransition, { kind: 'mark-linear-state' | 'link-linear-pr' }>): void {
+    const key = `${jobId}:${t.kind === 'link-linear-pr' ? t.prUrl : t.state}`;
+    if (this.linearInFlight.has(key)) return;
+    this.linearInFlight.add(key);
+    const write = t.kind === 'link-linear-pr'
+      ? this.opts.linearWriter.linkPr(issue, t.prUrl).then(() => this.mutate(jobId, (jj) =>
+        (jj.linearLinkedPrs ?? []).includes(t.prUrl) ? jj : { ...jj, linearLinkedPrs: [...(jj.linearLinkedPrs ?? []), t.prUrl] }))
+      : this.opts.linearWriter.setState(issue, t.state).then(() => this.mutate(jobId, (jj) =>
+        ({ ...jj, linearStateMarked: { ...jj.linearStateMarked, [t.state]: true } })));
+    void write
+      .catch((e) => console.warn(`[work] Linear ${t.kind}(${jobId}, ${t.kind === 'link-linear-pr' ? t.prUrl : t.state}) failed; a later tick retries: ${(e as Error).message}`))
+      .finally(() => this.linearInFlight.delete(key));
+  }
+
   // Never let a per-job tick failure bubble to `void orchestrator.tick()` —
   // Node treats an unhandled rejection as fatal and launchd will crashloop.
   private async tickSafe(jobId: string): Promise<void> {
@@ -708,26 +728,9 @@ export class WorkEngine {
       } else if (t.kind === 'mark-failed') {
         this.mutate(jobId, (jj) => this.appendEvent({ ...jj, state: 'failed' }, { kind: 'state_changed', who: 'orchestrator', body: 'halted: a step failed' }));
         markedFailed = true;
-      } else if (t.kind === 'mark-linear-state') {
-        const linearUuid = linearIssueRef(j);
-        if (!linearUuid) continue;
-        // setState is idempotent; await + retry on next tick beats the optimistic mark.
-        try {
-          await this.opts.linearWriter.setState(linearUuid, t.state);
-          this.mutate(jobId, (jj) => ({ ...jj, linearStateMarked: { ...jj.linearStateMarked, [t.state]: true } }));
-        } catch (e) {
-          console.warn(`[work] Linear setState(${jobId}, ${t.state}) failed; will retry next tick: ${(e as Error).message}`);
-        }
-      } else if (t.kind === 'link-linear-pr') {
-        const linearUuid = linearIssueRef(j);
-        if (!linearUuid) continue;
-        try {
-          await this.opts.linearWriter.linkPr(linearUuid, t.prUrl);
-          this.mutate(jobId, (jj) => (jj.linearLinkedPrs ?? []).includes(t.prUrl)
-            ? jj : { ...jj, linearLinkedPrs: [...(jj.linearLinkedPrs ?? []), t.prUrl] });
-        } catch (e) {
-          console.warn(`[work] Linear linkPr(${jobId}, ${t.prUrl}) failed; will retry next tick: ${(e as Error).message}`);
-        }
+      } else {
+        const issue = linearIssueRef(j);
+        if (issue) this.syncLinear(jobId, issue, t);
       }
     }
     // A job that completes on its own reaps what the manual paths (markJobDone / abandon /

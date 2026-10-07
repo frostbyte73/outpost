@@ -114,4 +114,26 @@ describe('a new PR on a Linear job', () => {
     await engine.tick(jobId);
     expect(linked).toHaveLength(1);
   });
+
+  // The writer retries a transient failure for up to an hour and a half. Awaited in the tick,
+  // that held the startup tick, which walks the queue one job at a time, for every job behind it.
+  it('a slow Linear write holds neither the tick nor a second copy of itself', async () => {
+    const calls: string[] = [];
+    let finish!: () => void;
+    const { engine, queue } = makeEngine({
+      setState: (_: string, state: string) => { calls.push(state); return new Promise<void>((r) => { finish = r; }); },
+      linkPr: async () => undefined,
+    });
+    const jobId = seed(engine, queue);
+    queue.mutate(jobId, (j): JobRecord => ({ ...j, source: 'linear', externalRef: { url: 'u', issueIdentifier: 'CLT-1' } }));
+
+    await engine.tick(jobId);
+    await engine.tick(jobId);
+    expect(calls).toEqual(['inProgress']);
+    expect(queue.get(jobId)!.linearStateMarked?.inProgress).toBeUndefined();
+
+    finish();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(queue.get(jobId)!.linearStateMarked?.inProgress).toBe(true);
+  });
 });
