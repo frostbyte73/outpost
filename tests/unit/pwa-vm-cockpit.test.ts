@@ -215,6 +215,27 @@ describe('cockpitInbox — broken', () => {
     expect(broken).toEqual([]);
   });
 
+  // An API error ended a turn: the step still reads `running`, so this row is the only thing
+  // in the cockpit saying the job is parked until somebody resumes it.
+  it('includes one row per job with a stalled session, naming the error', () => {
+    const stalls = [
+      { sessionId: 'a', error: 'server_error', at: NOW - 50, stepId: 's5' },
+      { sessionId: 'b', error: 'server_error', at: NOW - 40, stepId: 's5', dispatchId: 'd1' },
+    ];
+    const { broken } = cockpitInbox({
+      now: NOW,
+      jobs: [
+        { id: 'j4', title: 'Stalled', state: 'executing', updatedAt: NOW, stalls, steps: [{ id: 's5', type: 'orchestrated', state: 'running' }] },
+        { id: 'j5', title: 'Gone', state: 'abandoned', updatedAt: NOW, stalls, steps: [] },
+      ],
+    });
+    expect(broken).toHaveLength(1);
+    expect(broken[0]).toMatchObject({
+      key: 'stalled:j4', kind: 'session-stalled', tone: 'warn',
+      detail: 'Stopped on an API error (server error)', open: { surface: 'tracked', id: 'j4' },
+    });
+  });
+
   it('does not double-report a step failure on a job that already failed', () => {
     const { broken } = cockpitInbox({
       now: NOW,

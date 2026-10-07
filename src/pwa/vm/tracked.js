@@ -85,6 +85,14 @@ function failedStep(job) {
 const AUTH_STOP_ERRORS = new Set(['authentication_failed', 'oauth_org_not_allowed']);
 const STOP_ERROR_LABEL = { rate_limit: 'a rate limit', overloaded: 'an overloaded API', billing_error: 'a billing error' };
 
+// One line for the places that have no room for stalledFocus's card: the cockpit row and the
+// step feed's parked chip.
+export function stallText(st) {
+  return AUTH_STOP_ERRORS.has(st.error)
+    ? 'Claude needs re-authorizing'
+    : `Stopped on an API error (${String(st.error).replace(/_/g, ' ')})`;
+}
+
 function stalledFocus(job, st) {
   const step = st.stepId ? (job.steps ?? []).find((s) => s.id === st.stepId) : null;
   const who = !st.stepId ? 'The planner' : st.dispatchId ? `A session dispatched by ${step?.title ?? 'a step'}` : (step?.title ?? 'A step');
@@ -309,6 +317,10 @@ function markResolvedInfo(s) {
 // as prose but must not render identically: 'parked' has stopped and is waiting on something
 // with no work in flight; 'starting' has been handed work and is on its way back.
 function statusOf(s) {
+  // An API error ended the turn: the step still reads `running`, which would otherwise paint
+  // "Picking up a PR update" with animated dots over a session that will never move on its own.
+  // `stall` is attached per session by tracked/session-mounts.js from the job's live stalls.
+  if (s.stall) return { kind: 'parked', text: stallText(s.stall) };
   if (s.state === 'waiting') return { kind: 'parked', text: s.waitingOn?.reason ?? 'Waiting' };
   const running = (s.dispatches ?? []).find((d) => d.status === 'running');
   if (running?.brief) return { kind: 'parked', text: running.brief };

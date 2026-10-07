@@ -85,8 +85,12 @@ export function withStepTiming(job, step) {
 }
 
 function stepForSession(job, sessionId) {
+  const stall = job.stalls?.find((st) => st.sessionId === sessionId);
   for (const s of job.steps ?? []) {
-    if (s.sessionId === sessionId) return withStepTiming(job, s);
+    if (s.sessionId === sessionId) {
+      const step = withStepTiming(job, s);
+      return stall ? { ...step, stall } : step;
+    }
   }
   if (job.orchestratorSessionId === sessionId) return orchestratorStepShim(job);
   return null; // edit-queue sessions render as bare tails — no step chrome to attach

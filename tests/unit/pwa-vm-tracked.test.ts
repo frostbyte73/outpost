@@ -466,4 +466,13 @@ describe('stalled sessions (an API error ended the turn)', () => {
     expect(fa.description).toContain('a rate limit');
     expect(focusAction({ ...job('overloaded'), stalls: [{ sessionId: 'o', error: 'overloaded', at: 1 }] }).description).toMatch(/^The planner/);
   });
+
+  // The step still reads `running`, which without the stall painted "Picking up a PR update"
+  // with animated dots over a session that will never move on its own.
+  it('the step feed reads as parked on the error, not as resuming', () => {
+    const woken = { ...step, lastDelivered: [{ kind: 'external' }] };
+    expect(orchestratedRows(woken).statusKind).toBe('starting');
+    const vm = orchestratedRows({ ...woken, stall: { sessionId: 'a', error: 'server_error', at: 1 } });
+    expect(vm).toMatchObject({ statusKind: 'parked', statusLine: 'Stopped on an API error (server error)' });
+  });
 });

@@ -8,7 +8,7 @@
 // already loads.
 
 import { stepNeedsYou, hasUnapprovedDraft, isTerminalJob } from './work-predicates.js';
-import { implementAwaitingPush } from './tracked.js';
+import { implementAwaitingPush, stallText } from './tracked.js';
 
 // stepNeedsYou flags three shapes: a step parked on an explicit voluntary gate, a step (or
 // one of its dispatches) holding an unapproved write draft, and an indefinite meta.wait
@@ -154,6 +154,24 @@ function stepFailedItems(j) {
     }));
 }
 
+// An API error ended a session's turn and nothing resumes it but the user (or, for an auth
+// error, a sign-in). The step underneath still reads `running`, so without this row the job
+// looked busy from the cockpit while it was parked for good. One row per job: a rate limit
+// stalls every dispatch at once, and they all clear from the same Resume.
+function stalledItem(j) {
+  const st = j.stalls[0];
+  return {
+    key: `stalled:${j.id}`,
+    kind: 'session-stalled',
+    tone: 'warn',
+    title: jobTitle(j),
+    ref: jobRef(j),
+    detail: stallText(st),
+    time: st.at ?? j.updatedAt ?? 0,
+    open: { surface: 'tracked', id: j.id },
+  };
+}
+
 function newestSchedRunByScheduleId(runs) {
   const newest = new Map();
   for (const r of runs) {
@@ -191,6 +209,8 @@ function brokenItems({ jobs, runs }) {
     // isTerminalJob covers 'failed', so a failed job reports itself once and its steps
     // never restate the same problem.
     ...jobs.filter((j) => !isTerminalJob(j)).flatMap(stepFailedItems),
+    // `stalls` arrives already narrowed to the live ones (currentStalls, job-liveness.ts).
+    ...jobs.filter((j) => !isTerminalJob(j) && j.stalls?.length).map(stalledItem),
     ...routineFailedItems(runs),
   ]);
 }
