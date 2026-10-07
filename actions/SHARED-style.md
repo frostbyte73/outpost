@@ -32,18 +32,25 @@ Never write:
 
 ## Tests
 
-A test earns its place by pinning logic **you wrote** that could plausibly break. Write those, and only those.
+**The default is none.** Same bar as a comment: a unit test exists only when the behavior it pins is complicated or non-obvious enough that a reader could change the code, believe it still works, and be wrong. If the code is simple enough to verify by reading it, reading it is the test. Most changes ship with no new test file, and that is the expected outcome, not a gap.
 
-Don't write tests that:
+A test earns its place only for:
 
-- Exercise the language, standard library, framework or a dependency — that a map stores a key, that JSON round-trips, that a constructor returns what it was given.
-- Assert a getter returns its field, a constant equals itself, or a mock returns what it was told to.
-- Restate the implementation line by line, so any refactor breaks them and no bug ever does.
-- Enumerate permutations of the same path. One case per distinct behavior; a table only when the rows exercise different branches.
+- **Non-obvious behavior** — a state machine, a parser, concurrency or ordering, an invariant several functions maintain together, an edge case the code handles deliberately and a reader wouldn't guess.
+- **Side effects that are easy to break silently** — what gets persisted, emitted, retried, released, or cleaned up, where a regression wouldn't show up as an error.
+- **The bug you are fixing**, when the triggering input is subtle — a regression test that fails without your fix. A one-line fix to an obvious mistake doesn't need one.
 
-Do write tests for: a branch with real decision logic, a parser or state machine, an edge case the code handles deliberately, and the exact input behind the bug you are fixing (a regression test that fails without your fix).
+Don't write tests for:
 
-Put tests where the repo already puts them and match the existing test style — helpers, naming, assertion library. Don't introduce a new test framework or fixture pattern for one file. A change with no logic worth pinning ships with no new test, and that is the right outcome — say so in your report rather than writing one to fill the slot.
+- Basic logic, simple helper functions, formatting, mapping one shape onto another, or a straight-line function whose body is its own spec.
+- The language, standard library, framework or a dependency — that a map stores a key, that JSON round-trips, that a constructor returns what it was given.
+- Getters, constants, default values, or a mock returning what it was told to.
+- The implementation's own shape, restated line by line, so any refactor breaks the test and no bug ever does.
+- Permutations of the same path. One case per distinct behavior; a table only when the rows exercise different branches.
+
+**Write, then cut.** For every test you wrote, ask: *what specific bug would this catch that reading the code wouldn't?* If you can't name one in a sentence, delete the test. If that empties the file, delete the file. "It increases coverage" and "it documents the function" are not bugs.
+
+Put the tests that survive where the repo already puts them and match the existing test style — helpers, naming, assertion library. Don't introduce a new test framework or fixture pattern for one file. When you write no test, say so in your report in one line; don't write one to fill the slot.
 
 ## Code
 

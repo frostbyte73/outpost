@@ -75,7 +75,7 @@ If `$WORK_APPROACH` references specific files, `Read` them now. If anything in t
 
 ## Step 2 — Implement
 
-Apply `$WORK_APPROACH`. Use TDD where it makes sense (a test first, then the change, then the test passes), especially for backend logic and bug fixes. For UI tweaks or config changes, manual verification is fine. Either way, a test has to pin logic you wrote — see the Tests section of `SHARED-style.md`.
+Apply `$WORK_APPROACH`. Most changes need no new test — verify by running the existing suite and exercising the code path. Write a test only for behavior that is complicated or non-obvious, or a side effect that could break silently (the Tests section of `SHARED-style.md`); helper functions and basic logic get none.
 
 When the approach is ambiguous, exercise judgment — you're the implementer, and the human reviews the diff before it merges. If you discover the approach is wrong (the file doesn't look how the investigator described, an API has changed, a dependency is missing), do the thing that solves the goal and note the deviation in your final summary. Don't paper over it.
 
@@ -131,8 +131,8 @@ Read your own working-tree diff (`git diff`, plus any untracked files) end-to-en
 Then **re-open `SHARED-style.md` — every round, including a review-fix round** — and walk the
 diff hunk by hunk against it. Something read once at the start is something you write past by
 the third round. Run its write-then-cut procedure on every comment in the diff, including the
-ones you feel good about, and hold every new test to its Tests section: delete a test that pins
-a library, a getter, or the implementation's own shape.
+ones you feel good about, and hold every new test to its Tests section: delete any test of a
+helper, basic logic, a library, or the implementation's own shape — the whole file if that empties it.
 
 Report the pass in **`artifacts.styleCheck`**, not in `memo` — the controller overwrites
 `memo` on its next turn, while `artifacts` persist. First line `round <roundsSpent> — clean` or
