@@ -1,4 +1,4 @@
-import { linearQuery as defaultQuery } from './linear-api.js';
+import { linearQuery as defaultQuery, LinearError } from './linear-api.js';
 import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
 
 type QueryFn = typeof defaultQuery;
@@ -105,9 +105,11 @@ export class LinearWriter {
 
   // attachmentLinkURL, not attachmentCreate: a workspace with Linear's GitHub integration gets
   // the rich PR attachment (status, checks, review state) for a GitHub URL; one without it gets
-  // a plain link.
+  // a plain link. It is NOT idempotent: a URL the ticket already holds (linked by hand, or by
+  // Linear's own GitHub integration) is refused outright, so check first.
   async linkPr(issueRef: string, prUrl: string): Promise<void> {
-    const { id: linearUuid } = await this.fetchIssue(issueRef);
+    const { id: linearUuid, attachmentUrls } = await this.fetchIssue(issueRef);
+    if (attachmentUrls.includes(prUrl)) return;
     await this.withRetry(async () => {
       await this.query<{ attachmentLinkURL: { success: boolean } }>(
         `mutation ($issueId: String!, $url: String!) { attachmentLinkURL(issueId: $issueId, url: $url) { success } }`,
@@ -116,12 +118,18 @@ export class LinearWriter {
     });
   }
 
-  private async fetchIssue(issueRef: string): Promise<{ id: string; states: WorkflowState[] }> {
-    const data = await this.query<{ issue: { id: string; team: { states: { nodes: WorkflowState[] } } } }>(
-      `query ($id: String!) { issue(id: $id) { id team { states { nodes { id name type } } } } }`,
+  private async fetchIssue(issueRef: string): Promise<{ id: string; states: WorkflowState[]; attachmentUrls: string[] }> {
+    const data = await this.query<{ issue: {
+      id: string; team: { states: { nodes: WorkflowState[] } }; attachments: { nodes: Array<{ url: string }> };
+    } }>(
+      `query ($id: String!) { issue(id: $id) { id team { states { nodes { id name type } } } attachments { nodes { url } } } }`,
       { id: issueRef },
     );
-    return { id: data.issue.id, states: data.issue.team.states.nodes };
+    return {
+      id: data.issue.id,
+      states: data.issue.team.states.nodes,
+      attachmentUrls: data.issue.attachments.nodes.map((a) => a.url),
+    };
   }
 
   async upsertStatusComment(j: JobRecord): Promise<string> {
@@ -150,6 +158,9 @@ export class LinearWriter {
       try {
         return await fn();
       } catch (e) {
+        // Sleeping on a refusal also stalls every job behind this one: the startup tick walks the
+        // queue one job at a time, and the delays add up to an hour and a half.
+        if (e instanceof LinearError && e.userError) throw e;
         lastErr = e;
         if (i === RETRY_DELAYS_MS.length) break;
         await this.sleep(RETRY_DELAYS_MS[i]!);

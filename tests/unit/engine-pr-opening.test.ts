@@ -115,4 +115,3 @@ describe('a new PR on a Linear job', () => {
     expect(linked).toHaveLength(1);
   });
 });
-

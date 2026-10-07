@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { resolveStateId, LinearWriter } from '../../src/integrations/linear-writer.js';
+import { LinearError } from '../../src/integrations/linear-api.js';
 
 // Real workflow states as returned by Linear for the REL team. Two `started`
 // states ("In Progress" + "In Review") is the case worth pinning down — a naive
@@ -50,15 +51,21 @@ describe('resolveStateId', () => {
 // no ticket ever moved or got a PR link before. Every write resolves the UUID through
 // `issue(id:)`, which reads either, and the mutation only sees the UUID.
 describe('LinearWriter writes by issue identifier', () => {
-  function fakeLinear() {
+  function fakeLinear({ attached = [] as string[], linkError = null as Error | null } = {}) {
     const calls: Array<{ query: string; vars: Record<string, unknown> | undefined }> = [];
+    const slept: number[] = [];
     const query = (async (q: string, vars?: Record<string, unknown>) => {
       calls.push({ query: q, vars });
-      if (q.includes('issue(id:')) return { issue: { id: 'uuid-1', team: { states: { nodes: REL_STATES } } } };
-      if (q.includes('attachmentLinkURL')) return { attachmentLinkURL: { success: true } };
+      if (q.includes('issue(id:')) {
+        return { issue: { id: 'uuid-1', team: { states: { nodes: REL_STATES } }, attachments: { nodes: attached.map((url) => ({ url })) } } };
+      }
+      if (q.includes('attachmentLinkURL')) {
+        if (linkError) throw linkError;
+        return { attachmentLinkURL: { success: true } };
+      }
       return { issueUpdate: { success: true } };
     }) as never;
-    return { calls, writer: new LinearWriter({ query }) };
+    return { calls, slept, writer: new LinearWriter({ query, sleep: async (ms) => { slept.push(ms); } }) };
   }
 
   it('links a PR through attachmentLinkURL on the resolved UUID', async () => {
@@ -78,5 +85,24 @@ describe('LinearWriter writes by issue identifier', () => {
       { id: 'CLT-1' },
       { id: 'uuid-1', input: { stateId: 'in-review' } },
     ]);
+  });
+
+  // attachmentLinkURL refuses a URL the ticket already has — PR #1634 was on CLT-1923 since 2025.
+  it('skips a PR the ticket already has', async () => {
+    const { calls, writer } = fakeLinear({ attached: ['https://github.com/o/r/pull/1'] });
+    await writer.linkPr('CLT-1', 'https://github.com/o/r/pull/1');
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does not sleep and retry on a refusal Linear will repeat', async () => {
+    const { slept, writer } = fakeLinear({ linkError: new LinearError(200, 'linear graphql: nope', true) });
+    await expect(writer.linkPr('CLT-1', 'https://github.com/o/r/pull/2')).rejects.toThrow('nope');
+    expect(slept).toEqual([]);
+  });
+
+  it('still retries an error that may pass', async () => {
+    const { slept, writer } = fakeLinear({ linkError: new LinearError(503, 'linear http 503') });
+    await expect(writer.linkPr('CLT-1', 'https://github.com/o/r/pull/2')).rejects.toThrow('503');
+    expect(slept.length).toBeGreaterThan(0);
   });
 });
