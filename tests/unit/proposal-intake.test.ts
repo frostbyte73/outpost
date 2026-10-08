@@ -101,4 +101,33 @@ describe('intakeProposal', () => {
     );
     expect(r).toMatchObject({ proposal: { citedRunIds: ['r2'] } });
   });
+
+  describe('when citations are required', () => {
+    const req = (over: Record<string, unknown> = {}) => ({ ...ctx(), requireCitations: true, knownRunIds: new Set(['r1', 'r2', 'r3', 'r4', 'r5']), ...over });
+
+    it('refuses a proposal citing no run, naming both escapes', () => {
+      const r = intakeProposal({ skillMdAfter: 'x' }, req());
+      expect(r.kind).toBe('invalid');
+      expect(r.kind === 'invalid' && r.reason).toMatch(/citedRunIds.*cutOnly|cutOnly.*citedRunIds/);
+    });
+
+    it('accepts a cut with no citations', () => {
+      expect(intakeProposal({ skillMdAfter: 'x', cutOnly: true }, req()).kind).toBe('proposal');
+    });
+
+    it('drops unknown run ids and refuses when none remain', () => {
+      expect(intakeProposal({ skillMdAfter: 'x', citedRunIds: ['ghost'] }, req()).kind).toBe('invalid');
+      const r = intakeProposal({ skillMdAfter: 'x', citedRunIds: ['ghost', 'r2'] }, req());
+      expect(r).toMatchObject({ proposal: { citedRunIds: ['r2'] } });
+    });
+
+    it('keeps at most four', () => {
+      const r = intakeProposal({ skillMdAfter: 'x', citedRunIds: ['r1', 'r2', 'r3', 'r4', 'r5'] }, req());
+      expect(r).toMatchObject({ proposal: { citedRunIds: ['r1', 'r2', 'r3', 'r4'] } });
+    });
+  });
+
+  it('does not require citations from a build-action proposal', () => {
+    expect(intakeProposal({ skillMdAfter: 'x' }, ctx()).kind).toBe('proposal');
+  });
 });

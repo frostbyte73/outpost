@@ -84,6 +84,24 @@ export function writeMcpConfig(opts: McpConfigOpts): void {
   writeFileSync(opts.outPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
 }
 
+// An eval replay keeps only the gate: no Stop/statusline hooks, so it can't touch any session's state.
+export function writeEvalSettings(outPath: string, hookPort: number): void {
+  const cfg = { hooks: { PreToolUse: [loopbackHook(hookPort, '/hook/pretool', 600)] } };
+  writeFileSync(outPath, JSON.stringify(cfg, null, 2), { mode: 0o600 });
+}
+
+export function writeEvalMcpConfig(opts: McpConfigOpts & { sessionId: string; replayServers: string[] }): void {
+  const server = (route: string) => ({
+    type: 'http',
+    url: `http://127.0.0.1:${opts.hookPort}${route}`,
+    headers: { 'X-Daemon-Auth': opts.daemonAuthSecret },
+  });
+  const sid = encodeURIComponent(opts.sessionId);
+  const mcpServers: Record<string, unknown> = { outpost: server(`/mcp/eval/${sid}`) };
+  for (const name of opts.replayServers) mcpServers[name] = server(`/mcp/replay/${sid}/${encodeURIComponent(name)}`);
+  writeFileSync(opts.outPath, JSON.stringify({ mcpServers }, null, 2), { mode: 0o600 });
+}
+
 export function generateSecret(): string {
   return randomBytes(32).toString('hex');
 }

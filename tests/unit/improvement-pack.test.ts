@@ -266,6 +266,22 @@ describe('buildImprovementPack', () => {
     expect(pack.rejectedProposals[0]).toMatchObject({ rationale: 'add a step', feedback: 'too vague' });
   });
 
+  it('lists failed and inconclusive evals with the proposal they graded, not passed ones', () => {
+    const d = deps({
+      revisionsFor: () => [
+        event({ id: 'p1', kind: 'proposed', sessionId: 's1', rationale: 'shorten replies' }),
+        event({ id: 'v1', kind: 'evaluated', author: 'system', sessionId: 's1', rationale: 'fail: lost 1 of 2 target runs' }),
+        event({ id: 'v2', kind: 'evaluated', author: 'system', sessionId: 's2', rationale: 'inconclusive: no target run replayed validly' }),
+        event({ id: 'v3', kind: 'evaluated', author: 'system', sessionId: 's3', rationale: 'pass: won 2 of 2 targets' }),
+      ],
+    });
+    const pack = buildImprovementPack('read.investigate', d);
+    expect(pack.failedEvals).toEqual([
+      expect.objectContaining({ verdict: 'fail: lost 1 of 2 target runs', proposal: 'shorten replies' }),
+      expect.objectContaining({ verdict: 'inconclusive: no target run replayed validly' }),
+    ]);
+  });
+
   it('reports the previous review and the current body size', () => {
     const d = deps({
       skillMdFor: () => 'a\nb\nc\n',

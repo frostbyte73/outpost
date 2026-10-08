@@ -6,6 +6,7 @@ import { HookServer, type HookServerOpts } from '../../src/permissions/hook-serv
 import { freePort } from '../e2e/harness/port.js';
 
 const SECRET = 'current-run-secret';
+const EVAL_SECRET = 'eval-only-secret';
 
 function post(port: number, path: string, secret: string | undefined): Promise<{ status: number; body: string }> {
   return new Promise((resolve, reject) => {
@@ -43,6 +44,8 @@ async function start(): Promise<number> {
     onWorkPlanReady: record('plan'), onWorkStepResolved: record('resolved'), onWorkStepFailed: record('failed'),
     onActionProposal: record('proposal'), onWorkJournal: record('journal'),
     onMcp: async () => ({ status: 200, headers: {}, body: '{}' }),
+    onEvalMcp: async (path: string) => { handled.push(path); return { status: 200, headers: {}, body: '{}' }; },
+    evalSecret: EVAL_SECRET,
   } as HookServerOpts;
   server = new HookServer(opts);
   await server.listen();
@@ -88,5 +91,31 @@ describe('daemon shutdown', () => {
     expect(daemon).toContain("process.once('SIGTERM', shutdown)");
     expect(daemon).toContain("process.once('SIGINT', shutdown)");
     expect(daemon).toMatch(/manager\.closeAll\('shutdown'\)/);
+  });
+});
+
+describe('HookServer — eval replay MCP routes', () => {
+  it('routes an authenticated eval and replay path to onEvalMcp', async () => {
+    const port = await start();
+    expect((await post(port, '/mcp/eval/sid', SECRET)).status).toBe(200);
+    expect((await post(port, '/mcp/replay/sid/linear', SECRET)).status).toBe(200);
+    expect(handled).toEqual(['/mcp/eval/sid', '/mcp/replay/sid/linear']);
+  });
+
+  it('accepts the eval secret on the gate and the eval MCP routes only', async () => {
+    const port = await start();
+    expect((await post(port, '/mcp/eval/sid', EVAL_SECRET)).status).toBe(200);
+    expect((await post(port, '/hook/pretool', EVAL_SECRET)).status).toBe(200);
+    expect(handled).toEqual(['/mcp/eval/sid', 'pretool']);
+    for (const route of ['/mcp', '/work/plan-ready', '/work/create-job', '/work/action-proposal', '/hook/stop']) {
+      expect((await post(port, route, EVAL_SECRET)).status).toBe(401);
+    }
+    expect(handled).toEqual(['/mcp/eval/sid', 'pretool']);
+  });
+
+  it('refuses them without the secret', async () => {
+    const port = await start();
+    expect((await post(port, '/mcp/eval/sid', 'wrong')).status).toBe(401);
+    expect(handled).toEqual([]);
   });
 });

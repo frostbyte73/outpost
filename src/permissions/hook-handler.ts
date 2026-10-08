@@ -26,6 +26,7 @@ export interface HookResponse {
     hookEventName: 'PreToolUse';
     permissionDecision: 'allow' | 'deny';
     permissionDecisionReason?: string;
+    updatedInput?: unknown;
   };
 }
 

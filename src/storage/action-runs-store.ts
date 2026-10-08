@@ -72,8 +72,12 @@ export interface ActionRunRecord {
   envelopeRef?: string;
   baseSha?: string;
   skillSha?: string;
+  worktreePath?: string;
+  gitDir?: string;
   reads?: RecordedRead[];
   links?: RunLink[];
+  // Everything the round submitted (see RunOutput) — the before-version an eval compares against.
+  outputRef?: string;
 }
 
 type Line =
@@ -174,6 +178,7 @@ export class ActionRunsStore {
     for (const r of this.index) {
       if (r.envelopeRef) refs.add(r.envelopeRef);
       if (r.editDiffRef) refs.add(r.editDiffRef);
+      if (r.outputRef) refs.add(r.outputRef);
       for (const read of r.reads ?? []) refs.add(read.responseRef);
       for (const l of r.links ?? []) if (l.kind === 'reviewFindings') refs.add(l.ref);
     }

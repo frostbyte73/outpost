@@ -1,6 +1,7 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ActionAuthor } from './action-revisions-store.js';
+import type { EvalOutcome } from '../eval/eval-verdict.js';
 
 // In-flight action edits (meta.build-action's, and meta.improve-actions' scheduled
 // proposals), mirrored to <runtimeDir>/action-edits/<sessionId>/edit.json
@@ -19,6 +20,7 @@ export interface ActionProposal {
   citedRunIds?: string[];
   // A deletion fixing nothing in particular; judged on no-regression alone.
   cutOnly?: boolean;
+  eval?: { id?: string; outcome: EvalOutcome | 'pending'; reasons?: string[] };
 }
 
 export interface ActionEdit {

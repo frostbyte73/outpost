@@ -6,6 +6,7 @@ import type { ActionRunOutcome, ActionRunRecord, ActionRunsStore, RecordedRead }
 import type { BlobStore } from '../storage/blob-store.js';
 import { CODE_ROUND_ACTIONS, deriveLinkEvents, type LinkEvent } from './action-run-links.js';
 import { resolveVerdictOutcome, type DraftVerdictDetail } from './draft-verdict.js';
+import type { RunOutput } from '../eval/run-output.js';
 
 // Observes the job queue and records one run per action round. Wiring is a single
 // subscribe in daemon.ts: JobQueue.upsert already broadcasts the full record on every
@@ -26,7 +27,7 @@ export interface ActionRunLedgerDeps {
 
 const MAX_SNAPSHOT_SESSIONS = 200;
 
-export type RoundSnapshot = Pick<ActionRunRecord, 'envelopeRef' | 'baseSha'>;
+export type RoundSnapshot = Pick<ActionRunRecord, 'envelopeRef' | 'baseSha' | 'worktreePath' | 'gitDir'>;
 
 function keyOf(k: RunKey): string { return `${k.jobId}:${k.stepId ?? '-'}`; }
 
@@ -42,6 +43,7 @@ export class ActionRunLedger {
   private readonly lastSnapshot = new Map<string, RoundSnapshot & { skill?: { action: string; sha: string } }>();
   // Written once in the close patch, like cost — a line per read would be far too chatty.
   private readonly readsByRun = new Map<string, RecordedRead[]>();
+  private readonly outputsByRun = new Map<string, RunOutput[]>();
   private readonly now: () => number;
 
   constructor(private readonly deps: ActionRunLedgerDeps) {
@@ -98,7 +100,13 @@ export class ActionRunLedger {
     if (this.lastSnapshot.size > MAX_SNAPSHOT_SESSIONS) {
       this.lastSnapshot.delete(this.lastSnapshot.keys().next().value!);
     }
-    if (run) this.stampSnapshot(run, snap, sha);
+    if (!run) return;
+    // A relaunch of a collapsed round: its output must describe the same launch as its envelope.
+    if (run.envelopeRef) {
+      this.outputsByRun.delete(run.id);
+      this.deps.store.patch(run.id, { outputRef: '' });
+    }
+    this.stampSnapshot(run, snap, sha);
   }
 
   private skillShaOf(action: string): string | undefined {
@@ -117,6 +125,20 @@ export class ActionRunLedger {
     if (reads.some((r) => r.inputKey === read.inputKey)) return;
     reads.push(read);
     this.readsByRun.set(run.id, reads);
+  }
+
+  openRunId(jobId: string, stepId?: string): string | undefined {
+    return this.openByKey.get(keyOf({ jobId, stepId }))?.id;
+  }
+
+  // Patched on every submit rather than at close: a draft round is ruled on long after it ends.
+  noteOutput(runId: string, out: RunOutput): void {
+    if (!this.deps.store.get(runId)) return;
+    const outs = [...(this.outputsByRun.get(runId) ?? []), out];
+    this.outputsByRun.set(runId, outs);
+    if (this.outputsByRun.size > MAX_SNAPSHOT_SESSIONS) this.outputsByRun.delete(this.outputsByRun.keys().next().value!);
+    const ref = this.deps.blobs?.put(JSON.stringify(outs));
+    if (ref) this.deps.store.patch(runId, { outputRef: ref });
   }
 
   noteVerdict(jobId: string, stepId: string, detail: DraftVerdictDetail): void {

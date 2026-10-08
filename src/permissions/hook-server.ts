@@ -22,6 +22,10 @@ export interface HookServerOpts {
   onActionProposal: (body: string) => Promise<void>;
   onWorkJournal: (body: string) => Promise<void>;
   onMcp: (body: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
+  // An eval replay's own MCP surfaces: `/mcp/eval/<sid>` stands in for outpost, `/mcp/replay/<sid>/<server>` for the rest.
+  onEvalMcp?: (path: string, body: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
+  // Held by eval replays: opens the gate and their own MCP routes, nothing that changes daemon state.
+  evalSecret?: string;
   onCreateJob?: (payload: {
     source: string;
     title: string;
@@ -64,13 +68,15 @@ export class HookServer {
       '/work/create-job',
       '/mcp',
     ]);
-    if (req.method !== 'POST' || !KNOWN_ROUTES.has(req.url ?? '')) {
+    const isEvalMcp = /^\/mcp\/(eval|replay)\//.test(req.url ?? '');
+    if (req.method !== 'POST' || !(KNOWN_ROUTES.has(req.url ?? '') || isEvalMcp)) {
       res.statusCode = 404;
       res.end('not found');
       return;
     }
     const sent = req.headers['x-daemon-auth'];
-    if (sent !== this.opts.daemonAuthSecret) {
+    const evalAuthed = !!this.opts.evalSecret && sent === this.opts.evalSecret && (isEvalMcp || req.url === '/hook/pretool');
+    if (sent !== this.opts.daemonAuthSecret && !evalAuthed) {
       // The usual sender is a Claude session that outlived the daemon run that spawned it,
       // still holding that run's per-launch secret — so name the route and say which way the
       // secret was wrong, or a burst of these is unexplainable from the log alone.
@@ -174,6 +180,11 @@ export class HookServer {
           res.statusCode = 200;
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify(result));
+        } else if (isEvalMcp && this.opts.onEvalMcp) {
+          const reply = await this.opts.onEvalMcp(url!, body);
+          res.statusCode = reply.status;
+          for (const [k, v] of Object.entries(reply.headers)) res.setHeader(k, v);
+          res.end(reply.body);
         } else if (url === '/mcp') {
           const reply = await this.opts.onMcp(body);
           res.statusCode = reply.status;

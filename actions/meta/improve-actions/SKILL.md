@@ -36,6 +36,7 @@ cat "$OUTPOST_ENVELOPE"
 | `improve.scorecard` | Measured rates. `null` means nothing adjudicated, not zero. |
 | `improve.denials[]` | Unresolved blocked tool calls, newest first; `denialsTotal > denialsCap` means truncated. |
 | `improve.rejectedProposals[]` | Proposals already declined, with the reason. |
+| `improve.failedEvals[]` | Proposals the replay eval graded `fail` / `inconclusive`, with why. Same weight as a rejection. |
 | `improve.lessons[]` | What the action wrote about itself — weaker than the above, useful for *why*. |
 | `improve.history[]` | Past applied / reverted revisions. A reverted improver edit is the strongest negative signal; a `system` revert whose rationale reads `regression:` is the daemon undoing one that measurably made things worse. |
 | `improve.revisionStats[]` | Each revision scored on the runs that ran under it: `verbatimRate` (approved untouched ÷ ruled on), `failureRate`, `tokens`. Runs a reverted edit cited are already removed from the evidence above — cite something newer. |
@@ -47,11 +48,13 @@ directory and siblings for context.
 
 ## Step 2 — The rubric
 
-**Ground every change in a pattern.** Name it, and list **at least two** run ids exhibiting it in
+**Ground every change in a pattern.** Name it, and list **two to four** run ids exhibiting it in
 `citedRunIds`. The canonical improvement is a recurring edit: the user keeps rewriting X into Y, so
-the action should produce Y. One bad run is noise; no pattern means no change.
+the action should produce Y. One bad run is noise; no pattern means no change. Your revision is
+replayed blind on exactly those runs, plus a few the user accepted untouched, and a judge compares
+both outputs against what the user wanted — cite only runs your change would actually have fixed.
 
-**Don't repeat a rejection.** Check `rejectedProposals` and `history` first. If you think a rejection
+**Don't repeat a rejection.** Check `rejectedProposals`, `failedEvals` and `history` first. If you think a rejection
 was wrong, say what new evidence changes it.
 
 **Criteria over procedure.** State what a correct output looks like ("a review that finds nothing

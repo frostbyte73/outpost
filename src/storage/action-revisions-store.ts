@@ -29,7 +29,9 @@ export type ActionEventKind =
   | 'rejected'
   // An improver cycle that examined the action and concluded nothing was worth
   // changing. Carries no body, so it stays out of BODY_CHANGING and off the chain.
-  | 'reviewed';
+  | 'reviewed'
+  // A proposal's replay eval and its verdict (see src/eval/). Carries no body.
+  | 'evaluated';
 
 export type ActionAuthor = 'user' | 'improver' | 'external' | 'system';
 
@@ -55,6 +57,7 @@ export interface ActionEvent {
   runId?: string;
   revertOf?: string;
   citedRunIds?: string[];
+  evalId?: string;
 }
 
 export interface RecordInput {
@@ -70,6 +73,7 @@ export interface RecordInput {
   runId?: string;
   revertOf?: string;
   citedRunIds?: string[];
+  evalId?: string;
 }
 
 export interface ApplyWriteInput extends Omit<RecordInput, 'kind' | 'body'> {
@@ -189,6 +193,7 @@ export class ActionRevisionsStore {
     if (input.runId) event.runId = input.runId;
     if (input.revertOf) event.revertOf = input.revertOf;
     if (input.citedRunIds?.length) event.citedRunIds = input.citedRunIds;
+    if (input.evalId) event.evalId = input.evalId;
 
     // Blob first, then metadata: a line must never reference a body that isn't on disk.
     appendFileSync(this.indexPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });

@@ -202,6 +202,7 @@ function editCardHtml(edit, state) {
     <div class="o-section lib-section lib-edit-card">
       <h4 class="lib-section-hdr o-microhead">Proposal ready</h4>
       ${p.summary ? `<div class="lib-edit-summary">${escapeHtml(p.summary)}</div>` : ''}
+      ${evalHtml(p.eval)}
       ${evidenceHtml(p.evidence)}
       ${proposedChangeHtml(p)}
       ${rules ? `<div class="lib-edit-rules">Allowlist additions: ${rules}</div>` : ''}
@@ -229,6 +230,21 @@ function proposedChangeHtml(p) {
     suffix: deltaPillHtml(p.netTokenDelta),
     defaultOpen: true,
   });
+}
+
+const EVAL_TONE = { pass: 'ok', fail: 'danger', inconclusive: 'warn', pending: 'investigate' };
+
+// Shadow mode: the replay eval's verdict sits beside the user's own, so the two can be compared.
+function evalHtml(ev) {
+  if (!ev) return '';
+  const label = ev.outcome === 'pending' ? 'running…' : ev.outcome;
+  const reasons = (ev.reasons ?? []).map((r) => `<li>${escapeHtml(r)}</li>`).join('');
+  return `
+    <div class="lib-edit-evidence">
+      <div class="o-microhead">Replay eval <span class="o-pill ${EVAL_TONE[ev.outcome] ?? ''}">${escapeHtml(label)}</span></div>
+      ${reasons ? `<ul>${reasons}</ul>` : ''}
+    </div>
+  `;
 }
 
 // What the proposer cited. An improver must ground every change in observed runs, so this is

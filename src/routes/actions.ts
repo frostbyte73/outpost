@@ -31,6 +31,8 @@ import { unifiedSkillDiff } from '../actions/skill-diff.js';
 import type { ActionRunLedger } from '../work/action-run-ledger.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorkEngine } from '../work/engine.js';
+import type { EvalOutcome } from '../eval/eval-verdict.js';
+import type { UserVerdict } from '../eval/eval-store.js';
 import type { DaemonConfig } from '../config.js';
 import { ensureActionsInstalled, bundledRepoDir } from '../setup-actions.js';
 import { parseJsonObject, parseWindowMs, readJsonBody } from './util.js';
@@ -57,6 +59,12 @@ export interface ActionsRoutesDeps {
   manager: SessionManager;
   engine: WorkEngine;
   notifyAll: (message: unknown) => void;
+  // Shadow eval of an improver proposal; `onDone` fires once it has a verdict.
+  evaluateProposal?: (
+    input: { action: string; editSessionId: string; proposal: ActionProposal },
+    onDone: (result: { id: string; outcome: EvalOutcome; reasons: string[] }) => void,
+  ) => void;
+  noteProposalVerdict?: (editSessionId: string, postedAt: number, verdict: UserVerdict) => void;
 }
 
 const DEFAULT_SCORECARD_WINDOW = '30d';
@@ -366,6 +374,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
     actionRevisionsStore, manager, engine, notifyAll, permissionGroups, applyGroup,
+    evaluateProposal, noteProposalVerdict,
   } = deps;
 
   // ── local helpers ──────────────────────────────────────────────────────
@@ -500,6 +509,12 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   for (const edit of loadPersistedEdits(actionEditsDir)) {
     actionEdits.set(editKey(edit.actionName, edit.sessionId), edit);
   }
+  // An eval in flight when the daemon stopped is queued again; a finished one is just re-read.
+  for (const edit of actionEdits.values()) {
+    if (evaluateProposal && edit.actionName && edit.proposal?.eval?.outcome === 'pending') {
+      startEval(edit.actionName, edit.sessionId, edit.proposal);
+    }
+  }
 
   // An action's history changed. The acting client invalidates its own cache, but improver
   // events land while nobody is acting, so the History card needs to be told.
@@ -528,6 +543,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   // sent-back one. Must run before the caller clears edit.proposal.
   function noteRejected(edit: ActionEdit, feedback: string, author: ActionAuthor = 'user'): void {
     if (!edit.proposal || !edit.actionName) return;
+    if (author === 'user' && edit.proposal.eval) noteProposalVerdict?.(edit.sessionId, edit.proposal.postedAt, 'rejected');
     actionRevisionsStore.record({
       action: edit.actionName,
       kind: 'rejected',
@@ -575,6 +591,18 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     console.log(`[work] ${ledgerActionFor(edit)} reviewed ${edit.actionName}: no change proposed`);
   }
 
+  // The card may be gone (approved, rejected) by the time the verdict lands; it's in the eval store regardless.
+  function startEval(action: string, editSessionId: string, proposal: ActionProposal): void {
+    evaluateProposal!({ action, editSessionId, proposal }, (result) => {
+      const located = findEditBySession(editSessionId);
+      if (located?.edit.proposal?.postedAt === proposal.postedAt) {
+        located.edit.proposal.eval = result;
+        setEdit(located.key, located.edit);
+      }
+      notifyRevised(action);
+    });
+  }
+
   const onActionProposalHandler: ActionsRoutesHandlers['onActionProposalHandler'] = async (body) => {
     const payload = parseJsonObject(body) as Parameters<typeof intakeProposal>[0] | null;
     if (!payload) throw new Error('invalid json body');
@@ -607,11 +635,13 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       skillMdBefore,
       now: Date.now(),
       ...(edit.actionName ? { spentRunIds: spentRunIds(actionRevisionsStore.listByAction(edit.actionName)) } : {}),
+      ...(edit.authorAction === 'meta.improve-actions' && edit.actionName ? {
+        requireCitations: true,
+        knownRunIds: new Set(actionRunsStore.listByAction(edit.actionName).map((r) => r.id)),
+      } : {}),
     });
-    if (intake.kind === 'invalid') {
-      console.warn(`[hook] /work/action-proposal: ${intake.reason}`);
-      return;
-    }
+    // Thrown so the posting session sees it: a silently dropped proposal reads as delivered.
+    if (intake.kind === 'invalid') throw new Error(`proposal refused: ${intake.reason}`);
     if (intake.kind === 'no-change') {
       acceptNoChange(key, edit, intake.summary);
       return;
@@ -619,6 +649,10 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
 
     edit.status = 'review';
     edit.proposal = intake.proposal;
+    if (evaluateProposal && edit.actionName && edit.authorAction === 'meta.improve-actions') {
+      edit.proposal.eval = { outcome: 'pending' };
+      startEval(edit.actionName, edit.sessionId, edit.proposal);
+    }
     setEdit(key, edit);
     // Recorded even though nothing has been applied yet: a proposal the user then rejects is
     // exactly the signal the improver needs about its own suggestions. Skipped while the
@@ -889,6 +923,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     } catch (e) {
       res.statusCode = 500; res.end(`apply failed: ${(e as Error).message}`); return;
     }
+    if (proposal.eval) noteProposalVerdict?.(edit.sessionId, proposal.postedAt, 'approved');
     edit.status = 'applying';
     setEdit(key, edit);
     notifyRevised(name);

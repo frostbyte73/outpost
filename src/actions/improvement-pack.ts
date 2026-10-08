@@ -77,6 +77,8 @@ export interface ImprovementPack {
   denialsCap: number;
   denialsTotal: number;
   rejectedProposals: Array<{ at: number; rationale?: string; feedback?: string }>;
+  // Proposals the replay eval did not pass: the change and why the eval graded it down.
+  failedEvals: Array<{ at: number; verdict: string; proposal?: string }>;
   lessons: JournalEntry[];
   history: Array<{ at: number; kind: ActionEvent['kind']; author: ActionEvent['author']; bodyBytes?: number; rationale?: string }>;
   // Every SKILL.md revision scored on the runs that ran under it, newest first.
@@ -265,6 +267,13 @@ export function buildImprovementPack(
       .filter((e) => e.kind === 'rejected')
       .slice(0, LIST_CAP)
       .map((e) => ({ at: e.at, rationale: e.rationale, feedback: e.feedback })),
+    failedEvals: events
+      .filter((e) => e.kind === 'evaluated' && /^(fail|inconclusive):/.test(e.rationale ?? ''))
+      .slice(0, LIST_CAP)
+      .map((e) => {
+        const proposal = events.find((p) => p.kind === 'proposed' && p.sessionId && p.sessionId === e.sessionId)?.rationale;
+        return { at: e.at, verdict: e.rationale!, ...(proposal ? { proposal } : {}) };
+      }),
     lessons: deps.lessonsFor(action),
     history: events
       .filter((e) => e.kind === 'applied' || e.kind === 'reverted')

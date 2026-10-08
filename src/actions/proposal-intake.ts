@@ -13,7 +13,7 @@ import { approxTokens } from './tokens.js';
 const RULE_KINDS = ['tool', 'bash', 'mcp', 'path'] as const;
 const MAX_EVIDENCE = 10;
 const MAX_EVIDENCE_LEN = 300;
-const MAX_CITED_RUNS = 10;
+const MAX_CITED_RUNS = 4;
 
 export interface ProposalPayload {
   sessionId?: string;
@@ -54,12 +54,19 @@ export function netTokenDelta(before: string, after: string): number {
 
 function normalizeCitedRuns(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
-  return raw.filter((r): r is string => typeof r === 'string' && r.length > 0).slice(0, MAX_CITED_RUNS);
+  return raw.filter((r): r is string => typeof r === 'string' && r.length > 0);
 }
 
 export function intakeProposal(
   payload: ProposalPayload,
-  ctx: { skillMdBefore: string; now: number; spentRunIds?: ReadonlySet<string> },
+  ctx: {
+    skillMdBefore: string;
+    now: number;
+    spentRunIds?: ReadonlySet<string>;
+    // An improver proposal is replayed against the runs it cites, so it must cite real ones.
+    requireCitations?: boolean;
+    knownRunIds?: ReadonlySet<string>;
+  },
 ): ProposalIntake {
   // The flag wins over a body sent alongside it: "nothing to change" must never be able
   // to apply a write by accident.
@@ -67,7 +74,15 @@ export function intakeProposal(
   if (typeof payload.skillMdAfter !== 'string') {
     return { kind: 'invalid', reason: 'expected either skillMdAfter or noChange:true' };
   }
-  const cited = normalizeCitedRuns(payload.citedRunIds).filter((id) => !ctx.spentRunIds?.has(id));
+  const cited = normalizeCitedRuns(payload.citedRunIds)
+    .filter((id) => !ctx.spentRunIds?.has(id) && (!ctx.knownRunIds || ctx.knownRunIds.has(id)))
+    .slice(0, MAX_CITED_RUNS);
+  if (ctx.requireCitations && cited.length === 0 && payload.cutOnly !== true) {
+    return {
+      kind: 'invalid',
+      reason: 'cite 1–4 run ids from the pack this change fixes in citedRunIds, or set cutOnly:true for a pure deletion',
+    };
+  }
   return {
     kind: 'proposal',
     proposal: {

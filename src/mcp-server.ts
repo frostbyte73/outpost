@@ -31,7 +31,7 @@ export interface McpResponse {
   body: string;
 }
 
-export async function handleMcpRequest(rawBody: string, tools: McpTool[], dispatch: McpDispatch): Promise<McpResponse> {
+export async function handleMcpRequest(rawBody: string, tools: McpTool[], dispatch: McpDispatch, serverName = 'outpost'): Promise<McpResponse> {
   let parsed: unknown;
   try { parsed = JSON.parse(rawBody); }
   catch { return jsonResponse(400, jsonRpcError(null, -32700, 'parse error')); }
@@ -46,7 +46,7 @@ export async function handleMcpRequest(rawBody: string, tools: McpTool[], dispat
   const messages = candidates as JsonRpcMessage[];
   const responses: unknown[] = [];
   for (const msg of messages) {
-    const reply = await handleOne(msg, tools, dispatch);
+    const reply = await handleOne(msg, tools, dispatch, serverName);
     if (reply !== undefined) responses.push(reply);
   }
   if (responses.length === 0) return { status: 202, headers: {}, body: '' };
@@ -54,7 +54,7 @@ export async function handleMcpRequest(rawBody: string, tools: McpTool[], dispat
   return { status: 200, headers: { 'content-type': 'application/json' }, body };
 }
 
-async function handleOne(msg: JsonRpcMessage, tools: McpTool[], dispatch: McpDispatch): Promise<unknown> {
+async function handleOne(msg: JsonRpcMessage, tools: McpTool[], dispatch: McpDispatch, serverName: string): Promise<unknown> {
   const id = msg.id ?? null;
   const isNotification = msg.id === undefined || msg.id === null;
   const method = msg.method;
@@ -63,7 +63,7 @@ async function handleOne(msg: JsonRpcMessage, tools: McpTool[], dispatch: McpDis
     return jsonRpcResult(id, {
       protocolVersion: PROTOCOL_VERSION,
       capabilities: { tools: {} },
-      serverInfo: { name: 'outpost', version: '0.1.0' },
+      serverInfo: { name: serverName, version: '0.1.0' },
     });
   }
   if (method === 'notifications/initialized' || method === 'notifications/cancelled') {

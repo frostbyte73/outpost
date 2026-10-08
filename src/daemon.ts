@@ -66,13 +66,24 @@ import { homeOrKnownCwd } from './git/known-cwd.js';
 import { PreferencesStore } from './storage/preferences-store.js';
 import { registerPreferencesRoutes } from './routes/preferences.js';
 import { RunsStore } from './storage/runs-store.js';
-import { ActionRunsStore } from './storage/action-runs-store.js';
+import { ActionRunsStore, type ActionRunRecord } from './storage/action-runs-store.js';
 import { DenialsStore } from './storage/denials-store.js';
 import { ActionRevisionsStore } from './storage/action-revisions-store.js';
 import { PermissionGroupRevisionsStore } from './storage/permission-group-revisions-store.js';
 import { ActionRunLedger } from './work/action-run-ledger.js';
 import { BlobStore } from './storage/blob-store.js';
 import { readInputKey, recordableRead } from './permissions/read-recording.js';
+import { CODE_ROUND_ACTIONS } from './work/action-run-links.js';
+import { diffSince, snapshotWorktree } from './eval/run-output.js';
+import { EvalSessions } from './eval/eval-sessions.js';
+import { replayPreTool } from './eval/replay-hook.js';
+import { handleEvalMcp } from './eval/eval-mcp.js';
+import { EvalStore, type EvalRecord } from './eval/eval-store.js';
+import type { EvalOutcome } from './eval/eval-verdict.js';
+import { EvalQueue, newEvalRecord, runEval } from './eval/run-eval.js';
+import { claudeJudge } from './eval/judge.js';
+import { replayRun } from './eval/replay-runner.js';
+import { spentRunIds } from './actions/revision-stats.js';
 import { execFile } from 'node:child_process';
 import { UsageLedger } from './integrations/usage-ledger.js';
 import { createRunsCapture, type ScheduleRunContext } from './storage/runs-capture.js';
@@ -208,6 +219,7 @@ async function main() {
   }
 
   const secret = generateSecret();
+  const evalSecret = generateSecret();
   const HOOK_PORT = config.hookPort;
   const settingsPath = join(RUNTIME_DIR, 'daemon-settings.json');
   const mcpConfigPath = join(RUNTIME_DIR, 'daemon-mcp.json');
@@ -222,6 +234,7 @@ async function main() {
   };
   // Assigned once the run ledger exists; a launch before then has no round to attach to.
   let captureRoundSnapshot: (sessionId: string, env: Record<string, string>) => void = () => {};
+  let noteRoundOutput: (tool: string, args: Record<string, unknown>) => void = () => {};
   const actionsStore = new ActionsStore(join(RUNTIME_DIR, 'actions.json'));
   const interactive = new InteractiveStore(join(RUNTIME_DIR, 'interactive-sessions.json'));
   const permissionGroups = loadRuntimePermissionGroups(PERMISSION_GROUPS_PATH, PERMISSION_GROUPS_SEEDED_PATH, permissionGroupsDefault as PermissionGroupMap);
@@ -247,6 +260,7 @@ async function main() {
   }
   console.log(`[work] action registry: ${loadedActionCount} action${loadedActionCount === 1 ? '' : 's'}`);
 
+  const evalSessions = new EvalSessions();
   const allowlist = new Allowlist(loadRuntimeAllowlist(ALLOWLIST_PATH), { projectAllowlistDir, actionsStore, actionRegistry });
   const queue = new ApprovalQueue({ timeoutMs: APPROVAL_TIMEOUT_MS });
   const modes = new ApprovalModeStore(join(RUNTIME_DIR, 'approval-modes.json'));
@@ -506,6 +520,23 @@ async function main() {
       }
     },
   });
+  // Taken before the engine call for a closing submit, after it for a draft (which opens its round).
+  noteRoundOutput = (tool, a) => {
+    const jobId = a.jobId as string;
+    const stepId = a.stepId as string | undefined;
+    const runId = actionRunLedger.openRunId(jobId, stepId);
+    if (!runId) return;
+    actionRunLedger.noteOutput(runId, { tool, args: a });
+    if (tool !== 'submit_step_progress' || !stepId) return;
+    const action = engine.actionForStep(jobId, stepId);
+    const rec = worktreeManager.get(stepId);
+    const wt = rec && !rec.archivedAt ? rec.worktreePath : undefined;
+    const base = actionRunsStore.get(runId)?.baseSha;
+    if (!action || !CODE_ROUND_ACTIONS.has(action) || !wt || !base) return;
+    diffSince(wt, base)
+      .then((diff) => actionRunLedger.noteOutput(runId, { tool: 'worktree-diff', args: { diff } }))
+      .catch((e) => console.warn(`[action-runs] worktree diff for ${runId}: ${(e as Error).message}`));
+  };
   captureRoundSnapshot = (sessionId, env) => {
     const path = env.OUTPOST_ENVELOPE;
     if (!path) return;
@@ -514,9 +545,9 @@ async function main() {
     const snap = { envelopeRef: runBlobs.put(envelope) };
     const wt = engine.worktreePathForSession(sessionId);
     if (!wt) { actionRunLedger.attachSnapshot(sessionId, snap); return; }
-    execFile('git', ['-C', wt, 'rev-parse', 'HEAD'], (err, out) => {
-      actionRunLedger.attachSnapshot(sessionId, err ? snap : { ...snap, baseSha: out.trim() });
-    });
+    snapshotWorktree(wt)
+      .then(({ commit, gitDir }) => actionRunLedger.attachSnapshot(sessionId, { ...snap, baseSha: commit, gitDir, worktreePath: wt }))
+      .catch(() => actionRunLedger.attachSnapshot(sessionId, snap));
   };
   const runsCapture = createRunsCapture({
     runsStore,
@@ -580,7 +611,7 @@ async function main() {
   nativeHandlers.register('user-prs-watcher', () => userPrsWatcher.runOnce());
   const reviewIntake = new ReviewIntake({
     settings: () => preferencesStore.getPrReviewIntake(),
-    projects: () => projectRegistry.list().map((p) => p.cwd),
+    projects: () => sessionStore.listProjects().filter((p) => !p.internal).map((p) => p.cwd),
     homeDir: homedir(),
     createExternalJob: (input) => engine.createExternalJob(input),
     postPlan: (jobId, steps) => engine.onPlanReady(jobId, 'initial', steps),
@@ -647,6 +678,7 @@ async function main() {
   const hookServer = new HookServer({
     port: HOOK_PORT,
     daemonAuthSecret: secret,
+    evalSecret,
     onStatusLineHook: async (body) => {
       // Schema: https://code.claude.com/docs/en/statusline#available-data.
       const payload = parseJsonObject(body) as {
@@ -770,6 +802,15 @@ async function main() {
       const hookInput = parseJsonObject(body) as HookInput | null;
       if (!hookInput) throw new Error('invalid json body');
       console.log(`[hook] ${hookInput.tool_name} session=${hookInput.session_id?.slice(0,8)}${hookInput.agent_id ? ` agent=${hookInput.agent_type ?? '?'}/${hookInput.agent_id.slice(0,8)}` : ''} input=${JSON.stringify(hookInput.tool_input).slice(0, 200)}`);
+      const evalSession = evalSessions.get(hookInput.session_id);
+      if (evalSession) {
+        return JSON.stringify(replayPreTool(hookInput, evalSession, {
+          allows: (tool, input, action, worktree, sid) => allowlist.allows(tool, input, undefined, action, worktree, sid),
+          gated: (name) => actionRegistry.gatedFor(name),
+          pullPatterns: permissionGroups.pull?.alwaysAllowBashPatterns ?? [],
+          blob: (ref) => runBlobs.get(ref),
+        }));
+      }
       // Proof of life for the session — disarms any "ended without submitting" check left
       // by an earlier Stop. Subagent calls count (they carry the parent's session id).
       if (hookInput.session_id) engine.noteSessionActivity(hookInput.session_id);
@@ -910,12 +951,14 @@ async function main() {
         lesson: payload.lesson,
       });
     },
+    onEvalMcp: (path, body) => handleEvalMcp(path, body, { sessions: evalSessions, blob: (ref) => runBlobs.get(ref) }),
     onMcp: (body) => handleMcpRequest(body, OUTPOST_MCP_TOOLS, {
       submit_plan: async (a) => {
         // No stepId: an orchestrator's plan is refused against the JOB's orchestrator session.
         const refusal = engine.interactiveRefusal(a.jobId as string);
         if (refusal) throw new Error(refusal);
         await checkPlanDiagram(a.findings as { diagram?: unknown } | undefined);
+        noteRoundOutput('submit_plan', a);
         engine.onPlanReady(
           a.jobId as string,
           (a.mode as 'initial' | 'replan') ?? 'initial',
@@ -939,20 +982,24 @@ async function main() {
       submit_step_output: async (a) => {
         const refusal = engine.interactiveRefusal(a.jobId as string, a.stepId as string);
         if (refusal) throw new Error(refusal);
+        noteRoundOutput('submit_step_output', a);
         engine.onStepResolved(a.jobId as string, a.stepId as string, { output: a.output as string | undefined });
         return { ok: true };
       },
       submit_continue: async (a) => {
+        noteRoundOutput('submit_continue', a);
         engine.onOrchestratorContinue(a.jobId as string, a.reason as string | undefined);
         return { ok: true };
       },
       submit_step_failed: async (a) => {
+        noteRoundOutput('submit_step_failed', a);
         engine.onStepFailed(a.jobId as string, a.stepId as string, a.reason as string);
         return { ok: true };
       },
       submit_step_progress: async (a) => {
         const refusal = engine.interactiveRefusal(a.jobId as string, a.stepId as string);
         if (refusal) throw new Error(refusal);
+        noteRoundOutput('submit_step_progress', a);
         engine.onStepProgress(a.jobId as string, a.stepId as string, {
           memo: a.memo as string | undefined,
           phase: a.phase as string | undefined,
@@ -1000,6 +1047,7 @@ async function main() {
             note: 'Pre-approved by the user — stop this turn; you will be resumed in the commit phase to run it.',
           };
         }
+        if (!dispatchId) noteRoundOutput('submit_write_draft', a);
         // Only notify once the draft is actually accepted and parked — never on a refusal
         // above. submitDraft (write-draft-runner.ts) silently coerces a step-less
         // `{kind:'step'}` raiser to `{kind:'controller'}` for an orchestrated step; mirror
@@ -1092,11 +1140,53 @@ async function main() {
   const applyGroup = createGroupApplier({
     actionRegistry, permissionGroups, permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
   });
+  const evalStore = new EvalStore(join(RUNTIME_DIR, 'evals'));
+  const evalQueue = new EvalQueue();
+  const judge = claudeJudge();
+  const replayDeps = {
+    sessions: evalSessions,
+    blob: (ref: string) => runBlobs.get(ref),
+    actionDir: (a: string) => actionDirFor(outpostActionsDir, a).dir,
+    hookPort: HOOK_PORT,
+    secret: evalSecret,
+    scratchRoot: join(RUNTIME_DIR, 'eval-scratch'),
+  };
+  const evalDeps = {
+    runs: (a: string) => actionRunsStore.listByAction(a),
+    spent: (a: string) => spentRunIds(actionRevisionsStore.listByAction(a)),
+    blob: (ref: string) => runBlobs.get(ref),
+    replay: (run: ActionRunRecord, candidate: string, evalId: string, budget: number) => replayRun(run, candidate, evalId, budget, replayDeps),
+    judge,
+    store: evalStore,
+    revisions: actionRevisionsStore,
+  };
+  const evalWaiters = new Map<string, Array<(r: { id: string; outcome: EvalOutcome; reasons: string[] }) => void>>();
+  // Idempotent per record: the boot sweep and a restored review card can both ask for the same eval.
+  const queueEval = (rec: EvalRecord, onDone?: (r: { id: string; outcome: EvalOutcome; reasons: string[] }) => void) => {
+    const waiting = evalWaiters.get(rec.id);
+    if (waiting) { if (onDone) waiting.push(onDone); return; }
+    evalWaiters.set(rec.id, onDone ? [onDone] : []);
+    evalQueue.enqueue(async () => {
+      try {
+        const done = await runEval(rec, evalDeps);
+        console.log(`[eval] ${done.action}: ${done.outcome} ($${done.spentUsd.toFixed(2)}) — ${done.reasons.join('; ')}`);
+        for (const fn of evalWaiters.get(rec.id) ?? []) fn({ id: done.id, outcome: done.outcome!, reasons: done.reasons });
+      } finally {
+        evalWaiters.delete(rec.id);
+      }
+    });
+  };
   const actionRoutes = registerActionsRoutes(server, {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
     actionRevisionsStore, manager, engine, notifyAll,
     permissionGroups, applyGroup,
+    evaluateProposal: (input, onDone) => {
+      const rec = evalStore.forEdit(input.editSessionId, input.proposal.postedAt);
+      if (rec?.outcome) { onDone({ id: rec.id, outcome: rec.outcome, reasons: rec.reasons }); return; }
+      queueEval(rec ?? evalStore.save(newEvalRecord(input)), onDone);
+    },
+    noteProposalVerdict: (sid, postedAt, verdict) => { evalStore.noteUserVerdict(sid, postedAt, verdict); },
   });
   recordActionDenial = actionRoutes.recordActionDenial;
   onActionProposalHandler = actionRoutes.onActionProposalHandler;
@@ -1362,6 +1452,8 @@ async function main() {
 
   await server.listen();
   await hookServer.listen();
+  for (const rec of evalStore.pending()) queueEval(rec);
+  evalQueue.start();
 
   // A restart signals only this process — tsx watch on a file change, launchctl kickstart, a
   // bootout. Unhandled, every Claude child outlived it mid-turn, still holding this run's
