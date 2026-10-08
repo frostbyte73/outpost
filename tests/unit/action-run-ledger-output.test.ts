@@ -62,12 +62,43 @@ describe('ledger round output across a relaunch', () => {
   it('starts a collapsed round\'s output over when it relaunches, so it matches the new envelope', () => {
     const { store, blobs, ledger } = setup();
     const id = ledger.openRunId('j1', 's1')!;
-    ledger.attachSnapshot('x', { envelopeRef: 'env-1' });
+    ledger.beginLaunch('x', { envelopeRef: 'env-1' });
     ledger.noteOutput(id, { tool: 'submit_step_progress', args: { turn: 1 } });
-    ledger.attachSnapshot('x', { envelopeRef: 'env-2' });
+    ledger.beginLaunch('x', { envelopeRef: 'env-2' });
     expect(store.get(id)!.outputRef).toBe('');
     ledger.noteOutput(id, { tool: 'submit_step_progress', args: { turn: 2 } });
     expect(JSON.parse(blobs.get(store.get(id)!.outputRef!)!)).toEqual([{ tool: 'submit_step_progress', args: { turn: 2 } }]);
     expect(store.get(id)!.envelopeRef).toBe('env-2');
+  });
+});
+
+describe('ledger launch snapshot that completes after the round has output', () => {
+  it('keeps the output and lands the git snapshot on the run', () => {
+    const { store, ledger } = setup();
+    const id = ledger.openRunId('j1', 's1')!;
+    const seq = ledger.beginLaunch('x', { envelopeRef: 'env-1', worktreePath: '/wt' });
+    expect(store.get(id)).toMatchObject({ worktreePath: '/wt', baseSha: '', gitDir: '' });
+    ledger.noteOutput(id, { tool: 'submit_step_progress', args: { turn: 1 } });
+    ledger.completeLaunch('x', seq, { baseSha: 'abc', gitDir: '/repo/.git' });
+    expect(store.get(id)).toMatchObject({ baseSha: 'abc', gitDir: '/repo/.git', envelopeRef: 'env-1' });
+    expect(store.get(id)!.outputRef).toBeTruthy();
+  });
+
+  it('drops a snapshot whose launch was already superseded', () => {
+    const { store, ledger } = setup();
+    const id = ledger.openRunId('j1', 's1')!;
+    const first = ledger.beginLaunch('x', { envelopeRef: 'env-1', worktreePath: '/wt' });
+    const second = ledger.beginLaunch('x', { envelopeRef: 'env-2', worktreePath: '/wt' });
+    ledger.completeLaunch('x', first, { baseSha: 'old', gitDir: '/repo/.git' });
+    expect(store.get(id)!.baseSha).toBe('');
+    ledger.completeLaunch('x', second, { baseSha: 'new', gitDir: '/repo/.git' });
+    expect(store.get(id)!.baseSha).toBe('new');
+  });
+
+  it('records the model the session reported', () => {
+    const { store, ledger } = setup();
+    const id = ledger.openRunId('j1', 's1')!;
+    ledger.noteSessionModel('x', 'claude-opus-5-5');
+    expect(store.get(id)!.model).toBe('claude-opus-5-5');
   });
 });

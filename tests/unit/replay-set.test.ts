@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { answerKeyFor, buildReplaySet } from '../../src/eval/replay-set.js';
+import { answerKeyFor, buildReplaySet, isReplayable } from '../../src/eval/replay-set.js';
 import type { ActionRunRecord } from '../../src/storage/action-runs-store.js';
 
 let n = 0;
@@ -7,6 +7,17 @@ const run = (over: Partial<ActionRunRecord> = {}): ActionRunRecord => ({
   id: `r${++n}`, action: 'code.reply-pr-comments', round: 'draft', attempt: 1, jobId: 'j', stepId: 's',
   startedAt: n, envelopeRef: 'env', outputRef: 'out', skillSha: 'sha', outcome: 'accepted', verdictAt: n,
   ...over,
+});
+
+const GIT = { baseSha: 'b', gitDir: '/repo/.git', worktreePath: '/wt' };
+
+describe('isReplayable', () => {
+  it('needs a git snapshot for a round that ran in a worktree, and for any code round', () => {
+    expect(isReplayable(run())).toBe(true);
+    expect(isReplayable(run(GIT))).toBe(true);
+    expect(isReplayable(run({ worktreePath: '/wt', baseSha: '', gitDir: '' }))).toBe(false);
+    expect(isReplayable(run({ action: 'code.implement' }))).toBe(false);
+  });
 });
 
 describe('buildReplaySet', () => {
@@ -28,7 +39,7 @@ describe('buildReplaySet', () => {
 
   it('accepts a failed run and a linked code round as targets', () => {
     const failed = run({ outcome: 'failed', verdictAt: undefined, failureReason: 'boom' });
-    const code = run({ action: 'code.implement', round: 'code.implement', outcome: 'accepted', verdictAt: undefined, links: [{ kind: 'ciFailed', at: 1 }] });
+    const code = run({ ...GIT, action: 'code.implement', round: 'code.implement', outcome: 'accepted', verdictAt: undefined, links: [{ kind: 'ciFailed', at: 1 }] });
     const set = buildReplaySet({ citedRunIds: [failed.id, code.id], cutOnly: false, runs: [failed, code], spent: new Set() });
     expect(set.targets).toHaveLength(2);
   });
@@ -51,7 +62,7 @@ describe('buildReplaySet', () => {
   });
 
   it('counts a merged code round as regression-eligible', () => {
-    const merged = run({ action: 'code.implement', verdictAt: undefined, links: [{ kind: 'merged', at: 1, prUrl: 'u' }] });
+    const merged = run({ ...GIT, action: 'code.implement', verdictAt: undefined, links: [{ kind: 'merged', at: 1, prUrl: 'u' }] });
     const set = buildReplaySet({ citedRunIds: [], cutOnly: true, runs: [merged], spent: new Set() });
     expect(set.regression).toHaveLength(1);
   });
@@ -89,5 +100,9 @@ describe('answerKeyFor', () => {
 
   it('keys a regression run on its own approved output', () => {
     expect(answerKeyFor(run(), blob, 'regression')).toContain('the answer');
+  });
+
+  it('quotes the original output a target verdict was about', () => {
+    expect(answerKeyFor(run({ outcome: 'revised', feedbackText: 'too long' }), blob, 'target')).toContain('the answer');
   });
 });

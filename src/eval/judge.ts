@@ -14,6 +14,7 @@ export type JudgeOnce = (input: { context: string; answerKey: string; a: string;
 const SYSTEM_PROMPT = [
   'You compare two outputs an automated assistant produced for the same task and decide which one the user would rather have received.',
   'You are given the task context, an answer key describing what the user actually wanted (their edit, their send-back note, the failure, or what happened downstream), and outputs A and B.',
+  'The answer key quotes the output of an earlier, original run and what became of it. A and B are both new runs of the same task; neither is that original.',
   'Judge only against the answer key and the task. Ignore length, tone and formatting unless the answer key is about them. Do not prefer an output for its position.',
   'Answer "tie" when neither is clearly closer to what the user wanted.',
 ].join('\n');

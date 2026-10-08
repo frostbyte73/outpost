@@ -75,7 +75,7 @@ describe('ledger round snapshots', () => {
   it('attaches to the open run and stamps the skill hash from the run\'s own action', () => {
     const { store, ledger, q } = withSkill();
     q.emit(job(step()));
-    ledger.attachSnapshot('x', { envelopeRef: 'e1', baseSha: 'b1' });
+    ledger.beginLaunch('x', { envelopeRef: 'e1', baseSha: 'b1' });
     expect(store.listByAction('write.linear-comment')[0]).toMatchObject({
       envelopeRef: 'e1', baseSha: 'b1', skillSha: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
@@ -83,7 +83,7 @@ describe('ledger round snapshots', () => {
 
   it('holds a snapshot for a session whose round has not opened yet', () => {
     const { store, ledger, q } = withSkill();
-    ledger.attachSnapshot('y', { envelopeRef: 'e2' });
+    ledger.beginLaunch('y', { envelopeRef: 'e2' });
     q.emit(job(step({ id: 's2', sessionId: 'y' }), 'j2'));
     expect(store.listByAction('write.linear-comment')[0]).toMatchObject({ envelopeRef: 'e2', stepId: 's2' });
   });
@@ -133,7 +133,7 @@ describe('ledger snapshots on mid-turn rounds', () => {
     const q = fakeQueue();
     ledger.attach(q as never);
     q.emit(job(step()));
-    ledger.attachSnapshot('x', { envelopeRef: 'e1' });
+    ledger.beginLaunch('x', { envelopeRef: 'e1' });
     q.emit(job(step({ state: 'gate_pending_approval', drafts: [draft] })));
     expect(store.listByAction('write.linear-comment').find((r) => r.round === 'draft')).toMatchObject({
       envelopeRef: 'e1', skillSha: expect.stringMatching(/^[0-9a-f]{64}$/),
@@ -148,7 +148,7 @@ describe('ledger snapshots on mid-turn rounds', () => {
     const q = fakeQueue();
     ledger.attach(q as never);
     q.emit(job(step()));
-    ledger.attachSnapshot('x', { envelopeRef: 'e1' });
+    ledger.beginLaunch('x', { envelopeRef: 'e1' });
     skill = 'BODY B';
     q.emit(job(step({ state: 'gate_pending_approval', drafts: [draft] })));
     const draftRow = store.listByAction('write.linear-comment').find((r) => r.round === 'draft');

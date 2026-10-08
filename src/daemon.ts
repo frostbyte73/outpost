@@ -75,15 +75,15 @@ import { ActionRunLedger } from './work/action-run-ledger.js';
 import { BlobStore } from './storage/blob-store.js';
 import { readInputKey, recordableRead } from './permissions/read-recording.js';
 import { CODE_ROUND_ACTIONS } from './work/action-run-links.js';
-import { diffSince, snapshotWorktree } from './eval/run-output.js';
+import { diffSince, reconcileSnapshotRefs, snapshotWorktree } from './eval/run-output.js';
 import { EvalSessions } from './eval/eval-sessions.js';
 import { replayPreTool } from './eval/replay-hook.js';
 import { handleEvalMcp } from './eval/eval-mcp.js';
-import { EvalStore, type EvalRecord } from './eval/eval-store.js';
+import { BaselineCache, EvalStore, type EvalRecord } from './eval/eval-store.js';
 import type { EvalOutcome } from './eval/eval-verdict.js';
 import { EvalQueue, newEvalRecord, runEval } from './eval/run-eval.js';
 import { claudeJudge } from './eval/judge.js';
-import { replayRun } from './eval/replay-runner.js';
+import { killEvalChildren, replayRun, sweepEvalScratch } from './eval/replay-runner.js';
 import { spentRunIds } from './actions/revision-stats.js';
 import { execFile } from 'node:child_process';
 import { UsageLedger } from './integrations/usage-ledger.js';
@@ -226,6 +226,8 @@ async function main() {
   const settingsPath = join(RUNTIME_DIR, 'daemon-settings.json');
   const mcpConfigPath = join(RUNTIME_DIR, 'daemon-mcp.json');
   writeDaemonSettings({ outPath: settingsPath, hookPort: HOOK_PORT });
+  const actionSettingsPath = join(RUNTIME_DIR, 'daemon-action-settings.json');
+  writeDaemonSettings({ outPath: actionSettingsPath, hookPort: HOOK_PORT, recordReads: true });
   writeMcpConfig({ outPath: mcpConfigPath, hookPort: HOOK_PORT, daemonAuthSecret: secret });
 
   const projectAllowlistDir = join(RUNTIME_DIR, 'allowlists');
@@ -366,6 +368,7 @@ async function main() {
 
   const manager = new SessionManager({
     settingsPath,
+    actionSettingsPath,
     mcpConfigPath,
     daemonAuthSecret: secret,
     daemonHost: config.host ?? tsEnv?.hostname ?? '127.0.0.1',
@@ -495,6 +498,20 @@ async function main() {
   const runBlobs = new BlobStore(join(RUNTIME_DIR, 'run-snapshots', 'blobs'));
   // Before anything can launch: a stashed snapshot's blob isn't referenced by a row yet.
   console.log(`[action-runs] pruned ${runBlobs.prune(actionRunsStore.referencedBlobs())} unreferenced snapshot blobs`);
+  void (async () => {
+    for (const [gitDir, shas] of actionRunsStore.snapshotsByRepo()) {
+      if (!existsSync(gitDir)) {
+        console.log(`[action-runs] ${actionRunsStore.forgetSnapshots(gitDir, shas)} run(s) lost their snapshot with ${gitDir}`);
+        continue;
+      }
+      try {
+        const { missing } = await reconcileSnapshotRefs(gitDir, shas);
+        if (missing.length) console.log(`[action-runs] ${actionRunsStore.forgetSnapshots(gitDir, new Set(missing))} run(s) in ${gitDir} lost their snapshot to git gc`);
+      } catch (e) {
+        console.warn(`[action-runs] snapshot refs for ${gitDir}: ${(e as Error).message}`);
+      }
+    }
+  })();
   const reloadActions = () => {
     try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); } catch { /* tolerate */ }
     try { actionRegistry.load(); } catch (e) { console.warn(`[action-revert] registry reload failed: ${(e as Error).message}`); }
@@ -534,23 +551,30 @@ async function main() {
     const action = engine.actionForStep(jobId, stepId);
     const rec = worktreeManager.get(stepId);
     const wt = rec && !rec.archivedAt ? rec.worktreePath : undefined;
-    const base = actionRunsStore.get(runId)?.baseSha;
-    if (!action || !CODE_ROUND_ACTIONS.has(action) || !wt || !base) return;
-    diffSince(wt, base)
-      .then((diff) => actionRunLedger.noteOutput(runId, { tool: 'worktree-diff', args: { diff } }))
+    if (!action || !CODE_ROUND_ACTIONS.has(action) || !wt) return;
+    const sessionId = actionRunsStore.get(runId)?.sessionId;
+    // A round can finish before its launch snapshot does; the diff is only meaningful against it.
+    void ((sessionId && pendingSnapshots.get(sessionId)) || Promise.resolve())
+      .then(() => {
+        const base = actionRunsStore.get(runId)?.baseSha;
+        return base ? diffSince(wt, base).then((diff) => actionRunLedger.noteOutput(runId, { tool: 'worktree-diff', args: { diff } })) : undefined;
+      })
       .catch((e) => console.warn(`[action-runs] worktree diff for ${runId}: ${(e as Error).message}`));
   };
+  const pendingSnapshots = new Map<string, Promise<void>>();
   captureRoundSnapshot = (sessionId, env) => {
     const path = env.OUTPOST_ENVELOPE;
     if (!path) return;
     let envelope: string;
     try { envelope = readFileSync(path, 'utf8'); } catch { return; }
-    const snap = { envelopeRef: runBlobs.put(envelope) };
     const wt = engine.worktreePathForSession(sessionId);
-    if (!wt) { actionRunLedger.attachSnapshot(sessionId, snap); return; }
-    snapshotWorktree(wt)
-      .then(({ commit, gitDir }) => actionRunLedger.attachSnapshot(sessionId, { ...snap, baseSha: commit, gitDir, worktreePath: wt }))
-      .catch(() => actionRunLedger.attachSnapshot(sessionId, snap));
+    const seq = actionRunLedger.beginLaunch(sessionId, { envelopeRef: runBlobs.put(envelope), ...(wt ? { worktreePath: wt } : {}) });
+    if (!wt) return;
+    const pending = snapshotWorktree(wt)
+      .then(({ commit, gitDir }) => actionRunLedger.completeLaunch(sessionId, seq, { baseSha: commit, gitDir }))
+      .catch((e) => console.warn(`[action-runs] worktree snapshot for ${sessionId.slice(0, 8)}: ${(e as Error).message}`))
+      .finally(() => { if (pendingSnapshots.get(sessionId) === pending) pendingSnapshots.delete(sessionId); });
+    pendingSnapshots.set(sessionId, pending);
   };
   const runsCapture = createRunsCapture({
     runsStore,
@@ -733,6 +757,7 @@ async function main() {
       if (typeof payload.cost?.total_cost_usd === 'number') {
         actionRunLedger.noteSessionCost(sessionId, payload.cost.total_cost_usd);
       }
+      if (typeof payload.model?.id === 'string' && payload.model.id) actionRunLedger.noteSessionModel(sessionId, payload.model.id);
     },
     onStopHook: async (body) => {
       const payload = parseJsonObject(body) as { session_id?: string } | null;
@@ -1144,6 +1169,7 @@ async function main() {
     actionRegistry, permissionGroups, permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
   });
   const evalStore = new EvalStore(join(RUNTIME_DIR, 'evals'));
+  const EVAL_SCRATCH_DIR = join(RUNTIME_DIR, 'eval-scratch');
   const evalQueue = new EvalQueue();
   const judge = claudeJudge();
   const replayDeps = {
@@ -1152,37 +1178,47 @@ async function main() {
     actionDir: (a: string) => actionDirFor(outpostActionsDir, a).dir,
     hookPort: HOOK_PORT,
     secret: evalSecret,
-    scratchRoot: join(RUNTIME_DIR, 'eval-scratch'),
+    scratchRoot: EVAL_SCRATCH_DIR,
   };
   const evalDeps = {
     runs: (a: string) => actionRunsStore.listByAction(a),
     spent: (a: string) => spentRunIds(actionRevisionsStore.listByAction(a)),
     blob: (ref: string) => runBlobs.get(ref),
-    replay: (run: ActionRunRecord, candidate: string, evalId: string, budget: number) => replayRun(run, candidate, evalId, budget, replayDeps),
+    replay: (run: ActionRunRecord, skillMd: string, evalId: string, budget: number, signal?: AbortSignal) => replayRun(run, skillMd, evalId, budget, replayDeps, signal),
     judge,
     store: evalStore,
+    baselines: new BaselineCache(join(RUNTIME_DIR, 'eval-baselines')),
     revisions: actionRevisionsStore,
   };
   const evalWaiters = new Map<string, Array<(r: { id: string; outcome: EvalOutcome; reasons: string[] }) => void>>();
+  // One live eval per improver session: a redraft supersedes the proposal the previous eval was grading.
+  const evalAborts = new Map<string, { evalId: string; ctl: AbortController }>();
+  const evalHalt = new AbortController();
   // Idempotent per record: the boot sweep and a restored review card can both ask for the same eval.
   const queueEval = (rec: EvalRecord, onDone?: (r: { id: string; outcome: EvalOutcome; reasons: string[] }) => void) => {
     const waiting = evalWaiters.get(rec.id);
     if (waiting) { if (onDone) waiting.push(onDone); return; }
     evalWaiters.set(rec.id, onDone ? [onDone] : []);
+    const prior = evalAborts.get(rec.editSessionId);
+    if (prior && prior.evalId !== rec.id) prior.ctl.abort();
+    const ctl = new AbortController();
+    evalAborts.set(rec.editSessionId, { evalId: rec.id, ctl });
     evalQueue.enqueue(async () => {
       try {
         let done: EvalRecord;
         try {
-          done = await runEval(rec, evalDeps);
+          done = await runEval(rec, evalDeps, { supersede: ctl.signal, halt: evalHalt.signal });
         } catch (e) {
           // Settled rather than left pending: an auto-applying card waits on this verdict, hidden from the cockpit.
           const reasons = [`eval crashed: ${(e as Error).message}`];
           done = evalStore.save({ ...(evalStore.get(rec.id) ?? rec), outcome: 'inconclusive', reasons, endedAt: Date.now() });
         }
+        if (!done.outcome) { console.log(`[eval] ${done.action}: halted, resumes on next start`); return; }
         console.log(`[eval] ${done.action}: ${done.outcome} ($${done.spentUsd.toFixed(2)}) — ${done.reasons.join('; ')}`);
         for (const fn of evalWaiters.get(rec.id) ?? []) fn({ id: done.id, outcome: done.outcome!, reasons: done.reasons });
       } finally {
         evalWaiters.delete(rec.id);
+        if (evalAborts.get(rec.editSessionId)?.evalId === rec.id) evalAborts.delete(rec.editSessionId);
       }
     });
   };
@@ -1465,7 +1501,10 @@ async function main() {
 
   await server.listen();
   await hookServer.listen();
-  for (const rec of evalStore.pending()) queueEval(rec);
+  const swept = await sweepEvalScratch(EVAL_SCRATCH_DIR);
+  if (swept) console.log(`[eval] cleared ${swept} replay(s) left over from a previous run`);
+  // Oldest first, so a later proposal from the same improver session supersedes an earlier one.
+  for (const rec of evalStore.pending().sort((a, b) => a.postedAt - b.postedAt)) queueEval(rec);
   evalQueue.start();
 
   // A restart signals only this process — tsx watch on a file change, launchctl kickstart, a
@@ -1480,6 +1519,8 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
     setTimeout(() => process.exit(0), 8000).unref();
+    evalHalt.abort();
+    killEvalChildren();
     void manager.closeAll('shutdown').then((n) => {
       console.log(`[daemon] ${signal} — closed ${n} session(s), exiting`);
       process.exit(0);

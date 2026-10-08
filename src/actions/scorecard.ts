@@ -103,7 +103,8 @@ export function buildScorecard(
     action,
     windowMs,
     runs: inWindow.length,
-    pending: inWindow.filter((r) => !r.outcome || !ADJUDICATED_OUTCOMES.has(r.outcome)).length,
+    // Only a run nobody has ruled on yet; superseded, interrupted and auto-accepted runs are settled, just unscored.
+    pending: inWindow.filter((r) => !r.outcome || r.outcome === 'submitted').length,
     outcomes,
     acceptRate: rate(succeeded.length, adjudicated.length),
     firstTryRate: rate(succeeded.filter((r) => r.attempt === 1).length, succeeded.length),

@@ -76,8 +76,10 @@ export interface ActionRunRecord {
   gitDir?: string;
   reads?: RecordedRead[];
   links?: RunLink[];
-  // Everything the round submitted (see RunOutput) — the before-version an eval compares against.
+  // Everything the round submitted (see RunOutput) — what the user actually ruled on.
   outputRef?: string;
+  // The model id the session reported; a replay runs on the same one.
+  model?: string;
 }
 
 type Line =
@@ -183,6 +185,25 @@ export class ActionRunsStore {
       for (const l of r.links ?? []) if (l.kind === 'reviewFindings') refs.add(l.ref);
     }
     return refs;
+  }
+
+  // Retained runs' worktree snapshots, grouped by the repo that holds them.
+  snapshotsByRepo(): Map<string, Set<string>> {
+    const byRepo = new Map<string, Set<string>>();
+    for (const r of this.index) {
+      if (!r.baseSha || !r.gitDir) continue;
+      const shas = byRepo.get(r.gitDir) ?? new Set<string>();
+      shas.add(r.baseSha);
+      byRepo.set(r.gitDir, shas);
+    }
+    return byRepo;
+  }
+
+  // The snapshot is gone from git, so the run can no longer be replayed — isReplayable reads an empty baseSha that way.
+  forgetSnapshots(gitDir: string, shas: ReadonlySet<string>): number {
+    const lost = this.index.filter((r) => r.gitDir === gitDir && r.baseSha && shas.has(r.baseSha));
+    for (const r of lost) this.patch(r.id, { baseSha: '' });
+    return lost.length;
   }
 
   openRuns(): ActionRunRecord[] {

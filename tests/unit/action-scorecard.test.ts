@@ -136,11 +136,11 @@ describe('buildScorecard grouping', () => {
 });
 
 describe('buildScorecard draft-edit outcomes', () => {
-  it('scores edited as adjudicated but not a success, and leaves superseded pending', () => {
-    const sc = card([run({ outcome: 'accepted' }), run({ outcome: 'edited' }), run({ outcome: 'superseded' })]);
+  it('scores edited as adjudicated but not a success, and settled-but-unscored outcomes as not pending', () => {
+    const sc = card([run({ outcome: 'accepted' }), run({ outcome: 'edited' }), run({ outcome: 'superseded' }), run({ outcome: 'interrupted' }), run({ outcome: 'auto-accepted' })]);
     expect(sc.acceptRate).toBe(0.5);
     expect(sc.outcomes.edited).toBe(1);
     expect(sc.outcomes.superseded).toBe(1);
-    expect(sc.pending).toBe(1);
+    expect(sc.pending).toBe(0);
   });
 });

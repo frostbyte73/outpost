@@ -1,7 +1,9 @@
-import { mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ActionProposal } from '../storage/action-edits-store.js';
 import type { Comparison, EvalOutcome } from './eval-verdict.js';
+import type { RunOutput } from './run-output.js';
 
 export type UserVerdict = 'approved' | 'rejected';
 
@@ -11,6 +13,8 @@ export interface EvalReplayRecord {
   valid: boolean;
   misses: number;
   costUsd: number;
+  // The current-body side came from an earlier eval of the same body instead of being replayed.
+  baselineCached?: boolean;
   result?: Comparison;
   judgeReasons?: string[];
   error?: string;
@@ -90,5 +94,35 @@ export class EvalStore {
 
   list(action: string): EvalRecord[] {
     return [...this.byId.values()].filter((r) => r.action === action).sort((a, b) => b.startedAt - a.startedAt);
+  }
+}
+
+const BASELINE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+// A run replayed under the current SKILL.md, kept so the next proposal over the same body doesn't pay for it again.
+export class BaselineCache {
+  constructor(private readonly dir: string, now: number = Date.now()) {
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    for (const name of readdirSync(dir)) {
+      const path = join(dir, name);
+      try { if (now - statSync(path).mtimeMs > BASELINE_TTL_MS) rmSync(path, { force: true }); } catch { /* raced */ }
+    }
+  }
+
+  static key(runId: string, skillMd: string, model: string | undefined): string {
+    return createHash('sha256').update(`${runId}\0${model ?? ''}\0${skillMd}`).digest('hex');
+  }
+
+  get(key: string): RunOutput[] | undefined {
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(join(this.dir, `${key}.json`), 'utf8'));
+      return Array.isArray(parsed) ? parsed as RunOutput[] : undefined;
+    } catch { return undefined; }
+  }
+
+  put(key: string, output: RunOutput[]): void {
+    const path = join(this.dir, `${key}.json`);
+    writeFileSync(`${path}.tmp`, JSON.stringify(output), { mode: 0o600 });
+    renameSync(`${path}.tmp`, path);
   }
 }

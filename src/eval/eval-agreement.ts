@@ -1,5 +1,6 @@
 import type { EvalOutcome } from './eval-verdict.js';
 import type { EvalRecord, UserVerdict } from './eval-store.js';
+import { SUPERSEDED_REASON } from './run-eval.js';
 
 export interface EvalAgreementRow {
   id: string;
@@ -33,7 +34,8 @@ export function evalAgreement(records: EvalRecord[]): EvalAgreement {
   let reviewed = 0, agreed = 0, falsePasses = 0, falseFails = 0, spentUsd = 0;
   for (const r of records) {
     spentUsd += r.spentUsd;
-    if (!r.outcome) continue;
+    // Graded nothing: the proposal it was grading was replaced before it finished.
+    if (!r.outcome || isSuperseded(r)) continue;
     byOutcome[r.outcome] += 1;
     if (!r.userVerdict) continue;
     reviewed += 1;
@@ -49,4 +51,8 @@ export function evalAgreement(records: EvalRecord[]): EvalAgreement {
       userVerdict: r.userVerdict, agreed: r.agreed, spentUsd: r.spentUsd, reasons: r.reasons,
     }));
   return { total: records.length, byOutcome, reviewed, agreed, falsePasses, falseFails, spentUsd, recent };
+}
+
+function isSuperseded(r: EvalRecord): boolean {
+  return r.outcome === 'inconclusive' && r.reasons.length === 1 && r.reasons[0] === SUPERSEDED_REASON;
 }

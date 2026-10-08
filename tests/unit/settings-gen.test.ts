@@ -38,10 +38,13 @@ describe('writeDaemonSettings', () => {
     expect(hook.timeout).toBe(30);
   });
 
-  it('registers a PostToolUse hook pointing at /hook/posttool for live-read recording', () => {
+  it('registers a PostToolUse hook pointing at /hook/posttool only when recording reads', () => {
     const dir = mkdtempSync(join(tmpdir(), 'set-'));
-    const path = join(dir, 'daemon-settings.json');
-    writeDaemonSettings({ outPath: path, hookPort: 8444 });
+    const plain = join(dir, 'daemon-settings.json');
+    writeDaemonSettings({ outPath: plain, hookPort: 8444 });
+    expect(JSON.parse(readFileSync(plain, 'utf8')).hooks.PostToolUse).toBeUndefined();
+    const path = join(dir, 'daemon-action-settings.json');
+    writeDaemonSettings({ outPath: path, hookPort: 8444, recordReads: true });
     const entry = JSON.parse(readFileSync(path, 'utf8')).hooks.PostToolUse[0];
     expect(entry.matcher).toBe('Bash|WebFetch|WebSearch|mcp__.*');
     const hook = entry.hooks[0];

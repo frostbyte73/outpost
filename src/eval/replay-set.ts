@@ -8,9 +8,11 @@ const MAX_REGRESSION = 3;
 // What the user (or the PR) ruled on with nobody's gate in between — the same bar verbatimRate uses.
 const RULED_OUTCOMES = new Set(['accepted', 'edited', 'revised', 'denied']);
 
+// A round that ran in a worktree replays only from its git snapshot; without one it would run against nothing.
 export function isReplayable(r: ActionRunRecord): boolean {
   if (!r.envelopeRef || !r.outputRef || !r.skillSha) return false;
-  return !r.baseSha || (!!r.gitDir && !!r.worktreePath);
+  if (r.worktreePath || r.baseSha || CODE_ROUND_ACTIONS.has(r.action)) return !!r.baseSha && !!r.gitDir && !!r.worktreePath;
+  return true;
 }
 
 function isCodeRound(r: ActionRunRecord): boolean {
@@ -77,20 +79,25 @@ function linkLine(l: RunLink, blob: (ref: string) => string | undefined): string
   }
 }
 
-// What the user actually wanted from this run, in words a judge can grade both outputs against.
+const ORIGINAL_CAP = 30_000;
+
+// What the user actually wanted from this run, in words a judge can grade two fresh replays against.
+// Quotes the original output, since that's what the user's edit, note or approval was about.
 export function answerKeyFor(r: ActionRunRecord, blob: (ref: string) => string | undefined, kind: 'target' | 'regression'): string {
+  const original = renderOutputs(outputsOf(r, blob)).slice(0, ORIGINAL_CAP);
   if (kind === 'regression') {
-    return `The user approved this output unchanged:\n\n${renderOutputs(outputsOf(r, blob))}`;
+    return `The user approved the original run's output unchanged:\n\n${original}\n\nPrefer whichever of A and B still delivers what the user approved.`;
   }
+  const head = `The original run produced:\n\n${original}\n\n`;
   if (r.outcome === 'edited') {
     const diff = r.editDiffRef ? blob(r.editDiffRef) : undefined;
-    return `The user approved the draft only after editing it. Their edit (drafted → approved):\n\n${diff ?? '(diff unavailable)'}`;
+    return `${head}The user approved it only after editing it. Their edit (drafted → approved):\n\n${diff ?? '(diff unavailable)'}`;
   }
-  if (r.outcome === 'revised') return `The user sent the output back with this note:\n\n${r.feedbackText ?? '(no note)'}`;
-  if (r.outcome === 'denied') return `The user denied the output with this reason:\n\n${r.feedbackText ?? '(no reason given)'}`;
-  if (r.outcome === 'failed' || r.outcome === 'gave_up') return `The round failed: ${r.failureReason ?? '(no reason recorded)'}`;
+  if (r.outcome === 'revised') return `${head}The user sent it back with this note:\n\n${r.feedbackText ?? '(no note)'}`;
+  if (r.outcome === 'denied') return `${head}The user denied it with this reason:\n\n${r.feedbackText ?? '(no reason given)'}`;
+  if (r.outcome === 'failed' || r.outcome === 'gave_up') return `${head}The round failed: ${r.failureReason ?? '(no reason recorded)'}`;
   if (isCodeRound(r) && r.links?.length) {
-    return `What happened to this code afterwards:\n\n${r.links.map((l) => linkLine(l, blob)).join('\n\n')}`;
+    return `${head}What happened to this code afterwards:\n\n${r.links.map((l) => linkLine(l, blob)).join('\n\n')}`;
   }
-  return 'The user accepted this output as drafted.';
+  return `${head}The user accepted it as drafted.`;
 }

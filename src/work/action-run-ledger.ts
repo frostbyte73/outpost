@@ -39,8 +39,11 @@ export class ActionRunLedger {
   // Detail for the verdict the very next job mutation derives; never outlives that mutation.
   private readonly verdictStash = new Map<string, DraftVerdictDetail>();
   // A session's latest launch: a round opened mid-turn (a draft) ran under the same envelope
-  // and the same SKILL.md, even if the file has changed on disk since.
-  private readonly lastSnapshot = new Map<string, RoundSnapshot & { skill?: { action: string; sha: string } }>();
+  // and the same SKILL.md, even if the file has changed on disk since. `runIds` are the runs
+  // stamped from it, which a git snapshot completing after them still has to reach.
+  private readonly lastSnapshot = new Map<string, RoundSnapshot & { skill?: { action: string; sha: string }; seq: number; runIds: string[] }>();
+  private launchSeq = 0;
+  private readonly modelBySession = new Map<string, string>();
   // Written once in the close patch, like cost — a line per read would be far too chatty.
   private readonly readsByRun = new Map<string, RecordedRead[]>();
   private readonly outputsByRun = new Map<string, RunOutput[]>();
@@ -92,21 +95,47 @@ export class ActionRunLedger {
       e.t === 'open' && e.round === run.round && (e.key.stepId ?? e.key.jobId) === (run.stepId ?? run.jobId));
   }
 
-  attachSnapshot(sessionId: string, snap: RoundSnapshot): void {
+  // Called at launch, before the session can submit anything. A worktree's git snapshot is slow, so
+  // it follows via completeLaunch; until then the run carries an empty baseSha and isn't replayable.
+  beginLaunch(sessionId: string, snap: RoundSnapshot): number {
     const run = this.runForSession(sessionId);
     const sha = run ? this.skillShaOf(run.action) : undefined;
+    const seq = ++this.launchSeq;
+    const full: RoundSnapshot = snap.worktreePath
+      ? { ...snap, baseSha: snap.baseSha ?? '', gitDir: snap.gitDir ?? '' }
+      : snap;
     this.lastSnapshot.delete(sessionId);
-    this.lastSnapshot.set(sessionId, { ...snap, ...(run && sha ? { skill: { action: run.action, sha } } : {}) });
+    this.lastSnapshot.set(sessionId, {
+      ...full, seq, runIds: run ? [run.id] : [],
+      ...(run && sha ? { skill: { action: run.action, sha } } : {}),
+    });
     if (this.lastSnapshot.size > MAX_SNAPSHOT_SESSIONS) {
       this.lastSnapshot.delete(this.lastSnapshot.keys().next().value!);
     }
-    if (!run) return;
+    if (!run) return seq;
     // A relaunch of a collapsed round: its output must describe the same launch as its envelope.
     if (run.envelopeRef) {
       this.outputsByRun.delete(run.id);
       this.deps.store.patch(run.id, { outputRef: '' });
     }
-    this.stampSnapshot(run, snap, sha);
+    this.stampSnapshot(run, full, sha);
+    return seq;
+  }
+
+  // A superseded launch's snapshot is dropped: its runs have already been restamped by the newer one.
+  completeLaunch(sessionId: string, seq: number, git: Required<Pick<RoundSnapshot, 'baseSha' | 'gitDir'>>): void {
+    const held = this.lastSnapshot.get(sessionId);
+    if (!held || held.seq !== seq) return;
+    Object.assign(held, git);
+    for (const id of held.runIds) this.deps.store.patch(id, git);
+  }
+
+  noteSessionModel(sessionId: string, model: string): void {
+    this.modelBySession.delete(sessionId);
+    this.modelBySession.set(sessionId, model);
+    if (this.modelBySession.size > MAX_SNAPSHOT_SESSIONS) this.modelBySession.delete(this.modelBySession.keys().next().value!);
+    const run = this.runForSession(sessionId);
+    if (run && run.model !== model) this.deps.store.patch(run.id, { model });
   }
 
   private skillShaOf(action: string): string | undefined {
@@ -250,9 +279,12 @@ export class ActionRunLedger {
     if (e.sessionId) this.openBySession.set(e.sessionId, key);
     const held = e.sessionId ? this.lastSnapshot.get(e.sessionId) : undefined;
     if (held) {
-      const { skill, ...snap } = held;
+      const { skill, seq: _seq, runIds, ...snap } = held;
       this.stampSnapshot(run, snap, skill?.action === e.action ? skill.sha : this.skillShaOf(e.action));
+      runIds.push(run.id);
     }
+    const model = e.sessionId ? this.modelBySession.get(e.sessionId) : undefined;
+    if (model) this.deps.store.patch(run.id, { model });
   }
 
   private settle(run: ActionRunRecord, fields: Partial<ActionRunRecord>): void {

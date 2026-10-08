@@ -8,7 +8,8 @@ export const ARTIFACT_ACTIONS: ReadonlySet<string> = new Set([
   'code.implement', 'code.fix-ci', 'code.fix-pr-comment', 'code.spec', 'code.plan', 'read.investigate',
 ]);
 
-export const DEFAULT_EVAL_CAP_USD = 5;
+// Each run replays under both bodies, so this buys roughly half the runs it would for one.
+export const DEFAULT_EVAL_CAP_USD = 8;
 
 const GROWTH_ALLOWANCE = 1.05;
 const GROWTH_MIN_WINS = 3;

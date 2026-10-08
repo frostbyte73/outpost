@@ -4,6 +4,8 @@ import { randomBytes } from 'node:crypto';
 export interface DaemonSettingsOpts {
   outPath: string;
   hookPort: number;
+  // Action sessions only: their read responses are recorded for eval replay, nobody else's are.
+  recordReads?: boolean;
 }
 
 export interface McpConfigOpts {
@@ -53,7 +55,7 @@ export function writeDaemonSettings(opts: DaemonSettingsOpts): void {
     hooks: {
       PreToolUse: [loopbackHook(opts.hookPort, '/hook/pretool', 600)],
       // Only tools whose responses can be recorded for eval replay; failures have their own event.
-      PostToolUse: [loopbackHook(opts.hookPort, '/hook/posttool', 30, 'Bash|WebFetch|WebSearch|mcp__.*')],
+      ...(opts.recordReads ? { PostToolUse: [loopbackHook(opts.hookPort, '/hook/posttool', 30, 'Bash|WebFetch|WebSearch|mcp__.*')] } : {}),
       PostToolUseFailure: [loopbackHook(opts.hookPort, '/hook/posttoolfail', 30)],
       Stop: [loopbackHook(opts.hookPort, '/hook/stop', 30)],
       // Fires instead of Stop when an API error ended the turn — without it that turn never ends.

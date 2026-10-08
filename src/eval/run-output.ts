@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { copyFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -44,13 +44,60 @@ async function workingTree(dir: string): Promise<string> {
   }
 }
 
-// A round's starting state as an unreferenced commit on top of HEAD; git gc reclaims it after its prune window.
+// Unreferenced, a snapshot is gc'd in about two weeks, long before its run stops being replayable.
+const SNAPSHOT_REFS = 'refs/outpost/snapshots/';
+// Younger than this, a pinned snapshot may belong to a run the reconciling caller hasn't seen yet.
+const UNCLAIMED_GRACE_S = 24 * 60 * 60;
+
+// A round's starting state as a commit on top of HEAD, pinned under refs/outpost/snapshots/ until
+// reconcileSnapshotRefs finds no retained run that still needs it.
 export async function snapshotWorktree(dir: string): Promise<{ commit: string; gitDir: string }> {
   const tree = await workingTree(dir);
   const identity = { GIT_AUTHOR_NAME: 'outpost', GIT_AUTHOR_EMAIL: 'outpost@localhost', GIT_COMMITTER_NAME: 'outpost', GIT_COMMITTER_EMAIL: 'outpost@localhost' };
   const { stdout: commit } = await run('git', ['-C', dir, 'commit-tree', tree, '-p', 'HEAD', '-m', 'outpost round snapshot'], { env: { ...process.env, ...identity } });
+  const sha = commit.trim();
+  await run('git', ['-C', dir, 'update-ref', `${SNAPSHOT_REFS}${sha}`, sha]);
   const { stdout: gitDir } = await run('git', ['-C', dir, 'rev-parse', '--path-format=absolute', '--git-common-dir']);
-  return { commit: commit.trim(), gitDir: gitDir.trim() };
+  return { commit: sha, gitDir: gitDir.trim() };
+}
+
+function gitWithInput(args: string[], input: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    child.stdout.on('data', (c: Buffer) => { out += c.toString('utf8'); });
+    child.stderr.on('data', (c: Buffer) => { err += c.toString('utf8'); });
+    child.on('error', reject);
+    child.on('close', (code) => (code === 0 ? resolve(out) : reject(new Error(err.trim() || `git exited ${code}`))));
+    child.stdin.end(input);
+  });
+}
+
+// Pins every snapshot a retained run still needs (including ones taken before pinning existed), unpins
+// the rest, and reports the ones git already lost so their runs stop being offered for replay.
+export async function reconcileSnapshotRefs(gitDir: string, keep: ReadonlySet<string>, nowS = Math.floor(Date.now() / 1000)): Promise<{ missing: string[] }> {
+  const { stdout } = await run('git', ['--git-dir', gitDir, 'for-each-ref', '--format=%(objectname) %(committerdate:unix)', SNAPSHOT_REFS], { maxBuffer: 16 * 1024 * 1024 });
+  const pinned = new Map(stdout.split('\n').filter(Boolean).map((l) => {
+    const [sha, at] = l.split(' ');
+    return [sha!, Number(at)] as const;
+  }));
+  const wanted = [...keep];
+  const exists = new Set<string>();
+  if (wanted.length) {
+    const check = await gitWithInput(['--git-dir', gitDir, 'cat-file', '--batch-check=%(objectname) %(objecttype)'], wanted.join('\n') + '\n');
+    for (const line of check.split('\n')) {
+      const [sha, type] = line.split(' ');
+      if (sha && type === 'commit') exists.add(sha);
+    }
+  }
+  const ops: string[] = [];
+  for (const sha of exists) if (!pinned.has(sha)) ops.push(`create ${SNAPSHOT_REFS}${sha} ${sha}`);
+  for (const [sha, at] of pinned) {
+    if (!keep.has(sha) && nowS - at > UNCLAIMED_GRACE_S) ops.push(`delete ${SNAPSHOT_REFS}${sha}`);
+  }
+  if (ops.length) await gitWithInput(['--git-dir', gitDir, 'update-ref', '--stdin'], ops.join('\n') + '\n');
+  return { missing: wanted.filter((sha) => !exists.has(sha)) };
 }
 
 // What a round changed: everything in the working tree now that differs from its starting snapshot.

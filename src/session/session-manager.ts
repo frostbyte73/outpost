@@ -44,6 +44,8 @@ function isInitMessage(msg: unknown): boolean {
 
 export interface SessionManagerOpts {
   settingsPath: string;
+  // Used instead of settingsPath for a session spawned with an envelope, i.e. one running an action.
+  actionSettingsPath?: string;
   mcpConfigPath: string;
   daemonAuthSecret: string;
   daemonHost: string;
@@ -375,7 +377,7 @@ export class SessionManager {
     s.proc = new ClaudeProc({
       sessionId,
       mode,
-      settingsPath: this.opts.settingsPath,
+      settingsPath: env.OUTPOST_ENVELOPE && this.opts.actionSettingsPath ? this.opts.actionSettingsPath : this.opts.settingsPath,
       mcpConfigPath: this.opts.mcpConfigPath,
       cwd,
       env: { DAEMON_AUTH: this.opts.daemonAuthSecret, DAEMON_HOST: this.opts.daemonHost, OUTPOST_HOOK_PORT: String(this.opts.hookPort), ...env },

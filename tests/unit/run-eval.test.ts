@@ -35,9 +35,11 @@ function setup(over: Partial<RunEvalDeps> = {}, runs: ActionRunRecord[] = []) {
     env: '{"goal":"reply"}',
     out: JSON.stringify([{ tool: 'submit_write_draft', args: { summary: 'OLD', calls: [{ bash: 'gh pr comment 1 --body OLD' }] } }]),
   };
-  const replay = async (r: ActionRunRecord): Promise<ReplayResult> => {
+  // The candidate body replays to NEW, the current body to OLD.
+  const replay = async (r: ActionRunRecord, md: string): Promise<ReplayResult> => {
     replayed.push(r.id);
-    return { valid: true, misses: 0, costUsd: 0.5, output: [{ tool: 'submit_write_draft', args: { summary: 'NEW', calls: [{ bash: 'gh pr comment 1 --body NEW' }] } }] };
+    const tag = md.startsWith('y') ? 'NEW' : 'OLD';
+    return { valid: true, misses: 0, costUsd: 0.5, output: [{ tool: 'submit_write_draft', args: { summary: tag, calls: [{ bash: `gh pr comment 1 --body ${tag}` }] } }] };
   };
   const deps: RunEvalDeps = {
     runs: () => runs,
@@ -57,7 +59,7 @@ describe('runEval', () => {
   it('fails a candidate that wins its targets but loses a regression run, and records it', async () => {
     const target = run({ outcome: 'edited', editDiffRef: 'd' });
     const reg = run();
-    const judge: JudgeOnce = async (i) => (i.answerKey.startsWith('The user approved this output unchanged') ? prefersOld(i) : prefersNew(i));
+    const judge: JudgeOnce = async (i) => (i.answerKey.startsWith('The user approved the original run') ? prefersOld(i) : prefersNew(i));
     const { deps, recorded, store } = setup({ judge }, [target, reg]);
     const rec = await go(proposal({ citedRunIds: [target.id] }), deps);
     expect(rec.outcome).toBe('fail');
@@ -69,14 +71,14 @@ describe('runEval', () => {
   it('passes when the judge prefers the candidate on targets and ties on regression', async () => {
     const target = run({ outcome: 'edited' });
     const reg = run();
-    const judge: JudgeOnce = async (i) => (i.answerKey.startsWith('The user approved this output unchanged')
+    const judge: JudgeOnce = async (i) => (i.answerKey.startsWith('The user approved the original run')
       ? { winner: 'tie', reason: 'same', costUsd: 0.1 }
       : prefersNew(i));
     const { deps } = setup({ judge }, [target, reg]);
     const rec = await go(proposal({ citedRunIds: [target.id] }), deps);
     expect(rec.outcome).toBe('pass');
     expect(rec.replays.map((r) => [r.kind, r.result])).toEqual([['target', 'after'], ['regression', 'tie']]);
-    expect(rec.spentUsd).toBeCloseTo(0.5 * 2 + 0.1 * 4);
+    expect(rec.spentUsd).toBeCloseTo(0.5 * 4 + 0.1 * 4);
   });
 
   it('fails a candidate the judge rejects', async () => {
@@ -102,11 +104,11 @@ describe('runEval', () => {
   it('stops replaying once the spend cap is reached, and calls an overspend inconclusive', async () => {
     const targets = [run({ outcome: 'edited' }), run({ outcome: 'edited' })];
     const { deps, replayed } = setup({
-      capUsd: 1,
-      replay: async (r) => { replayed.push(r.id); return { valid: true, misses: 0, costUsd: 1.2, output: [{ tool: 'submit_write_draft', args: { summary: 'NEW' } }] }; },
+      capUsd: 2,
+      replay: async (r, md) => { replayed.push(r.id); return { valid: true, misses: 0, costUsd: 1.2, output: [{ tool: 'submit_write_draft', args: { summary: md.startsWith('y') ? 'NEW' : 'OLD' } }] }; },
     }, targets);
     const rec = await go(proposal({ citedRunIds: targets.map((t) => t.id) }), deps);
-    expect(replayed).toHaveLength(1);
+    expect(replayed).toHaveLength(2);
     expect(rec.outcome).toBe('inconclusive');
   });
 
@@ -125,7 +127,7 @@ describe('shadow agreement', () => {
     let store!: EvalStore;
     const judge: JudgeOnce = async (i) => {
       store.noteUserVerdict('es', 100, 'approved');
-      return i.answerKey.startsWith('The user approved this output unchanged') ? { winner: 'tie', reason: '', costUsd: 0 } : prefersNew(i);
+      return i.answerKey.startsWith('The user approved the original run') ? { winner: 'tie', reason: '', costUsd: 0 } : prefersNew(i);
     };
     const f = setup({ judge }, [target, reg]);
     store = f.store;
@@ -163,6 +165,95 @@ describe('resuming', () => {
   });
 });
 
+describe('paired replay', () => {
+  it('judges two fresh replays, never the verbatim original', async () => {
+    const target = run({ outcome: 'edited', editDiffRef: 'd' });
+    const seen: Array<{ a: string; b: string; key: string }> = [];
+    const judge: JudgeOnce = async (i) => { seen.push({ a: i.a, b: i.b, key: i.answerKey }); return prefersNew(i); };
+    const { deps } = setup({ judge }, [target]);
+    await go(proposal({ citedRunIds: [target.id] }), deps);
+    expect(seen[0]!.a).toContain('OLD');
+    expect(seen[0]!.b).toContain('NEW');
+    expect(seen[0]!.a).not.toBe(seen[0]!.b);
+    // The original's own text reaches the judge only inside the answer key.
+    expect(seen[0]!.key).toContain('gh pr comment 1 --body OLD');
+  });
+
+  it('reuses a baseline replayed under the same body instead of paying for it again', async () => {
+    const target = run({ outcome: 'edited' });
+    const cache = new Map<string, unknown>();
+    const baselines = { get: (k: string) => cache.get(k) as never, put: (k: string, o: unknown) => { cache.set(k, o); } };
+    const bodies: string[] = [];
+    const first = setup({ baselines, replay: async (_r, md) => { bodies.push(md); return { valid: true, misses: 0, costUsd: 0.5, output: [{ tool: 't', args: { md } }] }; } }, [target]);
+    await go(proposal({ citedRunIds: [target.id] }), first.deps);
+    const again = setup({ baselines, replay: async (_r, md) => { bodies.push(md); return { valid: true, misses: 0, costUsd: 0.5, output: [{ tool: 't', args: { md } }] }; } }, [target]);
+    const rec = await go(proposal({ citedRunIds: [target.id], skillMdAfter: 'y'.repeat(370) }), again.deps);
+    expect(bodies.filter((b) => b.startsWith('x'))).toHaveLength(1);
+    expect(rec.replays[0]).toMatchObject({ baselineCached: true, costUsd: 0.5 });
+  });
+
+  it('skips the candidate when the current body cannot replay', async () => {
+    const target = run({ outcome: 'edited' });
+    const bodies: string[] = [];
+    const { deps } = setup({ replay: async (_r, md) => { bodies.push(md); return { valid: false, misses: 3, costUsd: 0.2, output: [] }; } }, [target]);
+    const rec = await go(proposal({ citedRunIds: [target.id] }), deps);
+    expect(bodies).toHaveLength(1);
+    expect(rec.replays[0]).toMatchObject({ valid: false, error: expect.stringMatching(/^current body/) });
+    expect(rec.outcome).toBe('inconclusive');
+  });
+
+  it('tells the judge when a side was cut off, and drops the pair when both were', async () => {
+    const t1 = run({ outcome: 'edited' });
+    const t2 = run({ outcome: 'edited' });
+    const outs: string[] = [];
+    const judge: JudgeOnce = async (i) => { outs.push(i.a, i.b); return { winner: 'tie', reason: '', costUsd: 0 }; };
+    const { deps } = setup({
+      judge,
+      replay: async (r, md) => ({
+        valid: true, misses: 0, costUsd: 0.1, output: [],
+        ...(r.id === t2.id || md.startsWith('y') ? { stopped: 'error_max_budget_usd' } : {}),
+      }),
+    }, [t1, t2]);
+    const rec = await go(proposal({ citedRunIds: [t1.id, t2.id] }), deps);
+    expect(outs.some((o) => o.includes('error_max_budget_usd'))).toBe(true);
+    expect(rec.replays.find((r) => r.runId === t2.id)).toMatchObject({ valid: false, error: expect.stringMatching(/both bodies/) });
+  });
+
+  it('caps a replay at a multiple of what the live round cost', async () => {
+    const target = run({ outcome: 'edited', costUsd: 0.5 });
+    const budgets: number[] = [];
+    const { deps } = setup({ replay: async (_r, _m, _i, b) => { budgets.push(b); return { valid: true, misses: 0, costUsd: 0.1, output: [] }; } }, [target]);
+    await go(proposal({ citedRunIds: [target.id] }), deps);
+    expect(budgets[0]).toBe(1.5);
+  });
+});
+
+describe('cancellation', () => {
+  it('settles inconclusive as superseded once aborted, without recording a revision', async () => {
+    const targets = [run({ outcome: 'edited' }), run({ outcome: 'edited' })];
+    const ctl = new AbortController();
+    const { deps, recorded, replayed } = setup({
+      replay: async (r) => { replayed.push(r.id); ctl.abort(); return { valid: true, misses: 0, costUsd: 0.1, output: [] }; },
+    }, targets);
+    const rec = await runEval(deps.store.save(newEvalRecord({ action: 'code.reply-pr-comments', editSessionId: 'es', proposal: proposal({ citedRunIds: targets.map((t) => t.id) }) }, 'ev2', 1)), deps, { supersede: ctl.signal });
+    expect(replayed).toHaveLength(1);
+    expect(rec).toMatchObject({ outcome: 'inconclusive', reasons: [expect.stringMatching(/superseded/)] });
+    expect(recorded).toEqual([]);
+  });
+
+  it('leaves the eval pending when the daemon halts mid-replay, so the next start re-runs it', async () => {
+    const target = run({ outcome: 'edited' });
+    const ctl = new AbortController();
+    const { deps, recorded, store } = setup({
+      replay: async () => { ctl.abort(); return { valid: false, misses: 0, costUsd: 0.1, output: [], error: 'killed' }; },
+    }, [target]);
+    const rec = await runEval(deps.store.save(newEvalRecord({ action: 'code.reply-pr-comments', editSessionId: 'es', proposal: proposal({ citedRunIds: [target.id] }) }, 'ev3', 1)), deps, { halt: ctl.signal });
+    expect(rec.outcome).toBeUndefined();
+    expect(store.pending().map((r) => r.id)).toEqual(['ev3']);
+    expect(recorded).toEqual([]);
+  });
+});
+
 describe('budget', () => {
   it('reserves judge cost out of each replay budget and stops below a floor', async () => {
     const targets = [run({ outcome: 'edited' }), run({ outcome: 'edited' })];
@@ -173,8 +264,9 @@ describe('budget', () => {
       judge: async () => ({ winner: 'tie', reason: '', costUsd: 0.4 }),
     }, targets);
     await go(proposal({ citedRunIds: targets.map((t) => t.id) }), deps);
-    expect(budgets[0]).toBeLessThan(2);
-    expect(budgets).toHaveLength(1);
+    expect(budgets[0]).toBeLessThan(1);
+    // One pair, both sides on the same budget, then the floor stops the second run.
+    expect(budgets).toEqual([budgets[0], budgets[0]]);
   });
 });
 

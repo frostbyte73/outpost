@@ -46,20 +46,22 @@ describe('an eval end to end with a stub claude', () => {
     const stubClaude: SpawnClaude = async (args) => {
       const sid = args[args.indexOf('--session-id') + 1]!;
       const s = sessions.get(sid)!;
+      const body = readFileSync(join(args[args.indexOf('--plugin-dir') + 1]!, 'skills', 'code.reply-pr-comments', 'SKILL.md'), 'utf8');
+      const tag = body.length === 90 ? 'NEW' : 'OLD';
       const read = replayPreTool({ tool_name: 'Bash', tool_input: view, session_id: sid }, s, hookDeps);
       const cat = (read.hookSpecificOutput.updatedInput as { command: string }).command;
       decisions.push(`read:${read.hookSpecificOutput.permissionDecision}:${readFileSync(cat.match(/'(.+)'/)![1]!, 'utf8')}`);
-      const write = replayPreTool({ tool_name: 'Bash', tool_input: { command: 'gh pr comment 7 --body NEW' }, session_id: sid }, s, hookDeps);
+      const write = replayPreTool({ tool_name: 'Bash', tool_input: { command: `gh pr comment 7 --body ${tag}` }, session_id: sid }, s, hookDeps);
       decisions.push(`write:${write.hookSpecificOutput.permissionDecision}`);
       await handleEvalMcp(`/mcp/eval/${sid}`, JSON.stringify({
         jsonrpc: '2.0', id: 1, method: 'tools/call',
-        params: { name: 'submit_write_draft', arguments: { jobId: 'j', stepId: 's', summary: 'NEW', calls: [{ bash: 'gh pr comment 7 --body NEW' }] } },
+        params: { name: 'submit_write_draft', arguments: { jobId: 'j', stepId: 's', summary: tag, calls: [{ bash: `gh pr comment 7 --body ${tag}` }] } },
       }), { sessions, blob: (ref) => blobs.get(ref) });
       return { stdout: JSON.stringify({ type: 'result', total_cost_usd: 0.2 }), code: 0 };
     };
     const judge: JudgeOnce = async ({ answerKey, a, b }) => {
       const newSlot = a.includes('NEW') ? 'A' : 'B';
-      if (answerKey.startsWith('The user approved this output unchanged')) return { winner: 'tie', reason: 'equivalent', costUsd: 0.05 };
+      if (answerKey.startsWith('The user approved the original run')) return { winner: 'tie', reason: 'equivalent', costUsd: 0.05 };
       return { winner: newSlot, reason: 'matches the note', costUsd: 0.05 };
     };
     const recorded: unknown[] = [];
@@ -82,7 +84,8 @@ describe('an eval end to end with a stub claude', () => {
       revisions: { record: (i) => { recorded.push(i); return {} as never; } },
     });
 
-    expect(decisions).toEqual(['read:allow:PR 7: open', 'write:deny', 'read:allow:PR 7: open', 'write:deny']);
+    // Each run replays twice: once under the current body, once under the candidate.
+    expect(decisions).toEqual(Array(4).fill(['read:allow:PR 7: open', 'write:deny']).flat());
     expect(rec).toMatchObject({ outcome: 'pass' });
     expect(rec.replays.map((x) => [x.runId, x.result])).toEqual([['t1', 'after'], ['a1', 'tie']]);
     expect(store.get(rec.id)?.outcome).toBe('pass');

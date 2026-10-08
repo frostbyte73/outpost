@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { evalChildEnv, replayRun, type ReplayDeps, type SpawnClaude } from '../../src/eval/replay-runner.js';
+import { evalChildEnv, replayRun, sweepEvalScratch, type ReplayDeps, type SpawnClaude } from '../../src/eval/replay-runner.js';
 import { EvalSessions } from '../../src/eval/eval-sessions.js';
 import type { ActionRunRecord } from '../../src/storage/action-runs-store.js';
 
@@ -66,7 +66,7 @@ describe('replayRun', () => {
     expect(f.gitCalls.map((a) => a.find((x) => ['add', 'restore', 'remove'].includes(x)))).toEqual(['add', 'restore', 'remove']);
     expect(f.gitCalls[0]).toContain('abc^');
     expect(f.gitCalls[1]).toEqual(expect.arrayContaining(['restore', '--source=abc', '--worktree']));
-    expect(existsSync(join(f.root, 'scratch', 'e1', 'r1'))).toBe(false);
+    expect(existsSync(seen!.cwd)).toBe(false);
     expect(f.sessions.get(seen!.args[seen!.args.indexOf('--session-id') + 1]!)).toBeUndefined();
   });
 
@@ -88,7 +88,7 @@ describe('replayRun', () => {
     const f = fixture(async () => { throw new Error('ENOENT'); });
     const r = await replayRun(f.run, 'c', 'e4', 3, f.deps);
     expect(r).toMatchObject({ valid: false, error: expect.stringContaining('ENOENT') });
-    expect(existsSync(join(f.root, 'scratch', 'e4', 'r1'))).toBe(false);
+    expect(existsSync(join(f.root, 'scratch', 'e4'))).toBe(false);
   });
 
   it('is invalid, and charged its whole budget, when claude produced no result', async () => {
@@ -97,10 +97,23 @@ describe('replayRun', () => {
     expect(r).toMatchObject({ valid: false, costUsd: 3, error: expect.stringMatching(/no result/) });
   });
 
-  it('stays judged when the session ran but hit its budget or submitted nothing', async () => {
+  it('flags a replay that hit its budget, keeping what it submitted', async () => {
     const f = fixture(async () => ({ stdout: JSON.stringify({ type: 'result', subtype: 'error_max_budget_usd', is_error: true, total_cost_usd: 2.9 }), code: 1 }));
     const r = await replayRun(f.run, 'c', 'e7', 3, f.deps);
-    expect(r).toMatchObject({ valid: true, costUsd: 2.9, output: [] });
+    expect(r).toMatchObject({ valid: true, stopped: 'error_max_budget_usd', costUsd: 2.9, output: [] });
+  });
+
+  it('is invalid when the session ended in an execution error', async () => {
+    const f = fixture(async () => ({ stdout: JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, total_cost_usd: 0.3 }), code: 1 }));
+    const r = await replayRun(f.run, 'c', 'e8', 3, f.deps);
+    expect(r).toMatchObject({ valid: false, costUsd: 0.3, error: expect.stringMatching(/error_during_execution/) });
+  });
+
+  it('runs on the model the original session used', async () => {
+    let args: string[] = [];
+    const f = fixture(async (a) => { args = a; return { stdout: '{"type":"result"}', code: 0 }; }, { model: 'claude-sonnet-5-5' });
+    await replayRun(f.run, 'c', 'e9', 3, f.deps);
+    expect(args.slice(args.indexOf('--model'), args.indexOf('--model') + 2)).toEqual(['--model', 'claude-sonnet-5-5']);
   });
 
   it('runs without a worktree when the original had none', async () => {
@@ -117,5 +130,23 @@ describe('evalChildEnv', () => {
       { DAEMON_AUTH: 'eval-only', OUTPOST_ENVELOPE: '/e' },
     );
     expect(env).toEqual({ PATH: '/bin', HOME: '/h', DAEMON_AUTH: 'eval-only', OUTPOST_ENVELOPE: '/e' });
+  });
+});
+
+describe('sweepEvalScratch', () => {
+  it('removes every leftover attempt and prunes the repos their worktrees were registered in', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'sweep-'));
+    mkdirSync(join(root, 'ev1', 'a1', 'wt'), { recursive: true });
+    writeFileSync(join(root, 'ev1', 'a1', 'wt', '.git'), 'gitdir: /repo/.git/worktrees/wt\n');
+    mkdirSync(join(root, 'ev2', 'a2', 'plugin'), { recursive: true });
+    const calls: string[][] = [];
+    expect(await sweepEvalScratch(root, async (a) => { calls.push(a); })).toBe(2);
+    expect(calls).toEqual([['--git-dir', '/repo/.git', 'worktree', 'prune']]);
+    expect(existsSync(join(root, 'ev1'))).toBe(false);
+    expect(existsSync(join(root, 'ev2'))).toBe(false);
+  });
+
+  it('is a no-op when there is no scratch root yet', async () => {
+    expect(await sweepEvalScratch(join(tmpdir(), 'nope-does-not-exist'))).toBe(0);
   });
 });

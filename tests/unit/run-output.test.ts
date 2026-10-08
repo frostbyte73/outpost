@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { diffSince, renderOutputs, snapshotWorktree } from '../../src/eval/run-output.js';
+import { diffSince, reconcileSnapshotRefs, renderOutputs, snapshotWorktree } from '../../src/eval/run-output.js';
 
 describe('renderOutputs', () => {
   it('renders a draft with /tmp paths masked and file bodies inline', () => {
@@ -65,5 +65,35 @@ describe('worktree snapshots', () => {
     expect(diff).toContain('+three');
     expect(diff).toContain('+late');
     expect(diff).not.toContain('-one');
+  });
+
+  it('pins a snapshot so git gc cannot reclaim it', async () => {
+    const { dir, git } = repo();
+    writeFileSync(join(dir, 'a.txt'), 'two\n');
+    const snap = await snapshotWorktree(dir);
+    expect(git('for-each-ref', '--format=%(objectname)', 'refs/outpost/snapshots/').trim()).toBe(snap.commit);
+  });
+
+  it('reconciles pins against the retained runs and reports snapshots git already lost', async () => {
+    const { dir, git } = repo();
+    writeFileSync(join(dir, 'a.txt'), 'two\n');
+    const kept = await snapshotWorktree(dir);
+    writeFileSync(join(dir, 'a.txt'), 'three\n');
+    const dropped = await snapshotWorktree(dir);
+    git('update-ref', '-d', `refs/outpost/snapshots/${kept.commit}`);
+    const gone = 'f'.repeat(40);
+    const later = Math.floor(Date.now() / 1000) + 2 * 24 * 60 * 60;
+    const { missing } = await reconcileSnapshotRefs(kept.gitDir, new Set([kept.commit, gone]), later);
+    expect(missing).toEqual([gone]);
+    expect(git('for-each-ref', '--format=%(objectname)', 'refs/outpost/snapshots/').trim()).toBe(kept.commit);
+    expect(dropped.commit).not.toBe(kept.commit);
+  });
+
+  it('leaves a fresh unclaimed pin alone, since its run may not be recorded yet', async () => {
+    const { dir, git } = repo();
+    writeFileSync(join(dir, 'a.txt'), 'two\n');
+    const snap = await snapshotWorktree(dir);
+    await reconcileSnapshotRefs(snap.gitDir, new Set());
+    expect(git('for-each-ref', '--format=%(objectname)', 'refs/outpost/snapshots/').trim()).toBe(snap.commit);
   });
 });
