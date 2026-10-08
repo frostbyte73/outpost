@@ -388,6 +388,13 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
   font-variant-numeric: tabular-nums;
 }
 .lib-rev-revert { margin-left: auto; }
+.lib-rev-revert + .lib-rev-revert { margin-left: 0; }
+.lib-rev-replays {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: var(--text-mute);
+}
 .lib-rev-note { font-size: 12px; color: var(--text-mute); margin-top: 6px; }
 .lib-rev-rules {
   display: flex;

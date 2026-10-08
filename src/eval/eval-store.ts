@@ -84,6 +84,10 @@ export class EvalStore {
     return [...this.byId.values()].filter((r) => !r.outcome);
   }
 
+  all(): EvalRecord[] {
+    return [...this.byId.values()];
+  }
+
   list(action: string): EvalRecord[] {
     return [...this.byId.values()].filter((r) => r.action === action).sort((a, b) => b.startedAt - a.startedAt);
   }

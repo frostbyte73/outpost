@@ -65,6 +65,7 @@ import { runScript } from './schedules/script-runner.js';
 import { homeOrKnownCwd } from './git/known-cwd.js';
 import { PreferencesStore } from './storage/preferences-store.js';
 import { registerPreferencesRoutes } from './routes/preferences.js';
+import { registerEvalsRoutes } from './routes/evals.js';
 import { RunsStore } from './storage/runs-store.js';
 import { ActionRunsStore, type ActionRunRecord } from './storage/action-runs-store.js';
 import { DenialsStore } from './storage/denials-store.js';
@@ -119,6 +120,7 @@ mkdirSync(RUNTIME_DIR, { recursive: true });
 const APPROVAL_TIMEOUT_MS = config.approvalTimeoutMs;
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
+const REPO_ACTIONS_DIR = join(bundledRepoDir(SRC_DIR), 'actions');
 const PWA_DIR = join(SRC_DIR, 'pwa');
 // Runtime allowlist is gitignored; first start copies from allowlist.default.json,
 // hot-adds atomic-write back so rules survive a restart.
@@ -509,6 +511,7 @@ async function main() {
           actionsStore,
           runsFor: (a) => actionRunsStore.listByAction(a),
           dirFor: (a) => actionDirFor(outpostActionsDir, a).dir,
+          repoActionsDir: REPO_ACTIONS_DIR,
           onReverted: (a) => {
             reloadActions();
             try { notifyAll({ type: 'actions_changed' }); } catch { /* during startup */ }
@@ -1168,7 +1171,14 @@ async function main() {
     evalWaiters.set(rec.id, onDone ? [onDone] : []);
     evalQueue.enqueue(async () => {
       try {
-        const done = await runEval(rec, evalDeps);
+        let done: EvalRecord;
+        try {
+          done = await runEval(rec, evalDeps);
+        } catch (e) {
+          // Settled rather than left pending: an auto-applying card waits on this verdict, hidden from the cockpit.
+          const reasons = [`eval crashed: ${(e as Error).message}`];
+          done = evalStore.save({ ...(evalStore.get(rec.id) ?? rec), outcome: 'inconclusive', reasons, endedAt: Date.now() });
+        }
         console.log(`[eval] ${done.action}: ${done.outcome} ($${done.spentUsd.toFixed(2)}) — ${done.reasons.join('; ')}`);
         for (const fn of evalWaiters.get(rec.id) ?? []) fn({ id: done.id, outcome: done.outcome!, reasons: done.reasons });
       } finally {
@@ -1187,7 +1197,9 @@ async function main() {
       queueEval(rec ?? evalStore.save(newEvalRecord(input)), onDone);
     },
     noteProposalVerdict: (sid, postedAt, verdict) => { evalStore.noteUserVerdict(sid, postedAt, verdict); },
+    improverAutoApply: () => preferencesStore.getImproverAutoApply(),
   });
+  registerEvalsRoutes(server, { evalStore });
   recordActionDenial = actionRoutes.recordActionDenial;
   onActionProposalHandler = actionRoutes.onActionProposalHandler;
   beginImproverEdit = actionRoutes.beginImproverEdit;
@@ -1233,6 +1245,7 @@ async function main() {
 
   registerActionRevisionsRoutes(server, {
     outpostActionsDir, actionsStore, revisionsStore: actionRevisionsStore, notifyAll, reloadActions,
+    evalFor: (id) => evalStore.get(id), repoActionsDir: REPO_ACTIONS_DIR,
   });
 
   // Same shape meta.orchestrate's envelope carries, reproduced here rather than exposed off

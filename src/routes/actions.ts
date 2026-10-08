@@ -10,6 +10,8 @@ import type { Server } from '../server.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { actionDirFor, ACTION_CATEGORIES, GATED_GROUPS } from '../actions/registry.js';
 import { buildScorecard } from '../actions/scorecard.js';
+import { autoApplies, evalSettlement } from '../actions/auto-apply.js';
+import { syncRepoCopy } from '../actions/repo-copy.js';
 import { buildRevisionStats, spentRunIds } from '../actions/revision-stats.js';
 import type { PermissionGroup, PermissionGroupMap } from '../actions/types.js';
 import type { ActionsStore } from '../storage/actions-store.js';
@@ -22,6 +24,7 @@ import { splitShellClauses } from '../permissions/shell-split.js';
 import { lintPermissionRule } from '../permissions/write-shape.js';
 import type { GroupApplier } from './meta.js';
 import type { ActionAuthor, ActionRevisionsStore } from '../storage/action-revisions-store.js';
+import { isAutoApplied } from './action-revisions.js';
 import {
   forgetEdit, loadPersistedEdits, persistEdit,
   type ActionEdit, type ActionProposal,
@@ -65,7 +68,11 @@ export interface ActionsRoutesDeps {
     onDone: (result: { id: string; outcome: EvalOutcome; reasons: string[] }) => void,
   ) => void;
   noteProposalVerdict?: (editSessionId: string, postedAt: number, verdict: UserVerdict) => void;
+  // Read live, so turning it off in Settings stops the next verdict from landing.
+  improverAutoApply?: () => boolean;
 }
+
+const AUTO_APPLIED_FEED_MS = 24 * 60 * 60 * 1000;
 
 const DEFAULT_SCORECARD_WINDOW = '30d';
 
@@ -374,8 +381,9 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
     actionRevisionsStore, manager, engine, notifyAll, permissionGroups, applyGroup,
-    evaluateProposal, noteProposalVerdict,
+    evaluateProposal, noteProposalVerdict, improverAutoApply,
   } = deps;
+  const repoActionsDir = join(bundledRepoDir(SRC_DIR), 'actions');
 
   // ── local helpers ──────────────────────────────────────────────────────
   function spawnEditSession(
@@ -597,10 +605,99 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       const located = findEditBySession(editSessionId);
       if (located?.edit.proposal?.postedAt === proposal.postedAt) {
         located.edit.proposal.eval = result;
-        setEdit(located.key, located.edit);
+        settleByEval(located.key, located.edit, result);
       }
       notifyRevised(action);
     });
+  }
+
+  function autoSettles(edit: ActionEdit): boolean {
+    return !!edit.actionName && autoApplies(!!improverAutoApply?.(), edit.author, edit.actionName);
+  }
+
+  // Under auto-apply the eval's verdict stands in for the user's, so neither a user verdict nor a
+  // ledger verdict is recorded — the run is closed, not scored.
+  function settleByEval(key: string, edit: ActionEdit, result: { id: string; outcome: EvalOutcome; reasons: string[] }): void {
+    const name = edit.actionName!;
+    const proposal = edit.proposal!;
+    const { dir } = actionDirFor(outpostActionsDir, name);
+    const settlement = evalSettlement({
+      autoApply: !!improverAutoApply?.(), author: edit.author, action: name, outcome: result.outcome,
+      installedBody: readSkillMd(dir), proposedOver: proposal.skillMdBefore,
+    });
+    if (settlement === 'drop') {
+      noteRejected(edit, `eval ${result.outcome}: ${result.reasons.join('; ')}`, 'system');
+      void manager.close(edit.sessionId).catch(() => { /* tolerate */ });
+      actionRunLedger.closeExternal(edit.sessionId, 'submitted');
+      clearEdit(key);
+      console.log(`[improver] dropped ${name} proposal: eval ${result.outcome}`);
+      return;
+    }
+    if (settlement !== 'apply') {
+      if (settlement === 'stale') console.warn(`[improver] not auto-applying ${name}: SKILL.md changed since the proposal`);
+      setEdit(key, edit);
+      return;
+    }
+    try {
+      applyProposal(key, edit, dir, 'improver', result.id);
+    } catch (e) {
+      console.warn(`[improver] auto-apply of ${name} failed: ${(e as Error).message}`);
+      setEdit(key, edit);
+      return;
+    }
+    const mirrored = syncRepoCopy(repoActionsDir, name, proposal.skillMdBefore, proposal.skillMdAfter);
+    console.log(`[improver] auto-applied ${name} (eval ${result.id})${mirrored ? '' : ' — repo copy differs, runtime only'}`);
+  }
+
+  // Writes the proposal's SKILL.md and retires its edit. Throws, with nothing retired, if the write fails.
+  function applyProposal(key: string, edit: ActionEdit, dir: string, author: ActionAuthor, evalId?: string): void {
+    const proposal = edit.proposal!;
+    const name = edit.actionName!;
+    // Rules land before the write so the revision can record exactly which ones were new:
+    // addRule answers false for a duplicate, and only genuinely-new rules are safe for a
+    // later revert to remove.
+    const allowlistAdds = applyAllowlistAdds(actionsStore, author, name, proposal.allowlistAdds);
+    actionRevisionsStore.applyWrite({
+      action: name,
+      dir,
+      body: proposal.skillMdAfter,
+      author,
+      allowlistAdds,
+      rationale: proposal.summary,
+      sessionId: edit.sessionId,
+      ...(proposal.citedRunIds?.length ? { citedRunIds: proposal.citedRunIds } : {}),
+      ...(evalId ? { evalId } : {}),
+    });
+    // The proposal only carries SKILL.md, but the registry requires input/output
+    // schemas to load an action. Seed permissive defaults for a brand-new action;
+    // never clobber an existing action's schemas on edit.
+    const defaultSchema = JSON.stringify({ type: 'object' }, null, 2) + '\n';
+    for (const f of ['input.schema.json', 'output.schema.json']) {
+      const p = join(dir, f);
+      if (!existsSync(p)) writeFileSync(p, defaultSchema);
+    }
+    edit.status = 'applying';
+    setEdit(key, edit);
+    notifyRevised(name);
+    actionRunLedger.closeExternal(edit.sessionId, 'submitted');
+    void manager.close(edit.sessionId).catch(() => { /* tolerate */ });
+    // Re-symlink into ~/.claude/skills, then reload the registry so the new action
+    // reaches the catalog in the same actions_changed broadcast clearEdit fires —
+    // otherwise the detail pane, still selected on this name, renders "Skill not found".
+    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); } catch { /* tolerate */ }
+    try { actionRegistry.load(); } catch (e) { console.warn(`[action-edit] registry reload failed: ${(e as Error).message}`); }
+    clearEdit(key);
+  }
+
+  function recentAutoApplied(now: number): Array<{ action: string; eventId: string; at: number; rationale?: string }> {
+    const out: Array<{ action: string; eventId: string; at: number; rationale?: string }> = [];
+    for (const a of actionRegistry.listActions()) {
+      for (const e of actionRevisionsStore.listByAction(a.name)) {
+        if (e.at < now - AUTO_APPLIED_FEED_MS) break;
+        if (isAutoApplied(e)) out.push({ action: a.name, eventId: e.id, at: e.at, ...(e.rationale ? { rationale: e.rationale } : {}) });
+      }
+    }
+    return out;
   }
 
   const onActionProposalHandler: ActionsRoutesHandlers['onActionProposalHandler'] = async (body) => {
@@ -694,11 +791,15 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       sessionId: e.sessionId,
       status: e.status,
       startedAt: e.startedAt,
+      author: e.author,
       proposal: e.proposal && proposalView(e.proposal),
+      ...(e.proposal?.eval?.outcome === 'pending' && autoSettles(e) ? { autoApplying: true } : {}),
     }));
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ actions, catalog, skills, edits, denials: denialsStore.all() }));
+    res.end(JSON.stringify({
+      actions, catalog, skills, edits, denials: denialsStore.all(), autoApplied: recentAutoApplied(Date.now()),
+    }));
   });
 
   function handleScorecard(req: IncomingMessage, res: ServerResponse): void {
@@ -898,44 +999,12 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     // so `actor` is only a manual override for callers that have no edit row to speak for them.
     const author: ActionAuthor = edit.author ?? (payload?.actor === 'improver' ? 'improver' : 'user');
     try {
-      // Rules land before the write so the revision can record exactly which ones were new:
-      // addRule answers false for a duplicate, and only genuinely-new rules are safe for a
-      // later revert to remove.
-      const allowlistAdds = applyAllowlistAdds(actionsStore, author, name, proposal.allowlistAdds);
-      actionRevisionsStore.applyWrite({
-        action: name,
-        dir,
-        body: proposal.skillMdAfter,
-        author,
-        allowlistAdds,
-        rationale: proposal.summary,
-        sessionId: edit.sessionId,
-        ...(proposal.citedRunIds?.length ? { citedRunIds: proposal.citedRunIds } : {}),
-      });
-      // The proposal only carries SKILL.md, but the registry requires input/output
-      // schemas to load an action. Seed permissive defaults for a brand-new action;
-      // never clobber an existing action's schemas on edit.
-      const defaultSchema = JSON.stringify({ type: 'object' }, null, 2) + '\n';
-      for (const f of ['input.schema.json', 'output.schema.json']) {
-        const p = join(dir, f);
-        if (!existsSync(p)) writeFileSync(p, defaultSchema);
-      }
+      applyProposal(key, edit, dir, author);
     } catch (e) {
       res.statusCode = 500; res.end(`apply failed: ${(e as Error).message}`); return;
     }
     if (proposal.eval) noteProposalVerdict?.(edit.sessionId, proposal.postedAt, 'approved');
-    edit.status = 'applying';
-    setEdit(key, edit);
-    notifyRevised(name);
-    actionRunLedger.closeExternal(edit.sessionId, 'submitted');
     actionRunLedger.verdictExternal(edit.sessionId, 'accepted');
-    void manager.close(edit.sessionId).catch(() => { /* tolerate */ });
-    // Re-symlink into ~/.claude/skills, then reload the registry so the new action
-    // reaches the catalog in the same actions_changed broadcast clearEdit fires —
-    // otherwise the detail pane, still selected on this name, renders "Skill not found".
-    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); } catch { /* tolerate */ }
-    try { actionRegistry.load(); } catch (e) { console.warn(`[action-edit] registry reload failed: ${(e as Error).message}`); }
-    clearEdit(key);
     res.statusCode = 200; res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ ok: true, actionName: name }));
   });

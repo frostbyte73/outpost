@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ActionRevisionsStore } from '../../src/storage/action-revisions-store.js';
-import { autoRevertIfRegressed } from '../../src/routes/action-revisions.js';
+import { autoRevertIfRegressed, buildRevisionHistory } from '../../src/routes/action-revisions.js';
 import type { ActionsStore } from '../../src/storage/actions-store.js';
 import type { ActionRunOutcome, ActionRunRecord } from '../../src/storage/action-runs-store.js';
 
@@ -89,5 +89,27 @@ describe('autoRevertIfRegressed', () => {
     const runs = [...runsOf('v1', 0, many('accepted', 10)), ...runsOf('v2', clock + 1, many('denied', 8))];
     expect(autoRevertIfRegressed('code.x', deps(runs, []))).toMatchObject({ kind: 'reverted', author: 'system' });
     expect(readFileSync(join(dir, 'SKILL.md'), 'utf8')).toBe('v1');
+  });
+
+  it('restores the repo copy too when the regressed revision was auto-applied', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'auto-revert-repo-'));
+    mkdirSync(join(repoRoot, 'code', 'x'), { recursive: true });
+    writeFileSync(join(repoRoot, 'code', 'x', 'SKILL.md'), 'v2');
+    store.applyWrite({ action: 'code.x', dir, body: 'v1', author: 'user' });
+    const baselineAt = store.listByAction('code.x')[0]!.at;
+    store.applyWrite({ action: 'code.x', dir, body: 'v2', author: 'improver', evalId: 'ev1' });
+    const runs = [...runsOf('v1', baselineAt, many('accepted', 10)), ...runsOf('v2', clock + 1, many('denied', 8))];
+    autoRevertIfRegressed('code.x', { ...deps(runs, []), repoActionsDir: repoRoot });
+    expect(readFileSync(join(repoRoot, 'code', 'x', 'SKILL.md'), 'utf8')).toBe('v1');
+  });
+});
+
+describe('buildRevisionHistory', () => {
+  it('offers undo only on an auto-applied revision that is still the head', () => {
+    store.applyWrite({ action: 'code.x', dir, body: 'v1', author: 'user' });
+    store.applyWrite({ action: 'code.x', dir, body: 'v2', author: 'improver', evalId: 'ev1' });
+    expect(buildRevisionHistory(store, 'code.x')[0]).toMatchObject({ kind: 'applied', canUndo: true });
+    store.applyWrite({ action: 'code.x', dir, body: 'v3', author: 'user' });
+    expect(buildRevisionHistory(store, 'code.x').some((v) => v.canUndo)).toBe(false);
   });
 });

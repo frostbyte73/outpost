@@ -39,6 +39,7 @@ export function waitingOnYouCount() {
     pendingApprovals: approvals.get().pending,
     jobs: work.get().jobs,
     actionEdits: actions.get().edits,
+    autoApplied: actions.get().autoApplied,
     scheduleDrafts: schedulesStore.get().draftBySession,
     runs: runs.get().runs,
     now: Date.now(),

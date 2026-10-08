@@ -8,6 +8,8 @@ const initial = {
   catalog: [],
   skills: [],
   edits: [],
+  // Improver revisions a passing eval installed in the last day — the cockpit's cleared tail.
+  autoApplied: [],
   denials: {},
   // sessionId → { verb, at } — live "doing X right now" indicator for the inline
   // action-builder edit card. Updated by action_edit_activity notifications.
@@ -44,6 +46,7 @@ export const actions = {
         catalog: j.catalog ?? [],
         skills: j.skills ?? [],
         edits: j.edits ?? [],
+        autoApplied: j.autoApplied ?? [],
         denials: j.denials ?? {},
         loaded: true,
         loading: false,

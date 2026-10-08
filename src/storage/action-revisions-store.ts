@@ -260,6 +260,17 @@ export class ActionRevisionsStore {
     return this.bodyFor(chain[idx - 1]!.bodySha);
   }
 
+  chainHead(action: string): ActionEvent | undefined {
+    const chain = this.chainOf(action);
+    return chain[chain.length - 1];
+  }
+
+  previousChainEvent(action: string, eventId: string): ActionEvent | undefined {
+    const chain = this.chainOf(action);
+    const idx = chain.findIndex((e) => e.id === eventId);
+    return idx > 0 ? chain[idx - 1] : undefined;
+  }
+
   headBodyAt(action: string, at: number): string | undefined {
     const upTo = this.chainOf(action).filter((e) => e.at <= at);
     return this.bodyFor(upTo[upTo.length - 1]?.bodySha);

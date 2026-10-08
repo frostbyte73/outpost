@@ -25,6 +25,7 @@ export const SETTINGS_SECTIONS = [
       { key: 'notifications', label: 'Notifications', icon: '✉' },
       { key: 'projects', label: 'Projects', icon: '▣' },
       { key: 'pr-reviews', label: 'PR reviews', icon: '⇄' },
+      { key: 'improver', label: 'Improver', icon: '↻' },
     ],
   },
   {
@@ -188,4 +189,21 @@ export function hotkeyRows(overrides = {}) {
         };
       }),
   }));
+}
+
+function share(n, of) {
+  return of ? `${n} of ${of} (${Math.round((n / of) * 100)}%)` : '—';
+}
+
+// The shadow-eval tally from GET /api/evals/agreement, as label/value pairs.
+export function improverAgreementRows(a) {
+  if (!a) return [];
+  return [
+    ['Evals run', String(a.total)],
+    ['Outcomes', `${a.byOutcome.pass} pass · ${a.byOutcome.fail} fail · ${a.byOutcome.inconclusive} inconclusive`],
+    ['Agreed with you', share(a.agreed, a.reviewed)],
+    ['Passes you rejected', String(a.falsePasses)],
+    ['Fails you approved', String(a.falseFails)],
+    ['Spent', `$${a.spentUsd.toFixed(2)}`],
+  ];
 }

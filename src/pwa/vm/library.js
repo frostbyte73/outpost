@@ -193,8 +193,26 @@ export function revisionRows(events, now = Date.now()) {
     diff: e.diff ?? '',
     hasBody: !!e.hasBody,
     canRevert: !!e.canRevert,
+    canUndo: !!e.canUndo,
     bytesText: bytesText(e.bodyBytes),
+    citedRunIds: e.citedRunIds ?? [],
+    eval: e.eval ? revisionEvalView(e.eval) : null,
   }));
+}
+
+const COMPARISON_LABEL = { after: 'revision won', before: 'revision lost', tie: 'tie' };
+
+function revisionEvalView(ev) {
+  const delta = ev.tokensAfter - ev.tokensBefore;
+  return {
+    headline: `eval ${ev.outcome ?? 'running'} · ${ev.tokensBefore} → ${ev.tokensAfter} tok (${delta > 0 ? '+' : delta < 0 ? '−' : '±'}${Math.abs(delta)}) · ${formatCostUsd(ev.spentUsd)}`,
+    reasons: ev.reasons ?? [],
+    replays: (ev.replays ?? []).map((r) => ({
+      label: `${r.kind} ${r.runId}`,
+      verdict: r.valid ? (COMPARISON_LABEL[r.result] ?? 'not judged') : 'invalid replay',
+      reasons: r.judgeReasons ?? [],
+    })),
+  };
 }
 
 const REVISION_STAT_ROWS = 6;

@@ -206,7 +206,8 @@ function decideItems({ pendingApprovals, jobs, actionEdits, scheduleDrafts }) {
     ...pendingApprovals.map(approvalItem),
     ...live.filter((j) => j.state === 'plan_pending_review').map(planReviewItem),
     ...live.flatMap(stepGateItems),
-    ...actionEdits.filter((e) => e.proposal).map(proposalItem),
+    // An auto-applying proposal is the daemon's to settle once its eval lands, not the user's.
+    ...actionEdits.filter((e) => e.proposal && !e.autoApplying).map(proposalItem),
     ...[...scheduleDrafts.entries()].map(([sessionId, d]) => scheduleProposalItem(sessionId, d)),
     ...pushes,
   ]);
@@ -271,11 +272,27 @@ function clearedRunItems(runs, since) {
   return items;
 }
 
-function clearedItems({ jobs, runs, now }) {
+function autoAppliedItems(autoApplied, since) {
+  return autoApplied
+    .filter((a) => (a.at ?? 0) >= since)
+    .map((a) => ({
+      key: `auto-applied:${a.eventId}`,
+      kind: 'auto-applied',
+      tone: 'ok',
+      title: a.action,
+      ref: null,
+      detail: a.rationale ? `auto-applied: ${a.rationale}` : 'auto-applied a revision',
+      time: a.at ?? 0,
+      open: { surface: 'skills', id: a.action },
+    }));
+}
+
+function clearedItems({ jobs, runs, autoApplied, now }) {
   const since = now - CLEARED_WINDOW_MS;
   return newestFirst([
     ...clearedEventItems(jobs, since),
     ...clearedRunItems(runs, since),
+    ...autoAppliedItems(autoApplied, since),
   ]).slice(0, CLEARED_CAP);
 }
 
@@ -285,11 +302,12 @@ export function cockpitInbox({
   actionEdits = [],
   scheduleDrafts = new Map(),
   runs = [],
+  autoApplied = [],
   now = Date.now(),
 } = {}) {
   return {
     decide: decideItems({ pendingApprovals, jobs, actionEdits, scheduleDrafts }),
     broken: brokenItems({ jobs, runs }),
-    cleared: clearedItems({ jobs, runs, now }),
+    cleared: clearedItems({ jobs, runs, autoApplied, now }),
   };
 }

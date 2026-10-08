@@ -32,6 +32,11 @@ export function registerPreferencesRoutes(server: Server, deps: PreferencesRoute
         return;
       }
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'improverAutoApply') && typeof body.improverAutoApply !== 'boolean') {
+      res.statusCode = 400;
+      res.end('improverAutoApply must be a boolean');
+      return;
+    }
     const merged = preferencesStore.merge(body);
     // Other devices only need to hear about keys the daemon itself acts on —
     // launchConcurrency feeds the launch governor, so it must reach every tab live.

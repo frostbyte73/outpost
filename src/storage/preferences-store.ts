@@ -73,6 +73,11 @@ export class PreferencesStore {
     return { repos, reviewRequested: o.reviewRequested === true };
   }
 
+  // A passing improver eval rewrites SKILL.md with nobody looking, so absent reads as off.
+  getImproverAutoApply(): boolean {
+    return (this.get() as { improverAutoApply?: unknown }).improverAutoApply === true;
+  }
+
   // Settings-level pre-approvals under every job's own. Anything unparseable reads as gated.
   getPreapprovalDefaults(): Preapprovals | undefined {
     const parsed = parsePreapprovals((this.get() as { preapprovalDefaults?: unknown }).preapprovalDefaults);

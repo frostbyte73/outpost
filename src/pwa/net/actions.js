@@ -40,4 +40,11 @@ export const actionsApi = {
     );
   },
   permissionGroups() { return request('/api/permission-groups'); },
+  undoRevision(name, eventId) {
+    return request(
+      `/api/actions/${encodeURIComponent(name)}/revisions/${encodeURIComponent(eventId)}/undo`,
+      { method: 'POST', body: '{}' },
+    );
+  },
+  evalAgreement() { return request('/api/evals/agreement'); },
 };

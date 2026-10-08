@@ -64,6 +64,9 @@ function loadLaunchConcurrency() {
 function loadShellCommands() {
   return localStorage.getItem('cr:shellCommands') === 'true';
 }
+function loadImproverAutoApply() {
+  return localStorage.getItem('cr:improverAutoApply') === 'true';
+}
 const DEFAULT_PR_REVIEW_INTAKE = { repos: [], reviewRequested: false };
 function validPrReviewIntake(v) {
   return v && typeof v === 'object' && Array.isArray(v.repos)
@@ -91,6 +94,7 @@ const store = createStore({
   editorCommand: loadEditorCommand(),
   launchConcurrency: loadLaunchConcurrency(),
   shellCommands: loadShellCommands(),
+  improverAutoApply: loadImproverAutoApply(),
   prReviewIntake: loadPrReviewIntake(),
   preapprovalDefaults: loadPreapprovalDefaults(),
   acceptEdits: false,
@@ -151,6 +155,12 @@ function applyShellCommands(v) {
   store.set((s) => (s.shellCommands === v ? s : { ...s, shellCommands: v }));
 }
 
+function applyImproverAutoApply(v) {
+  if (typeof v !== 'boolean') return;
+  try { localStorage.setItem('cr:improverAutoApply', String(v)); } catch {}
+  store.set((s) => (s.improverAutoApply === v ? s : { ...s, improverAutoApply: v }));
+}
+
 function applyPrReviewIntake(v) {
   if (!validPrReviewIntake(v)) return;
   try { localStorage.setItem('cr:prReviewIntake', JSON.stringify(v)); } catch {}
@@ -171,6 +181,7 @@ register({ key: 'defaultModel', apply: applyDefaultModel, current: () => store.g
 register({ key: 'editorCommand', apply: applyEditorCommand, current: () => store.get().editorCommand });
 register({ key: 'launchConcurrency', apply: applyLaunchConcurrency, current: () => store.get().launchConcurrency });
 register({ key: 'shellCommands', apply: applyShellCommands, current: () => store.get().shellCommands });
+register({ key: 'improverAutoApply', apply: applyImproverAutoApply, current: () => store.get().improverAutoApply });
 register({ key: 'prReviewIntake', apply: applyPrReviewIntake, current: () => store.get().prReviewIntake });
 register({ key: 'preapprovalDefaults', apply: applyPreapprovalDefaults, current: () => store.get().preapprovalDefaults });
 
@@ -206,6 +217,10 @@ export const settings = {
   setShellCommands(v) {
     applyShellCommands(!!v);
     push('shellCommands', store.get().shellCommands);
+  },
+  setImproverAutoApply(v) {
+    applyImproverAutoApply(!!v);
+    push('improverAutoApply', store.get().improverAutoApply);
   },
   setPrReviewIntake(v) {
     applyPrReviewIntake(v);

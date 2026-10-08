@@ -37,6 +37,18 @@ function rulesHtml(rules, verb) {
   return `<div class="lib-rev-rules">${verb} ${pills}</div>`;
 }
 
+function evalHtml(row) {
+  if (!row.eval) return '';
+  const cited = row.citedRunIds.length ? `<div class="lib-rev-rules">Cited ${row.citedRunIds.map((id) => `<span class="o-pill code">${escapeHtml(id)}</span>`).join(' ')}</div>` : '';
+  const replays = row.eval.replays.map((r) => `
+    <li><span class="lib-rev-author">${escapeHtml(r.label)}</span> · ${escapeHtml(r.verdict)}${r.reasons[0] ? ` — ${escapeHtml(r.reasons[0])}` : ''}</li>`).join('');
+  return `
+    <div class="lib-rev-note">${escapeHtml(row.eval.headline)}${row.eval.reasons.length ? ` — ${escapeHtml(row.eval.reasons.join('; '))}` : ''}</div>
+    ${cited}
+    ${replays ? `<ul class="lib-rev-replays">${replays}</ul>` : ''}
+  `;
+}
+
 function diffHtml(row) {
   if (!row.hasBody) {
     return '<div class="lib-rev-pruned">Body no longer retained — too old to restore.</div>';
@@ -54,9 +66,11 @@ function rowHtml(row) {
         <span class="o-pill ${escapeHtml(row.tone === 'hot' ? 'danger' : row.tone)}">${escapeHtml(row.kindLabel)}</span>
         <span class="lib-rev-author">${escapeHtml(row.authorLabel)}</span>
         <span class="lib-rev-when">${escapeHtml(row.whenText ?? '')}</span>
+        ${row.canUndo ? '<button type="button" class="o-btn o-btn--ghost lib-rev-revert" data-rev-action="undo">Undo</button>' : ''}
         ${row.canRevert ? '<button type="button" class="o-btn o-btn--ghost lib-rev-revert" data-rev-action="revert">Revert</button>' : ''}
       </div>
       ${note ? `<div class="lib-rev-note">${escapeHtml(note)}</div>` : ''}
+      ${evalHtml(row)}
       ${rulesHtml(row.ruleAdds, 'Added')}
       ${rulesHtml(row.ruleRemovals, 'Removed')}
       ${diffHtml(row)}
@@ -69,15 +83,19 @@ export function wireRevisions(view, item) {
   if (!section) return;
   const errEl = section.querySelector('.lib-rev-error');
   section.addEventListener('click', async (e) => {
-    const btn = e.target.closest('[data-rev-action="revert"]');
+    const btn = e.target.closest('[data-rev-action]');
     if (!btn) return;
     const id = btn.closest('.lib-rev-row')?.dataset.revId;
     if (!id) return;
-    if (!confirm(`Restore this version of ${item.name}? Allowlist rules it added are removed too.`)) return;
+    const undo = btn.dataset.revAction === 'undo';
+    const ask = undo
+      ? `Undo this auto-applied revision of ${item.name}? The version it replaced is restored.`
+      : `Restore this version of ${item.name}? Allowlist rules it added are removed too.`;
+    if (!confirm(ask)) return;
     btn.disabled = true;
     errEl.hidden = true;
     try {
-      await actionsApi.revertRevision(item.name, id);
+      await (undo ? actionsApi.undoRevision(item.name, id) : actionsApi.revertRevision(item.name, id));
       library.invalidateRevisions(item.name);
     } catch (err) {
       errEl.textContent = err.message;

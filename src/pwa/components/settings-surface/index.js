@@ -31,6 +31,7 @@ import { detailShell, block } from './detail-shell.js';
 import { renderHotkeys } from './hotkeys.js';
 import { renderPrReviews } from './pr-reviews.js';
 import { renderPreapprovalDefaults } from './preapprovals.js';
+import { renderImprover } from './improver.js';
 
 const MODEL_LABELS = { default: 'Daemon default', fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
 // Shell launchers, not app names — each is what that editor installs on PATH for exactly
@@ -396,6 +397,7 @@ const SECTION_RENDERERS = {
   'pre-approvals': renderPreapprovalDefaults,
   projects: renderProjects,
   'pr-reviews': renderPrReviews,
+  improver: renderImprover,
   mcp: renderMcp,
   'claude-account': renderClaudeAuth,
   notifications: renderNotifications,
