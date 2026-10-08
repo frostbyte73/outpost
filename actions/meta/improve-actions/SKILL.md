@@ -37,7 +37,8 @@ cat "$OUTPOST_ENVELOPE"
 | `improve.denials[]` | Unresolved blocked tool calls, newest first; `denialsTotal > denialsCap` means truncated. |
 | `improve.rejectedProposals[]` | Proposals already declined, with the reason. |
 | `improve.lessons[]` | What the action wrote about itself — weaker than the above, useful for *why*. |
-| `improve.history[]` | Past applied / reverted revisions. A reverted improver edit is the strongest negative signal. |
+| `improve.history[]` | Past applied / reverted revisions. A reverted improver edit is the strongest negative signal; a `system` revert whose rationale reads `regression:` is the daemon undoing one that measurably made things worse. |
+| `improve.revisionStats[]` | Each revision scored on the runs that ran under it: `verbatimRate` (approved untouched ÷ ruled on), `failureRate`, `tokens`. Runs a reverted edit cited are already removed from the evidence above — cite something newer. |
 | `improve.previousReview` | Your conclusion last cycle. |
 
 Runs the user ruled on after the situation changed under the draft (a new commit, a new comment, a

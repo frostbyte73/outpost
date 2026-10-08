@@ -59,7 +59,7 @@ import { ClaudeLoginFlows } from './integrations/claude-login.js';
 import { McpConnectorList } from './integrations/mcp-connectors.js';
 import { McpExpiryWatcher } from './integrations/mcp-expiry-watcher.js';
 import { registerActionsRoutes, type ActionsRoutesHandlers } from './routes/actions.js';
-import { registerActionRevisionsRoutes } from './routes/action-revisions.js';
+import { autoRevertIfRegressed, registerActionRevisionsRoutes } from './routes/action-revisions.js';
 import { registerScheduleEditRoutes } from './routes/schedule-edits.js';
 import { runScript } from './schedules/script-runner.js';
 import { homeOrKnownCwd } from './git/known-cwd.js';
@@ -479,12 +479,31 @@ async function main() {
   const runBlobs = new BlobStore(join(RUNTIME_DIR, 'run-snapshots', 'blobs'));
   // Before anything can launch: a stashed snapshot's blob isn't referenced by a row yet.
   console.log(`[action-runs] pruned ${runBlobs.prune(actionRunsStore.referencedBlobs())} unreferenced snapshot blobs`);
+  const reloadActions = () => {
+    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); } catch { /* tolerate */ }
+    try { actionRegistry.load(); } catch (e) { console.warn(`[action-revert] registry reload failed: ${(e as Error).message}`); }
+  };
   const actionRunLedger = new ActionRunLedger({
     store: actionRunsStore,
     blobs: runBlobs,
     skillFor: readSkillMd,
     onSettled: (action) => {
       try { notifyAll({ type: 'action_run_settled', action }); } catch { /* during startup */ }
+      try {
+        autoRevertIfRegressed(action, {
+          store: actionRevisionsStore,
+          actionsStore,
+          runsFor: (a) => actionRunsStore.listByAction(a),
+          dirFor: (a) => actionDirFor(outpostActionsDir, a).dir,
+          onReverted: (a) => {
+            reloadActions();
+            try { notifyAll({ type: 'actions_changed' }); } catch { /* during startup */ }
+            try { notifyAll({ type: 'action_revised', action: a }); } catch { /* during startup */ }
+          },
+        });
+      } catch (e) {
+        console.warn(`[improver] auto-revert check for ${action}: ${(e as Error).message}`);
+      }
     },
   });
   captureRoundSnapshot = (sessionId, env) => {
@@ -1123,11 +1142,7 @@ async function main() {
   });
 
   registerActionRevisionsRoutes(server, {
-    outpostActionsDir, actionsStore, revisionsStore: actionRevisionsStore, notifyAll,
-    reloadActions: () => {
-      try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); } catch { /* tolerate */ }
-      try { actionRegistry.load(); } catch (e) { console.warn(`[action-revert] registry reload failed: ${(e as Error).message}`); }
-    },
+    outpostActionsDir, actionsStore, revisionsStore: actionRevisionsStore, notifyAll, reloadActions,
   });
 
   // Same shape meta.orchestrate's envelope carries, reproduced here rather than exposed off

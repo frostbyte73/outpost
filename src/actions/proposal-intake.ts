@@ -59,7 +59,7 @@ function normalizeCitedRuns(raw: unknown): string[] {
 
 export function intakeProposal(
   payload: ProposalPayload,
-  ctx: { skillMdBefore: string; now: number },
+  ctx: { skillMdBefore: string; now: number; spentRunIds?: ReadonlySet<string> },
 ): ProposalIntake {
   // The flag wins over a body sent alongside it: "nothing to change" must never be able
   // to apply a write by accident.
@@ -67,6 +67,7 @@ export function intakeProposal(
   if (typeof payload.skillMdAfter !== 'string') {
     return { kind: 'invalid', reason: 'expected either skillMdAfter or noChange:true' };
   }
+  const cited = normalizeCitedRuns(payload.citedRunIds).filter((id) => !ctx.spentRunIds?.has(id));
   return {
     kind: 'proposal',
     proposal: {
@@ -77,7 +78,7 @@ export function intakeProposal(
       postedAt: ctx.now,
       evidence: normalizeEvidence(payload.evidence),
       netTokenDelta: netTokenDelta(ctx.skillMdBefore, payload.skillMdAfter),
-      ...(normalizeCitedRuns(payload.citedRunIds).length ? { citedRunIds: normalizeCitedRuns(payload.citedRunIds) } : {}),
+      ...(cited.length ? { citedRunIds: cited } : {}),
       ...(payload.cutOnly === true ? { cutOnly: true } : {}),
     },
   };

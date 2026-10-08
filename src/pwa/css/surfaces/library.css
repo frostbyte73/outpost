@@ -296,6 +296,15 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
   cursor: pointer;
 }
 .lib-score-row:hover { background: var(--bg-elev-2); }
+.lib-score-row.static { cursor: default; }
+.lib-score-row.static:hover { background: transparent; }
+.lib-score-row-note {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .lib-score-row-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .lib-score-row-sub {
   display: flex;

@@ -3,6 +3,7 @@ import type { ActionDenial } from '../storage/denials-store.js';
 import type { ActionEvent } from '../storage/action-revisions-store.js';
 import type { JournalEntry } from '../storage/journal-store.js';
 import { buildScorecard, type Scorecard } from './scorecard.js';
+import { buildRevisionStats, spentRunIds, type RevisionStat } from './revision-stats.js';
 import { approxTokens } from './tokens.js';
 
 // Picks the one action most worth improving right now and assembles the evidence for it.
@@ -78,6 +79,8 @@ export interface ImprovementPack {
   rejectedProposals: Array<{ at: number; rationale?: string; feedback?: string }>;
   lessons: JournalEntry[];
   history: Array<{ at: number; kind: ActionEvent['kind']; author: ActionEvent['author']; bodyBytes?: number; rationale?: string }>;
+  // Every SKILL.md revision scored on the runs that ran under it, newest first.
+  revisionStats: RevisionStat[];
   previousReview?: { at: number; rationale?: string };
 }
 
@@ -203,6 +206,8 @@ export function buildImprovementPack(
     ? events.find((e) => e.at === reviewedAt && e.author === 'improver')
     : undefined;
   const unresolved = unresolvedDenials(denials).sort((a, b) => b.at - a.at);
+  const spent = spentRunIds(events);
+  const evidence = runs.filter((r) => !spent.has(r.id));
 
   return {
     action,
@@ -211,7 +216,7 @@ export function buildImprovementPack(
     currentTokens: approxTokens(skillMd),
     tokenCeiling: NO_AUTO_APPLY.has(action) ? null : DEFAULT_TOKEN_CEILING,
     scorecard: buildScorecard(action, runs, denials, { now, windowMs }),
-    failures: runs
+    failures: evidence
       .filter((r) => r.outcome === 'failed' || r.outcome === 'gave_up')
       .slice(0, LIST_CAP)
       .map((r) => ({
@@ -223,7 +228,7 @@ export function buildImprovementPack(
         stepId: r.stepId,
         reason: r.failureReason,
       })),
-    revisions: runs
+    revisions: evidence
       .filter((r) => r.outcome === 'revised')
       .slice(0, LIST_CAP)
       .map((r) => ({
@@ -235,7 +240,7 @@ export function buildImprovementPack(
         ...(r.feedbackText ? { feedbackText: r.feedbackText } : {}),
         jobId: r.jobId,
       })),
-    edits: runs
+    edits: evidence
       .filter((r) => r.outcome === 'edited')
       .slice(0, LIST_CAP)
       .map((r) => {
@@ -245,7 +250,7 @@ export function buildImprovementPack(
           ...(diff ? { diff: diff.slice(0, DIFF_CAP) } : {}),
         };
       }),
-    feedback: runs
+    feedback: evidence
       .filter((r) => (r.outcome === 'revised' || r.outcome === 'denied') && r.feedbackText)
       .slice(0, LIST_CAP)
       .map((r) => ({
@@ -265,6 +270,7 @@ export function buildImprovementPack(
       .filter((e) => e.kind === 'applied' || e.kind === 'reverted')
       .slice(0, LIST_CAP)
       .map((e) => ({ at: e.at, kind: e.kind, author: e.author, bodyBytes: e.bodyBytes, rationale: e.rationale })),
+    revisionStats: buildRevisionStats(events, deps.runsFor(action)).slice(0, LIST_CAP),
     ...(previous ? { previousReview: { at: previous.at, rationale: previous.rationale } } : {}),
   };
 }

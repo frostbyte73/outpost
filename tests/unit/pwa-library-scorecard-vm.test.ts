@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error — PWA modules are plain ES modules with no type declarations.
-import { outcomeTone, scorecardRows, scorecardTiles } from '../../src/pwa/vm/library.js';
+import { outcomeTone, revisionStatRows, scorecardRows, scorecardTiles } from '../../src/pwa/vm/library.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -63,5 +63,25 @@ describe('scorecardRows', () => {
       durationText: '1m 05s', costText: '$1.50', whenText: '1h ago', jobId: 'j1',
     });
     expect(rows[1]).toMatchObject({ outcome: 'submitted', tone: 'info', durationText: '—', costText: '—' });
+  });
+});
+
+describe('revisionStatRows', () => {
+  it('labels each revision and formats its rates, tokens and delta', () => {
+    const rows = revisionStatRows({
+      byRevision: [
+        { eventId: 'e2', kind: 'reverted', author: 'system', at: NOW - 60_000, rationale: 'regression: 80% → 50% verbatim',
+          tokens: 1000, tokenDelta: -120, runs: 3, adjudicated: 2, verbatimRate: 0.5, failureRate: 0, avgCostUsd: 0.2 },
+        { eventId: 'e1', kind: 'applied', author: 'improver', at: NOW - 120_000,
+          tokens: 1120, tokenDelta: null, runs: 0, adjudicated: 0, verbatimRate: null, failureRate: null, avgCostUsd: null },
+      ],
+    }, NOW);
+    expect(rows[0]).toMatchObject({ id: 'e2', label: 'reverted · system', tone: 'warn', verbatimText: '50%', runsText: '3 runs',
+      tokensText: '1000 tok (−120)', rationale: 'regression: 80% → 50% verbatim' });
+    expect(rows[1]).toMatchObject({ label: 'applied · improver', verbatimText: '—', runsText: '0 runs', tokensText: '1120 tok' });
+  });
+
+  it('is empty without per-revision data', () => {
+    expect(revisionStatRows({}, NOW)).toEqual([]);
   });
 });

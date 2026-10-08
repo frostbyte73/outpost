@@ -1,5 +1,6 @@
 import { ADJUDICATED_OUTCOMES, type ActionRunOutcome, type ActionRunRecord } from '../storage/action-runs-store.js';
 import type { ActionDenial } from '../storage/denials-store.js';
+import type { RevisionStat } from './revision-stats.js';
 
 // Rolls an action's run rows into the numbers the skills detail pane shows.
 //
@@ -30,6 +31,8 @@ export interface Scorecard {
   denials: { total: number; distinct: number; top: Array<Pick<ActionDenial, 'toolName' | 'suggested' | 'count'>> };
   failures: Array<{ at: number; jobId: string; stepId?: string; reason?: string }>;
   recent: ActionRunRecord[];
+  // Unwindowed: a revision's score must not shift with the card's time window.
+  byRevision?: RevisionStat[];
 }
 
 export interface ScorecardOpts {

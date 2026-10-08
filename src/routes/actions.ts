@@ -10,6 +10,7 @@ import type { Server } from '../server.js';
 import type { ActionRegistry } from '../actions/index.js';
 import { actionDirFor, ACTION_CATEGORIES, GATED_GROUPS } from '../actions/registry.js';
 import { buildScorecard } from '../actions/scorecard.js';
+import { buildRevisionStats, spentRunIds } from '../actions/revision-stats.js';
 import type { PermissionGroup, PermissionGroupMap } from '../actions/types.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ActionRunsStore } from '../storage/action-runs-store.js';
@@ -602,7 +603,11 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       catch { /* invalid/unsettled name */ }
     }
 
-    const intake = intakeProposal(payload, { skillMdBefore, now: Date.now() });
+    const intake = intakeProposal(payload, {
+      skillMdBefore,
+      now: Date.now(),
+      ...(edit.actionName ? { spentRunIds: spentRunIds(actionRevisionsStore.listByAction(edit.actionName)) } : {}),
+    });
     if (intake.kind === 'invalid') {
       console.warn(`[hook] /work/action-proposal: ${intake.reason}`);
       return;
@@ -676,6 +681,8 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       denialsStore.list(name),
       { now, ...(windowMs !== undefined ? { windowMs } : {}) },
     );
+    scorecard.byRevision = buildRevisionStats(
+      actionRevisionsStore.listByAction(name), actionRunsStore.listByAction(name));
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ scorecard }));
@@ -869,6 +876,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
         allowlistAdds,
         rationale: proposal.summary,
         sessionId: edit.sessionId,
+        ...(proposal.citedRunIds?.length ? { citedRunIds: proposal.citedRunIds } : {}),
       });
       // The proposal only carries SKILL.md, but the registry requires input/output
       // schemas to load an action. Seed permissive defaults for a brand-new action;

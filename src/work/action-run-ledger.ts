@@ -37,8 +37,9 @@ export class ActionRunLedger {
   private readonly lastCostBySession = new Map<string, number>();
   // Detail for the verdict the very next job mutation derives; never outlives that mutation.
   private readonly verdictStash = new Map<string, DraftVerdictDetail>();
-  // A session's latest launch: a round opened mid-turn (a draft) ran under the same envelope.
-  private readonly lastSnapshot = new Map<string, RoundSnapshot>();
+  // A session's latest launch: a round opened mid-turn (a draft) ran under the same envelope
+  // and the same SKILL.md, even if the file has changed on disk since.
+  private readonly lastSnapshot = new Map<string, RoundSnapshot & { skill?: { action: string; sha: string } }>();
   // Written once in the close patch, like cost — a line per read would be far too chatty.
   private readonly readsByRun = new Map<string, RecordedRead[]>();
   private readonly now: () => number;
@@ -90,21 +91,23 @@ export class ActionRunLedger {
   }
 
   attachSnapshot(sessionId: string, snap: RoundSnapshot): void {
+    const run = this.runForSession(sessionId);
+    const sha = run ? this.skillShaOf(run.action) : undefined;
     this.lastSnapshot.delete(sessionId);
-    this.lastSnapshot.set(sessionId, snap);
+    this.lastSnapshot.set(sessionId, { ...snap, ...(run && sha ? { skill: { action: run.action, sha } } : {}) });
     if (this.lastSnapshot.size > MAX_SNAPSHOT_SESSIONS) {
       this.lastSnapshot.delete(this.lastSnapshot.keys().next().value!);
     }
-    const run = this.runForSession(sessionId);
-    if (run) this.stampSnapshot(run, snap);
+    if (run) this.stampSnapshot(run, snap, sha);
   }
 
-  private stampSnapshot(run: ActionRunRecord, snap: RoundSnapshot): void {
-    const skill = this.deps.skillFor?.(run.action);
-    this.deps.store.patch(run.id, {
-      ...snap,
-      ...(skill ? { skillSha: createHash('sha256').update(skill).digest('hex') } : {}),
-    });
+  private skillShaOf(action: string): string | undefined {
+    const skill = this.deps.skillFor?.(action);
+    return skill ? createHash('sha256').update(skill).digest('hex') : undefined;
+  }
+
+  private stampSnapshot(run: ActionRunRecord, snap: RoundSnapshot, skillSha: string | undefined): void {
+    this.deps.store.patch(run.id, { ...snap, ...(skillSha ? { skillSha } : {}) });
   }
 
   noteRead(sessionId: string, read: RecordedRead): void {
@@ -223,8 +226,11 @@ export class ActionRunLedger {
     });
     this.openByKey.set(key, run);
     if (e.sessionId) this.openBySession.set(e.sessionId, key);
-    const snap = e.sessionId ? this.lastSnapshot.get(e.sessionId) : undefined;
-    if (snap) this.stampSnapshot(run, snap);
+    const held = e.sessionId ? this.lastSnapshot.get(e.sessionId) : undefined;
+    if (held) {
+      const { skill, ...snap } = held;
+      this.stampSnapshot(run, snap, skill?.action === e.action ? skill.sha : this.skillShaOf(e.action));
+    }
   }
 
   private settle(run: ActionRunRecord, fields: Partial<ActionRunRecord>): void {

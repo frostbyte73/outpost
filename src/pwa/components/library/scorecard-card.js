@@ -4,7 +4,7 @@
 
 import { escapeHtml } from '../../util.js';
 import { nav } from '../../state/nav.js';
-import { scorecardRows, scorecardTiles } from '../../vm/library.js';
+import { revisionStatRows, scorecardRows, scorecardTiles } from '../../vm/library.js';
 
 export function scorecardSectionHtml(item, libState) {
   if (item.kind !== 'action') return '';
@@ -16,7 +16,7 @@ export function scorecardSectionHtml(item, libState) {
   } else if (sc.runs === 0) {
     body = '<div class="lib-empty-note">No runs recorded yet.</div>';
   } else {
-    body = tilesHtml(sc) + rowsHtml(sc) + pendingHtml(sc);
+    body = tilesHtml(sc) + rowsHtml(sc) + pendingHtml(sc) + revisionsHtml(sc);
   }
   return `
     <div class="o-section lib-section lib-scorecard">
@@ -57,6 +57,31 @@ function pendingHtml(sc) {
   if (!sc.pending) return '';
   const label = sc.pending === 1 ? '1 run is' : `${sc.pending} runs are`;
   return `<div class="lib-perm-extra">${label} still awaiting a verdict and excluded from these rates.</div>`;
+}
+
+function revisionsHtml(sc) {
+  const rows = revisionStatRows(sc);
+  if (rows.length === 0) return '';
+  const items = rows.map((r) => `
+    <div class="lib-score-row static">
+      <span class="lib-score-row-top">
+        <span class="o-pill ${escapeHtml(r.tone === 'hot' ? 'danger' : r.tone)}">${escapeHtml(r.label)}</span>
+        <span class="o-pill code">${escapeHtml(r.verbatimText)} verbatim</span>
+      </span>
+      <span class="lib-score-row-sub">
+        <span>${escapeHtml(r.runsText)}</span>
+        <span>fail ${escapeHtml(r.failureText)}</span>
+        <span>${escapeHtml(r.tokensText)}</span>
+        <span>${escapeHtml(r.costText)}</span>
+        <span>${escapeHtml(r.whenText ?? '')}</span>
+      </span>
+      ${r.rationale ? `<span class="lib-score-row-note" title="${escapeHtml(r.rationale)}">${escapeHtml(r.rationale)}</span>` : ''}
+    </div>
+  `).join('');
+  return `
+    <h4 class="lib-section-hdr o-microhead">By revision</h4>
+    <div class="lib-score-rows">${items}</div>
+  `;
 }
 
 export function wireScorecard(view) {

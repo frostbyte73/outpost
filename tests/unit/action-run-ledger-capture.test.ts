@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -138,4 +139,20 @@ describe('ledger snapshots on mid-turn rounds', () => {
       envelopeRef: 'e1', skillSha: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
   });
+
+  it('keeps the skill hash from launch even if SKILL.md changes before the draft opens', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-'));
+    const store = new ActionRunsStore(join(dir, 'runs.jsonl'));
+    let skill = 'BODY A';
+    const ledger = new ActionRunLedger({ store, skillFor: () => skill });
+    const q = fakeQueue();
+    ledger.attach(q as never);
+    q.emit(job(step()));
+    ledger.attachSnapshot('x', { envelopeRef: 'e1' });
+    skill = 'BODY B';
+    q.emit(job(step({ state: 'gate_pending_approval', drafts: [draft] })));
+    const draftRow = store.listByAction('write.linear-comment').find((r) => r.round === 'draft');
+    expect(draftRow?.skillSha).toBe(createHash('sha256').update('BODY A').digest('hex'));
+  });
 });
+

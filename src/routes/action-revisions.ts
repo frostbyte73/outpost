@@ -2,8 +2,10 @@ import { lstatSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Server } from '../server.js';
 import { actionDirFor } from '../actions/registry.js';
+import { regressionVerdict } from '../actions/revision-stats.js';
 import { unifiedSkillDiff } from '../actions/skill-diff.js';
 import type { ActionsStore } from '../storage/actions-store.js';
+import type { ActionRunRecord } from '../storage/action-runs-store.js';
 import {
   BODY_CHANGING,
   type ActionAuthor,
@@ -117,8 +119,11 @@ export function revertToEvent(input: {
   dir: string;
   eventId: string;
   author: ActionAuthor;
+  rationale?: string;
+  // Whose rules to revoke, when that isn't the revision being restored.
+  revokeOf?: string;
 }): { event: ActionEvent; removed: Array<{ kind: string; value: string }> } {
-  const { store, actionsStore, action, dir, eventId, author } = input;
+  const { store, actionsStore, action, dir, eventId, author, rationale, revokeOf } = input;
   const target = store.eventById(action, eventId);
   if (!target) throw new RevertError(404, 'no such revision');
   if (!BODY_CHANGING.has(target.kind) || target.kind === 'deleted') {
@@ -127,11 +132,37 @@ export function revertToEvent(input: {
   const body = store.bodyFor(target.bodySha);
   if (body === undefined) throw new RevertError(409, 'this revision is too old — its body is no longer retained');
 
-  const removed = revokeRules(store, actionsStore, action, target);
+  const revokeTarget = revokeOf ? store.eventById(action, revokeOf) : target;
+  const removed = revokeTarget ? revokeRules(store, actionsStore, action, revokeTarget) : [];
   const event = store.applyWrite({
     action, dir, body, author, kind: 'reverted', revertOf: target.id, allowlistRemoved: removed,
+    ...(rationale ? { rationale } : {}),
   });
   return { event, removed };
+}
+
+export interface AutoRevertDeps {
+  store: ActionRevisionsStore;
+  actionsStore: ActionsStore;
+  runsFor: (action: string) => ActionRunRecord[];
+  dirFor: (action: string) => string;
+  onReverted: (action: string) => void;
+}
+
+const pct = (v: number) => `${Math.round(v * 100)}%`;
+
+// Undoes an improver revision whose verbatim rate fell against the one it replaced.
+export function autoRevertIfRegressed(action: string, deps: AutoRevertDeps): ActionEvent | undefined {
+  const verdict = regressionVerdict(deps.store.listByAction(action), deps.runsFor(action));
+  if (!verdict.regressed) return undefined;
+  const { event } = revertToEvent({
+    store: deps.store, actionsStore: deps.actionsStore, action, dir: deps.dirFor(action),
+    eventId: verdict.restoreEventId, revokeOf: verdict.regressedEventId, author: 'system',
+    rationale: `regression: ${pct(verdict.before)} → ${pct(verdict.after)} verbatim`,
+  });
+  console.log(`[improver] auto-reverted ${action}: ${event.rationale}`);
+  deps.onReverted(action);
+  return event;
 }
 
 export function registerActionRevisionsRoutes(server: Server, deps: ActionRevisionsRoutesDeps): void {

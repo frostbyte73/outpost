@@ -93,4 +93,12 @@ describe('intakeProposal', () => {
     expect(intakeProposal({ skillMdAfter: 'x' }, ctx())).toMatchObject({ proposal: { evidence: [] } });
     expect(intakeProposal({ skillMdAfter: 'x', evidence: 'nope' }, ctx())).toMatchObject({ proposal: { evidence: [] } });
   });
+
+  it('strips cited runs that already bought a reverted edit', () => {
+    const r = intakeProposal(
+      { skillMdAfter: 'x', citedRunIds: ['r1', 'r2'] },
+      { ...ctx(), spentRunIds: new Set(['r1']) },
+    );
+    expect(r).toMatchObject({ proposal: { citedRunIds: ['r2'] } });
+  });
 });

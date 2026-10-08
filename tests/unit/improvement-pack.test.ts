@@ -316,4 +316,23 @@ describe('buildImprovementPack', () => {
     const d = deps({ runsFor: () => runs(40, 'failed') });
     expect(buildImprovementPack('read.investigate', d).failures).toHaveLength(15);
   });
+
+  it('drops runs a reverted improver edit cited, and scores each revision', () => {
+    const revs = [
+      event({ id: 'e3', kind: 'reverted', at: NOW - 1 * HOUR, author: 'system', bodySha: 'A', bodyBytes: 400 }),
+      event({ id: 'e2', kind: 'applied', at: NOW - 2 * HOUR, author: 'improver', bodySha: 'B', bodyBytes: 480, citedRunIds: ['spent'] }),
+      event({ id: 'e1', kind: 'created', at: NOW - 3 * HOUR, author: 'system', bodySha: 'A', bodyBytes: 400 }),
+    ];
+    const d = deps({
+      revisionsFor: () => revs,
+      runsFor: () => [
+        run({ id: 'fresh', outcome: 'edited', skillSha: 'A', startedAt: NOW - 30 * 60 * 1000 }),
+        run({ id: 'spent', outcome: 'edited', skillSha: 'A', startedAt: NOW - 150 * 60 * 1000 }),
+      ],
+    });
+    const pack = buildImprovementPack('read.investigate', d);
+    expect(pack.edits.map((e) => e.runId)).toEqual(['fresh']);
+    expect(pack.revisionStats.map((s) => [s.eventId, s.runs, s.tokenDelta])).toEqual([['e3', 1, -20], ['e2', 0, 20], ['e1', 1, null]]);
+  });
 });
+

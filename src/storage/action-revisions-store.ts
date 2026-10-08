@@ -54,6 +54,7 @@ export interface ActionEvent {
   sessionId?: string;
   runId?: string;
   revertOf?: string;
+  citedRunIds?: string[];
 }
 
 export interface RecordInput {
@@ -68,6 +69,7 @@ export interface RecordInput {
   sessionId?: string;
   runId?: string;
   revertOf?: string;
+  citedRunIds?: string[];
 }
 
 export interface ApplyWriteInput extends Omit<RecordInput, 'kind' | 'body'> {
@@ -186,6 +188,7 @@ export class ActionRevisionsStore {
     if (input.sessionId) event.sessionId = input.sessionId;
     if (input.runId) event.runId = input.runId;
     if (input.revertOf) event.revertOf = input.revertOf;
+    if (input.citedRunIds?.length) event.citedRunIds = input.citedRunIds;
 
     // Blob first, then metadata: a line must never reference a body that isn't on disk.
     appendFileSync(this.indexPath, `${JSON.stringify(event)}\n`, { mode: 0o600 });

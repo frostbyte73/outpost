@@ -195,6 +195,30 @@ export function revisionRows(events, now = Date.now()) {
   }));
 }
 
+const REVISION_STAT_ROWS = 6;
+
+function tokensText(tokens, delta) {
+  if (typeof tokens !== 'number') return '—';
+  if (typeof delta !== 'number' || delta === 0) return `${tokens} tok`;
+  return `${tokens} tok (${delta > 0 ? '+' : '−'}${Math.abs(delta)})`;
+}
+
+// Each SKILL.md revision scored on the runs that ran under it, newest first.
+export function revisionStatRows(sc, now = Date.now()) {
+  return (sc?.byRevision ?? []).slice(0, REVISION_STAT_ROWS).map((r) => ({
+    id: r.eventId,
+    label: `${REVISION_LABEL[r.kind] ?? r.kind} · ${AUTHOR_LABEL[r.author] ?? r.author}`,
+    tone: REVISION_TONE[r.kind] ?? 'info',
+    whenText: relPast(r.at, now),
+    rationale: r.rationale ?? '',
+    runsText: `${r.runs} run${r.runs === 1 ? '' : 's'}`,
+    verbatimText: pct(r.verbatimRate),
+    failureText: pct(r.failureRate),
+    tokensText: tokensText(r.tokens, r.tokenDelta),
+    costText: formatCostUsd(r.avgCostUsd ?? null),
+  }));
+}
+
 // Classifies unified-diff lines for rendering. Deliberately not a parser — src/git/diff-parser.js
 // is TypeScript and the PWA ships unbundled, so it can't be imported here.
 export function revisionDiffLines(diffText) {
