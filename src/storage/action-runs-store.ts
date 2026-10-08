@@ -28,13 +28,25 @@ export type ActionRunOutcome =
   | 'abandoned'
   | 'failed'
   | 'gave_up'
-  | 'interrupted';
+  | 'interrupted'
+  // Approved, but only after the user changed the payload.
+  | 'edited'
+  // Ruled on after the world moved under the draft — evidence neither way.
+  | 'superseded';
 
 // Outcomes a gate (or the PR) has actually ruled on. A run still sitting at
 // `submitted` is pending, and stays out of every rate's denominator.
 export const ADJUDICATED_OUTCOMES: ReadonlySet<ActionRunOutcome> = new Set<ActionRunOutcome>([
-  'accepted', 'revised', 'denied', 'merged', 'abandoned', 'failed', 'gave_up',
+  'accepted', 'edited', 'revised', 'denied', 'merged', 'abandoned', 'failed', 'gave_up',
 ]);
+
+export interface RecordedRead { tool: string; inputKey: string; responseRef: string }
+
+export type RunLink =
+  | { kind: 'reviewFindings'; at: number; ref: string }
+  | { kind: 'prComments'; at: number; comments: Array<{ id: string; author: string }> }
+  | { kind: 'ciFailed'; at: number; headSha?: string }
+  | { kind: 'merged'; at: number; prUrl: string };
 
 export interface ActionRunRecord {
   id: string;
@@ -53,6 +65,15 @@ export interface ActionRunRecord {
   feedbackChars?: number;
   failureReason?: string;
   denials?: number;
+  feedbackText?: string;
+  editChars?: number;
+  editDiffRef?: string;
+  // Replay snapshot: blob refs (see BlobStore), the worktree HEAD, and the SKILL.md it ran under.
+  envelopeRef?: string;
+  baseSha?: string;
+  skillSha?: string;
+  reads?: RecordedRead[];
+  links?: RunLink[];
 }
 
 type Line =
@@ -141,6 +162,22 @@ export class ActionRunsStore {
   // rules on whichever one posted the plan.
   latestFor(scopeId: string, round?: string): ActionRunRecord | undefined {
     return this.index.find((r) => (r.stepId ?? r.jobId) === scopeId && (round === undefined || r.round === round));
+  }
+
+  // Newest first.
+  runsForStep(jobId: string, stepId: string): ActionRunRecord[] {
+    return this.index.filter((r) => r.jobId === jobId && r.stepId === stepId);
+  }
+
+  referencedBlobs(): Set<string> {
+    const refs = new Set<string>();
+    for (const r of this.index) {
+      if (r.envelopeRef) refs.add(r.envelopeRef);
+      if (r.editDiffRef) refs.add(r.editDiffRef);
+      for (const read of r.reads ?? []) refs.add(read.responseRef);
+      for (const l of r.links ?? []) if (l.kind === 'reviewFindings') refs.add(l.ref);
+    }
+    return refs;
   }
 
   openRuns(): ActionRunRecord[] {

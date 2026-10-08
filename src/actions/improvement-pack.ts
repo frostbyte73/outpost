@@ -1,8 +1,9 @@
-import { ADJUDICATED_OUTCOMES, type ActionRunRecord } from '../storage/action-runs-store.js';
+import type { ActionRunRecord } from '../storage/action-runs-store.js';
 import type { ActionDenial } from '../storage/denials-store.js';
 import type { ActionEvent } from '../storage/action-revisions-store.js';
 import type { JournalEntry } from '../storage/journal-store.js';
 import { buildScorecard, type Scorecard } from './scorecard.js';
+import { approxTokens } from './tokens.js';
 
 // Picks the one action most worth improving right now and assembles the evidence for it.
 //
@@ -13,7 +14,10 @@ import { buildScorecard, type Scorecard } from './scorecard.js';
 // Pure: every read arrives through ImprovementPackDeps, which is what makes the eligibility
 // rules testable without a daemon.
 
-const DEFAULT_MIN_RUNS = 20;
+const DEFAULT_MIN_RUNS = 3;
+const DEFAULT_MIN_GAP_MS = 3 * 24 * 60 * 60 * 1000;
+const DIFF_CAP = 4000;
+export const DEFAULT_TOKEN_CEILING = 6000;
 const DEFAULT_MAX_PENDING = 2;
 const DEFAULT_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const LIST_CAP = 15;
@@ -23,6 +27,14 @@ const DENIALS_LIST_CAP = 20;
 // no fixed point; meta.build-action is the authoring mechanism the user needs in order to fix
 // a bad improvement, so it must not be able to break itself.
 export const EXCLUDED_ACTIONS = ['meta.improve-actions', 'meta.build-action'];
+
+// Too large to replay faithfully, or self-referential: proposals stay on the review card.
+export const NO_AUTO_APPLY: ReadonlySet<string> = new Set([
+  'meta.improve-actions', 'meta.orchestrate', 'code.orchestrate-pr', 'code.orchestrate-review',
+]);
+
+// The runs that say the user wanted something else; an unedited accept says nothing to fix.
+const NEGATIVE_OUTCOMES: ReadonlySet<string> = new Set(['edited', 'revised', 'denied', 'failed', 'gave_up']);
 
 const IMPROVER_REVIEW_KINDS = new Set<ActionEvent['kind']>(['reviewed', 'proposed', 'applied']);
 
@@ -34,11 +46,13 @@ export interface ImprovementPackDeps {
   lessonsFor: (action: string) => JournalEntry[];
   skillMdFor: (action: string) => string;
   pendingEdits: () => Array<{ actionName: string | null; authorAction?: string }>;
+  blob?: (ref: string) => string | undefined;
   now: () => number;
 }
 
 export interface ImprovementPackOpts {
   minRuns?: number;
+  minGapMs?: number;
   maxPending?: number;
   exclude?: string[];
   windowMs?: number;
@@ -48,10 +62,14 @@ export interface ImprovementPack {
   action: string;
   whySelected: string;
   currentSkillMd: string;
-  currentLineCount: number;
+  currentTokens: number;
+  tokenCeiling: number | null;
   scorecard: Scorecard;
   failures: Array<{ runId: string; at: number; round: string; attempt: number; jobId: string; stepId?: string; reason?: string }>;
-  revisions: Array<{ runId: string; at: number; round: string; attempt: number; feedbackChars?: number; jobId: string }>;
+  revisions: Array<{ runId: string; at: number; round: string; attempt: number; feedbackChars?: number; feedbackText?: string; jobId: string }>;
+  // What the user changed before approving — the most direct evidence of what they wanted.
+  edits: Array<{ runId: string; at: number; round: string; editChars?: number; diff?: string; jobId: string }>;
+  feedback: Array<{ runId: string; at: number; kind: 'revised' | 'denied'; text: string; jobId: string }>;
   denials: Array<{ id: string; toolName: string; suggested: ActionDenial['suggested']; count: number; at: number }>;
   // Explicit rather than a silent truncation — `denialsTotal > denials.length` is how the
   // improver tells the list was cut, instead of reading it as everything that exists.
@@ -71,6 +89,7 @@ export function parsePackOpts(args: unknown): ImprovementPackOpts {
   const exclude = Array.isArray(a.exclude) ? a.exclude.filter((x): x is string => typeof x === 'string') : undefined;
   return {
     ...(num(a.minRuns) !== undefined ? { minRuns: num(a.minRuns) } : {}),
+    ...(num(a.minGapMs) !== undefined ? { minGapMs: num(a.minGapMs) } : {}),
     ...(num(a.maxPending) !== undefined ? { maxPending: num(a.maxPending) } : {}),
     ...(num(a.windowMs) !== undefined ? { windowMs: num(a.windowMs) } : {}),
     ...(exclude?.length ? { exclude } : {}),
@@ -84,8 +103,8 @@ export function lastImproverReviewAt(events: ActionEvent[]): number | undefined 
   return ats.length > 0 ? Math.max(...ats) : undefined;
 }
 
-function adjudicatedSince(runs: ActionRunRecord[], since: number): ActionRunRecord[] {
-  return runs.filter((r) => r.startedAt > since && r.outcome && ADJUDICATED_OUTCOMES.has(r.outcome));
+function negativeSince(runs: ActionRunRecord[], since: number): ActionRunRecord[] {
+  return runs.filter((r) => r.startedAt > since && r.outcome && NEGATIVE_OUTCOMES.has(r.outcome));
 }
 
 // A denial seen more than once is a standing signal that the action's permissions or its
@@ -114,7 +133,7 @@ function unresolvedDenials(denials: ActionDenial[]): ActionDenial[] {
 // the user threw the payload out rather than asking for a different wording.
 function needsAttentionScore(sc: Scorecard, denials: ActionDenial[]): number {
   const failures = sc.outcomes.failed + sc.outcomes.gave_up;
-  return 4 * failures + 3 * sc.outcomes.denied + 2 * sc.outcomes.revised
+  return 4 * failures + 3 * sc.outcomes.denied + 2 * (sc.outcomes.revised + sc.outcomes.edited)
     + recurringDenials(denials).length;
 }
 
@@ -131,6 +150,7 @@ export function selectActionToImprove(
   opts: ImprovementPackOpts = {},
 ): { action: string; reason: string } | null {
   const minRuns = opts.minRuns ?? DEFAULT_MIN_RUNS;
+  const minGapMs = opts.minGapMs ?? DEFAULT_MIN_GAP_MS;
   const maxPending = opts.maxPending ?? DEFAULT_MAX_PENDING;
   const exclude = new Set(opts.exclude ?? EXCLUDED_ACTIONS);
   const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
@@ -146,9 +166,10 @@ export function selectActionToImprove(
     if (exclude.has(action) || pendingNames.has(action)) continue;
     const revisions = deps.revisionsFor(action);
     const since = lastImproverReviewAt(revisions) ?? 0;
+    if (since && now - since < minGapMs) continue;
     const runs = deps.runsFor(action);
     const denials = deps.denialsFor(action);
-    const newRuns = adjudicatedSince(runs, since).length;
+    const newRuns = negativeSince(runs, since).length;
     const newDenials = recurringDenials(denials, since).length;
     if (newRuns < minRuns && newDenials === 0) continue;
     const sc = buildScorecard(action, runs, denials, { now, windowMs });
@@ -158,7 +179,7 @@ export function selectActionToImprove(
 
   candidates.sort((a, b) => b.score - a.score || a.since - b.since);
   const top = candidates[0]!;
-  const parts = [`${top.newRuns} new adjudicated run${top.newRuns === 1 ? '' : 's'}`];
+  const parts = [`${top.newRuns} new run${top.newRuns === 1 ? '' : 's'} the user edited, sent back, denied or saw fail`];
   if (top.denials > 0) parts.push(`${top.denials} recurring denial${top.denials === 1 ? '' : 's'}`);
   parts.push(top.since === 0 ? 'never reviewed' : 'reviewed before');
   return { action: top.action, reason: `${top.action}: ${parts.join(', ')}` };
@@ -172,7 +193,8 @@ export function buildImprovementPack(
 ): ImprovementPack {
   const now = deps.now();
   const windowMs = opts.windowMs ?? DEFAULT_WINDOW_MS;
-  const runs = deps.runsFor(action);
+  // A superseded verdict is evidence of nothing, and its note would read like a complaint.
+  const runs = deps.runsFor(action).filter((r) => r.outcome !== 'superseded');
   const denials = deps.denialsFor(action);
   const events = deps.revisionsFor(action);
   const skillMd = deps.skillMdFor(action);
@@ -186,7 +208,8 @@ export function buildImprovementPack(
     action,
     whySelected,
     currentSkillMd: skillMd,
-    currentLineCount: skillMd === '' ? 0 : skillMd.replace(/\n$/, '').split('\n').length,
+    currentTokens: approxTokens(skillMd),
+    tokenCeiling: NO_AUTO_APPLY.has(action) ? null : DEFAULT_TOKEN_CEILING,
     scorecard: buildScorecard(action, runs, denials, { now, windowMs }),
     failures: runs
       .filter((r) => r.outcome === 'failed' || r.outcome === 'gave_up')
@@ -209,7 +232,24 @@ export function buildImprovementPack(
         round: r.round,
         attempt: r.attempt,
         feedbackChars: r.feedbackChars,
+        ...(r.feedbackText ? { feedbackText: r.feedbackText } : {}),
         jobId: r.jobId,
+      })),
+    edits: runs
+      .filter((r) => r.outcome === 'edited')
+      .slice(0, LIST_CAP)
+      .map((r) => {
+        const diff = r.editDiffRef ? deps.blob?.(r.editDiffRef) : undefined;
+        return {
+          runId: r.id, at: r.verdictAt ?? r.startedAt, round: r.round, editChars: r.editChars, jobId: r.jobId,
+          ...(diff ? { diff: diff.slice(0, DIFF_CAP) } : {}),
+        };
+      }),
+    feedback: runs
+      .filter((r) => (r.outcome === 'revised' || r.outcome === 'denied') && r.feedbackText)
+      .slice(0, LIST_CAP)
+      .map((r) => ({
+        runId: r.id, at: r.verdictAt ?? r.startedAt, kind: r.outcome as 'revised' | 'denied', text: r.feedbackText!, jobId: r.jobId,
       })),
     denials: unresolved
       .slice(0, DENIALS_LIST_CAP)

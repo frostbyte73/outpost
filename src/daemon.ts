@@ -71,6 +71,9 @@ import { DenialsStore } from './storage/denials-store.js';
 import { ActionRevisionsStore } from './storage/action-revisions-store.js';
 import { PermissionGroupRevisionsStore } from './storage/permission-group-revisions-store.js';
 import { ActionRunLedger } from './work/action-run-ledger.js';
+import { BlobStore } from './storage/blob-store.js';
+import { readInputKey, recordableRead } from './permissions/read-recording.js';
+import { execFile } from 'node:child_process';
 import { UsageLedger } from './integrations/usage-ledger.js';
 import { createRunsCapture, type ScheduleRunContext } from './storage/runs-capture.js';
 import { registerRunsRoutes } from './routes/runs.js';
@@ -213,6 +216,12 @@ async function main() {
 
   const projectAllowlistDir = join(RUNTIME_DIR, 'allowlists');
   const outpostActionsDir = join(RUNTIME_DIR, 'actions');
+  const readSkillMd = (action: string): string => {
+    try { return readFileSync(join(actionDirFor(outpostActionsDir, action).dir, 'SKILL.md'), 'utf8'); }
+    catch { return ''; }
+  };
+  // Assigned once the run ledger exists; a launch before then has no round to attach to.
+  let captureRoundSnapshot: (sessionId: string, env: Record<string, string>) => void = () => {};
   const actionsStore = new ActionsStore(join(RUNTIME_DIR, 'actions.json'));
   const interactive = new InteractiveStore(join(RUNTIME_DIR, 'interactive-sessions.json'));
   const permissionGroups = loadRuntimePermissionGroups(PERMISSION_GROUPS_PATH, PERMISSION_GROUPS_SEEDED_PATH, permissionGroupsDefault as PermissionGroupMap);
@@ -349,6 +358,7 @@ async function main() {
     eventLogMaxEvents,
     eventLogMaxAgeMs,
     worktreeManager,
+    onLaunch: (sessionId, _cwd, env) => captureRoundSnapshot(sessionId, env),
     // The mirror of the Stop hook's own rebroadcast below: a session starting a turn is a
     // liveness change no job mutation reports. A step resume writes its step BEFORE it
     // sends the prompt (resumeControllerRound's `run()`), so the broadcast that mutation
@@ -457,6 +467,7 @@ async function main() {
     governor: launchGovernor,
     writeActionMeta: (id, meta) => sessionStore.writeActionMeta(id, meta),
     preapprovalDefaults: () => preferencesStore.getPreapprovalDefaults(),
+    onDraftVerdict: (jobId, stepId, detail) => actionRunLedger.noteVerdict(jobId, stepId, detail),
   });
   const runsStore = new RunsStore(join(RUNTIME_DIR, 'runs.jsonl'));
   const usageLedger = new UsageLedger(join(RUNTIME_DIR, 'usage-ledger.json'));
@@ -465,12 +476,29 @@ async function main() {
   const actionRevisionsStore = new ActionRevisionsStore(join(RUNTIME_DIR, 'action-revisions'));
   const groupRevisions = new PermissionGroupRevisionsStore(
     join(RUNTIME_DIR, 'permission-group-revisions.jsonl'));
+  const runBlobs = new BlobStore(join(RUNTIME_DIR, 'run-snapshots', 'blobs'));
+  // Before anything can launch: a stashed snapshot's blob isn't referenced by a row yet.
+  console.log(`[action-runs] pruned ${runBlobs.prune(actionRunsStore.referencedBlobs())} unreferenced snapshot blobs`);
   const actionRunLedger = new ActionRunLedger({
     store: actionRunsStore,
+    blobs: runBlobs,
+    skillFor: readSkillMd,
     onSettled: (action) => {
       try { notifyAll({ type: 'action_run_settled', action }); } catch { /* during startup */ }
     },
   });
+  captureRoundSnapshot = (sessionId, env) => {
+    const path = env.OUTPOST_ENVELOPE;
+    if (!path) return;
+    let envelope: string;
+    try { envelope = readFileSync(path, 'utf8'); } catch { return; }
+    const snap = { envelopeRef: runBlobs.put(envelope) };
+    const wt = engine.worktreePathForSession(sessionId);
+    if (!wt) { actionRunLedger.attachSnapshot(sessionId, snap); return; }
+    execFile('git', ['-C', wt, 'rev-parse', 'HEAD'], (err, out) => {
+      actionRunLedger.attachSnapshot(sessionId, err ? snap : { ...snap, baseSha: out.trim() });
+    });
+  };
   const runsCapture = createRunsCapture({
     runsStore,
     usageLedger,
@@ -824,6 +852,17 @@ async function main() {
       handlePostToolFailureHook(input, (sid, tool, toolInput, toolUseId) => engine.releaseConsumedPin(sid, tool, toolInput, toolUseId));
       return '{}';
     },
+    onPostToolHook: async (body) => {
+      const input = parseJsonObject(body) as { session_id?: string; tool_name?: string; tool_input?: unknown; tool_response?: unknown } | null;
+      if (!input) throw new Error('invalid json body');
+      if (!input.session_id || !input.tool_name || !engine.actionForSession(input.session_id)) return;
+      if (!recordableRead(input.tool_name, input.tool_input, permissionGroups.pull?.alwaysAllowBashPatterns ?? [])) return;
+      const responseRef = runBlobs.put(JSON.stringify(input.tool_response ?? null));
+      if (!responseRef) return;
+      actionRunLedger.noteRead(input.session_id, {
+        tool: input.tool_name, inputKey: readInputKey(input.tool_name, input.tool_input), responseRef,
+      });
+    },
     onWorkPlanReady: async (body) => {
       const payload = parseJsonObject(body) as { jobId: string; mode?: 'initial' | 'replan'; steps: unknown[]; drops?: string[]; feedback?: string; findings?: unknown } | null;
       if (!payload) throw new Error('invalid json body');
@@ -1055,10 +1094,8 @@ async function main() {
       denialsFor: (action: string) => denialsStore.list(action),
       revisionsFor: (action: string) => actionRevisionsStore.listByAction(action),
       lessonsFor: (action: string) => journalStore.recent(action),
-      skillMdFor: (action: string) => {
-        try { return readFileSync(join(actionDirFor(outpostActionsDir, action).dir, 'SKILL.md'), 'utf8'); }
-        catch { return ''; }
-      },
+      skillMdFor: readSkillMd,
+      blob: (ref: string) => runBlobs.get(ref),
       pendingEdits: () => listPendingEdits?.() ?? [],
       now: () => Date.now(),
     };

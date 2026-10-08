@@ -13,9 +13,9 @@ export interface McpConfigOpts {
 }
 
 // Loopback HTTP hook entry; claude refuses non-loopback URLs for SSRF safety.
-function loopbackHook(hookPort: number, route: string, timeout: number) {
+function loopbackHook(hookPort: number, route: string, timeout: number, matcher = '') {
   return {
-    matcher: '',
+    matcher,
     hooks: [
       {
         type: 'http',
@@ -52,10 +52,8 @@ export function writeDaemonSettings(opts: DaemonSettingsOpts): void {
   const cfg = {
     hooks: {
       PreToolUse: [loopbackHook(opts.hookPort, '/hook/pretool', 600)],
-      // Deliberately PostToolUseFailure, not PostToolUse — see PostToolFailureHookInput in
-      // hook-handler.ts for why. The event itself is Claude Code's failure signal (a rejected
-      // `git push` fires it); this daemon does not register a handler for the plain
-      // PostToolUse event at all.
+      // Only tools whose responses can be recorded for eval replay; failures have their own event.
+      PostToolUse: [loopbackHook(opts.hookPort, '/hook/posttool', 30, 'Bash|WebFetch|WebSearch|mcp__.*')],
       PostToolUseFailure: [loopbackHook(opts.hookPort, '/hook/posttoolfail', 30)],
       Stop: [loopbackHook(opts.hookPort, '/hook/stop', 30)],
       // Fires instead of Stop when an API error ended the turn — without it that turn never ends.

@@ -134,3 +134,13 @@ describe('buildScorecard grouping', () => {
     expect(sc.failures[0]).toMatchObject({ reason: 'boom' });
   });
 });
+
+describe('buildScorecard draft-edit outcomes', () => {
+  it('scores edited as adjudicated but not a success, and leaves superseded pending', () => {
+    const sc = card([run({ outcome: 'accepted' }), run({ outcome: 'edited' }), run({ outcome: 'superseded' })]);
+    expect(sc.acceptRate).toBe(0.5);
+    expect(sc.outcomes.edited).toBe(1);
+    expect(sc.outcomes.superseded).toBe(1);
+    expect(sc.pending).toBe(1);
+  });
+});

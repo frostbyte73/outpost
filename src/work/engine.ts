@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import type { JobQueue } from './work-queue.js';
+import type { DraftVerdictDetail } from './draft-verdict.js';
 import type { SessionManager } from '../session/session-manager.js';
 import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
 import type { LinearWriter } from '../integrations/linear-writer.js';
@@ -209,6 +210,7 @@ export interface WorkEngineOpts {
   unresolvedGraceMs?: number;
   runGh?: RunGh;
   preapprovalDefaults?: () => Preapprovals | undefined;
+  onDraftVerdict?: (jobId: string, stepId: string, detail: DraftVerdictDetail) => void;
 }
 
 type SessionRole =
@@ -1580,6 +1582,7 @@ export class WorkEngine {
         this.opts.journalStore?.append({ action, jobId, stepId, outcome, lesson, at: this.ctx.now() }),
       mergeReadiness: (jobId, stepId, prNumber, sha) => this.mergeReadiness(jobId, stepId, prNumber, sha),
       preapprovalDefaults: () => this.opts.preapprovalDefaults?.(),
+      noteVerdict: (jobId, stepId, detail) => this.opts.onDraftVerdict?.(jobId, stepId, detail),
       mergingFromBase: (stepId, base) => {
         const path = this.opts.worktreeManager.get(stepId)?.worktreePath;
         return path ? gitMergingFromBase(path, base) : Promise.resolve(false);
@@ -2900,14 +2903,14 @@ export class WorkEngine {
         // PreToolUse hook fires on every call — the hook denies-on-miss for action
         // sessions (no interactive approver attached). Without this, the user's global
         // `acceptEdits` would silently let edits through.
+        this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
+        this.bindAction(sessionId, actionName);
         this.opts.sessionManager.spawnDetached(sessionId, cwd, {
           OUTPOST_ENVELOPE: envelopePath,
           JOB_ID: jobId,
           STEP_ID: stepId,
           STEP_TYPE: s.type,
         }, 'default');
-        this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
-        this.bindAction(sessionId, actionName);
         this.stampActionSession(sessionId, actionName, s.title || 'Step');
         this.mutateStep(jobId, stepId, (st) => this.appendStepEvent({ ...st, sessionId } as Step, 'spawned', 'orchestrator'));
         this.mutate(jobId, (j) => this.appendEvent(j, {

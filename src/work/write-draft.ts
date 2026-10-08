@@ -97,6 +97,9 @@ export interface WriteDraft {
   raisedBy: DraftRaisedBy;
   summary: string;
   calls: PinnedCall[];
+  // The calls as the session submitted them, files included — the before-half of a user edit.
+  draftedCalls?: PinnedCall[];
+  factsAtDraft?: string;
   // The calls the user was shown and chose not to run, recorded at accept time. Never pinned
   // (nothing here can ever be consumed) — this is the durable answer to "why did only two of
   // the three replies I drafted go out", both for the resumed session (writeGateFor hands it

@@ -86,86 +86,97 @@ describe('lastImproverReviewAt', () => {
 });
 
 describe('selectActionToImprove — eligibility', () => {
-  it('skips an action below the run threshold with no recurring denial', () => {
-    expect(selectActionToImprove(deps({ runsFor: () => runs(19) }), { minRuns: 20 })).toBeNull();
+  it('skips an action below the negative-run threshold with no recurring denial', () => {
+    expect(selectActionToImprove(deps({ runsFor: () => runs(2, 'edited') }))).toBeNull();
   });
 
   it('admits an action at exactly the threshold', () => {
-    const r = selectActionToImprove(deps({ runsFor: () => runs(20) }), { minRuns: 20 });
-    expect(r?.action).toBe('read.investigate');
+    expect(selectActionToImprove(deps({ runsFor: () => runs(3, 'edited') }))?.action).toBe('read.investigate');
   });
 
-  it('does not count pending runs toward the threshold', () => {
-    // `submitted` means no gate has ruled — it carries no signal about quality yet.
-    expect(selectActionToImprove(deps({ runsFor: () => runs(30, 'submitted') }), { minRuns: 20 })).toBeNull();
+  it('never elects on runs the user accepted as drafted', () => {
+    expect(selectActionToImprove(deps({ runsFor: () => runs(30) }))).toBeNull();
+  });
+
+  it('does not count pending or superseded runs toward the threshold', () => {
+    expect(selectActionToImprove(deps({ runsFor: () => runs(30, 'submitted') }))).toBeNull();
+    expect(selectActionToImprove(deps({ runsFor: () => runs(30, 'superseded') }))).toBeNull();
   });
 
   it('does not count runs that predate the last review', () => {
-    // Otherwise every fire would re-review the same action off the same evidence.
     const d = deps({
-      runsFor: () => runs(30, 'accepted', NOW - 10 * HOUR),
+      runsFor: () => runs(30, 'edited', NOW - 100 * HOUR),
+      revisionsFor: () => [event({ kind: 'reviewed', at: NOW - 80 * HOUR })],
+    });
+    expect(selectActionToImprove(d)).toBeNull();
+  });
+
+  it('waits out the minimum gap since the last review, however much new evidence there is', () => {
+    const d = deps({
+      runsFor: () => runs(30, 'edited', NOW - HOUR),
       revisionsFor: () => [event({ kind: 'reviewed', at: NOW - 5 * HOUR })],
     });
-    expect(selectActionToImprove(d, { minRuns: 20 })).toBeNull();
+    expect(selectActionToImprove(d)).toBeNull();
+    expect(selectActionToImprove(d, { minGapMs: 0 })?.action).toBe('read.investigate');
   });
 
   it('admits an action below the run threshold when a denial keeps recurring', () => {
     const d = deps({ runsFor: () => runs(2), denialsFor: () => [denial({ count: 4 })] });
-    expect(selectActionToImprove(d, { minRuns: 20 })?.action).toBe('read.investigate');
+    expect(selectActionToImprove(d)?.action).toBe('read.investigate');
   });
 
   it('ignores a one-off denial', () => {
     const d = deps({ runsFor: () => runs(2), denialsFor: () => [denial({ count: 1 })] });
-    expect(selectActionToImprove(d, { minRuns: 20 })).toBeNull();
+    expect(selectActionToImprove(d)).toBeNull();
   });
 
   it('ignores a recurring denial last seen before the previous review', () => {
     const d = deps({
       runsFor: () => runs(2),
-      denialsFor: () => [denial({ count: 4, at: NOW - 10 * HOUR })],
-      revisionsFor: () => [event({ kind: 'reviewed', at: NOW - 5 * HOUR })],
+      denialsFor: () => [denial({ count: 4, at: NOW - 100 * HOUR })],
+      revisionsFor: () => [event({ kind: 'reviewed', at: NOW - 80 * HOUR })],
     });
-    expect(selectActionToImprove(d, { minRuns: 20 })).toBeNull();
+    expect(selectActionToImprove(d)).toBeNull();
   });
 });
 
 describe('selectActionToImprove — exclusions', () => {
   it('never selects either self-referential action', () => {
     const d = deps({ listActionNames: () => EXCLUDED_ACTIONS, runsFor: () => runs(50, 'failed') });
-    expect(selectActionToImprove(d, { minRuns: 20 })).toBeNull();
+    expect(selectActionToImprove(d)).toBeNull();
   });
 
   it('honours a schedule-supplied exclusion list', () => {
-    const d = deps({ runsFor: () => runs(50) });
-    expect(selectActionToImprove(d, { minRuns: 20, exclude: ['read.investigate'] })).toBeNull();
+    const d = deps({ runsFor: () => runs(50, 'edited') });
+    expect(selectActionToImprove(d, { exclude: ['read.investigate'] })).toBeNull();
   });
 
   it('skips an action the user is already editing', () => {
     const d = deps({
-      runsFor: () => runs(50),
+      runsFor: () => runs(50, 'edited'),
       pendingEdits: () => [{ actionName: 'read.investigate' }],
     });
-    expect(selectActionToImprove(d, { minRuns: 20 })).toBeNull();
+    expect(selectActionToImprove(d)).toBeNull();
   });
 
   it('stops entirely once maxPending improver proposals await review', () => {
     const d = deps({
       listActionNames: () => ['code.spec'],
-      runsFor: () => runs(50),
+      runsFor: () => runs(50, 'edited'),
       pendingEdits: () => [
         { actionName: 'a.b', authorAction: 'meta.improve-actions' },
         { actionName: 'c.d', authorAction: 'meta.improve-actions' },
       ],
     });
-    expect(selectActionToImprove(d, { minRuns: 20, maxPending: 2 })).toBeNull();
+    expect(selectActionToImprove(d, { maxPending: 2 })).toBeNull();
   });
 
   it('does not count a user edit toward the improver backlog cap', () => {
     const d = deps({
-      runsFor: () => runs(50),
+      runsFor: () => runs(50, 'edited'),
       pendingEdits: () => [{ actionName: 'other.thing' }],
     });
-    expect(selectActionToImprove(d, { minRuns: 20, maxPending: 1 })?.action).toBe('read.investigate');
+    expect(selectActionToImprove(d, { maxPending: 1 })?.action).toBe('read.investigate');
   });
 });
 
@@ -179,26 +190,48 @@ describe('selectActionToImprove — ranking', () => {
       listActionNames: () => ['code.plan', 'code.spec'],
       runsFor: (a) => byAction[a] ?? [],
     });
-    expect(selectActionToImprove(d, { minRuns: 20 })?.action).toBe('code.spec');
+    expect(selectActionToImprove(d)?.action).toBe('code.spec');
   });
 
   it('breaks a tie by longest-unreviewed', () => {
     const reviewedAt: Record<string, number> = {
-      'code.spec': NOW - 2 * HOUR,
-      'code.plan': NOW - 50 * HOUR,
+      'code.spec': NOW - 80 * HOUR,
+      'code.plan': NOW - 100 * HOUR,
     };
     const d = deps({
       listActionNames: () => ['code.spec', 'code.plan'],
-      runsFor: () => runs(30, 'accepted', NOW - HOUR),
+      runsFor: () => runs(30, 'edited', NOW - HOUR),
       revisionsFor: (a) => [event({ kind: 'reviewed', at: reviewedAt[a]! })],
     });
-    expect(selectActionToImprove(d, { minRuns: 20 })?.action).toBe('code.plan');
+    expect(selectActionToImprove(d)?.action).toBe('code.plan');
   });
 
   it('explains why it picked what it picked', () => {
-    const d = deps({ runsFor: () => runs(24) });
-    expect(selectActionToImprove(d, { minRuns: 20 })?.reason)
-      .toBe('read.investigate: 24 new adjudicated runs, never reviewed');
+    const d = deps({ runsFor: () => runs(24, 'edited') });
+    expect(selectActionToImprove(d)?.reason)
+      .toBe('read.investigate: 24 new runs the user edited, sent back, denied or saw fail, never reviewed');
+  });
+});
+
+describe('buildImprovementPack — draft evidence', () => {
+  it('carries edit diffs and feedback text, and leaves superseded runs out', () => {
+    const rows: ActionRunRecord[] = [
+      run({ id: 'e1', outcome: 'edited', editChars: 9, editDiffRef: 'D' }),
+      run({ id: 'v1', outcome: 'revised', feedbackText: 'just approve' }),
+      run({ id: 's1', outcome: 'superseded', feedbackText: 'conflict appeared' }),
+    ];
+    const pack = buildImprovementPack('read.investigate', deps({
+      runsFor: () => rows, blob: (r) => (r === 'D' ? '-x\n+y' : undefined),
+    }));
+    expect(pack.edits).toEqual([expect.objectContaining({ runId: 'e1', diff: '-x\n+y', editChars: 9 })]);
+    expect(pack.feedback).toEqual([expect.objectContaining({ runId: 'v1', kind: 'revised', text: 'just approve' })]);
+    expect(JSON.stringify(pack)).not.toContain('conflict appeared');
+    expect(pack.currentTokens).toBe(2);
+    expect(pack.tokenCeiling).toBe(6000);
+  });
+
+  it('gives the never-auto-applied actions no token ceiling', () => {
+    expect(buildImprovementPack('meta.orchestrate', deps()).tokenCeiling).toBeNull();
   });
 });
 
@@ -239,7 +272,7 @@ describe('buildImprovementPack', () => {
       revisionsFor: () => [event({ kind: 'reviewed', at: NOW - 3 * HOUR, rationale: 'all clean' })],
     });
     const pack = buildImprovementPack('read.investigate', d, {}, 'because');
-    expect(pack.currentLineCount).toBe(3);
+    expect(pack.currentTokens).toBe(2);
     expect(pack.whySelected).toBe('because');
     expect(pack.previousReview).toEqual({ at: NOW - 3 * HOUR, rationale: 'all clean' });
   });

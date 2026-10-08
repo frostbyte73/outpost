@@ -1,5 +1,6 @@
 import type { ActionRunOutcome } from '../storage/action-runs-store.js';
 import type { ActionEdit, ActionProposal } from '../storage/action-edits-store.js';
+import { approxTokens } from './tokens.js';
 
 // The branching a posted action-proposal goes through, lifted out of routes/actions.ts's
 // factory closure so it's reachable from a test without standing up a Server — the same
@@ -12,6 +13,7 @@ import type { ActionEdit, ActionProposal } from '../storage/action-edits-store.j
 const RULE_KINDS = ['tool', 'bash', 'mcp', 'path'] as const;
 const MAX_EVIDENCE = 10;
 const MAX_EVIDENCE_LEN = 300;
+const MAX_CITED_RUNS = 10;
 
 export interface ProposalPayload {
   sessionId?: string;
@@ -20,6 +22,8 @@ export interface ProposalPayload {
   skillMdAfter?: string;
   noChange?: boolean;
   evidence?: unknown;
+  citedRunIds?: unknown;
+  cutOnly?: boolean;
   allowlistAdds?: Array<{ kind: string; value: string }>;
 }
 
@@ -43,9 +47,14 @@ function normalizeRules(raw: ProposalPayload['allowlistAdds']): ActionProposal['
     !!r && typeof r.value === 'string' && (RULE_KINDS as readonly string[]).includes(r.kind));
 }
 
-export function netLineDelta(before: string, after: string): number {
-  const lines = (s: string) => (s === '' ? 0 : s.replace(/\n$/, '').split('\n').length);
-  return lines(after) - lines(before);
+// Tokens, not lines: a line-count guard is satisfied by making lines longer.
+export function netTokenDelta(before: string, after: string): number {
+  return approxTokens(after) - approxTokens(before);
+}
+
+function normalizeCitedRuns(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.filter((r): r is string => typeof r === 'string' && r.length > 0).slice(0, MAX_CITED_RUNS);
 }
 
 export function intakeProposal(
@@ -67,7 +76,9 @@ export function intakeProposal(
       allowlistAdds: normalizeRules(payload.allowlistAdds),
       postedAt: ctx.now,
       evidence: normalizeEvidence(payload.evidence),
-      netLineDelta: netLineDelta(ctx.skillMdBefore, payload.skillMdAfter),
+      netTokenDelta: netTokenDelta(ctx.skillMdBefore, payload.skillMdAfter),
+      ...(normalizeCitedRuns(payload.citedRunIds).length ? { citedRunIds: normalizeCitedRuns(payload.citedRunIds) } : {}),
+      ...(payload.cutOnly === true ? { cutOnly: true } : {}),
     },
   };
 }

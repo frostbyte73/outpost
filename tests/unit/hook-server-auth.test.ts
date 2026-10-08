@@ -38,6 +38,7 @@ async function start(): Promise<number> {
     port, daemonAuthSecret: SECRET,
     onPreToolHook: async () => { handled.push('pretool'); return '{}'; },
     onPostToolFailureHook: async () => '{}',
+    onPostToolHook: async () => {},
     onStopHook: record('stop'), onStopFailureHook: record('stop-failure'), onStatusLineHook: record('statusline'),
     onWorkPlanReady: record('plan'), onWorkStepResolved: record('resolved'), onWorkStepFailed: record('failed'),
     onActionProposal: record('proposal'), onWorkJournal: record('journal'),

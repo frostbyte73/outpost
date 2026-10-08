@@ -15,7 +15,10 @@ export interface ActionProposal {
   allowlistAdds: Array<{ kind: 'tool' | 'bash' | 'mcp' | 'path'; value: string }>;
   postedAt: number;
   evidence?: string[];    // observations the proposer cited, one short line each
-  netLineDelta?: number;  // after - before; surfaced on the review card so bloat is visible
+  netTokenDelta?: number;
+  citedRunIds?: string[];
+  // A deletion fixing nothing in particular; judged on no-regression alone.
+  cutOnly?: boolean;
 }
 
 export interface ActionEdit {

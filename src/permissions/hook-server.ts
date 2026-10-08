@@ -12,6 +12,7 @@ export interface HookServerOpts {
   daemonAuthSecret: string;
   onPreToolHook: (body: string) => Promise<string>;
   onPostToolFailureHook: (body: string) => Promise<string>;
+  onPostToolHook: (body: string) => Promise<void>;
   onStopHook: (body: string) => Promise<void>;
   onStopFailureHook: (body: string) => Promise<void>;
   onStatusLineHook: (body: string) => Promise<void>;
@@ -51,6 +52,7 @@ export class HookServer {
     const KNOWN_ROUTES = new Set([
       '/hook/pretool',
       '/hook/posttoolfail',
+      '/hook/posttool',
       '/hook/stop',
       '/hook/stop-failure',
       '/hook/statusline',
@@ -106,6 +108,10 @@ export class HookServer {
           res.statusCode = 200;
           res.setHeader('content-type', 'application/json');
           res.end(result);
+        } else if (url === '/hook/posttool') {
+          await this.opts.onPostToolHook(body);
+          res.statusCode = 204;
+          res.end();
         } else if (url === '/hook/statusline') {
           await this.opts.onStatusLineHook(body);
           res.statusCode = 204;

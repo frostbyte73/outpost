@@ -67,6 +67,8 @@ export interface SessionManagerOpts {
   // complaint only ever appears on stderr, and the frame it becomes reaches attached clients
   // only — so without this the lapse is invisible to anyone not watching the session that hit it.
   onAuthFailure?: (sessionId: string, message: string) => void;
+  // Fires on every launch carrying an env, spawn or not: a running session's next round has a new envelope.
+  onLaunch?: (sessionId: string, cwd: string, env: Record<string, string>) => void;
 }
 
 export class SessionManager {
@@ -318,6 +320,7 @@ export class SessionManager {
   // observed via opts.onProcMessage. Idempotent — no-op if already active.
   spawnDetached(sessionId: string, cwd: string, extraEnv?: Record<string, string>, permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'): void {
     if (this.active.has(sessionId)) return;
+    if (extraEnv) this.opts.onLaunch?.(sessionId, cwd, extraEnv);
     if (permissionMode) this.permissionModes.set(sessionId, permissionMode);
     const s = this.spawn(sessionId, cwd, extraEnv);
     this.working.set(sessionId, Date.now());
@@ -329,6 +332,7 @@ export class SessionManager {
 
   // Send a message; respawn first if idle-reaped. extraEnv is applied only on respawn.
   sendOrResume(sessionId: string, cwd: string, message: unknown, extraEnv?: Record<string, string>): void {
+    if (extraEnv) this.opts.onLaunch?.(sessionId, cwd, extraEnv);
     if (!this.active.has(sessionId)) this.spawn(sessionId, cwd, extraEnv);
     this.send(sessionId, message);
   }

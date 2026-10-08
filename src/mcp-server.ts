@@ -398,6 +398,15 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
           items: { type: 'string' },
           description: 'Short cited observations backing this proposal (which runs, which failures). Shown on the review card so the user sees why, not just a diff.',
         },
+        citedRunIds: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Run ids (from the pack) this change claims to fix. The eval replays exactly these.',
+        },
+        cutOnly: {
+          type: 'boolean',
+          description: 'A pure deletion that fixes no particular run; judged on no-regression alone. Omit citedRunIds.',
+        },
         allowlistAdds: {
           type: 'array',
           items: {

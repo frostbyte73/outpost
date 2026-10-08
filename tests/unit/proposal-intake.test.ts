@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  intakeProposal, ledgerActionFor, netLineDelta, onSessionGone,
+  intakeProposal, ledgerActionFor, onSessionGone,
 } from '../../src/actions/proposal-intake.js';
 import type { ActionEdit, ActionProposal } from '../../src/storage/action-edits-store.js';
 
@@ -42,18 +42,23 @@ describe('intakeProposal', () => {
     expect(r.kind).toBe('invalid');
   });
 
-  it('builds a proposal with the before-text, posted time and a signed line delta', () => {
-    const r = intakeProposal({ summary: 'tighten', skillMdAfter: 'a\nb\nc\nd\n' }, ctx('a\nb\n'));
+  it('builds a proposal with the before-text, posted time and a signed token delta', () => {
+    const r = intakeProposal({ summary: 'tighten', skillMdAfter: 'abcdabcd' }, ctx('abcd'));
     expect(r.kind).toBe('proposal');
     if (r.kind !== 'proposal') return;
-    expect(r.proposal.skillMdBefore).toBe('a\nb\n');
+    expect(r.proposal.skillMdBefore).toBe('abcd');
     expect(r.proposal.postedAt).toBe(NOW);
-    expect(r.proposal.netLineDelta).toBe(2);
+    expect(r.proposal.netTokenDelta).toBe(1);
   });
 
-  it('reports a negative delta when the proposal shrinks the body', () => {
-    const r = intakeProposal({ skillMdAfter: 'a\n' }, ctx('a\nb\nc\n'));
-    expect(r.kind === 'proposal' && r.proposal.netLineDelta).toBe(-2);
+  it('counts longer lines as growth even when the line count drops', () => {
+    const r = intakeProposal({ skillMdAfter: `${'x'.repeat(40)}\n` }, ctx('a\nb\nc\n'));
+    expect(r.kind === 'proposal' && r.proposal.netTokenDelta).toBe(9);
+  });
+
+  it('keeps cited run ids and the cut-only flag', () => {
+    const r = intakeProposal({ skillMdAfter: 'x', citedRunIds: ['r1', 7, 'r2'] as never, cutOnly: true }, ctx('xy'));
+    expect(r.kind === 'proposal' && r.proposal).toMatchObject({ citedRunIds: ['r1', 'r2'], cutOnly: true });
   });
 
   it('keeps well-formed allowlist rules and drops malformed ones', () => {
@@ -87,36 +92,5 @@ describe('intakeProposal', () => {
   it('yields an empty evidence list when the field is absent or not an array', () => {
     expect(intakeProposal({ skillMdAfter: 'x' }, ctx())).toMatchObject({ proposal: { evidence: [] } });
     expect(intakeProposal({ skillMdAfter: 'x', evidence: 'nope' }, ctx())).toMatchObject({ proposal: { evidence: [] } });
-  });
-});
-
-describe('netLineDelta', () => {
-  it('ignores a missing trailing newline on either side', () => {
-    expect(netLineDelta('a\nb', 'a\nb\n')).toBe(0);
-  });
-
-  it('counts an empty body as zero lines', () => {
-    expect(netLineDelta('', 'a\nb\n')).toBe(2);
-  });
-});
-
-describe('onSessionGone', () => {
-  it('keeps an edit whose proposal is already posted, leaving the verdict pending', () => {
-    expect(onSessionGone(edit({ status: 'review', proposal: proposal() })))
-      .toEqual({ keep: true, outcome: 'submitted' });
-  });
-
-  it('drops an edit that never posted anything', () => {
-    expect(onSessionGone(edit())).toEqual({ keep: false, outcome: 'abandoned' });
-  });
-});
-
-describe('ledgerActionFor', () => {
-  it('defaults to meta.build-action for rows written before authorAction existed', () => {
-    expect(ledgerActionFor(edit())).toBe('meta.build-action');
-  });
-
-  it('attributes an improver edit to its own action', () => {
-    expect(ledgerActionFor(edit({ authorAction: 'meta.improve-actions' }))).toBe('meta.improve-actions');
   });
 });

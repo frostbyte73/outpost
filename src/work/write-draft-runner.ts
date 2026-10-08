@@ -6,6 +6,7 @@ import { confirmationsRequired } from '../permissions/dangerous-writes.js';
 import { duplicatePrCreate } from '../steps/orchestrated-policy.js';
 import { anyPreapproved, effectivePreapprovals } from './preapprovals.js';
 import { classifyDraft, prNumberOf } from './preapproval-classify.js';
+import { draftEdit, factsFingerprint, type DraftVerdictDetail } from './draft-verdict.js';
 import {
   extractFileReferences, hashFileContents, sameRaiser, writeFileContents,
   type DraftRaisedBy, type PinnedCall, type WriteDraft,
@@ -38,6 +39,16 @@ export interface DraftHost {
   mergeReadiness?(jobId: string, stepId: string, prNumber: number, sha: string): Promise<string | undefined>;
   preapprovalDefaults?(): Preapprovals | undefined;
   mergingFromBase?(stepId: string, baseBranch: string): Promise<boolean>;
+  // Called before the verdict's own mutation, which is what the run ledger pairs it with.
+  noteVerdict?(jobId: string, stepId: string, detail: DraftVerdictDetail): void;
+}
+
+function prOf(s: Step | undefined) {
+  return s?.type === 'orchestrated' ? s.pr : undefined;
+}
+
+function isStale(host: DraftHost, jobId: string, stepId: string, d: WriteDraft): boolean {
+  return d.factsAtDraft !== undefined && d.factsAtDraft !== factsFingerprint(prOf(host.getStep(jobId, stepId)));
 }
 
 // accept/revise/deny's shared "resolve a PENDING draft by id, or explain precisely why not"
@@ -124,7 +135,10 @@ export async function submitDraft(
     }
   }
 
-  const draft: WriteDraft = { ...incoming, raisedBy, id: host.newId(), requestedAt: host.now() };
+  const draft: WriteDraft = {
+    ...incoming, raisedBy, id: host.newId(), requestedAt: host.now(),
+    draftedCalls: incoming.calls, factsAtDraft: factsFingerprint(prOf(step)),
+  };
 
   host.mutateStep(jobId, stepId, (s) => {
     // A redraft replaces the pending draft from the same raiser rather than stacking:
@@ -237,7 +251,12 @@ export async function acceptDraft(
   // same calls again.
   // `calls`, not `skippedCalls`: every call is skipped on this path, and the lesson is built
   // from the drafted bodies that the stripping above throws away.
-  if (!keep.length) return settleUnrun(host, jobId, stepId, step, draft, calls);
+  if (!keep.length) {
+    host.noteVerdict?.(jobId, stepId, {
+      edit: draftEdit(draft.draftedCalls ?? draft.calls, []), stale: isStale(host, jobId, stepId, draft),
+    });
+    return settleUnrun(host, jobId, stepId, step, draft, calls);
+  }
 
   // Rebuild from the identity/payload fields only (allowlist, not a denylist of consumption
   // fields) — a freshly approved draft has no pin history yet, whatever the caller's `calls`
@@ -317,9 +336,15 @@ export async function acceptDraft(
     pinned.push({ ...c, fileDigests });
   }
 
+  if (opts.approvedBy !== 'preapproval') {
+    host.noteVerdict?.(jobId, stepId, {
+      edit: draftEdit(draft.draftedCalls ?? draft.calls, keep), stale: isStale(host, jobId, stepId, draft),
+    });
+  }
   const at = host.now();
   host.mutateStep(jobId, stepId, (s) => {
-    const withDraft = { ...replaceDraft(s, draftId, (d) => ({
+    // The drafted copy only matters until the verdict, and job JSON is rebroadcast on every mutation.
+    const withDraft = { ...replaceDraft(s, draftId, ({ draftedCalls: _drafted, factsAtDraft: _facts, ...d }) => ({
       ...d,
       calls: pinned,
       ...(skippedCalls.length ? { skippedCalls } : {}),
@@ -361,6 +386,7 @@ export function reviseDraft(
   if (!lookup.found) return lookup.result;
   const draft = lookup.draft;
 
+  host.noteVerdict?.(jobId, stepId, { feedbackText: note, stale: isStale(host, jobId, stepId, draft) });
   host.mutateStep(jobId, stepId, (s) => {
     const withFeedback = { ...replaceDraft(s, draftId, (d) => ({
       ...d, feedback: [...(d.feedback ?? []), note],
@@ -512,6 +538,7 @@ export function denyDraft(
   if (!lookup.found) return lookup.result;
   const draft = lookup.draft;
 
+  host.noteVerdict?.(jobId, stepId, { feedbackText: note, stale: isStale(host, jobId, stepId, draft) });
   return settleDraftUnrun(host, jobId, stepId, draft, {
     event: `denied ${draft.action}: ${note}`,
     note: draft.raisedBy.kind === 'dispatch' ? `denied: ${note}` : note,

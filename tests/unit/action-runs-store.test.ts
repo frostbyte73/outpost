@@ -149,3 +149,14 @@ describe('ActionRunLedger.reconcileAtBoot', () => {
     expect(s.get(run.id)?.outcome).toBe('interrupted');
   });
 });
+
+describe('ActionRunsStore blob references', () => {
+  it('lists every blob a retained row references', () => {
+    const s = new ActionRunsStore(join(mkdtempSync(join(tmpdir(), 'r-')), 'r.jsonl'), () => 'id1', () => 10);
+    s.open({
+      action: 'a', round: 'r', attempt: 1, jobId: 'j', startedAt: 5, envelopeRef: 'e', editDiffRef: 'd',
+      reads: [{ tool: 't', inputKey: 'k', responseRef: 'x' }], links: [{ kind: 'reviewFindings', at: 1, ref: 'v' }],
+    });
+    expect([...s.referencedBlobs()].sort()).toEqual(['d', 'e', 'v', 'x']);
+  });
+});

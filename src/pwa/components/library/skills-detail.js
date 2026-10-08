@@ -226,7 +226,7 @@ function proposedChangeHtml(p) {
   if (!p.diff) return '<div class="lib-edit-status">No change to SKILL.md — the proposed body is identical.</div>';
   return skillDiffHtml(p.diff, {
     label: 'Proposed change',
-    suffix: deltaPillHtml(p.netLineDelta),
+    suffix: deltaPillHtml(p.netTokenDelta),
     defaultOpen: true,
   });
 }
@@ -249,7 +249,7 @@ function evidenceHtml(evidence) {
 function deltaPillHtml(delta) {
   if (typeof delta !== 'number' || delta === 0) return '';
   const tone = delta > 0 ? 'warn' : 'ok';
-  const text = `${delta > 0 ? '+' : '−'}${Math.abs(delta)} lines`;
+  const text = `${delta > 0 ? '+' : '−'}${Math.abs(delta)} tokens`;
   return ` <span class="o-pill ${tone}">${escapeHtml(text)}</span>`;
 }
 
