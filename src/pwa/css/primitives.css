@@ -325,6 +325,7 @@
 .o-btn--ghost:hover { background: var(--bg-elev-2); color: var(--text); }
 .o-btn--danger { background: var(--danger-soft); border-color: var(--danger-soft); color: var(--danger); }
 .o-btn--danger:hover { border-color: var(--danger); }
+.o-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
 /* ── Overflow menu (⋯) ───────────────────────────────────────────────────
    Desktop: `.o-menu`/`.o-menu-body` are `display: contents` so their

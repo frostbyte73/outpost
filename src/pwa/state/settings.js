@@ -211,9 +211,13 @@ export const settings = {
     applyPrReviewIntake(v);
     push('prReviewIntake', store.get().prReviewIntake);
   },
-  setPreapprovalDefaults(v) {
+  // The daemon enforces these, so a value it refused must not linger locally looking saved.
+  async setPreapprovalDefaults(v) {
+    const prev = store.get().preapprovalDefaults;
     applyPreapprovalDefaults(v);
-    push('preapprovalDefaults', store.get().preapprovalDefaults);
+    const ok = await push('preapprovalDefaults', v);
+    if (!ok) applyPreapprovalDefaults(prev);
+    return ok;
   },
   applyLaunchConcurrency,
   setAcceptEdits(v) {

@@ -140,15 +140,6 @@ html[data-layout="desktop"] .lib-search { background: transparent; border: 0; pa
   gap: 6px;
 }
 
-/* Actions now use primitives.css's .o-btn + role variants directly (§7.1) —
-   this surface's disabled treatment is the one thing .o-btn itself doesn't
-   define, scoped to this surface's action containers only. */
-.lib-detail-actions .o-btn:disabled,
-.lib-edit-actions .o-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
 /* ── Pending edit / proposal review card ─────────────────────────────── */
 .lib-edit-card { padding: 14px 16px; margin-bottom: 16px; border-left: 3px solid var(--accent); }
 .lib-edit-status { font-size: 13px; color: var(--text-mute); }

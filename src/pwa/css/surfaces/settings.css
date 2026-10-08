@@ -69,6 +69,10 @@ html[data-layout="desktop"] .o-frame-list.settings-nav-col {
 .settings-block { padding: var(--gap-4); }
 .settings-loading { color: var(--text-dim); font-size: 12px; }
 .settings-note { color: var(--text-dim); font-size: 12px; margin: 8px 0 0; }
+.settings-save-row { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+.settings-save-status { font-size: 12px; color: var(--text-dim); }
+.settings-save-status[data-state="saved"] { color: var(--ok); }
+.settings-save-status[data-state="failed"] { color: var(--danger); }
 
 .settings-preapprovals-legend { display: grid; grid-template-columns: 140px 1fr; gap: 6px 16px; margin: 0; font-size: 13px; }
 .settings-preapprovals-legend dt { color: var(--text); }

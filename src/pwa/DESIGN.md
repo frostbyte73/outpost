@@ -378,6 +378,26 @@ Parallel groups bracket with a second `--accent-2-soft` rail and a nano mono
 `∥ parallel` tag. Failure reasons render as a `--danger` left-rail callout *above*
 the retry affordance — always say why before offering the fix.
 
+### 7.8 Every action answers
+
+Every control the operator can press must visibly respond — before, during, and
+after. A button that looks pressable and does nothing observable is a bug, even
+if the work happened.
+
+- **Before:** an action that has nothing to do is `disabled`, not live. A Save
+  with no unsaved changes is greyed out; it lights up the moment an edit makes
+  it meaningful, and goes grey again if the edit is undone.
+- **During:** anything that waits on the daemon says so in place — the label
+  turns to `Saving…` / `Starting…` and the control disables so it can't be
+  double-fired.
+- **After:** the result is stated where the operator is looking, in words —
+  `Saved` (`--ok`) or what went wrong (`--danger`). Report the outcome the daemon
+  confirmed, not the one the client assumed; on failure, keep the operator's
+  input so they can retry.
+
+A primary-styled button is a promise that something happens. If you can't say
+what the operator will see after clicking it, the button isn't finished.
+
 ---
 
 ## 8. Motion
@@ -435,6 +455,7 @@ they read as instrument output.
 - Communicate depth with hairlines; use `--shadow-pop` only on floating overlays.
 - Use the left-edge rail to mark a row/card's state.
 - Reference tokens, always. Never a raw hex or rgba in a component.
+- Give every action a visible response: disabled when moot, in-progress while waiting, a stated result after (§7.8).
 
 **Don't**
 - Don't paint the screen with accent because it's the brand color.
@@ -444,6 +465,7 @@ they read as instrument output.
 - Don't put a shadow on an in-plane card or row.
 - Don't animate for decoration; don't pulse anything that isn't live.
 - Don't copy a legacy component's shape forward — migrate it to §7.
+- Don't ship a live button that, when there's nothing to do, does nothing.
 
 ---
 

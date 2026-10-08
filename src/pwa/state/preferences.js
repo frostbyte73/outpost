@@ -14,22 +14,28 @@ export function register({ key, apply, current }) {
 
 let pending = {};
 let timer = null;
+let waiters = [];
 const DEBOUNCE_MS = 400;
 
 // Record a user-initiated preference change; coalesce into one debounced PATCH.
+// Resolves true once the daemon accepted the batch, false if it didn't.
 export function push(key, value) {
   pending[key] = value;
   if (timer) clearTimeout(timer);
   timer = setTimeout(flush, DEBOUNCE_MS);
+  return new Promise((resolve) => waiters.push(resolve));
 }
 
 async function flush() {
   timer = null;
   const patch = pending;
+  const settle = waiters;
   pending = {};
-  if (!Object.keys(patch).length) return;
+  waiters = [];
+  let ok = true;
   try { await preferencesApi.patch(patch); }
-  catch { /* offline — the mirror already holds the local value */ }
+  catch { ok = false; /* offline — the mirror already holds the local value */ }
+  for (const resolve of settle) resolve(ok);
 }
 
 // Boot reconcile: daemon wins for keys it has; seed it from local for keys it
