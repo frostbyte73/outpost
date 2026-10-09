@@ -156,6 +156,18 @@ describe('shouldDeliver', () => {
     expect(shouldDeliver(step({ state: 'gate_pending_approval', inbox: [ci] }), false, 500)).toBe(false);
     expect(shouldDeliver(step({ state: 'gate_pending_approval', inbox: [msg] }), false, 500)).toBe(true);
   });
+
+  // CS-2068: a gate asking whether to merge sat for hours after the PR merged by hand.
+  it('delivers a settled PR through a gate, which the merge or close makes moot', () => {
+    const settled = (prState: 'open' | 'merged' | 'closed') => step({
+      state: 'gate_pending_approval',
+      inbox: [ext(['pr-state'], `PR ${prState}`)],
+      pr: { prUrl: 'u', prState } as OrchestratedStep['pr'],
+    });
+    expect(shouldDeliver(settled('merged'), false, 500)).toBe(true);
+    expect(shouldDeliver(settled('closed'), false, 500)).toBe(true);
+    expect(shouldDeliver(settled('open'), false, 500)).toBe(false);
+  });
 });
 
 // A reviewer leaving four comments over two minutes is one piece of news, not four rounds. The

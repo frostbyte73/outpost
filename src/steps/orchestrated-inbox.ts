@@ -67,13 +67,18 @@ export function externalHoldUntil(step: OrchestratedStep, now: number): number |
   return until > now ? until : undefined;
 }
 
+function prSettled(step: OrchestratedStep): boolean {
+  return (step.pr?.prState === 'merged' || step.pr?.prState === 'closed')
+    && step.inbox.some((i) => i.kind === 'external' && i.events.includes('pr-state'));
+}
+
 export function shouldDeliver(step: OrchestratedStep, sessionWorking: boolean, now: number): boolean {
   if (sessionWorking) return false;
   if (step.inbox.length === 0) return false;
   if (step.state === 'resolved' || step.state === 'failed') return false;
-  // A gated step is the user's turn, not the controller's — except that a message may
-  // be the instruction to abandon the gate entirely.
-  if (step.state === 'gate_pending_approval') return hasUserMessage(step);
+  // A gated step is the user's turn, not the controller's — except that a message may be the
+  // instruction to abandon the gate, and a merged or closed PR leaves the gate nothing to decide
+  if (step.state === 'gate_pending_approval') return hasUserMessage(step) || prSettled(step);
   if (hasUserMessage(step)) return true;
   if (!waitSatisfied(step, now)) return false;
   return externalHoldUntil(step, now) === undefined;
@@ -89,8 +94,8 @@ export function drainForDelivery(step: OrchestratedStep): { step: OrchestratedSt
       lastDelivered: items,
       waitingOn: undefined,
       state: 'running',
-      // The only delivery a gated step accepts is a user message abandoning the gate
-      // (shouldDeliver). The gate goes with it — a `running` step carrying a `gate` renders
+      // The only deliveries a gated step accepts abandon the gate (shouldDeliver). The gate
+      // goes with it — a `running` step carrying a `gate` renders
       // Approve/Decline buttons that resolveGate refuses to act on.
       gate: undefined,
       roundsSpent: step.roundsSpent + 1,
