@@ -184,6 +184,7 @@ html[data-layout="desktop"] .o-sidebar.is-collapsed .o-usage { display: none; }
    shows it. */
 html[data-layout="desktop"] .o-sidebar-item[hidden] { display: none; }
 html[data-layout="desktop"] .o-sidebar-item.is-paused .o-sidebar-icon { color: var(--warn); opacity: 1; }
+html[data-layout="desktop"] .o-sidebar-update { color: var(--accent); }
 
 /* ── Frame: list · detail · context ──────────────────────────────────── */
 html[data-layout="desktop"] .o-frame {

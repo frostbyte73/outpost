@@ -177,6 +177,10 @@ install/install.sh
 
 This writes `~/Library/LaunchAgents/local.outpost.$USER.plist`, loads it, and prints the pid on success. The daemon starts at every login and auto-restarts on crash. Logs land in `~/Library/Logs/outpost.{log,err.log}`. It discovers every project under `~/.claude/projects/` at startup and keeps its own registry of added repos, so there's no "pick one workspace" step.
 
+### Updates
+
+Outpost checks `origin/main` once a day. When there are new commits, an **Update available** link appears in the sidebar (on mobile, the header). It opens **Settings › Updates**, which has **Update now** and **Pull updates automatically**. An update fast-forwards your checkout, runs `npm ci` if `package-lock.json` changed, and restarts the daemon once no session is mid-turn. Updating is disabled while the checkout is off `main`, has uncommitted changes, or has local commits, and the restart only happens under the LaunchAgent / systemd service (`npm start` pulls, then asks you to restart).
+
 ### Running on Linux / WSL2
 
 On Linux the same `install/install.sh` installs a systemd **user** service (`~/.config/systemd/user/outpost.service`) instead of a LaunchAgent, and enables lingering so it runs from boot rather than from your first login. Logs go to the journal: `journalctl --user -u outpost -f`. Also install `expect` (`sudo apt install expect`) — the PWA's Claude / MCP login flows drive the CLI through it.

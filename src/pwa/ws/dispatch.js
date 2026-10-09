@@ -499,6 +499,10 @@ const broadcastHandlers = {
     import('../state/user-prs.js').then(({ userPrs }) => userPrs.applyWsEvent(msg.snapshot));
   },
 
+  update_status(msg) {
+    import('../state/update.js').then(({ updateStore }) => updateStore.applyWsEvent(msg.status));
+  },
+
   run_appended(msg) {
     import('../state/runs.js').then(({ runs }) => runs.applyWsAppend(msg.run));
   },

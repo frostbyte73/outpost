@@ -32,6 +32,7 @@ export const SETTINGS_SECTIONS = [
     label: 'Daemon',
     items: [
       { key: 'tailscale', label: 'Tailscale', icon: '⬡' },
+      { key: 'updates', label: 'Updates', icon: '⇡' },
       { key: 'health', label: 'Health & logs', icon: '◔' },
       { key: 'advanced', label: 'Advanced', icon: '⚙' },
     ],
@@ -206,4 +207,24 @@ export function improverAgreementRows(a) {
     ['Fails you approved', String(a.falseFails)],
     ['Spent', `$${a.spentUsd.toFixed(2)}`],
   ];
+}
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+// One-line summary of GET /api/update for the Updates section.
+export function updateStatusLine(s) {
+  if (!s) return 'Loading…';
+  if (s.phase === 'checking') return 'Checking for updates…';
+  if (s.phase === 'applying') return 'Pulling the latest main…';
+  if (s.phase === 'restart-pending') {
+    if (!s.supervised) return `Updated to ${s.current} — restart Outpost to apply`;
+    return s.waitingOn
+      ? `Updated to ${s.current} — restart queued behind ${plural(s.waitingOn, 'running task')}`
+      : `Updated to ${s.current} — restarting…`;
+  }
+  if (s.error) return s.error;
+  if (s.checkedAt == null) return 'Not checked yet';
+  if (s.blocked) return `Can't update: ${s.blocked}`;
+  if (s.behind > 0) return `${plural(s.behind, 'commit')} behind — ${s.latestSubject}`;
+  return 'Up to date';
 }

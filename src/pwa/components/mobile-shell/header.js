@@ -12,6 +12,8 @@ import { usageTier, clampPct, usagePopoverHtml, queueActionFor, heldWindow } fro
 import { fmtRemaining } from '../../utils/formatting.js';
 import { noteSheetOpen, noteSheetClose, pinSheetBelowHeader, makeSheetDismissible } from '../sheet-utils.js';
 import { escapeHtml } from '../../util.js';
+import { nav } from '../../state/nav.js';
+import { updateStore, updateAvailable } from '../../state/update.js';
 
 // `held`: this window is what's keeping the job queue back — the row takes the paused --warn.
 function usageBarRowHtml(staticLabel, pct, resetsAt, held) {
@@ -101,6 +103,23 @@ function mountUsageSlot(slot) {
   return () => { unsubUsage(); unsubWork(); };
 }
 
+// Shown beside the usage widget on every main header while new commits are waiting on main.
+function mountUpdatePill(btn) {
+  const paint = () => { btn.hidden = !updateAvailable(updateStore.get().status); };
+  btn.addEventListener('click', () => nav.select('settings', 'updates'));
+  void updateStore.ensureLoaded();
+  paint();
+  return updateStore.subscribe(paint);
+}
+
+function mountMainActions(header) {
+  const unsubUsage = mountUsageSlot(header.querySelector('#m-usage-slot'));
+  const unsubUpdate = mountUpdatePill(header.querySelector('.m-update-pill'));
+  return () => { unsubUsage(); unsubUpdate(); };
+}
+
+const UPDATE_PILL = '<button type="button" class="m-update-pill" hidden>Update</button>';
+
 // ── list-root: Cockpit's home shape ─────────────────────────────────────
 export function renderListRoot(header, { greeting, sub }) {
   header.innerHTML = `
@@ -108,9 +127,9 @@ export function renderListRoot(header, { greeting, sub }) {
       <div class="m-greet">${escapeHtml(greeting)}</div>
       <div class="m-sub">${escapeHtml(sub)}</div>
     </div>
-    <div class="h-actions" id="m-usage-slot"></div>
+    <div class="h-actions">${UPDATE_PILL}<div id="m-usage-slot"></div></div>
   `;
-  return mountUsageSlot(header.querySelector('#m-usage-slot'));
+  return mountMainActions(header);
 }
 
 // ── list: Tracked / Sessions / Schedules / More-root / library screens ─────
@@ -124,11 +143,11 @@ export function renderList(header, { title, sub, onSearch, onSettings }) {
       <div class="m-greet">${escapeHtml(title)}</div>
       ${sub ? `<div class="m-sub">${escapeHtml(sub)}</div>` : ''}
     </div>
-    <div class="h-actions">${icons}<div id="m-usage-slot"></div></div>
+    <div class="h-actions">${icons}${UPDATE_PILL}<div id="m-usage-slot"></div></div>
   `;
   header.querySelector('[data-action="search"]')?.addEventListener('click', () => onSearch?.());
   header.querySelector('[data-action="settings"]')?.addEventListener('click', () => onSettings?.());
-  return mountUsageSlot(header.querySelector('#m-usage-slot'));
+  return mountMainActions(header);
 }
 
 // ── session: live transcript screen ────────────────────────────────────────

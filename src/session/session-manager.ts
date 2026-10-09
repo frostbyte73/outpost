@@ -282,6 +282,12 @@ export class SessionManager {
     return this.active.has(sessionId) && this.working.has(sessionId);
   }
 
+  workingCount(): number {
+    let n = 0;
+    for (const id of this.working.keys()) if (this.active.has(id)) n++;
+    return n;
+  }
+
   // When the in-flight turn started, or null if the session isn't working. Lets a
   // client that attached mid-turn show a truthful elapsed time instead of restarting
   // the clock at whatever moment it happened to reconnect.

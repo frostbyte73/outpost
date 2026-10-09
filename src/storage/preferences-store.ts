@@ -84,6 +84,11 @@ export class PreferencesStore {
     return (this.get() as { improverAutoApply?: unknown }).improverAutoApply === true;
   }
 
+  // Pulling main restarts the daemon with nobody looking, so absent reads as off.
+  getAutoUpdate(): boolean {
+    return (this.get() as { autoUpdate?: unknown }).autoUpdate === true;
+  }
+
   // Settings-level pre-approvals under every job's own. Anything unparseable reads as gated.
   getPreapprovalDefaults(): Preapprovals | undefined {
     const parsed = parsePreapprovals((this.get() as { preapprovalDefaults?: unknown }).preapprovalDefaults);

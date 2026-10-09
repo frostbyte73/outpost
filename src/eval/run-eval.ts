@@ -193,10 +193,15 @@ export async function runEval(start: EvalRecord, deps: RunEvalDeps, signals: Eva
 export class EvalQueue {
   private open!: () => void;
   private tail: Promise<void> = new Promise((resolve) => { this.open = resolve; });
+  private queued = 0;
 
   start(): void { this.open(); }
 
+  get pending(): number { return this.queued; }
+
   enqueue(job: () => Promise<void>): void {
-    this.tail = this.tail.then(job).catch((e) => console.warn(`[eval] ${(e as Error).message}`));
+    this.queued++;
+    this.tail = this.tail.then(job).catch((e) => console.warn(`[eval] ${(e as Error).message}`))
+      .finally(() => { this.queued--; });
   }
 }

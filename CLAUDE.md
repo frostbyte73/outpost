@@ -158,7 +158,7 @@ src/
   push-{keys,sender,subscriptions}.ts
 
   routes/                # HTTP route factories: registerXRoutes(server, deps)
-    {git,jobs,sessions,projects,push,runs,schedules,meta,util,actions,preferences}.ts
+    {git,jobs,sessions,projects,push,runs,schedules,meta,util,actions,preferences,update}.ts
     action-revisions.ts, schedule-edits.ts
   session/               # session lifecycle
     session-{manager,store}.ts, claude-proc.ts, stream-json.ts, event-log.ts
@@ -190,6 +190,7 @@ src/
     scheduler.ts, schedules-store.ts, guards.ts, routing.ts, types.ts, wiring.ts
     headroom.ts, token-scheduler.ts  # opportunistic firing off spare 5h/7d token capacity
     native-handlers.ts, script-runner.ts, schedule-envelope.ts, setup-schedules.ts
+  update/                # updater.ts: daily fetch of origin/main, ff-only pull, restart once no session is mid-turn
   storage/               # persisted stores
     {journal,project-registry,actions,runs,preferences}-store.ts, runs-capture.ts
     stop-hook-tracker.ts, recurrence-tracker.ts, job-event-log.ts, jobs-migrate.ts

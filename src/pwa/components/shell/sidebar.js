@@ -8,6 +8,7 @@ import { usageTier, clampPct, usagePopoverHtml, queueActionFor, queueToggle, que
 import { fmtRemaining } from '../../utils/formatting.js';
 import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { needsYou, isTerminalJob } from '../../vm/work-predicates.js';
+import { updateStore, updateAvailable } from '../../state/update.js';
 
 // Sidebar taxonomy per the redesign spec: Cockpit / Tracked / Sessions /
 // Schedules, a Library group (Skills / Runs history), Settings pinned at the
@@ -57,6 +58,10 @@ export function mountSidebar(root) {
     <div class="o-sidebar-section">Library</div>
     <nav class="o-sidebar-lib" aria-label="Library"></nav>
     <div class="o-sidebar-foot">
+      <button type="button" class="o-sidebar-item o-sidebar-update" id="sb-update" hidden>
+        <span class="o-sidebar-icon">${iconUpdate()}</span>
+        <span class="o-sidebar-label">Update available</span>
+      </button>
       <button type="button" class="o-sidebar-item" id="sb-settings" data-surface="settings">
         <span class="o-sidebar-icon">${iconSettings()}</span>
         <span class="o-sidebar-label">Settings</span>
@@ -86,6 +91,9 @@ export function mountSidebar(root) {
   for (const item of TOP_ITEMS) top.appendChild(buildItem(item));
   for (const item of LIBRARY_ITEMS) lib.appendChild(buildItem(item));
   root.querySelector('#sb-settings').addEventListener('click', () => nav.setSurface('settings'));
+  const updateBtn = root.querySelector('#sb-update');
+  updateBtn.addEventListener('click', () => nav.select('settings', 'updates'));
+  const paintUpdate = () => { updateBtn.hidden = !updateAvailable(updateStore.get().status); };
 
   const applyActive = () => {
     const cur = nav.get().surface;
@@ -145,6 +153,7 @@ export function mountSidebar(root) {
   paintCounts();
   paintUsage();
   paintQueue();
+  paintUpdate();
 
   const unsubNav = nav.subscribe(() => { applyActive(); applyCollapsed(); });
   const unsubApprovals = approvals.subscribe(paintCounts);
@@ -152,15 +161,17 @@ export function mountSidebar(root) {
   const unsubSessions = sessions.subscribe(paintCounts);
   const unsubSchedules = schedulesStore.subscribe(paintCounts);
   const unsubUsage = usage.subscribe(paintUsage);
+  const unsubUpdate = updateStore.subscribe(paintUpdate);
   const teardownPopover = installUsagePopover(root);
   // Theme, light/dark, and a system-mode flip all land as one of these two attributes.
   const themeObs = new MutationObserver(() => paintFavicon(root));
   themeObs.observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme', 'data-mode'] });
   schedulesStore.load();
+  void updateStore.ensureLoaded();
 
   return () => {
     unsubNav(); unsubApprovals(); unsubWork(); unsubSessions(); unsubSchedules();
-    unsubUsage(); teardownPopover(); themeObs.disconnect();
+    unsubUsage(); unsubUpdate(); teardownPopover(); themeObs.disconnect();
   };
 }
 
@@ -306,4 +317,5 @@ function iconSessions() { return svg('<rect x="4" y="5" width="16" height="4" rx
 function iconSchedules(){ return svg('<circle cx="12" cy="12" r="8"/><path d="M12 8v4l3 2"/>'); }
 function iconSkills()   { return svg('<path d="M12 3l2 6 6 2-6 2-2 6-2-6-6-2 6-2z"/>'); }
 function iconRuns()     { return svg('<circle cx="12" cy="12" r="8"/><path d="M8 12h8"/>'); }
+function iconUpdate() { return svg('<path d="M12 19V5M5 12l7-7 7 7"/>'); }
 function iconSettings() { return svg('<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.2 4.2l2.1 2.1M17.7 17.7l2.1 2.1M2 12h3M19 12h3M4.2 19.8l2.1-2.1M17.7 6.3l2.1-2.1"/>'); }

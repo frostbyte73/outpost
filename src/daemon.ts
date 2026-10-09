@@ -65,6 +65,8 @@ import { runScript } from './schedules/script-runner.js';
 import { homeOrKnownCwd } from './git/known-cwd.js';
 import { PreferencesStore } from './storage/preferences-store.js';
 import { registerPreferencesRoutes } from './routes/preferences.js';
+import { registerUpdateRoutes } from './routes/update.js';
+import { Updater, isSupervised } from './update/updater.js';
 import { registerEvalsRoutes } from './routes/evals.js';
 import { RunsStore } from './storage/runs-store.js';
 import { ActionRunsStore, type ActionRunRecord } from './storage/action-runs-store.js';
@@ -120,6 +122,8 @@ mkdirSync(RUNTIME_DIR, { recursive: true });
 const APPROVAL_TIMEOUT_MS = config.approvalTimeoutMs;
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
+// Read before main() exports its own OUTPOST_API_URL
+const SUPERVISED = isSupervised();
 const REPO_ACTIONS_DIR = join(bundledRepoDir(SRC_DIR), 'actions');
 const PWA_DIR = join(SRC_DIR, 'pwa');
 // Runtime allowlist is gitignored; first start copies from allowlist.default.json,
@@ -1172,6 +1176,16 @@ async function main() {
   const evalStore = new EvalStore(join(RUNTIME_DIR, 'evals'));
   const EVAL_SCRATCH_DIR = join(RUNTIME_DIR, 'eval-scratch');
   const evalQueue = new EvalQueue();
+  const updater = new Updater({
+    repoDir: join(SRC_DIR, '..'),
+    supervised: SUPERVISED,
+    getAuto: () => preferencesStore.getAutoUpdate(),
+    setAuto: (v) => { preferencesStore.merge({ autoUpdate: v }); },
+    busyCount: () => manager.workingCount() + evalQueue.pending,
+    restart: () => shutdown('update'),
+    onChange: (status) => { try { notifyAll({ type: 'update_status', status }); } catch { /* pre-startup */ } },
+  });
+  registerUpdateRoutes(server, { updater });
   const judge = claudeJudge();
   const replayDeps = {
     sessions: evalSessions,
@@ -1516,10 +1530,11 @@ async function main() {
   // The timer is the backstop if a close hangs; SIGKILL on the daemon still skips all of this,
   // which is why the pretool route fails closed on its own.
   let shuttingDown = false;
-  const shutdown = (signal: NodeJS.Signals): void => {
+  const shutdown = (signal: NodeJS.Signals | 'update'): void => {
     if (shuttingDown) return;
     shuttingDown = true;
     setTimeout(() => process.exit(0), 8000).unref();
+    updater.stop();
     evalHalt.abort();
     killEvalChildren();
     void manager.closeAll('shutdown').then((n) => {
@@ -1529,6 +1544,7 @@ async function main() {
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
+  updater.start();
   if (config.httpPort !== null) {
     console.log(`[daemon] listening on http://127.0.0.1:${config.httpPort}`);
   }

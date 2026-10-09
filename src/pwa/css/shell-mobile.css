@@ -84,6 +84,17 @@ html[data-layout="mobile"] #header .h-actions {
   gap: 4px;
   flex: none;
 }
+html[data-layout="mobile"] #header .m-update-pill {
+  border: 0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+}
+html[data-layout="mobile"] #header .m-update-pill[hidden] { display: none; }
 html[data-layout="mobile"] #header .h-icon {
   width: 40px;
   height: 40px;

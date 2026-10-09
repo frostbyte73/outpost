@@ -32,6 +32,8 @@ import { renderHotkeys } from './hotkeys.js';
 import { renderPrReviews } from './pr-reviews.js';
 import { renderPreapprovalDefaults } from './preapprovals.js';
 import { renderImprover } from './improver.js';
+import { renderUpdates } from './updates.js';
+import { updateStore, updateAvailable } from '../../state/update.js';
 
 const MODEL_LABELS = { default: 'Daemon default', fable: 'Fable', opus: 'Opus', sonnet: 'Sonnet', haiku: 'Haiku' };
 // Shell launchers, not app names — each is what that editor installs on PATH for exactly
@@ -62,6 +64,7 @@ export function renderList(mount) {
       mcp: mcpHasWarning(grantsStore.get()),
       permissions: pendingHasWarning(grantsStore.get()),
       'claude-account': claudeAuthHasWarning(grantsStore.get()),
+      updates: updateAvailable(updateStore.get().status),
     };
     const groups = settingsSections(warnFlags, isDesktop());
     mount.innerHTML = groups.map((g) => `
@@ -88,6 +91,7 @@ export function renderList(mount) {
   paint();
   const unsubNav = nav.subscribe(paint);
   const unsubGrants = grantsStore.subscribe(paint);
+  const unsubUpdate = updateStore.subscribe(paint);
   // Kick off the lazy loads whose results feed the MCP, Permissions and Claude account
   // warn-dots as soon as the surface opens, not only once the user drills into one of them.
   void grantsStore.ensureMcpLoaded();
@@ -111,7 +115,7 @@ export function renderList(mount) {
     });
   }
 
-  return () => { unsubNav(); unsubGrants(); };
+  return () => { unsubNav(); unsubGrants(); unsubUpdate(); };
 }
 
 // ── Detail pane ────────────────────────────────────────────────────────
@@ -402,6 +406,7 @@ const SECTION_RENDERERS = {
   'claude-account': renderClaudeAuth,
   notifications: renderNotifications,
   tailscale: renderTailscale,
+  updates: renderUpdates,
   health: renderHealth,
   advanced: renderAdvanced,
   hotkeys: renderHotkeys,

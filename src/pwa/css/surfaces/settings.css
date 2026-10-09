@@ -798,3 +798,7 @@ html[data-layout="mobile"] .settings-detail-lede { margin-top: 2px; }
 .hk-chip { min-width: 3.5em; text-align: center; }
 .hk-reset:disabled { opacity: 0.5; cursor: not-allowed; }
 .hk-row-error { grid-column: 1 / -1; color: var(--danger); font-size: 12px; margin-top: 2px; }
+
+.settings-check { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
+.settings-check input { margin: 0; accent-color: var(--accent); }
+.settings-row--start { justify-content: flex-start; }
