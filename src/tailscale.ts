@@ -31,8 +31,15 @@ function resolveCli(): string {
   return CLI_CANDIDATES.find((p) => existsSync(p)) ?? 'tailscale';
 }
 
+// The App Store binary is both the GUI and the CLI, and guesses which from terminal
+// env (TERM, SHLVL, ...). Under launchd there is none, so it tries to launch the GUI
+// and fails with "Tailscale GUI failed to start (CLIError error 3)".
 function run(bin: string, args: string[]): string {
-  return execFileSync(bin, args, { encoding: 'utf8', timeout: CLI_TIMEOUT_MS }).trim();
+  return execFileSync(bin, args, {
+    encoding: 'utf8',
+    timeout: CLI_TIMEOUT_MS,
+    env: { ...process.env, TAILSCALE_BE_CLI: '1' },
+  }).trim();
 }
 
 // The sandboxed App Store CLI rejects an absolute --cert-file and redirects a relative
