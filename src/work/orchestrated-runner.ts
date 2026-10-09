@@ -47,13 +47,17 @@ function stamp(host: OrchestratedHost, item: NewItem): InboxItem {
 }
 
 function recordProgress(s: OrchestratedStep, p: ProgressPayload): OrchestratedStep {
+  const specChanged = p.artifacts?.spec !== undefined && p.artifacts.spec !== s.artifacts?.spec;
+  // Merge, don't replace: one round must not clobber an earlier round's artifact.
+  const artifacts = p.artifacts ? { ...(s.artifacts ?? {}), ...p.artifacts } : s.artifacts;
+  // A plan written against the old spec would skip the new spec's gate and plan round
+  if (specChanged && artifacts && p.artifacts?.implPlan === undefined) delete artifacts.implPlan;
   return {
     ...s,
     ...(p.memo !== undefined ? { memo: p.memo } : {}),
     ...(p.phase !== undefined ? { phase: p.phase } : {}),
-    // Merge, don't replace: one round must not clobber an earlier round's artifact.
-    ...(p.artifacts ? { artifacts: { ...(s.artifacts ?? {}), ...p.artifacts } } : {}),
-    ...(p.artifacts?.spec !== undefined && p.artifacts.spec !== s.artifacts?.spec ? { specApprovedAt: undefined } : {}),
+    ...(p.artifacts ? { artifacts } : {}),
+    ...(specChanged ? { specApprovedAt: undefined } : {}),
   };
 }
 

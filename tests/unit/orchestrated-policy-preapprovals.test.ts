@@ -107,6 +107,14 @@ describe('specApprovedAt', () => {
     expect(h.get().specApprovedAt).toBeUndefined();
   });
 
+  it('is stamped by approving a redrafted spec after a plan existed', () => {
+    const h = host({ ...base, artifacts: { spec: 'S', implPlan: 'P' }, specApprovedAt: 5 });
+    applyMove(h.host, 'j', 's1', { artifacts: { spec: 'S2' }, next: { kind: 'gate', draft: 'S2', question: 'ok?' } });
+    expect(h.get().artifacts).toEqual({ spec: 'S2' });
+    resolveGate(h.host, 'j', 's1', true);
+    expect(h.get().specApprovedAt).toBe(77);
+  });
+
   it('survives a round that leaves the spec untouched', () => {
     const h = host({ ...base, artifacts: { spec: 'S' }, specApprovedAt: 5 });
     applyMove(h.host, 'j', 's1', { artifacts: { implPlan: 'P' }, next: { kind: 'self-round', action: 'code.implement' } });
