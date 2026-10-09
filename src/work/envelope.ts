@@ -182,6 +182,8 @@ export interface OrchestratedEnvelope extends StepEnvelopeBase {
   pr?: PrFacts;
   preapprovals: EffectivePreapprovals;
   baseBranch?: string;
+  // The user's Settings reviewers, narrowed to those that exist in this repo's org
+  prReviewers?: string[];
   // resolveGate drops the gate-resolved marker from the inbox once delivered, so these are
   // the only durable record of what the user said to a voluntary `gate` move — approve
   // (gateApproved) and decline (gateFeedback) alike.

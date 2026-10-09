@@ -12,6 +12,7 @@ export interface ClassifyContext {
   baseBranch?: string;
   prNumber?: number;
   commentIds: ReadonlySet<number>;
+  reviewers?: readonly string[];
   // Read from the worktree by the daemon: an uncommitted merge of origin/<baseBranch> is in progress.
   mergeFromBase?: boolean;
 }
@@ -47,7 +48,7 @@ function parseFlags(args: string[], allowed: Record<string, boolean>): { flags: 
     const eq = a.indexOf('=');
     const name = eq === -1 ? a : a.slice(0, eq);
     const inline = eq === -1 ? undefined : a.slice(eq + 1);
-    if (!Object.hasOwn(allowed, name)) return null;
+    if (!Object.hasOwn(allowed, name) || flags.has(name)) return null;
     if (allowed[name]) {
       const v = inline ?? args[++i];
       if (v === undefined) return null;
@@ -92,13 +93,26 @@ function prCreateShape(rest: string[], ctx: ClassifyContext): Shape {
   const p = parseFlags(rest, {
     '--title': true, '-t': true, '--body': true, '-b': true, '--body-file': true, '-F': true,
     '--base': true, '-B': true, '--head': true, '-H': true, '--draft': false, '-d': false,
+    '--reviewer': true, '-r': true,
   });
   if (!p || p.positional.length) return { miss: 'unrecognised `gh pr create` flags' };
   const head = p.flags.get('--head') ?? p.flags.get('-H');
   const base = p.flags.get('--base') ?? p.flags.get('-B');
   if (head !== ctx.branch) return { miss: `--head must be ${ctx.branch}` };
   if (!ctx.baseBranch || base !== ctx.baseBranch) return { miss: `--base must be ${ctx.baseBranch ?? "the step's base branch"}` };
+  // gh accumulates repeated --reviewer values, so a second spelling must not hide behind the first
+  if (p.flags.has('--reviewer') && p.flags.has('-r')) return { miss: 'pass --reviewer once' };
+  const reviewer = p.flags.get('--reviewer') ?? p.flags.get('-r');
+  if (reviewer !== undefined && !sameReviewers(reviewer, ctx.reviewers ?? [])) {
+    return { miss: `--reviewer must be exactly ${ctx.reviewers?.join(',') || 'absent'} (Settings)` };
+  }
   return { setting: 'openPr', expects: [] };
+}
+
+function sameReviewers(flag: string, configured: readonly string[]): boolean {
+  const got = new Set(flag.split(',').map((r) => r.trim().toLowerCase()));
+  const want = new Set(configured.map((r) => r.toLowerCase()));
+  return got.size === want.size && [...want].every((r) => got.has(r));
 }
 
 function prCommentShape(rest: string[], ctx: ClassifyContext): Shape {

@@ -50,3 +50,17 @@ describe('preapprovalDefaults', () => {
     expect(store.getPreapprovalDefaults()).toBeUndefined();
   });
 });
+
+describe('prReviewers', () => {
+  it('stores logins and team slugs', async () => {
+    const { port, store } = await start();
+    expect(await patch(port, { prReviewers: ['livekit/core-services', 'alice'] })).toBe(200);
+    expect(store.getPrReviewers()).toEqual(['livekit/core-services', 'alice']);
+  });
+
+  it('refuses an entry gh would read as a flag', async () => {
+    const { port, store } = await start();
+    expect(await patch(port, { prReviewers: ['--repo=evil/x'] })).toBe(400);
+    expect(store.getPrReviewers()).toEqual([]);
+  });
+});

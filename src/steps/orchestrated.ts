@@ -3,6 +3,7 @@ import { shouldDeliver } from './orchestrated-inbox.js';
 import { currentDraftForRaiser, writeGateFor } from '../work/write-draft.js';
 import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
 import { effectivePreapprovals } from '../work/preapprovals.js';
+import { reviewersForCwd } from '../git/pr-reviewers.js';
 import type { StepHandler } from './types.js';
 
 function previousFindings(job: JobRecord, selfId: string) {
@@ -61,6 +62,9 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
     // different one — see currentDraftForRaiser.
     const boundAction = s.boundAction ?? s.controller;
     const writeGate = writeGateFor(currentDraftForRaiser(s, { kind: 'controller' }, boundAction));
+    const prReviewers = s.workspace.kind === 'writable'
+      ? reviewersForCwd(ctx.prReviewers?.() ?? [], s.workspace.repoCwd)
+      : [];
     return {
       boundAction,
       ...(actionCatalog ? { actionCatalog } : {}),
@@ -91,6 +95,7 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
       pr: s.pr,
       preapprovals: effectivePreapprovals(ctx.preapprovalDefaults?.(), job.preapprovals, s.preapprovals),
       ...(s.baseBranch ? { baseBranch: s.baseBranch } : {}),
+      ...(prReviewers.length ? { prReviewers } : {}),
       ...(s.gateApproved !== undefined ? { gateApproved: s.gateApproved } : {}),
       ...(s.gateFeedback !== undefined ? { gateFeedback: s.gateFeedback } : {}),
       job: {

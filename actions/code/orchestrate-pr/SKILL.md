@@ -59,6 +59,7 @@ cat "$OUTPOST_ENVELOPE"
 | `gateApproved` | `true` once the user has approved a `gate` of yours. Absent until then (§3). |
 | `preapprovals` | What the user pre-approved for this step: `spec` (`gate`/`auto`/`skip`), `push`, `openPr`, `replies`, `merge`, `syncBase`, and `landing` (`merged`/`approved`/`direct`). Always present; all-gated (`spec: "gate"`, every boolean `false`, `landing: "merged"`) is today's behaviour. See §3b. |
 | `baseBranch` | The branch your worktree was cut from — the `--base` of any PR you open, and the target of a `direct` landing. |
+| `prReviewers` | Reviewers the user set in Settings, already narrowed to this repo's org. Absent when none apply. Row 8 passes them as `--reviewer`. |
 | `gateFeedback` | Every note the user has attached to a gate, oldest first. |
 | `roundsSpent` | How many turns this attempt has taken. Informational — there is no cap. |
 | `boundAction`, `boundNote` | Which hat you are wearing this turn (§2). |
@@ -217,7 +218,8 @@ user like any other.
   message from `artifacts.commitMessage`, inline in the call's `files`) and
   `git push -u origin <branch>`.
 - **`openPr`** — row 8's `gh pr create` is approved for you. Keep `--head <branch>` and
-  `--base <baseBranch>` explicit and never pass `--repo`; anything else makes it a normal draft.
+  `--base <baseBranch>` explicit, never pass `--repo`, and pass `--reviewer` only as exactly
+  `prReviewers`; anything else makes it a normal draft.
 - **`replies`** — row 14's bound `code.reply-pr-comments` round posts without waiting.
 - **`merge`** — row 16's bound `code.merge-pr` round merges once the daemon re-reads the PR and
   finds it approved, green, mergeable, at the same head, with nothing unanswered.
@@ -389,6 +391,10 @@ mcp__outpost__submit_write_draft({
   calls: [{ label: "open PR", bash: "gh pr create --title \"<title>\" --body \"<body>\" --base <base> --head <branch>" }]
 })
 ```
+
+When the envelope carries `prReviewers`, append `--reviewer <prReviewers joined with ",">` —
+exactly that list, nothing added or dropped. Don't pick reviewers yourself; CODEOWNERS covers the
+rest.
 
 Write every value literally — no `$VAR`. If `writeGate.feedback` comes back non-empty (the
 user wants a different title/body — every round, oldest first), redraft addressing it. If the

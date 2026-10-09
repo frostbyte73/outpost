@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { parsePreapprovals } from '../work/preapprovals.js';
+import { isReviewerEntry } from '../git/pr-reviewers.js';
 import type { Preapprovals } from '../work/work-types.js';
 
 export type PreferencesBlob = Record<string, unknown>;
@@ -71,6 +72,11 @@ export class PreferencesStore {
           .map((r) => r.trim().toLowerCase()))]
       : [];
     return { repos, reviewRequested: o.reviewRequested === true };
+  }
+
+  getPrReviewers(): string[] {
+    const raw = (this.get() as { prReviewers?: unknown }).prReviewers;
+    return Array.isArray(raw) ? raw.filter(isReviewerEntry) : [];
   }
 
   // A passing improver eval rewrites SKILL.md with nobody looking, so absent reads as off.

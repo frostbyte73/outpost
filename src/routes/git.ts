@@ -11,6 +11,7 @@ import {
   gitDiscard, gitCreateBranch, gitOpenPr, gitFinalizeSquashMerge, gitFinalizeSquashToBranch,
   gitFinalizeAppendToBranch, gitRemoteBranchExists, gitSquashMergeToBase, gitCommitsSince, gitPrDraftContext } from '../git/git-ops.js';
 import { draftPrDescription } from '../git/pr-draft.js';
+import { reviewersForCwd } from '../git/pr-reviewers.js';
 import type { GitCommandResult } from '../git/git-ops.js';
 import { handleDiffRoute } from '../git/diff-endpoint.js';
 import { DEFAULT_EDITOR_COMMAND, openInEditor } from '../git/open-in-editor.js';
@@ -339,7 +340,7 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
     const payload = await readJsonObject<{ title?: string; body?: string; base?: string }>(req, res, { allowEmpty: true });
     if (!payload) return;
     engine.markPrOpening(m[1]!);
-    const result = await gitOpenPr(resolved.cwd, payload);
+    const result = await gitOpenPr(resolved.cwd, { ...payload, reviewers: reviewersForCwd(preferencesStore.getPrReviewers(), resolved.cwd) });
     engine.finishPrOpening(m[1]!, result.ok ? result.url : undefined);
     let status;
     try { status = await gitStatus(resolved.cwd); } catch { status = null; }
@@ -437,9 +438,10 @@ export function registerGitRoutes(server: Server, deps: GitRoutesDeps): void {
       const exists = await gitRemoteBranchExists(rec.worktreePath, payload.newBranch);
       // Only the squash path opens a PR; an append fast-forwards one that's already there.
       if (!exists) engine.markPrOpening(sessionId);
+      const reviewers = reviewersForCwd(preferencesStore.getPrReviewers(), rec.worktreePath);
       const result: GitCommandResult & { url?: string } = exists
-        ? await gitFinalizeAppendToBranch({ worktreePath: rec.worktreePath, branch: payload.newBranch, baseBranch })
-        : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, baseRef: diffBaseFor(rec), newBranch: payload.newBranch, message, ...(pr ? { pr } : {}) });
+        ? await gitFinalizeAppendToBranch({ worktreePath: rec.worktreePath, branch: payload.newBranch, baseBranch, reviewers })
+        : await gitFinalizeSquashToBranch({ worktreePath: rec.worktreePath, baseBranch, baseRef: diffBaseFor(rec), newBranch: payload.newBranch, message, reviewers, ...(pr ? { pr } : {}) });
       if (!exists) engine.finishPrOpening(sessionId, result.ok ? result.url : undefined);
       // The PR head moved (or a new PR opened) — nudge the watcher so the owning step's
       // controller learns of it without waiting on the hourly sweep.

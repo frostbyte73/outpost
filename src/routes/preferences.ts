@@ -2,6 +2,7 @@ import type { Server } from '../server.js';
 import type { PreferencesStore } from '../storage/preferences-store.js';
 import { readJsonBody } from './util.js';
 import { parsePreapprovals } from '../work/preapprovals.js';
+import { isReviewerEntry } from '../git/pr-reviewers.js';
 
 export interface PreferencesRoutesDeps {
   preferencesStore: PreferencesStore;
@@ -35,6 +36,12 @@ export function registerPreferencesRoutes(server: Server, deps: PreferencesRoute
     if (Object.prototype.hasOwnProperty.call(body, 'improverAutoApply') && typeof body.improverAutoApply !== 'boolean') {
       res.statusCode = 400;
       res.end('improverAutoApply must be a boolean');
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'prReviewers')
+      && !(Array.isArray(body.prReviewers) && body.prReviewers.every(isReviewerEntry))) {
+      res.statusCode = 400;
+      res.end('prReviewers must be a list of GitHub logins or org/team slugs');
       return;
     }
     const merged = preferencesStore.merge(body);

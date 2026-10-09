@@ -162,3 +162,23 @@ describe('prNumberOf', () => {
     expect(prNumberOf('https://github.com/livekit/egress/issues/3')).toBeUndefined();
   });
 });
+
+describe('gh pr create --reviewer', () => {
+  const create = (flags: string) => `gh pr create --title t --body b --base main --head deps/bump-ws ${flags}`;
+  const withTeam = ctx({ reviewers: ['livekit/core', 'alice'] });
+
+  it('covers exactly the configured reviewers, in any order or case', () => {
+    expect(classifyDraft([call(create('--reviewer alice,LiveKit/core'))], withTeam)).toMatchObject({ covered: true });
+    expect(classifyDraft([call(create('-r livekit/core,alice'))], withTeam)).toMatchObject({ covered: true });
+  });
+
+  it('does not cover a reviewer the user did not configure', () => {
+    expect(classifyDraft([call(create('--reviewer livekit/core,alice,bob'))], withTeam)).toMatchObject({ covered: false });
+    expect(classifyDraft([call(create('--reviewer alice'))], ctx())).toMatchObject({ covered: false });
+  });
+
+  it('does not cover a second reviewer flag hiding behind the first', () => {
+    expect(classifyDraft([call(create('--reviewer livekit/core,alice --reviewer bob'))], withTeam)).toMatchObject({ covered: false });
+    expect(classifyDraft([call(create('--reviewer livekit/core,alice -r bob'))], withTeam)).toMatchObject({ covered: false });
+  });
+});

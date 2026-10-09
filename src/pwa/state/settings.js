@@ -79,6 +79,13 @@ function loadPrReviewIntake() {
   } catch { return DEFAULT_PR_REVIEW_INTAKE; }
 }
 
+function loadPrReviewers() {
+  try {
+    const v = JSON.parse(localStorage.getItem('cr:prReviewers') ?? 'null');
+    return Array.isArray(v) && v.every((r) => typeof r === 'string') ? v : [];
+  } catch { return []; }
+}
+
 function loadPreapprovalDefaults() {
   try {
     const v = JSON.parse(localStorage.getItem('cr:preapprovalDefaults') ?? 'null');
@@ -96,6 +103,7 @@ const store = createStore({
   shellCommands: loadShellCommands(),
   improverAutoApply: loadImproverAutoApply(),
   prReviewIntake: loadPrReviewIntake(),
+  prReviewers: loadPrReviewers(),
   preapprovalDefaults: loadPreapprovalDefaults(),
   acceptEdits: false,
   modePopoverOpen: false,
@@ -167,6 +175,12 @@ function applyPrReviewIntake(v) {
   store.set((s) => ({ ...s, prReviewIntake: v }));
 }
 
+function applyPrReviewers(v) {
+  if (!Array.isArray(v) || !v.every((r) => typeof r === 'string')) return;
+  try { localStorage.setItem('cr:prReviewers', JSON.stringify(v)); } catch {}
+  store.set((s) => ({ ...s, prReviewers: v }));
+}
+
 // The daemon validates and enforces these; the mirror only seeds the Settings form and step cards.
 function applyPreapprovalDefaults(v) {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return;
@@ -183,6 +197,7 @@ register({ key: 'launchConcurrency', apply: applyLaunchConcurrency, current: () 
 register({ key: 'shellCommands', apply: applyShellCommands, current: () => store.get().shellCommands });
 register({ key: 'improverAutoApply', apply: applyImproverAutoApply, current: () => store.get().improverAutoApply });
 register({ key: 'prReviewIntake', apply: applyPrReviewIntake, current: () => store.get().prReviewIntake });
+register({ key: 'prReviewers', apply: applyPrReviewers, current: () => store.get().prReviewers });
 register({ key: 'preapprovalDefaults', apply: applyPreapprovalDefaults, current: () => store.get().preapprovalDefaults });
 
 export const settings = {
@@ -225,6 +240,13 @@ export const settings = {
   setPrReviewIntake(v) {
     applyPrReviewIntake(v);
     push('prReviewIntake', store.get().prReviewIntake);
+  },
+  async setPrReviewers(v) {
+    const prev = store.get().prReviewers;
+    applyPrReviewers(v);
+    const ok = await push('prReviewers', v);
+    if (!ok) applyPrReviewers(prev);
+    return ok;
   },
   // The daemon enforces these, so a value it refused must not linger locally looking saved.
   async setPreapprovalDefaults(v) {

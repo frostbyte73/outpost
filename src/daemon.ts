@@ -486,6 +486,7 @@ async function main() {
     governor: launchGovernor,
     writeActionMeta: (id, meta) => sessionStore.writeActionMeta(id, meta),
     preapprovalDefaults: () => preferencesStore.getPreapprovalDefaults(),
+    prReviewers: () => preferencesStore.getPrReviewers(),
     onDraftVerdict: (jobId, stepId, detail) => actionRunLedger.noteVerdict(jobId, stepId, detail),
   });
   const runsStore = new RunsStore(join(RUNTIME_DIR, 'runs.jsonl'));

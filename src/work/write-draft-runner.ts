@@ -39,6 +39,7 @@ export interface DraftHost {
   mergeReadiness?(jobId: string, stepId: string, prNumber: number, sha: string): Promise<string | undefined>;
   preapprovalDefaults?(): Preapprovals | undefined;
   mergingFromBase?(stepId: string, baseBranch: string): Promise<boolean>;
+  prReviewers?(repoCwd: string): string[];
   // Called before the verdict's own mutation, which is what the run ledger pairs it with.
   noteVerdict?(jobId: string, stepId: string, detail: DraftVerdictDetail): void;
 }
@@ -182,6 +183,7 @@ async function tryAutoApprove(host: DraftHost, jobId: string, stepId: string, dr
     branch: step.workspace.branch,
     baseBranch: step.baseBranch,
     mergeFromBase,
+    reviewers: host.prReviewers?.(step.workspace.repoCwd) ?? [],
     prNumber: prNumberOf(step.pr?.prUrl),
     commentIds: new Set((step.pr?.comments ?? []).flatMap((c) => c.commentId === undefined ? [] : [c.commentId])),
   });

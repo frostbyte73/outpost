@@ -56,6 +56,7 @@ import { readMergeReadiness } from './merge-readiness.js';
 import { clampToCeiling, describePreapprovals, effectivePreapprovals } from './preapprovals.js';
 import { runGh as defaultRunGh, type RunGh } from '../integrations/gh-cli.js';
 import { gitMergingFromBase } from '../git/git-ops.js';
+import { reviewersForCwd } from '../git/pr-reviewers.js';
 import {
   currentDraftForRaiser, matchPinnedCall, writeGateFor,
   type DraftRaisedBy, type PinnedCall, type WriteDraft,
@@ -210,6 +211,7 @@ export interface WorkEngineOpts {
   unresolvedGraceMs?: number;
   runGh?: RunGh;
   preapprovalDefaults?: () => Preapprovals | undefined;
+  prReviewers?: () => string[];
   onDraftVerdict?: (jobId: string, stepId: string, detail: DraftVerdictDetail) => void;
 }
 
@@ -541,6 +543,7 @@ export class WorkEngine {
       actionRegistry: opts.actionRegistry,
       isInteractive: (id) => opts.interactive?.isInteractive(id) ?? false,
       preapprovalDefaults: opts.preapprovalDefaults,
+      prReviewers: opts.prReviewers,
     };
   }
 
@@ -1582,6 +1585,7 @@ export class WorkEngine {
         this.opts.journalStore?.append({ action, jobId, stepId, outcome, lesson, at: this.ctx.now() }),
       mergeReadiness: (jobId, stepId, prNumber, sha) => this.mergeReadiness(jobId, stepId, prNumber, sha),
       preapprovalDefaults: () => this.opts.preapprovalDefaults?.(),
+      prReviewers: (cwd) => reviewersForCwd(this.opts.prReviewers?.() ?? [], cwd),
       noteVerdict: (jobId, stepId, detail) => this.opts.onDraftVerdict?.(jobId, stepId, detail),
       mergingFromBase: (stepId, base) => {
         const path = this.opts.worktreeManager.get(stepId)?.worktreePath;

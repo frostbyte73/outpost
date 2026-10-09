@@ -26,6 +26,7 @@ export interface HandlerCtx {
   // actionRegistry — a test ctx need not supply it, and absent reads as "on autopilot".
   isInteractive?: (sessionId: string) => boolean;
   preapprovalDefaults?: () => Preapprovals | undefined;
+  prReviewers?: () => string[];
 }
 
 export interface StepHandler<S extends Step> {
