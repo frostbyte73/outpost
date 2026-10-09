@@ -25,7 +25,7 @@ import { sessions } from '../../src/pwa/state/sessions.js';
 
 const SESSION = 'sess-impl';
 
-function job({ live = [], state = 'running', waitingOn = null as unknown, lastDelivered = [] as unknown[] }) {
+function job({ live = [], state = 'running', waitingOn = null as unknown, lastDelivered = [] as unknown[], pr = undefined as unknown, stalls = undefined as unknown }) {
   return {
     id: 'j1', title: 'Ship it', state: 'executing', source: 'manual',
     createdAt: 1, updatedAt: 100,
@@ -37,7 +37,9 @@ function job({ live = [], state = 'running', waitingOn = null as unknown, lastDe
       dispatches: [], inbox: [], drafts: [], artifacts: {},
       events: [{ kind: 'spawned', at: 1 }],
       workspace: { kind: 'writable', repoCwd: '/repo', branch: 'feat/x' },
+      pr,
     }],
+    stalls,
     live: { orchestrator: false, stepIds: live.length ? ['st1'] : [], sessionIds: live },
   };
 }
@@ -110,5 +112,32 @@ describe('inline feed trusts its own session stream over job liveness', () => {
 
     sessions.for(SESSION).stopThinking();
     expect(chipText(root)).toBe('⏸ Watching CI');
+  });
+});
+
+describe('the parked chip states what the facts say', () => {
+  const chip = () => root.querySelector('.inline-session-chip');
+
+  it('a green, approved PR reads as ready to merge, with the controller sentence as the tooltip', () => {
+    seed({
+      live: [], state: 'waiting', waitingOn: { reason: 'PR #2029 is ready to merge.' },
+      pr: { prUrl: 'https://github.com/o/r/pull/2029', prState: 'open', ciState: 'success', reviewState: 'approved' },
+    });
+    renderTrackedDetail(root, 'j1');
+    expect(chipText(root)).toBe('→ Ready to merge');
+    expect(chip()?.getAttribute('data-tone')).toBe('ok');
+    expect(chip()?.getAttribute('title')).toBe('PR #2029 is ready to merge.');
+  });
+
+  // session-mounts.js attaches the job's stall to the step that owns the stopped session.
+  it('a stalled session reads as stopped, not as resuming', () => {
+    seed({
+      live: [], state: 'running', lastDelivered: [{ id: 'i1', at: 1, kind: 'external' }],
+      stalls: [{ sessionId: SESSION, error: 'server_error', at: 1, stepId: 'st1' }],
+    });
+    renderTrackedDetail(root, 'j1');
+    expect(root.querySelector('.thinking-strip')).toBeNull();
+    expect(chipText(root)).toBe('! Stopped on an API error (server error)');
+    expect(chip()?.getAttribute('data-tone')).toBe('warn');
   });
 });

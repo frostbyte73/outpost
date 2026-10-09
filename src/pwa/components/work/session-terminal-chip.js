@@ -62,9 +62,10 @@ export function terminalChipVariant(step) {
 const GLYPH = { finished: '✓', failed: '✗', cancelled: '⊘', declined: '⊘' };
 const LABEL = { finished: 'Finished', failed: 'Failed', cancelled: 'Cancelled', declined: 'Declined' };
 
-function chipHtml(variant, text) {
+function chipHtml(variant, text, { tone = null, title = null } = {}) {
+  const attrs = (tone ? ` data-tone="${escapeHtml(tone)}"` : '') + (title ? ` title="${escapeHtml(title)}"` : '');
   return (
-    `<div class="inline-session-chip" data-variant="${escapeHtml(variant)}">` +
+    `<div class="inline-session-chip" data-variant="${escapeHtml(variant)}"${attrs}>` +
       `<span class="inline-session-chip-text">${escapeHtml(text)}</span>` +
     `</div>`
   );
@@ -83,15 +84,16 @@ export function renderTerminalChipHtml(step) {
 // isn't happening — so the feed states the status instead. Only orchestrated steps have one;
 // an action step's session going quiet means it's about to settle and take the terminal chip.
 //
-// `⏸` unconditionally rather than per-status: the glyph is answering "is this session
-// running", which is already false by the time this renders. That is also why this covers
-// ONLY the `parked` kind — a step that is mid-resume has work coming and must not wear a
-// pause glyph (see startingStripHtml).
+// The glyph and tone come from the step's facts (vm/tracked.js's statusOf): `→` ready to merge,
+// `✗` CI failing, `⏸` when nothing more specific applies. The controller's own sentence rides
+// along as the tooltip once a fact has taken the label. This covers ONLY the `parked` kind — a
+// step that is mid-resume has work coming and must not wear a resting glyph (see
+// startingStripHtml).
 export function renderIdleChipHtml(step) {
   if (!step || step.type !== 'orchestrated') return '';
-  const { statusLine, statusKind } = orchestratedRows(step);
+  const { statusLine, statusKind, statusGlyph, statusTone, statusDetail } = orchestratedRows(step);
   if (!statusLine || statusKind !== 'parked') return '';
-  return chipHtml('idle', `⏸ ${statusLine}`);
+  return chipHtml('idle', `${statusGlyph ?? '⏸'} ${statusLine}`, { tone: statusTone, title: statusDetail });
 }
 
 // The other half of "no transcript is streaming": work has been handed to this step and the

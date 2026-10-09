@@ -119,7 +119,9 @@ seededTest('renders the controller, phase, dispatches and the gate draft as sepa
   // would say "✓ Finished in 10m37s" rather than leaving a stale transcript tail up.
   await expect(ident.locator('.o-pill')).toHaveCount(0);
   const idleChip = step.locator('.inline-session-chip[data-variant="idle"]');
-  await expect(idleChip).toHaveText('⏸ PR open');
+  // The gate outranks the phase: the step is parked on the user, so that is its status.
+  await expect(idleChip).toHaveText('? Needs your approval');
+  await expect(idleChip).toHaveAttribute('data-tone', 'warn');
 
   // A controller writes its own status text, so it can be any length. The chip is the whole
   // message (unlike .inline-line, a truncated preview of a transcript that continues

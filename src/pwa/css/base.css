@@ -581,6 +581,10 @@ html[data-density="roomy"] {
 /* Parked, not running — the default rail above is --accent-2, which would claim a
    liveness that isn't true (DESIGN §10). Inert until the controller wakes. */
 .step-inline-session:has(.inline-session-chip[data-variant="idle"])      { box-shadow: inset 2px 0 0 var(--line); }
+/* A parked step whose facts carry a state (ready to merge, CI failing, a stall) takes that
+   state's colour on the rail and the chip; a plain wait stays neutral (DESIGN §9). */
+.step-inline-session:has(.inline-session-chip[data-variant="idle"][data-tone="ok"])   { box-shadow: inset 2px 0 0 var(--ok); }
+.step-inline-session:has(.inline-session-chip[data-variant="idle"][data-tone="warn"]) { box-shadow: inset 2px 0 0 var(--warn); }
 
 /* Live rail — a pulsing accent-coloured bar that sits precisely over the
    static rail while the thinking strip is present. Confined to the
@@ -758,6 +762,8 @@ html[data-density="roomy"] {
 .inline-session-chip[data-variant="finished"]  { color: var(--ok, var(--accent-2)); }
 .inline-session-chip[data-variant="failed"]    { color: var(--danger); }
 .inline-session-chip[data-variant="cancelled"] { color: var(--text-dim); }
+.inline-session-chip[data-variant="idle"][data-tone="ok"]   { color: var(--ok); }
+.inline-session-chip[data-variant="idle"][data-tone="warn"] { color: var(--warn); }
 
 .approval-reject-form {
   display: none;
