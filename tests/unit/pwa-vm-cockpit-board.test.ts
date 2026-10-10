@@ -118,11 +118,17 @@ describe('session rows', () => {
     expect(r.feeds).toHaveLength(1);
   });
 
-  it('your turn when alive and idle', () => {
+  it('your turn when alive and idle, with no feed so the idle reaper still applies', () => {
     const r = board({ projects: proj({ runState: 'background' }) }).sessions[0];
     expect(r.tone).toBe('you');
     expect(r.status.text).toBe('Your turn');
     expect(r.actions.map((a: any) => a.kind)).toEqual(['your-turn']);
+    expect(r.feeds).toEqual([]);
+  });
+
+  it('feeds a session holding a pending approval', () => {
+    const r = board({ projects: proj({ runState: 'background' }), pendingApprovals: [{ approvalId: 'p', sessionId: 'm', toolName: 'Bash' }] }).sessions[0];
+    expect(r.feeds).toHaveLength(1);
   });
 
   it('idle with no feed once the process has exited', () => {
@@ -156,14 +162,20 @@ describe('ordering', () => {
 });
 
 describe('stabilizeOrder', () => {
-  it('passes the desired order through when not frozen', () => {
-    expect(stabilizeOrder(['a', 'b'], ['b', 'a'], false)).toEqual(['b', 'a']);
+  it('passes the desired order through when nothing is pinned', () => {
+    expect(stabilizeOrder(['a', 'b'], ['b', 'a'], new Set())).toEqual(['b', 'a']);
   });
-  it('keeps prior places while frozen, drops leavers, appends newcomers', () => {
-    expect(stabilizeOrder(['a', 'b', 'c'], ['n', 'c', 'a'], true)).toEqual(['a', 'c', 'n']);
+  it('holds only the pinned row in its prior slot; the rest re-sort around it', () => {
+    expect(stabilizeOrder(['a', 'b', 'c'], ['c', 'a', 'b'], new Set(['b']))).toEqual(['c', 'b', 'a']);
+  });
+  it('places a newcomer where the order wants it, pinned rows still held', () => {
+    expect(stabilizeOrder(['a', 'b'], ['n', 'b', 'a'], new Set(['a']))).toEqual(['a', 'n', 'b']);
+  });
+  it('drops a pinned row that left', () => {
+    expect(stabilizeOrder(['a', 'b'], ['b'], new Set(['a']))).toEqual(['b']);
   });
   it('has nothing to hold on first paint', () => {
-    expect(stabilizeOrder(null, ['b', 'a'], true)).toEqual(['b', 'a']);
+    expect(stabilizeOrder(null, ['b', 'a'], new Set(['a']))).toEqual(['b', 'a']);
   });
 });
 

@@ -46,6 +46,7 @@ export function createRow(model, ctx) {
   let sig = '';
   let body = null;
   let bodyMode = null;
+  let archiveError = '';
 
   el.querySelector('.ckb-line').addEventListener('click', (e) => {
     if (e.target.closest('button') && !e.target.closest('.ckb-caret')) return;
@@ -57,8 +58,11 @@ export function createRow(model, ctx) {
   el.addEventListener('pointerenter', () => ctx.onHover(current.key, true));
   el.addEventListener('pointerleave', () => ctx.onHover(current.key, false));
 
+  let lastView = ctx.initialView;
+
   function update(m, view) {
     current = m;
+    lastView = view;
     el.dataset.rowKey = m.key;
     el.dataset.tone = m.tone;
     el.classList.toggle('is-selected', view.selected);
@@ -69,8 +73,8 @@ export function createRow(model, ctx) {
       dom.glyph.className = `o-row-icon ckb-glyph ${ICON_CLASS[m.tone]}`;
       dom.ref.innerHTML = refHtml(m);
       dom.title.textContent = m.title;
-      dom.status.textContent = statusText(m, view.now);
-      dom.status.dataset.tone = m.status.tone;
+      dom.status.textContent = archiveError || statusText(m, view.now);
+      dom.status.dataset.tone = archiveError ? 'failed' : m.status.tone;
       dom.act.innerHTML = m.actionLabel
         ? `<button type="button" class="o-btn o-btn--default sm">${escapeHtml(m.actionLabel)}</button>`
         : '';
@@ -102,7 +106,9 @@ export function createRow(model, ctx) {
     setArchiving(on, error = '') {
       dom.archive.disabled = on;
       dom.archive.textContent = on ? 'Archiving…' : 'Archive';
-      if (error) { dom.status.textContent = error; dom.status.dataset.tone = 'failed'; sig = ''; }
+      archiveError = on ? '' : error;
+      sig = '';
+      update(current, lastView);
     },
     destroy() { body?.unmount(); teardownFeeds(dom.feeds); el.remove(); },
   };

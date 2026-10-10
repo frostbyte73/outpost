@@ -99,6 +99,15 @@ seededTest('j/k/space/e drive the board without the mouse', async ({ outpostPage
   const first = outpostPage.locator('.ckb-item.is-selected');
   await expect(first).toHaveCount(1);
   await expect(first).toHaveAttribute('data-row-key', `job:${JOB_ID}`);
+  const rail = await first.evaluate((el) => {
+    const probe = document.createElement('span');
+    probe.style.color = 'var(--warn)';
+    document.body.appendChild(probe);
+    const warn = getComputedStyle(probe).color;
+    probe.remove();
+    return { left: getComputedStyle(el).borderLeftColor, warn };
+  });
+  expect(rail.left).toBe(rail.warn);
   await outpostPage.keyboard.press('Space');
   await expect(first.locator('.ckb-body')).toBeVisible();
   await outpostPage.keyboard.press('Escape');

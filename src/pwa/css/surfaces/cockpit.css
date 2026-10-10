@@ -53,10 +53,11 @@ html[data-layout="mobile"] .cockpit-group:first-child { margin-top: 0; }
 .ckb-fold[hidden], .o-row-group[hidden] { display: none; }
 
 .o-row.ckb-item { display: block; padding: 0; border-left: 2px solid var(--line); }
+/* The state rail outranks the highlight: a selected row still says what state it's in. */
+.ckb-item.is-selected { border-color: var(--accent); background: var(--accent-soft); border-left-color: var(--line); }
 .ckb-item[data-tone="live"] { border-left-color: var(--accent); }
 .ckb-item[data-tone="you"] { border-left-color: var(--warn); }
 .ckb-item[data-tone="failed"] { border-left-color: var(--danger); }
-.ckb-item.is-selected { border-color: var(--accent); background: var(--accent-soft); }
 .ckb-line {
   display: grid; grid-template-columns: 16px auto minmax(0, 1fr) auto auto auto 16px;
   align-items: center; gap: var(--gap-2); min-height: 32px; padding: var(--gap-1) var(--gap-3); cursor: pointer;

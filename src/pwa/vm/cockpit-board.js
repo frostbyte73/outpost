@@ -185,7 +185,8 @@ function sessionRow(s, cwd, slice, pendingApprovals, localEngaged) {
     ref: shortName(cwd), refMono: true, kindLabel: null,
     title: s.title ?? 'Untitled session', tone, status, time: s.lastModified ?? 0,
     actions, actionLabel: actionLabel(actions),
-    feeds: alive ? [{ sessionId: s.id, stepId: null, repo: null, action: null }] : [],
+    // Only while there's something to watch: an attached feed cancels the daemon's idle reaper.
+    feeds: alive && (working || pending.length) ? [{ sessionId: s.id, stepId: null, repo: null, action: null }] : [],
     engagedAt: Math.max(s.lastEngagedAt ?? s.lastModified ?? 0, localEngaged.get(s.id) ?? 0),
     createdAt: s.lastModified ?? 0, cwd, inboxItem: null,
   };
@@ -250,12 +251,17 @@ export function cockpitBoard({
   };
 }
 
-export function stabilizeOrder(prevKeys, keys, frozen) {
-  if (!frozen || !prevKeys) return keys;
+// A pinned row (hovered or expanded) holds its prior slot; everything else takes the desired order.
+export function stabilizeOrder(prevKeys, keys, pinned) {
+  if (!prevKeys || !pinned.size) return keys;
   const present = new Set(keys);
-  const kept = prevKeys.filter((k) => present.has(k));
-  const keptSet = new Set(kept);
-  return [...kept, ...keys.filter((k) => !keptSet.has(k))];
+  const held = prevKeys
+    .map((k, i) => [k, i])
+    .filter(([k]) => pinned.has(k) && present.has(k));
+  const heldKeys = new Set(held.map(([k]) => k));
+  const out = keys.filter((k) => !heldKeys.has(k));
+  for (const [k, i] of held) out.splice(Math.min(i, out.length), 0, k);
+  return out;
 }
 
 export function sessionsShownInBody(row, mode) {

@@ -18,7 +18,7 @@ import { openInboxItem } from './inbox.js';
 import { openPalette } from '../palette/index.js';
 import { archiveSession } from '../session-view/session-actions.js';
 import { openDiffForStep, openSession } from '../../app-bridge.js';
-import { placeKeyedNodes } from '../../utils/keyed-rows.js';
+import { placeKeyedNodes, setHtmlIfChanged } from '../../utils/keyed-rows.js';
 
 const GROUPS = ['started', 'notStarted', 'backlog', 'sessions', 'other'];
 const TIME_REFRESH_MS = 30_000;
@@ -65,12 +65,21 @@ function reducedMotion() {
   return typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
 }
 
-// FLIP: the only motion besides the live pulse, and only when dc's own action moved a row.
-function placeWithSlide(container, entries) {
+let slideMs = null;
+function slideDuration() {
+  if (slideMs == null) slideMs = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur-2')) || 180;
+  return slideMs;
+}
+
+// FLIP, only when the group's order actually changed — measuring every row each frame is layout thrash.
+function placeWithSlide(container, entries, reordered) {
+  if (!reordered || reducedMotion() || typeof Element.prototype.animate !== 'function') {
+    placeKeyedNodes(container, entries);
+    return;
+  }
   const before = new Map([...container.children].map((el) => [el, el.getBoundingClientRect().top]));
   placeKeyedNodes(container, entries);
-  if (reducedMotion() || typeof Element.prototype.animate !== 'function') return;
-  const dur = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--dur-2')) || 180;
+  const dur = slideDuration();
   for (const el of container.children) {
     const prev = before.get(el);
     if (prev == null) continue;
@@ -93,13 +102,13 @@ export function renderDetail(mount) {
   const hovered = new Set();
   let backlogOpen = false;
   let selectedKey = null;
-  let lastBoard = null;
   let scheduled = false;
+  let disposed = false;
 
   function schedule() {
     if (scheduled) return;
     scheduled = true;
-    raf(() => { scheduled = false; paint(); });
+    raf(() => { scheduled = false; if (!disposed) paint(); });
   }
 
   function runAction(m) {
@@ -134,11 +143,6 @@ export function renderDetail(mount) {
     onHover(key, on) { if (on) hovered.add(key); else { hovered.delete(key); schedule(); } },
   };
 
-  function isFrozen(group) {
-    const exp = expansion.get();
-    return (lastBoard?.[group] ?? []).some((r) => hovered.has(r.key) || exp.has(r.key));
-  }
-
   function paint() {
     const now = Date.now();
     const board = cockpitBoard({
@@ -159,8 +163,9 @@ export function renderDetail(mount) {
       if (!m || (mode === 'action' && !hasOpenableAction(m))) expansion.close(key);
     }
     const exp = expansion.get();
+    const pinned = new Set([...hovered, ...exp.keys()]);
 
-    root.querySelector('.ckb-tally').innerHTML = tallyHtml(board.tally);
+    setHtmlIfChanged(root.querySelector('.ckb-tally'), tallyHtml(board.tally));
     root.querySelector('.ckb-empty').hidden = !board.empty;
     root.querySelector('[data-divider="notStarted"]').hidden = board.notStarted.length === 0 && board.backlog.length === 0;
     const fold = root.querySelector('[data-fold="backlog"]');
@@ -176,8 +181,13 @@ export function renderDetail(mount) {
     const seen = new Set();
     for (const g of GROUPS) {
       const byKey = new Map(board[g].map((r) => [r.key, r]));
-      const keys = stabilizeOrder(order.get(g) ?? null, board[g].map((r) => r.key), isFrozen(g));
+      const prevKeys = order.get(g) ?? null;
+      const keys = stabilizeOrder(prevKeys, board[g].map((r) => r.key), pinned);
       order.set(g, keys);
+      const survivors = new Set(keys);
+      const was = (prevKeys ?? []).filter((k) => survivors.has(k));
+      const wasSet = new Set(was);
+      const reordered = keys.filter((k) => wasSet.has(k)).some((k, i) => k !== was[i]);
       const entries = keys.map((key) => {
         const m = byKey.get(key);
         seen.add(key);
@@ -188,12 +198,11 @@ export function renderDetail(mount) {
         else row.update(m, view);
         return { key, node: row.el };
       });
-      placeWithSlide(groupEl[g], entries);
+      placeWithSlide(groupEl[g], entries, reordered);
     }
     for (const [key, row] of rows) {
       if (!seen.has(key)) { row.destroy(); rows.delete(key); }
     }
-    lastBoard = board;
   }
 
   root.addEventListener('click', (e) => {
@@ -221,6 +230,7 @@ export function renderDetail(mount) {
   const timer = setInterval(schedule, TIME_REFRESH_MS);
 
   return () => {
+    disposed = true;
     clearInterval(timer);
     uninstallKeys();
     for (const u of unsubs) u();

@@ -11,7 +11,7 @@ export interface SessionInfo {
   id: string;
   title: string;
   lastModified: number;
-  // Newest prompt dc typed (tail-scanned); absent when the tail holds none.
+  // Newest prompt dc typed, else the session file's creation.
   lastEngagedAt?: number;
   path: string;
   worktreePath?: string;
@@ -945,7 +945,7 @@ export class SessionStore {
     try {
       const stat = statSync(path);
       const id = path.split('/').pop()!.replace(/\.jsonl$/, '');
-      const act = this.activity(path, stat.size, stat.mtimeMs);
+      const act = this.activity(path, stat.size, stat.mtimeMs, stat.birthtimeMs);
       const meta = this.readActionMeta(id);
       // Persisted sidecar so titles don't shift as new content streams in; delete to force regeneration.
       const titlePath = path.replace(/\.jsonl$/, '.title');
@@ -973,13 +973,15 @@ export class SessionStore {
   }
 
   // Falls back to mtime so a brand-new session with no real turns yet still sorts to the top.
-  private activity(path: string, size: number, mtimeMs: number): { lastModified: number; lastEngagedAt?: number } {
+  // The JSONL is append-only, so a prompt a long agent turn pushed out of the tail is still the
+  // newest one; with none ever seen, creation stands in — never agent activity.
+  private activity(path: string, size: number, mtimeMs: number, birthtimeMs: number): { lastModified: number; lastEngagedAt: number } {
     let cached = this.lastMsgTsCache.get(path);
     if (!cached || cached.size !== size) {
       const { last, prompt } = tailTimestamps(path, size);
-      cached = { size, ts: last, prompt };
+      cached = { size, ts: last, prompt: prompt ?? cached?.prompt ?? null };
       this.lastMsgTsCache.set(path, cached);
     }
-    return { lastModified: cached.ts ?? mtimeMs, ...(cached.prompt != null ? { lastEngagedAt: cached.prompt } : {}) };
+    return { lastModified: cached.ts ?? mtimeMs, lastEngagedAt: cached.prompt ?? birthtimeMs };
   }
 }

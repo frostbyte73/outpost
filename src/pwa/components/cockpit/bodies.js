@@ -5,6 +5,7 @@ import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
 import { orchestratedRows } from '../../vm/tracked.js';
 import { isTerminalStep } from '../../vm/work-predicates.js';
+import { OPENABLE } from '../../vm/cockpit-board.js';
 import {
   controllerGateHtml, controllerGateActionsHtml, controllerComposerHtml,
   artifactTrailHtml, wireArtifactTrail, wireControllerControls,
@@ -84,55 +85,44 @@ function liveController(job) {
   return (job.steps ?? []).find((s) => s.type === 'orchestrated' && !s.cancelled && !isTerminalStep(s)) ?? null;
 }
 
-function caretJobHtml(job) {
-  if (!job.steps?.length || job.state === 'plan_pending_review') {
-    return `<div data-ckb-plan>${renderPlanSection(job, {})}</div>${openFullHtml()}`;
-  }
-  const ctl = liveController(job);
-  return timelineHtml(job, Date.now())
-    + (ctl ? `<div data-ckb-step="${escapeHtml(ctl.id)}">${controllerComposerHtml(ctl)}</div>` : '')
-    + openFullHtml();
+function fieldKey(f, i) {
+  return f.closest('[data-composer]')?.getAttribute('data-composer') ?? (f.id || `${f.tagName}#${i}`);
 }
 
-function textareaKey(ta, i) {
-  return ta.closest('[data-composer]')?.getAttribute('data-composer') ?? (ta.id || `#${i}`);
-}
-
-// Typed text must survive a body re-render on a live job.
+// Typed text, checkbox state and focus must survive a body rebuild on a live job.
 function rerender(el, html, wire) {
-  const typed = new Map();
-  el.querySelectorAll('textarea').forEach((ta, i) => { if (ta.value) typed.set(textareaKey(ta, i), ta.value); });
+  const saved = new Map();
+  let focusKey = null;
+  let selection = null;
+  el.querySelectorAll('textarea, input').forEach((f, i) => {
+    const key = fieldKey(f, i);
+    saved.set(key, f.type === 'checkbox' ? { checked: f.checked } : { value: f.value });
+    if (f === document.activeElement) {
+      focusKey = key;
+      selection = [f.selectionStart, f.selectionEnd];
+    }
+  });
   el.innerHTML = html;
   wire();
-  el.querySelectorAll('textarea').forEach((ta, i) => {
-    const value = typed.get(textareaKey(ta, i));
-    if (value == null) return;
-    ta.value = value;
-    ta.dispatchEvent(new Event('input', { bubbles: true }));
-    ta.closest('[data-composer]')?.removeAttribute('hidden');
+  el.querySelectorAll('textarea, input').forEach((f, i) => {
+    const key = fieldKey(f, i);
+    const prev = saved.get(key);
+    if (prev) {
+      if ('checked' in prev) f.checked = prev.checked;
+      else if (prev.value) {
+        f.value = prev.value;
+        f.dispatchEvent(new Event('input', { bubbles: true }));
+        f.closest('[data-composer]')?.removeAttribute('hidden');
+      }
+    }
+    if (key === focusKey) {
+      f.focus();
+      try { f.setSelectionRange(selection[0], selection[1]); } catch { /* not a text field */ }
+    }
   });
 }
 
-function wireJobBody(el, job, model, sessionMounts) {
-  el.querySelectorAll('[data-ckb-step]').forEach((wrap) => {
-    const step = stepOf(job, wrap.getAttribute('data-ckb-step'));
-    if (!step) return;
-    wireArtifactTrail(wrap);
-    wireControllerControls(wrap, job, step);
-  });
-  if (el.querySelector('[data-ckb-plan]')) {
-    wirePlanActions(el, job);
-    wirePlanPreapprovals(el, `plan:${job.id}`);
-  }
-  for (const a of model.actions) {
-    if (a.kind !== 'draft') continue;
-    const draft = (stepOf(job, a.stepId)?.drafts ?? []).find((d) => d.id === a.draftId);
-    if (draft) wireWriteDraft(el, { jobId: job.id, stepId: a.stepId, draft });
-  }
-  el.querySelectorAll('[data-ckb-session]').forEach((m) => {
-    const id = m.getAttribute('data-ckb-session');
-    sessionMounts.set(id, mountSessionView(m, id, { jobId: job.id, scopedHotkeys: true }));
-  });
+function wireBodyButtons(el, job) {
   el.querySelectorAll('[data-ckb-body]').forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -148,30 +138,123 @@ function wireJobBody(el, job, model, sessionMounts) {
       else if (kind === 'hand-back') void sessionsApi.setInteractive(btn.getAttribute('data-session-id'), false);
     });
   });
+}
+
+function wireStepControls(el, job) {
+  el.querySelectorAll('[data-ckb-step]').forEach((wrap) => {
+    const step = stepOf(job, wrap.getAttribute('data-ckb-step'));
+    if (!step) return;
+    wireArtifactTrail(wrap);
+    wireControllerControls(wrap, job, step);
+  });
+}
+
+function wireActionBody(el, job, model, sessionMounts) {
+  wireStepControls(el, job);
+  if (el.querySelector('[data-ckb-plan]')) {
+    wirePlanActions(el, job);
+    wirePlanPreapprovals(el, `plan:${job.id}`);
+  }
+  for (const a of model.actions) {
+    if (a.kind !== 'draft') continue;
+    const draft = (stepOf(job, a.stepId)?.drafts ?? []).find((d) => d.id === a.draftId);
+    if (draft) wireWriteDraft(el, { jobId: job.id, stepId: a.stepId, draft });
+  }
+  el.querySelectorAll('[data-ckb-session]').forEach((m) => {
+    const id = m.getAttribute('data-ckb-session');
+    sessionMounts.set(id, mountSessionView(m, id, { jobId: job.id, scopedHotkeys: true }));
+  });
+  wireBodyButtons(el, job);
   wireAutogrow(el);
 }
 
-function mountJobBody(el, model, mode) {
+// Rebuilt only when what it renders changes — an approval elsewhere on the job isn't in it.
+function mountActionBody(el, model) {
   const sessionMounts = new Map();
   let sig = null;
   const paint = (m) => {
     const job = work.get().byId.get(m.id);
     if (!job) return;
-    const next = mode === 'action'
-      ? `a|${JSON.stringify(m.actions)}|${(job.steps ?? []).map((s) => (s.gate?.draft ?? '').length).join(',')}`
-      : `c|${job.updatedAt}`;
+    const shown = m.actions.filter((a) => OPENABLE.has(a.kind));
+    const next = `${JSON.stringify(shown)}|${shown.map((a) => (stepOf(job, a.stepId)?.gate?.draft ?? '').length).join(',')}`;
     if (next === sig) return;
     sig = next;
     for (const h of sessionMounts.values()) h.unmount();
     sessionMounts.clear();
-    const html = mode === 'action' ? actionBodyHtml(job, m) : caretJobHtml(job);
-    rerender(el, html, () => wireJobBody(el, job, m, sessionMounts));
+    rerender(el, actionBodyHtml(job, { ...m, actions: shown }), () => wireActionBody(el, job, m, sessionMounts));
   };
   paint(model);
   return {
     update: paint,
     unmount() { for (const h of sessionMounts.values()) h.unmount(); el.textContent = ''; },
   };
+}
+
+function isPlanView(job) {
+  return !job.steps?.length || job.state === 'plan_pending_review';
+}
+
+// The timeline repaints with the job; the composer region is only rebuilt when the live
+// controller changes, so typing in it survives every watcher sync.
+function mountCaretBody(el, model) {
+  let layout = null;
+  let tlHtml = null;
+  let composerFor;
+  let regions = null;
+
+  const build = (job) => {
+    layout = isPlanView(job) ? 'plan' : 'tl';
+    el.innerHTML = layout === 'plan'
+      ? `<div data-ckb-region="plan"></div>${openFullHtml()}`
+      : `<div data-ckb-region="tl"></div><div data-ckb-region="compose"></div>${openFullHtml()}`;
+    regions = {
+      plan: el.querySelector('[data-ckb-region="plan"]'),
+      tl: el.querySelector('[data-ckb-region="tl"]'),
+      compose: el.querySelector('[data-ckb-region="compose"]'),
+    };
+    tlHtml = null;
+    composerFor = undefined;
+    wireBodyButtons(el, job);
+  };
+
+  const paint = (m) => {
+    const job = work.get().byId.get(m.id);
+    if (!job) return;
+    if (layout !== (isPlanView(job) ? 'plan' : 'tl')) build(job);
+    if (layout === 'plan') {
+      const html = `<div data-ckb-plan>${renderPlanSection(job, {})}</div>`;
+      if (html === tlHtml) return;
+      tlHtml = html;
+      rerender(regions.plan, html, () => {
+        wirePlanActions(regions.plan, job);
+        wirePlanPreapprovals(regions.plan, `plan:${job.id}`);
+        wireAutogrow(regions.plan);
+      });
+      return;
+    }
+    const html = timelineHtml(job, Date.now());
+    if (html !== tlHtml) {
+      const open = [...regions.tl.querySelectorAll('.orc-trail-chip.is-open')]
+        .map((c) => [c.closest('[data-ckb-step]')?.getAttribute('data-ckb-step'), c.getAttribute('data-trail-chip')]);
+      tlHtml = html;
+      regions.tl.innerHTML = html;
+      wireStepControls(regions.tl, job);
+      for (const [stepId, slug] of open) {
+        regions.tl.querySelector(`[data-ckb-step="${CSS.escape(stepId ?? '')}"] .orc-trail-chip[data-trail-chip="${CSS.escape(slug ?? '')}"]`)?.click();
+      }
+    }
+    const ctl = liveController(job);
+    if ((ctl?.id ?? null) !== composerFor) {
+      composerFor = ctl?.id ?? null;
+      regions.compose.innerHTML = ctl ? `<div data-ckb-step="${escapeHtml(ctl.id)}">${controllerComposerHtml(ctl)}</div>` : '';
+      if (ctl) {
+        wireControllerControls(regions.compose, job, ctl);
+        wireAutogrow(regions.compose);
+      }
+    }
+  };
+  paint(model);
+  return { update: paint, unmount() { el.textContent = ''; } };
 }
 
 function mountSessionBody(el, model) {
@@ -187,7 +270,7 @@ function mountSessionBody(el, model) {
 
 export function mountBody(el, model, mode) {
   if (model.kind === 'session') return mountSessionBody(el, model);
-  if (model.kind === 'job') return mountJobBody(el, model, mode);
+  if (model.kind === 'job') return mode === 'action' ? mountActionBody(el, model) : mountCaretBody(el, model);
   el.textContent = '';
   return { update() {}, unmount() {} };
 }

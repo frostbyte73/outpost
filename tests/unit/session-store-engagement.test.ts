@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../src/session/session-store.js';
@@ -26,11 +26,26 @@ describe('SessionInfo.lastEngagedAt', () => {
     expect(s.lastModified).toBe(T0 + 2000);
   });
 
-  it('is absent when the tail holds no typed prompt', () => {
+  it('falls back to the session file’s creation, never to agent activity', () => {
     const s = storeWith([
       { type: 'assistant', cwd: tmpdir(), timestamp: iso(T0), message: { content: [{ type: 'text', text: 'hi' }] } },
     ]);
-    expect(s.lastEngagedAt).toBeUndefined();
+    expect(s.lastEngagedAt).toBe(statSync(s.path).birthtimeMs);
+  });
+
+  it('keeps the prompt once a long agent turn pushes it out of the tail', () => {
+    const root = mkdtempSync(join(tmpdir(), 'sseng-'));
+    const proj = join(root, '-p');
+    mkdirSync(proj);
+    const file = join(proj, 'sess-1.jsonl');
+    writeFileSync(file, JSON.stringify({ type: 'user', cwd: tmpdir(), timestamp: iso(T0), message: { content: 'go' } }) + '\n');
+    const store = new SessionStore({ root });
+    expect(store.listProjects()[0]!.sessions[0]!.lastEngagedAt).toBe(T0);
+    const filler = 'x'.repeat(2000);
+    const lines = Array.from({ length: 60 }, (_, i) =>
+      JSON.stringify({ type: 'assistant', timestamp: iso(T0 + 1000 + i), message: { content: [{ type: 'text', text: filler }] } })).join('\n') + '\n';
+    appendFileSync(file, lines);
+    expect(store.listProjects()[0]!.sessions[0]!.lastEngagedAt).toBe(T0);
   });
 
   it('ignores meta user records', () => {

@@ -7,6 +7,15 @@ function isTyping(target) {
   return target instanceof Element && !!target.closest('input, textarea, select, [contenteditable="true"]');
 }
 
+// Board keys answer only from the page itself or a row header — a focused control keeps its own
+// Enter/Space, and anything outside the board (an overlay, a dialog) isn't ours.
+function boardOwns(root, target) {
+  if (document.querySelector('[aria-modal="true"]')) return false;
+  if (!(target instanceof Element) || target === document.body) return true;
+  if (!root.contains(target)) return false;
+  return !target.closest('.ckb-body, a, summary, button:not(.ckb-caret), [role="button"]');
+}
+
 export function installBoardKeys(root, board) {
   const step = (dir) => {
     const keys = board.rowKeys();
@@ -35,9 +44,13 @@ export function installBoardKeys(root, board) {
   const onKey = (e) => {
     if (!isDesktop() || !root.isConnected || isPaletteOpen()) return;
     if (isTyping(e.target)) {
-      if (keymap.matches(e, 'cockpit.collapse')) { e.target.blur(); e.preventDefault(); }
+      if (root.contains(e.target) && !e.defaultPrevented && keymap.matches(e, 'cockpit.collapse')) {
+        e.target.blur();
+        e.preventDefault();
+      }
       return;
     }
+    if (!boardOwns(root, e.target)) return;
     const key = board.selected();
     const handled = (id, fn) => {
       if (!keymap.matches(e, id)) return false;
