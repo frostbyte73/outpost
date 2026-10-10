@@ -75,6 +75,7 @@ export interface SessionMessageDeps {
   modes: ApprovalModeTarget;
   shell?: ShellTarget;
   log?: (line: string) => void;
+  onUserMessage?: (sessionId: string) => void;
 }
 
 export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: SessionMessageDeps): void {
@@ -94,6 +95,7 @@ export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: Ses
     // which drops every other session too. Report it, don't die.
     try {
       deps.manager.send(sessionId, { type: 'user', message: { role: 'user', content: blocks + content } });
+      deps.onUserMessage?.(sessionId);
     } catch (e) {
       deps.shell?.restore(sessionId, blocks);
       log(`[api] user_message to ${sessionId.slice(0, 8)} failed: ${(e as Error).message}`);

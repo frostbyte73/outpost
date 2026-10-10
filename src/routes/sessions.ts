@@ -41,6 +41,7 @@ export interface SessionsRoutesDeps {
   // Re-runs the job's decision pass, so whatever the pause held (a queued inbox, a due
   // timer) is picked up the moment control comes back.
   tickJob(jobId: string): void;
+  markJobEngaged(jobId: string): void;
   info: {
     version: string;
     approvalTimeoutMs: number;
@@ -54,7 +55,7 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
   const {
     sessionStore, manager, worktreeManager, queue, recurrence, allowlist,
     latestStatuslineBySession, cwdForSession, summarizeToolInput, captureSessionEnd, info,
-    interactive, interactiveTarget, jobIdForSession, tickJob,
+    interactive, interactiveTarget, jobIdForSession, tickJob, markJobEngaged,
   } = deps;
 
   function sendHandover(sessionId: string, tookWheel: boolean): void {
@@ -100,6 +101,7 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
       sendHandover(sessionId, false);
       tickJob(target.jobId);
     }
+    markJobEngaged(target.jobId);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ interactive: payload.on }));

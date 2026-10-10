@@ -1140,6 +1140,7 @@ async function main() {
     interactive,
     interactiveTarget: (id) => engine.interactiveTarget(id),
     jobIdForSession: (id) => engine.jobIdForSession(id),
+    markJobEngaged: (id) => engine.markEngaged(id),
     // engine.tick is async; the route doesn't wait on it — the WS broadcast is what tells
     // the client anything happened.
     tickJob: (id) => { void engine.tick(id); },
@@ -1504,7 +1505,10 @@ async function main() {
     // this catches whatever a future branch forgets.
     ws.on('message', (raw: Buffer | ArrayBuffer | Buffer[]) => {
       try {
-        handleSessionMessage(raw, sessionId, { queue, manager, modes, shell: sessionShell, log: (l) => console.log(l) });
+        handleSessionMessage(raw, sessionId, {
+          queue, manager, modes, shell: sessionShell, log: (l) => console.log(l),
+          onUserMessage: (id) => { const jobId = engine.jobIdForSession(id); if (jobId) engine.markEngaged(jobId); },
+        });
       } catch (e) {
         console.error(`[api] session ${sessionId.slice(0, 8)} message handler threw: ${(e as Error).message}`);
         try { ws.send(JSON.stringify({ type: 'daemon_error', message: (e as Error).message })); } catch { /* socket already gone */ }

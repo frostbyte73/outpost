@@ -157,3 +157,26 @@ describe('handleSessionMessage', () => {
     expect(d.modes.set).not.toHaveBeenCalled();
   });
 });
+
+describe('handleSessionMessage — engagement', () => {
+  const deps = () => ({
+    queue: { decide: vi.fn() },
+    manager: { send: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
+    modes: { set: vi.fn() },
+    onUserMessage: vi.fn(),
+  });
+  const userMessage = Buffer.from(JSON.stringify({ type: 'user_message', content: 'hi' }));
+
+  it('reports a delivered user message', () => {
+    const d = deps();
+    handleSessionMessage(userMessage, 's1', d);
+    expect(d.onUserMessage).toHaveBeenCalledWith('s1');
+  });
+
+  it('does not report a message the manager refused', () => {
+    const d = deps();
+    d.manager.send.mockImplementation(() => { throw new Error('not active'); });
+    handleSessionMessage(userMessage, 's1', d);
+    expect(d.onUserMessage).not.toHaveBeenCalled();
+  });
+});
