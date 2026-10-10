@@ -13,9 +13,9 @@ function hookAccess(runtimeDir: string): { baseUrl: string; secret: string } {
   };
 }
 
-test('an action proposal appears under Decide without a reload', async ({ daemon, outpostPage }) => {
+test('an action proposal appears under Other without a reload', async ({ daemon, outpostPage }) => {
   await outpostPage.locator('.o-sidebar-item[data-surface="cockpit"]').click();
-  await expect(outpostPage.locator('.cockpit-quiet')).toBeVisible();
+  await expect(outpostPage.locator('.ckb-empty')).toBeVisible();
 
   const start = await outpostPage.request.post(
     `${daemon.baseUrl}/api/actions/code.implement/edit`,
@@ -37,10 +37,10 @@ test('an action proposal appears under Decide without a reload', async ({ daemon
   expect(posted.ok()).toBe(true);
 
   // No reload anywhere above — the proposal has to arrive over the WS broadcast.
-  const row = outpostPage.locator('[data-group="decide"] .o-row').first();
+  const row = outpostPage.locator('[data-group="other"] .ckb-item .ckb-line').first();
   await expect(row).toBeVisible();
   await expect(row).toContainText('code.implement');
-  await expect(outpostPage.locator('.cockpit-quiet')).toBeHidden();
+  await expect(outpostPage.locator('.ckb-empty')).toBeHidden();
 
   await row.click();
   await expect(outpostPage.locator('.lib-wip-pill')).toHaveText('review');
@@ -74,7 +74,7 @@ test('a new action proposal renders the file, not an all-plus diff', async ({ da
   expect(posted.ok()).toBe(true);
 
   await outpostPage.locator('.o-sidebar-item[data-surface="cockpit"]').click();
-  await outpostPage.locator('[data-group="decide"] .o-row').first().click();
+  await outpostPage.locator('[data-group="other"] .ckb-item .ckb-line').first().click();
 
   const block = outpostPage.locator('.lib-edit-card .lib-diff');
   await expect(block.locator('summary')).toContainText('New SKILL.md');
