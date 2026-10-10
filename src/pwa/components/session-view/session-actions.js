@@ -77,7 +77,7 @@ const defaultConfirm = async ({ body }) => window.confirm(body);
 
 // Returns true when the session was archived (false on cancel/failure) so
 // callers can navigate away only on success.
-export async function archiveSession(sessionId, confirm = defaultConfirm) {
+export async function archiveSession(sessionId, confirm = defaultConfirm, { reportError = (m) => window.alert(m) } = {}) {
   const { isWorktree } = computeGitInfo(sessionId);
   if (isWorktree) {
     const ok = await confirm({
@@ -97,7 +97,7 @@ export async function archiveSession(sessionId, confirm = defaultConfirm) {
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
   } catch (e) {
     sessions.for(sessionId).clearExpectArchive();
-    window.alert(`Archive failed: ${e.message}`);
+    reportError(`Archive failed: ${e.message}`);
     return false;
   }
   refreshSessions();

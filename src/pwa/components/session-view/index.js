@@ -661,6 +661,11 @@ function wireComposer(dom, sessionId, paletteState) {
   return () => document.removeEventListener('pointerdown', onOutsideClick, true);
 }
 
+// The cockpit mounts several session views at once; a document-level ⌘⇧E must hit one of them.
+export function headerHotkeyInScope(mount, scoped) {
+  return !scoped || mount.contains(document.activeElement);
+}
+
 // Public API: mount a session view for `sessionId` into `mount`. Returns an
 // object with an `unmount()` that unsubscribes and downgrades the session's
 // runState to background (unless another view still shows it, in which case it
@@ -733,6 +738,7 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   // obvious ⌘⇧A, because Chrome reserves ⌘⇧A for "Search tabs" at the
   // accelerator level — it never reaches the page for us to preventDefault.
   const onHeaderKeydown = (e) => {
+    if (!headerHotkeyInScope(mount, !!meta.scopedHotkeys)) return;
     if (keymap.matches(e, 'session.promoteToJob')) {
       e.preventDefault();
       promoteSessionToJob(sessionId);
