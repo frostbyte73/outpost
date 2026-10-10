@@ -257,7 +257,7 @@ function slugOf(k, taken) {
   return slug;
 }
 
-function phaseLabelOf(s) {
+export function phaseLabelOf(s) {
   if (!s.phase) return '';
   return PHASE_LABEL[s.phase] ?? humanizeKey(s.phase);
 }

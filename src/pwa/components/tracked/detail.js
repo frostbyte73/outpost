@@ -9,11 +9,7 @@ import { work } from '../../state/work.js';
 import { nav } from '../../state/nav.js';
 import { prPatches } from '../../state/pr-patches.js';
 import { worktreeChanges } from '../../state/worktree-changes.js';
-import {
-  renderPlanSection, toggleReplanComposer, submitReplan, toggleDiscardComposer, submitDiscard,
-  collectPlanPreapprovals, wirePlanPreapprovals,
-} from '../work/plan-section.js';
-import { clearPreapprovalsScope } from '../work/preapprovals-control.js';
+import { renderPlanSection, wirePlanPreapprovals, PLAN_ACTIONS, wirePlanActions } from '../work/plan-section.js';
 import { planIsLive } from '../../vm/work-predicates.js';
 import { renderTimelineStep, wireTimelineStep, computeGroupPositions } from '../work/step-card.js';
 import { openAddStepDialog } from '../work/add-step-dialog.js';
@@ -493,29 +489,13 @@ export function renderTrackedDetail(root, jobId) {
 
   const planScope = `plan:${job.id}`;
   wirePlanPreapprovals(root, planScope);
+  wirePlanActions(root, job);
   root.querySelectorAll('[data-job-action]').forEach((el) => {
+    if (PLAN_ACTIONS.has(el.getAttribute('data-job-action'))) return;
     el.addEventListener('click', (e) => {
       const action = el.getAttribute('data-job-action');
       if (el.closest('summary')) { e.preventDefault(); e.stopPropagation(); }
-      if (action === 'approve-plan') {
-        void work.approve(job.id, { gate: 'plan', stepPreapprovals: collectPlanPreapprovals(root) })
-          .then(() => clearPreapprovalsScope(planScope));
-      } else if (action === 'recon-apply') {
-        void work.applyReconciliation(job.id, collectPlanPreapprovals(root))
-          .then(() => clearPreapprovalsScope(planScope));
-      }
-      else if (action === 'recon-discard') toggleDiscardComposer(root, true);
-      else if (action === 'recon-discard-cancel') toggleDiscardComposer(root, false);
-      else if (action === 'recon-discard-submit') void submitDiscard(root, job.id);
-      else if (action === 'launch-orchestrator') {
-        const ta = root.querySelector('.launch-context-textarea');
-        const context = ta?.value.trim() || undefined;
-        void work.launchOrchestrator(job.id, context);
-      }
-      else if (action === 'add-step-end') openActionPickerDialog(job.id);
-      else if (action === 'reopen-orchestrator') toggleReplanComposer(root, true);
-      else if (action === 'replan-cancel') toggleReplanComposer(root, false);
-      else if (action === 'replan-submit') submitReplan(root, job.id);
+      if (action === 'add-step-end') openActionPickerDialog(job.id);
       else if (action === 'toggle-edit-plan') {
         editingPlanByJob.set(job.id, !isEditingPlan(job.id));
         renderTrackedDetail(root, job.id);

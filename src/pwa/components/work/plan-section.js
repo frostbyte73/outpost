@@ -12,7 +12,7 @@ import { planIsLive } from '../../vm/work-predicates.js';
 import { renderFinding } from './finding.js';
 import { orchestratorStepShim } from '../tracked/session-mounts.js';
 import { actionCategory, actionDisplayName } from './action-icon.js';
-import { readPreapprovalsControl, renderPreapprovalsControl, wirePreapprovalsControl } from './preapprovals-control.js';
+import { readPreapprovalsControl, renderPreapprovalsControl, wirePreapprovalsControl, clearPreapprovalsScope } from './preapprovals-control.js';
 import { effective, loosened } from '../../vm/preapprovals.js';
 import { settings } from '../../state/settings.js';
 
@@ -350,4 +350,34 @@ export async function submitReplan(root, jobId) {
     submit.textContent = 'Send to orchestrator';
     alert(`Replan failed: ${e?.message ?? e}`);
   }
+}
+
+export const PLAN_ACTIONS = new Set([
+  'approve-plan', 'recon-apply', 'recon-discard', 'recon-discard-cancel', 'recon-discard-submit',
+  'launch-orchestrator', 'reopen-orchestrator', 'replan-cancel', 'replan-submit',
+]);
+
+export function wirePlanActions(root, job) {
+  const scope = `plan:${job.id}`;
+  root.querySelectorAll('[data-job-action]').forEach((el) => {
+    const action = el.getAttribute('data-job-action');
+    if (!PLAN_ACTIONS.has(action)) return;
+    el.addEventListener('click', (e) => {
+      if (el.closest('summary')) { e.preventDefault(); e.stopPropagation(); }
+      if (action === 'approve-plan') {
+        void work.approve(job.id, { gate: 'plan', stepPreapprovals: collectPlanPreapprovals(root) })
+          .then(() => clearPreapprovalsScope(scope));
+      } else if (action === 'recon-apply') {
+        void work.applyReconciliation(job.id, collectPlanPreapprovals(root)).then(() => clearPreapprovalsScope(scope));
+      } else if (action === 'recon-discard') toggleDiscardComposer(root, true);
+      else if (action === 'recon-discard-cancel') toggleDiscardComposer(root, false);
+      else if (action === 'recon-discard-submit') void submitDiscard(root, job.id);
+      else if (action === 'launch-orchestrator') {
+        const ta = root.querySelector('.launch-context-textarea');
+        void work.launchOrchestrator(job.id, ta?.value.trim() || undefined);
+      } else if (action === 'reopen-orchestrator') toggleReplanComposer(root, true);
+      else if (action === 'replan-cancel') toggleReplanComposer(root, false);
+      else submitReplan(root, job.id);
+    });
+  });
 }

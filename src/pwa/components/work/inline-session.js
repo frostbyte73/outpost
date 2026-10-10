@@ -67,16 +67,16 @@ function renderTail(slice, sessionId) {
   return lines.join('');
 }
 
-function buildSkeleton(mount) {
+function buildSkeleton(mount, { bare = false } = {}) {
   mount.classList.add('step-inline-session');
   // Set by stepFeedHtml on the mounts whose session the user may take over — a dispatch
   // child's feed and the orchestrator's carry no wheel, so they set nothing.
-  const wheelSession = mount.dataset.wheelSession;
+  const wheelSession = bare ? null : mount.dataset.wheelSession;
   if (wheelSession) mount.classList.add('step-inline-session--wheel');
   mount.innerHTML = `
-    <div class="inline-session-header">
+    ${bare ? '' : `<div class="inline-session-header">
       <button class="inline-session-open" type="button" aria-label="Open session in its own tab">Open ↗</button>
-    </div>
+    </div>`}
     <div class="inline-session-body"></div>
     <div class="inline-session-foot">
       <div class="inline-session-thinking"></div>
@@ -93,12 +93,12 @@ function buildSkeleton(mount) {
 
 // `live` is destructured under another name: the WS-attach flag below is also called `live`,
 // and they are different questions — "is the subprocess alive" vs "have we attached to it".
-export function mountInlineSession(mount, sessionId, { jobId, step = null, live: sessionLive = true }) {
+export function mountInlineSession(mount, sessionId, { jobId, step = null, live: sessionLive = true, bare = false }) {
   if (!sessionId) return { unmount() {}, updateStep() {} };
 
   sessions.ensureSlice(sessionId);
 
-  const dom = buildSkeleton(mount);
+  const dom = buildSkeleton(mount, { bare });
   let currentStep = step;
   // Whether THIS session's subprocess is alive, straight from the job's own liveness
   // (job.live.sessionIds — see src/work/job-liveness.ts for why it can't be derived here).
@@ -122,7 +122,7 @@ export function mountInlineSession(mount, sessionId, { jobId, step = null, live:
   };
   syncLive();
 
-  dom.openBtn.addEventListener('click', (e) => {
+  dom.openBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     openSession({ id: sessionId, fromTicketId: jobId });
   });
