@@ -55,10 +55,8 @@ function conflictFor(combo, id) {
 
 function validate(id, combo) {
   const surface = SURFACE_BY_ID[id];
-  // Every surface except diff requires a modifier: diff's handler is the only
-  // one that guards `!typing`, so a bare-key binding elsewhere (session,
-  // palette, shell) would fire while the user is typing in a text field.
-  if (surface !== 'diff' && !hasModifier(combo)) return { ok: false, reason: 'modifier' };
+  // Only surfaces whose handler ignores keys while typing may take a bare key.
+  if (surface !== 'diff' && surface !== 'cockpit' && !hasModifier(combo)) return { ok: false, reason: 'modifier' };
   if (isReserved(combo)) return { ok: false, reason: 'reserved' };
   const conflictId = conflictFor(combo, id);
   if (conflictId) return { ok: false, reason: 'conflict', conflictId };

@@ -16,6 +16,13 @@ function ev(init: any) { return new KeyboardEvent('keydown', init); }
 beforeEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe('keymap registry', () => {
+  it('cockpit commands take bare keys; other surfaces still need a modifier', async () => {
+    const { keymap } = await freshKeymap();
+    expect(keymap.bindingFor('cockpit.next')).toBe('j');
+    expect(keymap.setBinding('cockpit.next', 'h').ok).toBe(true);
+    expect(keymap.setBinding('session.archive', 'h').ok).toBe(false);
+  });
+
   it('bindingFor returns override else catalog default', async () => {
     const { keymap } = await freshKeymap();
     expect(keymap.bindingFor('shell.toggleSidebar')).toBe('mod+b');

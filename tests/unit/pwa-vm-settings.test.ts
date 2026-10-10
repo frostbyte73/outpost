@@ -15,7 +15,7 @@ describe('settingsSections', () => {
 describe('hotkeyRows', () => {
   it('groups by surface in order and reflects an override over the default', () => {
     const groups = hotkeyRows({ 'shell.toggleSidebar': 'mod+shift+b' });
-    expect(groups.map((g: any) => g.surface)).toEqual(['shell', 'session', 'palette', 'diff']);
+    expect(groups.map((g: any) => g.surface)).toEqual(['shell', 'session', 'palette', 'diff', 'cockpit']);
     const shell = groups.find((g: any) => g.surface === 'shell')!;
     const sidebar = shell.rows.find((r: any) => r.id === 'shell.toggleSidebar')!;
     expect(sidebar.binding).toBe('mod+shift+b');

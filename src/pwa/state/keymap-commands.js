@@ -27,6 +27,15 @@ export const KEYMAP_COMMANDS = [
   { id: 'diff.primaryAction', surface: 'diff', label: 'Run primary action', description: 'Run the diff overlay primary action.', defaultBinding: 'mod+enter' },
   { id: 'diff.regenerate', surface: 'diff', label: 'Regenerate commit message', description: 'Regenerate the drafted commit message.', defaultBinding: 'mod+r' },
   { id: 'diff.comment', surface: 'diff', label: 'Comment on hovered row', description: 'Open a comment on the hovered diff row (when not typing).', defaultBinding: 'c' },
+  { id: 'cockpit.next', surface: 'cockpit', label: 'Next row', description: 'Move the cockpit highlight down.', defaultBinding: 'j' },
+  { id: 'cockpit.prev', surface: 'cockpit', label: 'Previous row', description: 'Move the cockpit highlight up.', defaultBinding: 'k' },
+  { id: 'cockpit.toggle', surface: 'cockpit', label: 'Expand row', description: 'Open or close the highlighted row.', defaultBinding: 'space' },
+  { id: 'cockpit.action', surface: 'cockpit', label: 'Open what needs you', description: 'Open only what the highlighted row is waiting on.', defaultBinding: 'a' },
+  { id: 'cockpit.reply', surface: 'cockpit', label: 'Reply', description: 'Focus the open row’s message box.', defaultBinding: 'r' },
+  { id: 'cockpit.archive', surface: 'cockpit', label: 'Archive session', description: 'Archive the highlighted manual session.', defaultBinding: 'e' },
+  { id: 'cockpit.open', surface: 'cockpit', label: 'Open full view', description: 'Open the highlighted row in Tracked or Sessions.', defaultBinding: 'enter' },
+  { id: 'cockpit.collapse', surface: 'cockpit', label: 'Collapse', description: 'Leave the message box, or collapse the open row.', defaultBinding: 'escape' },
+  { id: 'cockpit.nextNeedsYou', surface: 'cockpit', label: 'Next that needs you', description: 'Jump to the next row waiting on you.', defaultBinding: 'n' },
 ];
 
 export const DEFAULT_BINDINGS = Object.fromEntries(
