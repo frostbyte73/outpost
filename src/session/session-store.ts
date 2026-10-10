@@ -11,6 +11,8 @@ export interface SessionInfo {
   id: string;
   title: string;
   lastModified: number;
+  // Newest prompt dc typed (tail-scanned); absent when the tail holds none.
+  lastEngagedAt?: number;
   path: string;
   worktreePath?: string;
   worktreeBranch?: string;
@@ -424,13 +426,27 @@ function firstTextOfToolResult(content: unknown): string | undefined {
   return undefined;
 }
 
-// Tail-scan for the newest user/assistant timestamp; sort key must be real activity, not mtime —
-// `claude --resume` appends non-content lines that bump mtime without representing a new turn.
-function lastMessageTimestampMs(path: string, size: number): number | null {
+type TailRecord = { type?: string; timestamp?: string; isMeta?: boolean; message?: { content?: unknown } };
+
+function isTypedPrompt(o: TailRecord): boolean {
+  if (o.type !== 'user' || o.isMeta) return false;
+  const c = o.message?.content;
+  if (typeof c === 'string') return !isSystemInjection(c);
+  if (!Array.isArray(c)) return false;
+  if (c.some((b) => (b as { type?: string })?.type === 'tool_result')) return false;
+  return c.some((b) => {
+    const blk = b as { type?: string; text?: unknown };
+    return blk?.type === 'text' && !isSystemInjection(String(blk.text ?? ''));
+  });
+}
+
+// Tail-scan for the newest user/assistant timestamp and the newest typed prompt; sort keys must be
+// real activity, not mtime — `claude --resume` appends non-content lines that bump mtime.
+function tailTimestamps(path: string, size: number): { last: number | null; prompt: number | null } {
   const TAIL_BYTES = 64 * 1024;
   const start = Math.max(0, size - TAIL_BYTES);
   const len = size - start;
-  if (len <= 0) return null;
+  if (len <= 0) return { last: null, prompt: null };
   const fd = openSync(path, 'r');
   try {
     const buf = Buffer.alloc(len);
@@ -438,19 +454,21 @@ function lastMessageTimestampMs(path: string, size: number): number | null {
     const text = buf.toString('utf8');
     // Drop leading partial record if we started mid-line.
     const firstNl = start === 0 ? -1 : text.indexOf('\n');
-    const usable = firstNl === -1 ? text : text.slice(firstNl + 1);
-    const lines = usable.split('\n');
-    for (let i = lines.length - 1; i >= 0; i--) {
+    const lines = (firstNl === -1 ? text : text.slice(firstNl + 1)).split('\n');
+    let last: number | null = null;
+    let prompt: number | null = null;
+    for (let i = lines.length - 1; i >= 0 && (last === null || prompt === null); i--) {
       const line = lines[i];
       if (!line) continue;
-      let obj: unknown;
-      try { obj = JSON.parse(line); } catch { continue; }
-      const o = obj as { type?: string; timestamp?: string };
+      let o: TailRecord;
+      try { o = JSON.parse(line) as TailRecord; } catch { continue; }
       if ((o.type !== 'user' && o.type !== 'assistant') || typeof o.timestamp !== 'string') continue;
       const ms = Date.parse(o.timestamp);
-      if (Number.isFinite(ms)) return ms;
+      if (!Number.isFinite(ms)) continue;
+      if (last === null) last = ms;
+      if (prompt === null && isTypedPrompt(o)) prompt = ms;
     }
-    return null;
+    return { last, prompt };
   } finally {
     closeSync(fd);
   }
@@ -514,7 +532,7 @@ export class SessionStore {
   private readonly runtimeDir: string | undefined;
   private cwdCache = new Map<string, { cwd: string; mtime: number }>();
   // JSONL is append-only, so size unchanged ⇒ cached timestamp still valid.
-  private lastMsgTsCache = new Map<string, { size: number; ts: number | null }>();
+  private lastMsgTsCache = new Map<string, { size: number; ts: number | null; prompt: number | null }>();
   // Never invalidated within a daemon lifetime — restart picks up new git inits.
   private gitRepoCache = new Map<string, boolean>();
 
@@ -927,7 +945,7 @@ export class SessionStore {
     try {
       const stat = statSync(path);
       const id = path.split('/').pop()!.replace(/\.jsonl$/, '');
-      const lastModified = this.lastActivityMs(path, stat.size, stat.mtimeMs);
+      const act = this.activity(path, stat.size, stat.mtimeMs);
       const meta = this.readActionMeta(id);
       // Persisted sidecar so titles don't shift as new content streams in; delete to force regeneration.
       const titlePath = path.replace(/\.jsonl$/, '.title');
@@ -947,19 +965,21 @@ export class SessionStore {
       }
       // An action session's stamped title/label supersedes the transcript-derived one
       // (whose first turn is a bare `/action <uuid>` slash command → a UUID or "Untitled").
-      if (meta) return { id, title: meta.title || title, lastModified, path, sessionClass: 'action', actionLabel: meta.action };
-      return { id, title, lastModified, path };
+      if (meta) return { id, title: meta.title || title, ...act, path, sessionClass: 'action', actionLabel: meta.action };
+      return { id, title, ...act, path };
     } catch {
       return null;
     }
   }
 
   // Falls back to mtime so a brand-new session with no real turns yet still sorts to the top.
-  private lastActivityMs(path: string, size: number, mtimeMs: number): number {
-    const cached = this.lastMsgTsCache.get(path);
-    if (cached && cached.size === size) return cached.ts ?? mtimeMs;
-    const ts = lastMessageTimestampMs(path, size);
-    this.lastMsgTsCache.set(path, { size, ts });
-    return ts ?? mtimeMs;
+  private activity(path: string, size: number, mtimeMs: number): { lastModified: number; lastEngagedAt?: number } {
+    let cached = this.lastMsgTsCache.get(path);
+    if (!cached || cached.size !== size) {
+      const { last, prompt } = tailTimestamps(path, size);
+      cached = { size, ts: last, prompt };
+      this.lastMsgTsCache.set(path, cached);
+    }
+    return { lastModified: cached.ts ?? mtimeMs, ...(cached.prompt != null ? { lastEngagedAt: cached.prompt } : {}) };
   }
 }
