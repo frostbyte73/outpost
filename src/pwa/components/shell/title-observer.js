@@ -4,7 +4,7 @@ import { nav } from '../../state/nav.js';
 // multi-window setups can tell them apart by tab bar alone.
 
 const SURFACE_TITLES = {
-  cockpit: 'Cockpit',
+  cockpit: 'Cockpit (WIP)',
   tracked: 'Tracked',
   sessions: 'Sessions',
   schedules: 'Schedules',

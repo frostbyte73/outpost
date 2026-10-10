@@ -28,7 +28,7 @@ const raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame 
 function skeleton() {
   return `
     <div class="ckb-view">
-      <header class="ckb-top"><h1 class="ckb-h1">Cockpit</h1><div class="ckb-tally"></div></header>
+      <header class="ckb-top"><h1 class="ckb-h1">Cockpit (WIP)</h1><div class="ckb-tally"></div></header>
       <div class="ckb-empty" hidden>Nothing in flight.</div>
       <section class="ckb-section" data-section="jobs">
         <div class="o-group-hdr"><h2>Jobs</h2><span class="o-group-count"></span><span class="o-group-rule"></span>

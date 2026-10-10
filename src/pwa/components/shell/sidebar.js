@@ -19,7 +19,7 @@ import { updateStore, updateAvailable } from '../../state/update.js';
 // compact usage widget reuses both rather than re-deriving them.
 
 const TOP_ITEMS = [
-  { key: 'cockpit',   label: 'Cockpit',   icon: iconCockpit,   count: cockpitCount,   hot: true },
+  { key: 'cockpit',   label: 'Cockpit (WIP)',   icon: iconCockpit,   count: cockpitCount,   hot: true },
   { key: 'tracked',   label: 'Tracked',   icon: iconTracked,   count: trackedCount },
   { key: 'sessions',  label: 'Sessions',  icon: iconSessions,  count: sessionsCount },
   { key: 'schedules', label: 'Schedules', icon: iconSchedules, count: schedulesCount },

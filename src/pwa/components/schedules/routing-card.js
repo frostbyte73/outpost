@@ -30,7 +30,7 @@ export function renderRoutingCard(schedule, detail, editState, repaint, onSave) 
         <div class="sched-route">
           <span class="sched-route-icon">◈</span>
           <div class="sched-route-desc">
-            <div><strong>Cockpit</strong> — findings surface in the run queue</div>
+            <div><strong>Cockpit (WIP)</strong> — findings surface in the run queue</div>
             <div class="sub">Confidence threshold: ${routing.cockpit?.confidenceThreshold != null ? `<code>${Math.round(routing.cockpit.confidenceThreshold * 100)}%</code>` : '<code>any</code>'}</div>
           </div>
         </div>
@@ -60,7 +60,7 @@ export function renderRoutingCard(schedule, detail, editState, repaint, onSave) 
     <div class="sched-card-hdr"><h3 class="o-microhead">▲ Where findings go</h3></div>
     <div class="sched-form">
       <div class="sched-route-edit">
-        <div class="sched-route-edit-hdr"><span class="sched-route-icon">◈</span><strong>Cockpit</strong></div>
+        <div class="sched-route-edit-hdr"><span class="sched-route-icon">◈</span><strong>Cockpit (WIP)</strong></div>
         <label class="sched-form-row"><span class="k">Confidence ≥</span><input class="r-cockpit-threshold" type="number" min="0" max="100" placeholder="any" value="${escapeHtml(String(thresholdPct))}" /><span class="sched-form-unit">%</span></label>
       </div>
       <div class="sched-route-edit">

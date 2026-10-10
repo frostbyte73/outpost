@@ -9,7 +9,7 @@ export const KEYMAP_COMMANDS = [
   { id: 'shell.togglePalette', surface: 'shell', label: 'Toggle command palette', description: 'Open or close the ⌘K palette.', defaultBinding: 'mod+k' },
   { id: 'shell.toggleSidebar', surface: 'shell', label: 'Toggle sidebar', description: 'Collapse or expand the sidebar.', defaultBinding: 'mod+b' },
   { id: 'shell.focusFilter', surface: 'shell', label: 'Focus list filter', description: 'Focus the current list column filter input.', defaultBinding: 'mod+f' },
-  { id: 'shell.jump.cockpit', surface: 'shell', label: 'Jump to Cockpit', description: 'Switch to the Cockpit surface.', defaultBinding: 'mod+1' },
+  { id: 'shell.jump.cockpit', surface: 'shell', label: 'Jump to Cockpit (WIP)', description: 'Switch to the Cockpit (WIP) surface.', defaultBinding: 'mod+1' },
   { id: 'shell.jump.tracked', surface: 'shell', label: 'Jump to Tracked', description: 'Switch to the Tracked surface.', defaultBinding: 'mod+2' },
   { id: 'shell.jump.sessions', surface: 'shell', label: 'Jump to Sessions', description: 'Switch to the Sessions surface.', defaultBinding: 'mod+3' },
   { id: 'shell.jump.schedules', surface: 'shell', label: 'Jump to Schedules', description: 'Switch to the Schedules surface.', defaultBinding: 'mod+4' },

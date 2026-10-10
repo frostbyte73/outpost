@@ -169,7 +169,7 @@ export function mcpConnectorsHidden(connectors = []) {
 }
 
 const HOTKEY_SURFACE_ORDER = ['shell', 'session', 'palette', 'diff', 'cockpit'];
-const HOTKEY_SURFACE_LABELS = { shell: 'Shell', session: 'Session', palette: 'Palette', diff: 'Diff review', cockpit: 'Cockpit' };
+const HOTKEY_SURFACE_LABELS = { shell: 'Shell', session: 'Session', palette: 'Palette', diff: 'Diff review', cockpit: 'Cockpit (WIP)' };
 
 // Pure grouping of the command catalog + user overrides into per-surface row
 // groups for the Hotkeys settings page. No DOM.
