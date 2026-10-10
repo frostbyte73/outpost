@@ -78,6 +78,10 @@ else that "uses accent" should use it as a *tint* (soft background) or as
 *colored text/border*, not as a filled block. Two solid-accent blobs on screen
 means one of them is lying about its importance.
 
+**Exception — the cockpit board.** Every expanded row body keeps its own primary
+(Approve, Accept, Send): the board exists to work several items at once, and each open body
+is its own decision. Row-level buttons stay `default`; nothing else on the board is a solid fill.
+
 **`--accent-2` — structural accent, never a call-to-action.** It is deliberately
 desaturated and dimmed (see the luminance notes in `base.css` — we tuned it to
 sit well below accent so hierarchy is unambiguous). Use for:

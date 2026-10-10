@@ -206,7 +206,7 @@ src/
     components/            # per-feature UI modules — one dir per surface/overlay
       shell/                 # desktop chrome: topbar, sidebar, surface registry/frame, keyboard, list-filter
       mobile-shell/          # mobile chrome: bottom tab bar, header, FAB, More screen, screen stack
-      cockpit/               # home surface (waiting/in-flight/upcoming/finished)
+      cockpit/               # desktop board (index.js) + mobile inbox (inbox.js)
       tracked/               # jobs list + detail + focus rail
       sessions-surface/      # sessions list/detail/rail
       schedules/             # schedules list/detail/create-dialog + routing/trigger/what/runs cards
@@ -244,7 +244,7 @@ src/
 - **New HTTP route** → factory function in `src/routes/<group>.ts`; wire it in `daemon.ts` (`registerXRoutes(server, deps)`). Do not inline routes into `daemon.ts`.
 - **New action** → `actions/<category>/<name>/` **and** `~/.outpost/actions/<category>/<name>/` — both, always (see Gotchas). A step that must decide its own next move is a controller (`type: 'orchestrated'`); anything else is a plain `action` step. If it's only ever reached from a controller round, a UI button, or a schedule, set `outpost: plannable: false` so it stays out of the orchestrator's catalog; if it IS a controller, add its sub-actions to `outpost: roster` and add it to the same roster whenever you add a round that binds it.
 - **New backend concern** → the matching cluster subdir. If nothing fits, create a new subdir rather than dropping a file at `src/` root.
-- **New PWA surface** → its own dir under `src/pwa/components/<surface>/index.js`, exporting `renderList`/`renderDetail`/`renderContext` as needed and registered in `shell/surfaces.js` (desktop) — `mobile-shell/index.js` mounts the *same* exports as a pushed screen, it does not reimplement the surface.
+- **New PWA surface** → its own dir under `src/pwa/components/<surface>/index.js`, exporting `renderList`/`renderDetail`/`renderContext` as needed and registered in `shell/surfaces.js` (desktop) — `mobile-shell/index.js` mounts the *same* exports as a pushed screen, it does not reimplement the surface. The one exception is the cockpit: desktop mounts the board (`components/cockpit/index.js`), mobile mounts the old inbox (`components/cockpit/inbox.js`), because a dense live board doesn't fit a phone.
 - **New PWA view-model** → `src/pwa/vm/<surface>.js`, pure functions only (no DOM, no store reads inside — callers pass raw snapshots in). This is what keeps desktop and mobile rendering the same derived data through different chrome.
 - **Cross-module callback** a component needs from `app.js` → add a key to `src/pwa/app-bridge.js`'s bridge object and wrapper function, installed via `installAppBridge()` at boot. Don't import `app.js` from a component (creates cycles).
 - **New PWA util** → `src/pwa/utils/<name>.js` if pure. Don't add another top-level `util.js`.
