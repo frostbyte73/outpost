@@ -210,17 +210,13 @@ const sessionHandlers = {
     }
   },
 
+  system(msg, _sid, isCurrent) {
+    if (msg.subtype === 'task_notification' && applyTaskNotification(msg) && isCurrent) deps.renderSession();
+  },
+
   user(msg, sid, isCurrent) {
-    // two shapes: string (synthetic <task-notification>) or array of tool_result blocks
     const S = sessions.for(sid);
-    const content = msg.message?.content;
-    if (typeof content === 'string') {
-      if (content.trimStart().startsWith('<task-notification>')) {
-        if (applyTaskNotification(content, sid) && isCurrent) deps.renderSession();
-      }
-      return;
-    }
-    const blocks = content;
+    const blocks = msg.message?.content;
     if (!Array.isArray(blocks)) return;
     let touched = false;
     for (const b of blocks) {

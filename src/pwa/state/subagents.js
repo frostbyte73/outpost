@@ -382,16 +382,11 @@ export function applyTaskTranscriptMessage(m, sessionId) {
   return false;
 }
 
-// <task-notification> from the daemon-injected user message signals subagent
-// completion. task-id is either an agent_id or a background Bash task id;
-// Bash ones return false so callers can skip further handling.
-export function applyTaskNotification(text) {
-  const get = (tag) => {
-    const re = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`);
-    const m = re.exec(text);
-    return m ? m[1].trim() : null;
-  };
-  const taskId = get('task-id');
+// stream-json carries a background agent's completion as a `system`/`task_notification`
+// frame — the <task-notification> user message exists only in the JSONL. task_id is
+// either an agent_id or a background Bash task id; Bash ones return false.
+export function applyTaskNotification(msg) {
+  const taskId = msg.task_id;
   if (!taskId) return false;
   // agentId is globally unique, so search every session's slice.
   let bucketSid = null;
@@ -400,9 +395,9 @@ export function applyTaskNotification(text) {
   }
   if (bucketSid == null) return false;
   subagents.setCompletion(taskId, bucketSid, {
-    status: get('status') ?? 'completed',
-    summary: get('summary') ?? null,
-    result: get('result') ?? null,
+    status: msg.status ?? 'completed',
+    summary: msg.summary ?? null,
+    result: null,
     completedAt: Date.now(),
   });
   return true;

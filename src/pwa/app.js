@@ -37,7 +37,6 @@ import {
   applyTaskUse,
   applyTaskResult,
   applyTaskTranscriptMessage,
-  applyTaskNotification,
   recordParentAgentInvocation,
   addSubagentEntry,
   applyDiskSubagents,
