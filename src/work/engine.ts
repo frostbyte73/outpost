@@ -2184,6 +2184,10 @@ export class WorkEngine {
     void this.tickOne(jobId);
   }
 
+  markEngaged(jobId: string): void {
+    this.mutate(jobId, (j) => ({ ...j, lastEngagedAt: this.ctx.now() }));
+  }
+
   // User force-closes a live orchestrated step rather than waiting for the controller to
   // converge on its own move.
   markStepResolved(jobId: string, stepId: string): void {

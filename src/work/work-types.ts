@@ -458,6 +458,8 @@ export interface JobRecord {
   failure?: { reason: string; at: number };
   stalls?: SessionStall[];
   events?: JobEvent[];
+  // When dc last acted on this job from the PWA; orders the cockpit. Agent activity never sets it.
+  lastEngagedAt?: number;
   createdAt: number;
   updatedAt: number;
 }
