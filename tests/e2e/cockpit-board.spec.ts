@@ -91,3 +91,33 @@ seededTest('the caret opens a job’s history and a session’s composer in plac
   await expect(session.locator('.ckb-body .ckb-session .sv-composer')).toBeVisible();
   await expect(outpostPage.locator('.o-sidebar-item[data-surface="cockpit"]')).toHaveClass(/is-active/);
 });
+
+seededTest('j/k/space/e drive the board without the mouse', async ({ outpostPage }) => {
+  await openCockpit(outpostPage);
+  await outpostPage.locator('.ckb-top').click();
+  await outpostPage.keyboard.press('j');
+  const first = outpostPage.locator('.ckb-item.is-selected');
+  await expect(first).toHaveCount(1);
+  await expect(first).toHaveAttribute('data-row-key', `job:${JOB_ID}`);
+  await outpostPage.keyboard.press('Space');
+  await expect(first.locator('.ckb-body')).toBeVisible();
+  await outpostPage.keyboard.press('Escape');
+  await expect(first.locator('.ckb-body')).toBeHidden();
+
+  await outpostPage.keyboard.press('j');
+  const session = outpostPage.locator(`.ckb-item[data-row-key="session:${MANUAL_SESSION}"]`);
+  await expect(session).toHaveClass(/is-selected/);
+  await outpostPage.keyboard.press('e');
+  await expect(session).toHaveCount(0, { timeout: 10_000 });
+});
+
+seededTest('typing in a composer never triggers board keys', async ({ outpostPage }) => {
+  await openCockpit(outpostPage);
+  const session = outpostPage.locator(`.ckb-item[data-row-key="session:${MANUAL_SESSION}"]`);
+  await session.locator('.ckb-caret').click();
+  const composer = session.locator('.ckb-body .ckb-session .sv-composer');
+  await composer.click();
+  await outpostPage.keyboard.type('jkae');
+  await expect(composer).toHaveText('jkae');
+  await expect(session.locator('.ckb-body')).toBeVisible();
+});
