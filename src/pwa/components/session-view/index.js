@@ -45,6 +45,7 @@ import { computeGitInfo, resolveSessionTitle, sessionRunMeta, archiveSession, de
 import { agentsStripHtml, refreshAgentsSheet } from '../agents-sheet/index.js';
 import { refreshTodosSheet } from '../todos-sheet.js';
 import { deriveSkillLabel } from '../../vm/sessions.js';
+import { engagement } from '../../state/engagement.js';
 
 const APPROVAL_MODES = ['ask', 'plan', 'accept-edits', 'bypass'];
 const APPROVAL_MODE_LABEL = { 'ask': 'Ask', 'plan': 'Plan', 'accept-edits': 'Accept edits', 'bypass': 'Bypass' };
@@ -594,6 +595,7 @@ function wireComposer(dom, sessionId, paletteState) {
     }
     // Marked __pending so future stages can render it dimmed until
     // server-echoed.
+    engagement.markSession(sessionId);
     sessions.for(sessionId).appendTranscript({ role: 'user', text, __pending: true });
     clearComposer();
   };

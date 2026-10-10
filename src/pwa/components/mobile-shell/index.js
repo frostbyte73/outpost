@@ -16,7 +16,7 @@ import { schedulesStore } from '../../state/schedules.js';
 import { actions } from '../../state/actions.js';
 import { runs } from '../../state/runs.js';
 import { openSession } from '../../app-bridge.js';
-import { renderDetail as renderCockpitDetail } from '../cockpit/index.js';
+import { renderInbox as renderCockpitDetail } from '../cockpit/inbox.js';
 import { renderList as renderTrackedList, renderDetail as renderTrackedDetail } from '../tracked/index.js';
 import { renderFocusCard } from '../tracked/focus-rail.js';
 import { trackedGroups } from '../../vm/tracked.js';

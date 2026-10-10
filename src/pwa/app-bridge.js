@@ -8,6 +8,8 @@
 // until installAppBridge() has run, which keeps the module import-safe.
 
 import { nav } from './state/nav.js';
+import { approvals } from './state/approvals.js';
+import { engagement } from './state/engagement.js';
 
 let bridge = {
   catchUpFromDisk: null,
@@ -48,6 +50,8 @@ export function catchUpFromDisk(sessionId) {
   return bridge.catchUpFromDisk?.(sessionId);
 }
 export function decideApproval(approvalId, decision, reason) {
+  const a = approvals.get().pending.find((p) => p.approvalId === approvalId);
+  if (a?.sessionId) engagement.markSession(a.sessionId);
   return bridge.decideApproval?.(approvalId, decision, reason);
 }
 export function forceReconnect() {
