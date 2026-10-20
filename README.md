@@ -160,6 +160,36 @@ chmod 600 ~/.outpost/.env
 
 Standard `KEY=value` syntax, `#` comments allowed, `export KEY=value` tolerated. Anything already set in the plist or shell wins over the file, so the file is the safe place for secrets you don't want baked into LaunchAgent XML.
 
+#### Or keep the secrets in 1Password
+
+Any value that starts with `op://` is a [1Password CLI](https://developer.1password.com/docs/cli/) reference. The daemon resolves it through `op` at startup, so the file holds a pointer rather than the secret:
+
+```bash
+cat > ~/.outpost/.env <<'EOF'
+# Reference an item, not a value. Titles work, including ones with spaces;
+# an item ID works too and survives a rename.
+LINEAR_API_TOKEN=op://Employee/linear-api-key/password
+GITHUB_TOKEN=op://Employee/github-pat/token
+EOF
+chmod 600 ~/.outpost/.env
+```
+
+`op read` runs once per distinct reference, so two keys naming the same item cost one call, and plain `KEY=value` lines in the same file are unaffected. The CLI has to be signed in — with the desktop app, expect an unlock prompt when the daemon starts if 1Password is locked.
+
+A reference that won't resolve — 1Password locked, item renamed, `op` missing, no answer within 60 seconds — logs a warning and leaves that one key unset. The daemon still boots, and whatever needed the key says so: the Linear routine prints `LINEAR_API_TOKEN missing ... — work orchestrator disabled`. To make an unresolvable reference fatal instead, so a bad pointer can never pass silently:
+
+```bash
+echo 'OUTPOST_ENV_STRICT=1' >> ~/.outpost/.env
+```
+
+If `op` isn't on the daemon's `PATH` — launchd doesn't inherit your shell's — name it outright. `/opt/homebrew/bin/op` is searched automatically, so you only need this for an unusual install:
+
+```bash
+echo 'OUTPOST_OP_BIN=/opt/homebrew/bin/op' >> ~/.outpost/.env
+```
+
+Both lines are read from this file, so there's no need to touch the plist.
+
 ### Review the permissions before going live
 
 Two files govern what runs without asking, and they answer different questions:
@@ -231,7 +261,7 @@ To override a default permanently, edit `~/Library/LaunchAgents/$PLIST_LABEL.pli
 | `OUTPOST_STOP_THRESHOLD_MS` | `30000` | How long a session must be idle before a stop-hook counts it as done (drives "needs you" notifications). |
 | `OUTPOST_PUSH_TTL_SECONDS` | `60` | TTL on outgoing Web Push messages. |
 
-Anything else (`OUTPOST_CERT_PATH`, `OUTPOST_KEY_PATH`, `OUTPOST_ALLOWLIST_PATH`, `OUTPOST_VAPID_PATH`, `OUTPOST_PUSH_SUBS_PATH`) exists for power users — see `src/config.ts` for the full list.
+Anything else (`OUTPOST_CERT_PATH`, `OUTPOST_KEY_PATH`, `OUTPOST_ALLOWLIST_PATH`, `OUTPOST_VAPID_PATH`, `OUTPOST_PUSH_SUBS_PATH`) exists for power users — see `src/config.ts` for the full list. `OUTPOST_ENV_STRICT` and `OUTPOST_OP_BIN` are covered under [secrets in `~/.outpost/.env`](#or-keep-the-secrets-in-1password).
 
 ## Remote access over Tailscale (optional)
 
