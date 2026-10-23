@@ -33,7 +33,7 @@
     "alwaysAllowPathPatterns": []
   },
   "pull": {
-    "description": "Network reads: WebFetch/WebSearch, read-only MCP calls (get_/list_/search_ patterns) against Linear/Datadog/GitHub/Notion/Slack/incident.io/Grafana, curl -s, and read-only gh commands.",
+    "description": "Network reads: WebFetch/WebSearch, read-only MCP calls (get_/list_/search_ patterns) against Linear/Datadog/GitHub/Notion/Slack/incident.io/Grafana, curl -s (a GitHub API read authenticates with -H \"Authorization: Bearer $GITHUB_TOKEN\" — the token may go to https://api.github.com/ only, see github-token.ts), and read-only gh commands.",
     "alwaysAllow": [
       "WebFetch",
       "WebSearch",
@@ -41,7 +41,7 @@
       "ReadMcpResourceTool"
     ],
     "alwaysAllowBashPatterns": [
-      "^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|[\"']?(?:https?://|\\$\\{?[A-Za-z_])[^\\s\"'<>&|;\\\\]*[\"']?))*(?:\\s|\\\\\\n)*$",
+      "^curl(?:(?:\\s|\\\\\\n)+(?:-[fsSL]+|--(?:silent|fail(?:-with-body)?|show-error|location|compressed)|(?:--max-time|--connect-timeout|-H|--header)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|[\"']?(?:https?://|\\$\\{?[A-Za-z_])[^\\s\"'<>&|;\\\\]*[\"']?))*(?:\\s|\\\\\\n)*$",
       "^gh api(?:(?:\\s|\\\\\\n)+(?:--paginate|--slurp|(?:--cache|--hostname|-H|--header|-q|--jq|-t|--template)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)|(?:--method|-X)(?:(?:\\s|\\\\\\n)+|=)GET|(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./][^\\s\"'<>&|;\\\\]*)))*(?:\\s|\\\\\\n)*$",
       "^gh (pr view|pr list|pr checks|pr diff|pr status|run view|run list|run watch|workflow view|workflow list|repo view|issue view|issue list|search|release view|release list|label list|cache list|browse)(\\s|$)",
       "^kubectl (get|describe|logs|top|version|api-resources|api-versions)(\\s|$)",
@@ -96,7 +96,7 @@
     ]
   },
   "push": {
-    "description": "External writes. Every call here is gated: it runs only when pinned by a write draft the user approved, so these rules name the WRITE and let the approval card show the payload, rather than enumerating every permissible flag. Rules must match writes ONLY — matching a read (bare `git tag`, a GET `gh api`) would demand a draft before an action could read. Two structural bars are enforced in code rather than spelled into each rule: --input/--body-file/--notes-file must point under /tmp so the card can render the body being sent (allowlist.ts fileFlagsAllowed), and a force-push, `--mirror`, or `gh pr merge --admin` is refused outright, pin or no pin (dangerous-writes.ts). Everything else dangerous — merging, deleting a ref, a foreign --repo, a raw API write, a URL remote, pushing to a default branch — is surfaced as a warning on the draft instead of being unreachable.",
+    "description": "External writes. Every call here is gated: it runs only when pinned by a write draft the user approved, so these rules name the WRITE and let the approval card show the payload, rather than enumerating every permissible flag. Rules must match writes ONLY — matching a read (bare `git tag`, a GET `gh api`) would demand a draft before an action could read. Two structural bars are enforced in code rather than spelled into each rule: --input/--body-file/--notes-file must point under /tmp so the card can render the body being sent (allowlist.ts fileFlagsAllowed), and a force-push, `--mirror`, or `gh pr merge --admin` is refused outright, pin or no pin (dangerous-writes.ts). Everything else dangerous — merging, deleting a ref, a foreign --repo, a raw API write, a URL remote, pushing to a default branch — is surfaced as a warning on the draft instead of being unreachable. The one exception to verb anchors is curl, for GitHub API writes on a machine without gh: an anchored whitelist pinned to https://api.github.com/, because curl's own flags (--proxy, --resolve, --next, a second URL) decide where the request and its Authorization header actually go. A curl body read from a file (-d @path) faces the same /tmp bar, and $GITHUB_TOKEN may appear only as that request's Authorization header (github-token.ts).",
     "alwaysAllow": [],
     "alwaysAllowBashPatterns": [
       "^git push(\\s|$)",
@@ -107,7 +107,8 @@
       "^gh release (create|edit|upload)(\\s|$)",
       "^gh workflow run(\\s|$)",
       "^gh run rerun(\\s|$)",
-      "^gh api[^\\n]*(?:--method|-X)(?:[ \\t]+|=)(?:POST|PUT|PATCH|DELETE|post|put|patch|delete)(?:\\s|$)"
+      "^gh api[^\\n]*(?:--method|-X)(?:[ \\t]+|=)(?:POST|PUT|PATCH|DELETE|post|put|patch|delete)(?:\\s|$)",
+      "^curl(?=[\\s\\S]*?\\s(?:(?:-X|--request)(?:\\s+|=)[\"']?(?:POST|PUT|PATCH|DELETE|post|put|patch|delete)[\"']?|-d|--data|--data-binary|--data-raw|--json)(?:\\s|=|$))(?:(?:\\s|\\\\\\n)+(?:-[sSfL]+|--(?:silent|show-error|fail|fail-with-body|location)|(?:-X|--request)(?:\\s|\\\\\\n)+[\"']?(?:POST|PUT|PATCH|DELETE|post|put|patch|delete)[\"']?|--request=[\"']?(?:POST|PUT|PATCH|DELETE|post|put|patch|delete)[\"']?|(?:-H|-d)(?:\\s|\\\\\\n)+(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./@][^\\s\"'<>&|;\\\\]*)|(?:--header|--data|--data-binary|--data-raw|--json)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./@][^\\s\"'<>&|;\\\\]*)|(?:-m|--max-time|--connect-timeout)(?:(?:\\s|\\\\\\n)+|=)[0-9]+))*(?:\\s|\\\\\\n)+(?:\"https://api\\.github\\.com/[^\"\\n]*\"|'https://api\\.github\\.com/[^'\\n]*'|https://api\\.github\\.com/[^\\s\"'<>&|;\\\\]*)(?:(?:\\s|\\\\\\n)+(?:-[sSfL]+|--(?:silent|show-error|fail|fail-with-body|location)|(?:-X|--request)(?:\\s|\\\\\\n)+[\"']?(?:POST|PUT|PATCH|DELETE|post|put|patch|delete)[\"']?|--request=[\"']?(?:POST|PUT|PATCH|DELETE|post|put|patch|delete)[\"']?|(?:-H|-d)(?:\\s|\\\\\\n)+(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./@][^\\s\"'<>&|;\\\\]*)|(?:--header|--data|--data-binary|--data-raw|--json)(?:(?:\\s|\\\\\\n)+|=)(?:\"[^-\"\\n][^\"\\n]*\"|'[^-'\\n][^'\\n]*'|[A-Za-z0-9_$./@][^\\s\"'<>&|;\\\\]*)|(?:-m|--max-time|--connect-timeout)(?:(?:\\s|\\\\\\n)+|=)[0-9]+))*(?:\\s|\\\\\\n)*$"
     ],
     "alwaysAllowMcpPatterns": [
       "^mcp__claude_ai_Linear__(save_|create_)",

@@ -7,7 +7,9 @@ The defaults work for most people. The one file worth knowing about is `~/.outpo
 The background service doesn't inherit your shell's environment, so anything Claude's subprocesses need at runtime goes in `~/.outpost/.env`, which the daemon reads at startup:
 
 ```bash
-# Lets `gh` act under a specific identity. Without it, gh uses its own login.
+# The daemon's GitHub identity: PR creation, the PR watcher, review intake.
+# With it, Outpost calls the GitHub API directly and needs no `gh` binary;
+# without it, those calls fall back to `gh` and its own auth.
 GITHUB_TOKEN=ghp_...
 
 # Turns on the built-in hourly Linear intake routine (one job per issue assigned to you).

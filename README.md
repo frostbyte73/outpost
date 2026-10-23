@@ -27,9 +27,9 @@ Port 8080 taken by something else? Re-run with another port, e.g. `OUTPOST_HTTP_
 - **Use it from your phone** — install it as an app on your phone over [Tailscale](docs/remote-access.md), with push notifications when something needs you.
 - **Work that runs on its own** — routines on a schedule, on an event, or whenever you have spare usage left in your limits. [routines →](docs/features.md#routines--work-that-fires-without-you)
 - **Safe by default** — reads run automatically; anything else asks first. [permissions →](docs/permissions.md)
-- **Runs on what you already have** — your `claude` login, your `git` and `gh` identity, your MCP servers.
+- **Runs on what you already have** — your `claude` login, your `git` identity and GitHub token or `gh` login, your MCP servers.
 
-GitHub features (PRs, CI, review comments) need the [GitHub CLI](https://cli.github.com) logged in: `brew install gh && gh auth login`.
+GitHub features (PRs, CI, review comments) need GitHub access: a `GITHUB_TOKEN` in `~/.outpost/.env` is enough (the daemon then calls the GitHub API directly, and actions use `curl` with it — see [configuration](docs/configuration.md)). Otherwise install the [GitHub CLI](https://cli.github.com) and log in: `brew install gh && gh auth login`.
 
 Linear features (hourly intake of your assigned tickets as jobs, ticket state updates) need a personal API key from Linear › Settings › Security & access, added to `~/.outpost/.env` as `LINEAR_API_TOKEN=lin_api_...`, then `launchctl kickstart -k gui/$UID/local.outpost.$USER`. See [configuration](docs/configuration.md).
 

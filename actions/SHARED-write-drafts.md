@@ -101,6 +101,34 @@ yourself, the way every such action worked before `files` existed), and its curr
 what get hashed. Nothing about that path is wrong — `files` is the better default for anything
 new, not a requirement for every file-referencing call.
 
+## GitHub without `gh`: curl and `$GITHUB_TOKEN`
+
+When a `gh` call fails with `command not found`, talk to the REST API directly. `GITHUB_TOKEN`
+is already in your environment; reference it, never print or paste it. The one shape the
+permission checker accepts:
+
+```
+curl -sS --fail-with-body -X POST \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H 'Accept: application/vnd.github+json' \
+  https://api.github.com/repos/<owner>/<repo>/pulls \
+  -d @/tmp/outpost-pr.json
+```
+
+- **The token goes in that `Authorization` header, to `https://api.github.com/`, and nowhere
+  else.** Any other host, a second URL, `--proxy`/`--resolve`/`--next`/`-o`, a `VAR=… curl`
+  prefix, or the token inside a body or URL is refused outright — no approval can authorise it.
+- **Put the body in a file, via `files`** (see above): `-d @/tmp/<name>.json` gets the same
+  /tmp bar and digest pin as `--input`, and the user edits the JSON in the card. Inline
+  `-d '{…}'` works only while the body has no single quote in it, which a PR description
+  rarely manages.
+- **Reads need no draft**: drop `-X`/`-d` and it's an ordinary `pull` call
+  (`curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/<owner>/<repo>/pulls/<n>`).
+  A write — `-X POST|PUT|PATCH|DELETE`, or any `-d`/`--data*`/`--json` — is gated like any
+  other and must be drafted.
+- Use literal `<owner>/<repo>` from `git remote get-url origin`; `gh api`'s `{owner}`/`{repo}`
+  placeholders mean nothing to curl.
+
 ## Three outcomes, one resume each
 
 Accept can come from the daemon as well as the user. When the user pre-approved this kind of

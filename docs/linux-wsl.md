@@ -13,7 +13,7 @@ On Windows, run Outpost inside a WSL2 distro (Ubuntu is the tested path):
 
 2. **Keep your repos in the Linux filesystem** (`~/code/...`), not under `/mnt/c`. Git and worktree operations across that boundary are an order of magnitude slower.
 
-3. **Install** Node 22+, `claude`, `gh`, and `expect` inside the distro, log in to `claude`, then clone and run `install/install.sh` as in the README.
+3. **Install** Node 22+, `claude`, `gh` (optional with a `GITHUB_TOKEN` in `~/.outpost/.env`), and `expect` inside the distro, log in to `claude`, then clone and run `install/install.sh` as in the README.
 
 4. **Keep the distro alive.** WSL stops a distro shortly after its last terminal closes, systemd services included, and nothing starts it at Windows login. Register a logon task from PowerShell that holds it open:
 

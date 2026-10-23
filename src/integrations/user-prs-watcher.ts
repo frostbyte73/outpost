@@ -1,14 +1,12 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { dirname } from 'node:path';
+import { runGh } from './gh-cli.js';
 
-const execFileP = promisify(execFile);
-
+// No repo of its own: a search names its repos in the query, a PR view by its URL.
 async function defaultRunGh(args: string[]): Promise<string> {
-  const { stdout } = await execFileP('gh', args, { maxBuffer: 4 * 1024 * 1024, timeout: 20_000 });
-  return stdout.toString();
+  return runGh(homedir(), args, { timeout: 20_000 });
 }
 
 export interface UserPr {
