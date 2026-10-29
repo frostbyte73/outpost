@@ -152,6 +152,7 @@ export interface SessionInfo {
   lastModified: number;
   // Newest prompt dc typed, else the session file's creation.
   lastEngagedAt?: number;
+  lastReplyAt?: number;
   path: string;
   worktreePath?: string;
   worktreeBranch?: string;
@@ -169,6 +170,8 @@ export interface SessionInfo {
   actionLabel?: string;
   // Live proc state, annotated by GET /api/sessions from SessionManager.
   runState?: 'foreground' | 'background' | 'idle';
+  working?: boolean;
+  seenAt?: number;
 }
 
 export interface ProjectInfo {

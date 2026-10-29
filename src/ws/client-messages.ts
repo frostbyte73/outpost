@@ -56,9 +56,11 @@ export function handleNotificationsMessage(raw: RawFrame, deps: NotificationsMes
 }
 
 interface SessionMessageTarget {
-  sendTurn(sessionId: string, turn: TurnInput, onDrop?: (e: Error, reply: (frame: unknown) => void) => void): void;
+  sendTurn(sessionId: string, turn: TurnInput): void;
   interrupt(sessionId: string): void;
   broadcast(sessionId: string, message: unknown): void;
+  isLive(sessionId: string): boolean;
+  wake(sessionId: string): Promise<void>;
 }
 
 interface ApprovalModeTarget {
@@ -119,24 +121,35 @@ export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: Ses
       refuse(e as Error);
       return;
     }
-    // SessionManager.sendTurn throws when the session isn't in `active` — which a client
-    // can trigger any time by typing into a session whose subprocess has since exited
-    // (a daemon restart drops every active entry while the PWA keeps showing them).
-    // Unguarded, that throw unwinds through ws.on('message') and kills the daemon,
-    // which drops every other session too. Report it, don't die.
-    try {
-      deps.manager.sendTurn(sessionId, turn, refuse);
-      deps.onUserMessage?.(sessionId);
-    } catch (e) {
-      refuse(e as Error);
-    }
+    // A throw here would unwind through ws.on('message') and take the daemon down with every session.
+    const deliver = () => {
+      try {
+        deps.manager.sendTurn(sessionId, turn);
+        deps.onUserMessage?.(sessionId);
+      } catch (e) {
+        refuse(e as Error);
+      }
+    };
+    if (deps.manager.isLive(sessionId)) deliver();
+    // To every viewer: the sender may have reconnected on a new socket while the worktree was building.
+    else deps.manager.wake(sessionId).then(deliver, (e: Error) => refuse(e, (f) => deps.manager.broadcast(sessionId, f)));
+  } else if (msg.type === 'wake') {
+    deps.manager.wake(sessionId).catch((e: Error) => {
+      const frame = { type: 'daemon_error', message: e.message };
+      if (deps.reply) deps.reply(frame);
+      else deps.manager.broadcast(sessionId, frame);
+    });
   } else if (msg.type === 'shell_exec') {
     const { execId, command } = msg as { execId?: string; command?: string };
-    if (deps.shell && typeof execId === 'string' && typeof command === 'string' && command.trim()) {
-      void deps.shell.run(sessionId, execId, command).catch((e: Error) => {
-        log(`[api] shell_exec in ${sessionId.slice(0, 8)} failed: ${e.message}`);
-      });
-    }
+    const shell = deps.shell;
+    // After the wake, so a new worktree session runs in its worktree and the result reaches a live client.
+    void deps.manager.wake(sessionId)
+      .catch((e: Error) => log(`[api] wake for ${sessionId.slice(0, 8)} failed: ${e.message}`))
+      .then(() => {
+        if (!shell || typeof execId !== 'string' || typeof command !== 'string' || !command.trim()) return;
+        return shell.run(sessionId, execId, command);
+      })
+      .catch((e: Error) => log(`[api] shell_exec in ${sessionId.slice(0, 8)} failed: ${e.message}`));
   } else if (msg.type === 'approval_decide') {
     const { approvalId, decision, reason } = msg as { approvalId: string; decision: 'allow' | 'deny'; reason?: string };
     deps.queue.decide(approvalId, { allow: decision === 'allow', reason });

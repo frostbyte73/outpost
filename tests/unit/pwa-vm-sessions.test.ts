@@ -17,10 +17,10 @@ function projects() {
 }
 
 function sessionsById() {
-  return new Map([
-    ['running', { runState: 'foreground' }],
-    ['idle', { runState: 'inactive' }],
-    ['action', { runState: 'background' }],
+  return new Map<string, any>([
+    ['running', { runState: 'foreground', thinking: true }],
+    ['idle', { runState: 'foreground', thinking: false }],
+    ['action', { runState: 'background', thinking: true }],
   ]);
 }
 
@@ -40,34 +40,48 @@ describe('sessionGroups', () => {
     const rows = projects();
     rows[0]!.sessions.push({ id: 'edit', title: 'Edit action: oncall', lastModified: 500, archived: false, kind: 'action-edit' } as any);
     const live = sessionsById();
-    live.set('edit', { runState: 'background' } as any);
-    live.set('action', { runState: 'inactive' } as any);
+    live.set('edit', { runState: 'background', thinking: true });
+    live.set('action', { runState: 'background', thinking: false });
 
     const groups = sessionGroups({ projects: rows, sessionsById: live });
     expect(groups.actions.map((s: any) => s.id)).toEqual(['edit']);
     expect(groups.idle.map((s: any) => s.id)).toEqual(['idle', 'action']);
   });
 
-  // The regression: opening a job files every finished step's session under Running.
-  // mountInlineSession calls ensureSlice for every step it draws, so a slice exists for
-  // sessions whose subprocess died long ago. The slice must not out-vote the daemon's own
-  // row unless it actually knows something — an untouched slice carries runState `null`,
-  // and the server row decides.
-  it('defers to the daemon row for a slice that has no liveness evidence of its own', () => {
-    const rendered = new Map<string, any>([
-      ['running', { runState: null }],
-      ['idle', { runState: null }],
-      ['action', { runState: null }],
-    ]);
+  it('uses the daemon working flag for a session this tab has no slice for', () => {
     const rows = projects();
-    // What GET /api/sessions says: one alive, the rest reaped.
-    const serverRunState: Record<string, string> = { running: 'background', idle: 'idle', action: 'idle' };
-    rows[0]!.sessions = rows[0]!.sessions.map((s) => ({ ...s, runState: serverRunState[s.id] })) as any;
-
-    const groups = sessionGroups({ projects: rows, sessionsById: rendered });
+    rows[0]!.sessions = rows[0]!.sessions.map((s) => ({ ...s, working: s.id === 'running' })) as any;
+    const groups = sessionGroups({ projects: rows, sessionsById: new Map() });
     expect(groups.sessions.map((s: any) => s.id)).toEqual(['running']);
     expect(groups.actions).toEqual([]);
     expect(groups.idle.map((s: any) => s.id).sort()).toEqual(['action', 'idle']);
+  });
+
+  it('groups a session that is open with a live process but not working as idle', () => {
+    const groups = sessionGroups({ projects: projects(), sessionsById: sessionsById() });
+    expect(groups.idle.map((s: any) => s.id)).toContain('idle');
+    expect(groups.idle.find((s: any) => s.id === 'idle').state).toBe('idle');
+  });
+
+  it('groups an unread manual session with sessions', () => {
+    const activity = new Map([['idle', { working: false, lastReplyAt: 5000, seenAt: 4000 }]]);
+    const groups = sessionGroups({ projects: projects(), sessionsById: sessionsById(), activity });
+    expect(groups.sessions.map((s: any) => s.id).sort()).toEqual(['idle', 'running']);
+    expect(groups.sessions.find((s: any) => s.id === 'idle').state).toBe('unread');
+  });
+
+  it('never marks an action session unread', () => {
+    const live = sessionsById();
+    live.set('action', { thinking: false });
+    const activity = new Map([['action', { working: false, lastReplyAt: 5000, seenAt: 4000 }]]);
+    const groups = sessionGroups({ projects: projects(), sessionsById: live, activity });
+    expect(groups.idle.map((s: any) => s.id)).toContain('action');
+  });
+
+  it('groups a session holding an approval with sessions', () => {
+    const groups = sessionGroups({ projects: projects(), sessionsById: new Map(), approvalSessionIds: new Set(['idle']) });
+    expect(groups.sessions.map((s: any) => s.id)).toEqual(['idle']);
+    expect(groups.sessions[0].state).toBe('approval');
   });
 
   it('reveals archived sessions into "recent" when showArchived is set', () => {
@@ -75,7 +89,7 @@ describe('sessionGroups', () => {
     expect(groups.recent.map((s: any) => s.id)).toEqual(['archived']);
   });
 
-  it('tab=active keeps only running/background sessions', () => {
+  it('tab=active keeps only non-idle sessions', () => {
     const groups = sessionGroups({ projects: projects(), sessionsById: sessionsById(), tab: 'active' });
     expect(ids(groups)).toEqual(['action', 'running']);
   });

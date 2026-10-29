@@ -11,7 +11,7 @@ import type {
 export class ClaudeTranscripts implements TranscriptReader {
   private cwdCache = new Map<string, { cwd: string; mtime: number }>();
   // JSONL is append-only, so size unchanged ⇒ cached timestamp still valid.
-  private lastMsgTsCache = new Map<string, { size: number; ts: number | null; prompt: number | null }>();
+  private lastMsgTsCache = new Map<string, { size: number; ts: number | null; prompt: number | null; reply: number | null }>();
 
   constructor(private readonly root: string) {}
 
@@ -194,13 +194,17 @@ export class ClaudeTranscripts implements TranscriptReader {
   // Falls back to mtime so a brand-new session with no real turns yet still sorts to the top.
   // The JSONL is append-only, so a prompt a long agent turn pushed out of the tail is still the
   // newest one; with none ever seen, creation stands in — never agent activity.
-  private activity(path: string, size: number, mtimeMs: number, birthtimeMs: number): { lastModified: number; lastEngagedAt: number } {
+  private activity(path: string, size: number, mtimeMs: number, birthtimeMs: number): { lastModified: number; lastEngagedAt: number; lastReplyAt?: number } {
     let cached = this.lastMsgTsCache.get(path);
     if (!cached || cached.size !== size) {
-      const { last, prompt } = tailTimestamps(path, size);
-      cached = { size, ts: last, prompt: prompt ?? cached?.prompt ?? null };
+      const { last, prompt, reply } = tailTimestamps(path, size);
+      cached = { size, ts: last, prompt: prompt ?? cached?.prompt ?? null, reply: reply ?? cached?.reply ?? null };
       this.lastMsgTsCache.set(path, cached);
     }
-    return { lastModified: cached.ts ?? mtimeMs, lastEngagedAt: cached.prompt ?? birthtimeMs };
+    return {
+      lastModified: cached.ts ?? mtimeMs,
+      lastEngagedAt: cached.prompt ?? birthtimeMs,
+      ...(cached.reply !== null ? { lastReplyAt: cached.reply } : {}),
+    };
   }
 }

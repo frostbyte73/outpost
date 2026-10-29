@@ -28,6 +28,7 @@ import {
   expandToolByContent,
   applyPendingExpand,
 } from './state/sessions.js';
+import { sessionActivity } from './state/session-activity.js';
 import { approvals } from './state/approvals.js';
 import { settings, VALID_THEMES, VALID_MODES } from './state/settings.js';
 import { hydrate as hydratePreferences } from './state/preferences.js';
@@ -177,6 +178,7 @@ async function loadSessions() {
     const data = await r.json();
     sessions.setProjects(data.projects);
     seedRunStates(data.projects ?? []);
+    sessionActivity.seed(data.projects ?? []);
     approvals.setPending(data.pending ?? []);
     for (const a of approvals.get().pending) {
       if (isHighDetailTool(a.tool) && a.sessionId) {

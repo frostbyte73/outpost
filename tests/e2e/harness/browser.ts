@@ -1,4 +1,4 @@
-import { test as base, type Page } from '@playwright/test';
+import { test as base, expect, type Page } from '@playwright/test';
 import { resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { startDaemon, type DaemonHandle, type StartDaemonOpts } from './daemon.js';
@@ -27,7 +27,7 @@ export const test = base.extend<{
   },
 });
 
-export { expect } from '@playwright/test';
+export { expect };
 
 // Register a project via POST /api/projects, refresh the session list IN-PLACE (no
 // reload, which would wipe optimistic state like permission mode set in settings before
@@ -57,4 +57,12 @@ export async function openSessionAtCwd(
       ...(spawnMode === 'worktree' ? { spawn: 'worktree', base: baseBranch ?? 'main' } : {}),
     });
   }, { cwd, spawnMode: opts.spawnMode, baseBranch: opts.baseBranch });
+}
+
+// A session's process (and a worktree session's worktree) only starts once the user types.
+export async function typeToWake(outpostPage: Page): Promise<void> {
+  const composer = outpostPage.locator('.sv-composer');
+  await expect(composer).toBeVisible({ timeout: 10_000 });
+  await composer.click();
+  await outpostPage.keyboard.type('x');
 }

@@ -14,6 +14,7 @@
 import { sessions } from '../../state/sessions.js';
 import { approvals } from '../../state/approvals.js';
 import { subagents } from '../../state/subagents.js';
+import { sessionActivity } from '../../state/session-activity.js';
 import { keymap } from '../../state/keymap.js';
 import { formatCombo } from '../../utils/hotkey.js';
 import { nav } from '../../state/nav.js';
@@ -145,11 +146,13 @@ function buildCard(item) {
   };
 }
 
+const ICON_TONE = { approval: 'warn', unread: 'warn', thinking: 'busy', idle: 'idle' };
+
 function patchCard(card, item, { isActive, runningMs }) {
-  const running = item.runState === 'foreground' || item.runState === 'background';
+  const running = item.state === 'thinking';
   const isAction = item.sessionClass === 'action';
 
-  setClass(card.icon, `o-row-icon ${running ? 'busy' : 'idle'}`);
+  setClass(card.icon, `o-row-icon ${ICON_TONE[item.state]}`);
   card.el.classList.toggle('active', isActive);
   setClass(card.skill, `o-pill code sess-skill${isAction ? '' : ' free'}`);
   setText(card.skill, isAction ? (item.actionLabel || 'action') : 'session');
@@ -295,7 +298,7 @@ export function renderList(mount) {
     const sessionsById = sessions.get().sessionsById;
     const subCounts = subagentCountBySession();
     const approvalIds = approvalSessionIds();
-    const common = { projects, sessionsById, subagentCountBySession: subCounts, approvalSessionIds: approvalIds, previewBySession: previewBySession() };
+    const common = { projects, sessionsById, subagentCountBySession: subCounts, approvalSessionIds: approvalIds, previewBySession: previewBySession(), activity: sessionActivity.get() };
 
     // Unfiltered pass drives the header count and the running-duration tracker
     // (background/idle sessions still need their clock ticking even while a
@@ -306,11 +309,11 @@ export function renderList(mount) {
     const now = Date.now();
     for (const item of allItems) {
       itemsById.set(item.id, item);
-      const running = item.runState === 'foreground' || item.runState === 'background';
+      const running = item.state === 'thinking';
       if (running && !runningSince.has(item.id)) runningSince.set(item.id, now);
       if (!running && runningSince.has(item.id)) runningSince.delete(item.id);
     }
-    countEl.textContent = `${full.sessions.length + full.actions.length} running · ${allItems.length} total`;
+    countEl.textContent = `${full.sessions.length + full.actions.length} active · ${allItems.length} total`;
 
     const groups = sessionGroups({ ...common, tab, filter, showArchived: false });
     const selected = nav.get().selectionBySurface.sessions ?? null;
@@ -346,6 +349,7 @@ export function renderList(mount) {
   const unsubSessions = sessions.subscribe(schedulePaint);
   const unsubApprovals = approvals.subscribe(schedulePaint);
   const unsubSubagents = subagents.subscribe(schedulePaint);
+  const unsubActivity = sessionActivity.subscribe(schedulePaint);
   const unsubNav = nav.subscribe(refreshActive);
   const unsubKeymap = keymap.subscribe(() => {
     filterKbd.textContent = formatCombo(keymap.bindingFor('shell.focusFilter'));
@@ -356,7 +360,7 @@ export function renderList(mount) {
   }, 1000);
   return () => {
     if (paintRaf) cancelAnimationFrame(paintRaf);
-    unsubSessions(); unsubApprovals(); unsubSubagents(); unsubNav(); unsubKeymap();
+    unsubSessions(); unsubApprovals(); unsubSubagents(); unsubActivity(); unsubNav(); unsubKeymap();
     clearInterval(ticker);
   };
 }

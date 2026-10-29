@@ -130,7 +130,7 @@ describe('makeUploadSaver', () => {
 describe('user_message with attachments', () => {
   const deps = (uploadsRoot?: string) => ({
     queue: { decide: vi.fn() },
-    manager: { sendTurn: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
+    manager: { sendTurn: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn(), isLive: vi.fn(() => true), wake: vi.fn(async () => {}) },
     modes: { set: vi.fn() },
     uploadsRoot,
   }) satisfies SessionMessageDeps;
@@ -141,7 +141,7 @@ describe('user_message with attachments', () => {
     handleSessionMessage(frame({ content: 'look', attachments: [png] }), 's1', d);
     expect(d.manager.sendTurn).toHaveBeenCalledWith('s1', {
       text: 'look', images: [{ mediaType: 'image/png', data: png.data }],
-    }, expect.any(Function));
+    });
   });
 
   it('writes a file under uploadsRoot and sends its path', () => {

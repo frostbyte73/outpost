@@ -13,6 +13,7 @@ import { schedulesStore } from '../../state/schedules.js';
 import { runs } from '../../state/runs.js';
 import { nav } from '../../state/nav.js';
 import { engagement } from '../../state/engagement.js';
+import { sessionActivity } from '../../state/session-activity.js';
 import { cockpitLayout } from '../../state/cockpit-layout.js';
 import { expansion } from './expansion.js';
 import { launches } from './launches.js';
@@ -244,6 +245,7 @@ export function renderDetail(mount) {
       slices: sessions.get().sessionsById ?? new Map(),
       pendingApprovals: approvals.get().pending,
       localEngaged: engagement.get(),
+      activity: sessionActivity.get(),
       actionEdits: actions.get().edits,
       autoApplied: actions.get().autoApplied,
       scheduleDrafts: schedulesStore.get().draftBySession,
@@ -401,7 +403,7 @@ export function renderDetail(mount) {
   const resizer = createColumnResizer(boardEl, board);
   const dragger = installDrag(boardEl, board);
   paint();
-  const unsubs = [work, sessions, approvals, actions, schedulesStore, runs, engagement, expansion, launches, cockpitLayout]
+  const unsubs = [work, sessions, approvals, actions, schedulesStore, runs, engagement, sessionActivity, expansion, launches, cockpitLayout]
     .map((s) => s.subscribe(schedule));
   const uninstallKeys = installBoardKeys(root, board);
   const timer = setInterval(schedule, TIME_REFRESH_MS);

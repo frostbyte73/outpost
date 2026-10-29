@@ -57,3 +57,29 @@ describe('SessionInfo.lastEngagedAt', () => {
     expect(s.lastEngagedAt).toBe(T0);
   });
 });
+
+describe('SessionInfo.lastReplyAt', () => {
+  it('is the newest assistant text, not a later tool call', () => {
+    const s = storeWith([
+      { type: 'user', cwd: tmpdir(), timestamp: iso(T0), message: { content: 'go' } },
+      { type: 'assistant', timestamp: iso(T0 + 1000), message: { content: [{ type: 'text', text: 'done' }] } },
+      { type: 'assistant', timestamp: iso(T0 + 2000), message: { content: [{ type: 'tool_use', id: 't', name: 'Bash', input: {} }] } },
+    ]);
+    expect(s.lastReplyAt).toBe(T0 + 1000);
+  });
+
+  it('ignores sidechain (subagent) replies', () => {
+    const s = storeWith([
+      { type: 'assistant', cwd: tmpdir(), timestamp: iso(T0), message: { content: [{ type: 'text', text: 'main' }] } },
+      { type: 'assistant', isSidechain: true, timestamp: iso(T0 + 3000), message: { content: [{ type: 'text', text: 'sub' }] } },
+    ]);
+    expect(s.lastReplyAt).toBe(T0);
+  });
+
+  it('is absent when Claude has not replied in text', () => {
+    const s = storeWith([
+      { type: 'user', cwd: tmpdir(), timestamp: iso(T0), message: { content: 'go' } },
+    ]);
+    expect(s.lastReplyAt).toBeUndefined();
+  });
+});

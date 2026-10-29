@@ -30,6 +30,7 @@ interface ActiveSession {
   // Set by close() right before the SIGTERM so onExit can flag the exit as
   // daemon-initiated (vs a crash). Cleared implicitly — a fresh spawn makes a new session.
   closeReason?: SessionCloseReason;
+  exited: Promise<void>;
   lastActivity: number;
   // Forwarded via session_state so the PWA can anchor file paths before the next /api/sessions refresh.
   spawnCwd: string;
@@ -39,15 +40,6 @@ interface ActiveSession {
 }
 
 const STDERR_TAIL_CHARS = 2000;
-
-const WS_OPEN = 1;
-
-export type OnDrop = (e: Error, reply: (frame: unknown) => void) => void;
-
-interface PendingSpawn {
-  held: { turn: TurnInput; onDrop?: OnDrop }[];
-  waiters: { ws: WebSocket; since: number }[];
-}
 
 export interface SessionExit {
   expected?: SessionCloseReason;
@@ -78,12 +70,21 @@ export interface SessionManagerOpts {
   onAuthFailure?: (sessionId: string, message: string) => void;
   // Fires on every launch carrying an env, spawn or not: a running session's next round has a new envelope.
   onLaunch?: (sessionId: string, cwd: string, env: Record<string, string>) => void;
+  // A quiet session holding one of these is waiting on the user, not idle, so it isn't reaped.
+  hasPendingApproval?: (sessionId: string) => boolean;
+  onWorkingChange?: (sessionId: string, working: boolean) => void;
+  onAssistantReply?: (sessionId: string, at: number) => void;
 }
 
 export class SessionManager {
   private active = new Map<string, ActiveSession>();
-  // Worktree sessions still being built; messages and reconnects that arrive meanwhile wait here.
-  private pendingSpawn = new Map<string, PendingSpawn>();
+  // Sockets viewing a session that has no process; promoted to clients when it wakes.
+  private watchers = new Map<string, Set<WebSocket>>();
+  // A brand-new session's attach hints, held until its first wake.
+  private spawnHints = new Map<string, { cwd: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string }>();
+  private waking = new Map<string, Promise<void>>();
+  // The id each socket attached under, so a /clear rekey doesn't move it to a session it never opened.
+  private socketIds = new Map<WebSocket, string>();
   // Persists across the session's lifetime so getCwd() works after the process exits (hook may fire mid-session).
   private sessionCwds = new Map<string, string>();
   // In-memory; lost on daemon restart. Only set when a session is spawned via the
@@ -109,99 +110,125 @@ export class SessionManager {
     ws.close();
   }
 
-  // On resume, cwd is read from the session's JSONL; the opts.cwd argument is only honored for new sessions.
-  // On worktree-creation failure the daemon emits daemon_error and closes the WS — no silent fallback to shared mode.
+  // Never spawns: with no live process the socket watches until wake(); a new session's hints are checked now and held.
   attach(sessionId: string, ws: WebSocket, opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string; since?: number; model?: SessionModel } = {}): void {
-    const since = opts.since ?? 0;
     // Sticky per-session: applied on this spawn and any later idle-reap respawn.
     if (opts.model) this.sessionModels.set(sessionId, opts.model);
-    let s = this.active.get(sessionId);
+    const s = this.active.get(sessionId);
     if (s) {
-      this.attachClient(s, ws, since);
+      this.trackSocket(sessionId, ws);
+      this.attachClient(s, ws, opts.since ?? 0);
       return;
     }
-    const pending = this.pendingSpawn.get(sessionId);
-    if (pending) {
-      pending.waiters.push({ ws, since });
-      return;
-    }
-    const existingWt = this.opts.worktreeManager?.get(sessionId);
-    if (existingWt && !existingWt.archivedAt && existingWt.worktreePath) {
-      s = this.spawn(sessionId, existingWt.worktreePath);
-      this.attachClient(s, ws, since);
-      return;
-    }
-    const known = this.opts.sessionStore.findSession(sessionId);
-    if (known) {
-      s = this.spawn(sessionId, known.cwd);
-      this.attachClient(s, ws, since);
-      return;
-    }
-    if (!opts.cwd || !opts.cwd.startsWith('/')) {
-      this.rejectAttach(ws, opts.cwd
-        ? `cwd must be absolute: ${opts.cwd}`
-        : `session ${sessionId.slice(0, 8)} has no live process and no transcript to resume`);
-      return;
-    }
-    try {
-      if (!statSync(opts.cwd).isDirectory()) {
-        this.rejectAttach(ws, `cwd is not a directory: ${opts.cwd}`);
+    let spawnCwd = this.resumeCwd(sessionId);
+    if (!spawnCwd) {
+      const refusal = this.validateHints(sessionId, opts);
+      if (refusal) {
+        this.rejectAttach(ws, refusal);
         return;
       }
-    } catch {
-      this.rejectAttach(ws, `cwd does not exist: ${opts.cwd}`);
-      return;
+      spawnCwd = opts.cwd!;
+      this.spawnHints.set(sessionId, { cwd: spawnCwd, spawnMode: opts.spawnMode, baseBranch: opts.baseBranch });
     }
-    if (opts.spawnMode === 'worktree') {
-      if (!this.opts.worktreeManager) {
-        this.rejectAttach(ws, 'worktreeManager not configured but spawnMode=worktree requested');
-        return;
-      }
-      if (!opts.baseBranch) {
-        this.rejectAttach(ws, 'baseBranch required for spawnMode=worktree');
-        return;
-      }
-      const entry: PendingSpawn = { held: [], waiters: [{ ws, since }] };
-      this.pendingSpawn.set(sessionId, entry);
-      void this.spawnInWorktree(this.opts.worktreeManager, sessionId, opts.cwd, opts.baseBranch, entry);
-      return;
-    }
-    s = this.spawn(sessionId, opts.cwd);
-    this.attachClient(s, ws, since);
+    this.trackSocket(sessionId, ws);
+    this.addWatcher(sessionId, ws);
+    ws.send(JSON.stringify({
+      type: 'session_state', latestSeq: 0, earliestSeq: 0, spawnCwd, working: false, workingSince: null, live: false,
+    }));
   }
 
-  // Held messages are sent before sockets attach, so `session_state` reports the turn as working.
-  private async spawnInWorktree(wtMgr: WorktreeManager, sessionId: string, projectCwd: string, baseBranch: string, entry: PendingSpawn): Promise<void> {
-    let session: ActiveSession;
-    let stage = 'worktree creation';
-    try {
-      const rec = await wtMgr.create({ sessionId, projectCwd, baseBranch });
-      this.pendingSpawn.delete(sessionId);
-      stage = 'session spawn';
-      session = this.spawn(sessionId, rec.worktreePath);
-    } catch (e) {
-      this.pendingSpawn.delete(sessionId);
-      const err = new Error(`${stage} failed: ${(e as Error).message}`);
-      // To every open waiter: the socket a message arrived on may since have been replaced by a reconnect.
-      const open = entry.waiters.filter(({ ws }) => ws.readyState === WS_OPEN);
-      const reply = (frame: unknown) => { for (const { ws } of open) ws.send(JSON.stringify(frame)); };
-      for (const { onDrop } of entry.held) {
-        try { onDrop?.(err, reply); } catch { /* a throw here would be an unhandled rejection */ }
-      }
-      for (const { ws } of entry.waiters) this.rejectAttach(ws, err.message);
-      return;
+  // Start the session's process if it has none and hand it every watching socket.
+  wake(sessionId: string): Promise<void> {
+    const s = this.active.get(sessionId);
+    if (s && !s.closeReason) {
+      s.lastActivity = Date.now();
+      return Promise.resolve();
     }
-    for (const { turn } of entry.held) this.sendTurn(sessionId, turn);
-    // A socket that closed mid-build never fires the close handler attachClient registers.
-    const open = entry.waiters.filter(({ ws }) => ws.readyState === WS_OPEN);
-    for (const { ws, since } of open) this.attachClient(session, ws, since);
-    if (open.length === 0) this.startIdleTimer(session);
+    let pending = this.waking.get(sessionId);
+    if (!pending) {
+      pending = (s ? s.exited : Promise.resolve())
+        .then(() => this.spawnForWake(sessionId))
+        .finally(() => this.waking.delete(sessionId));
+      this.waking.set(sessionId, pending);
+    }
+    return pending;
+  }
+
+  private async spawnForWake(sessionId: string): Promise<void> {
+    let cwd = this.resumeCwd(sessionId);
+    if (!cwd) {
+      const hints = this.spawnHints.get(sessionId);
+      if (!hints) throw new Error(`session ${sessionId.slice(0, 8)} has no live process and no transcript to resume`);
+      cwd = hints.cwd;
+      if (hints.spawnMode === 'worktree') {
+        try {
+          const rec = await this.opts.worktreeManager!.create({ sessionId, projectCwd: hints.cwd, baseBranch: hints.baseBranch! });
+          cwd = rec.worktreePath;
+        } catch (e) {
+          throw new Error(`worktree creation failed: ${(e as Error).message}`);
+        }
+      }
+    }
+    if (this.active.has(sessionId)) return;
+    this.spawnHints.delete(sessionId);
+    this.spawn(sessionId, cwd);
+  }
+
+  private resumeCwd(sessionId: string): string | undefined {
+    const wt = this.opts.worktreeManager?.get(sessionId);
+    if (wt && !wt.archivedAt && wt.worktreePath) return wt.worktreePath;
+    return this.opts.sessionStore.findSession(sessionId)?.cwd ?? this.sessionCwds.get(sessionId);
+  }
+
+  private validateHints(sessionId: string, opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string }): string | null {
+    if (!opts.cwd || !opts.cwd.startsWith('/')) {
+      return opts.cwd
+        ? `cwd must be absolute: ${opts.cwd}`
+        : `session ${sessionId.slice(0, 8)} has no live process and no transcript to resume`;
+    }
+    try {
+      if (!statSync(opts.cwd).isDirectory()) return `cwd is not a directory: ${opts.cwd}`;
+    } catch {
+      return `cwd does not exist: ${opts.cwd}`;
+    }
+    if (opts.spawnMode === 'worktree') {
+      if (!this.opts.worktreeManager) return 'worktreeManager not configured but spawnMode=worktree requested';
+      if (!opts.baseBranch) return 'baseBranch required for spawnMode=worktree';
+    }
+    return null;
+  }
+
+  private trackSocket(sessionId: string, ws: WebSocket): void {
+    this.socketIds.set(ws, sessionId);
+    ws.on('close', () => this.dropSocket(ws));
+  }
+
+  private addWatcher(sessionId: string, ws: WebSocket): void {
+    let set = this.watchers.get(sessionId);
+    if (!set) this.watchers.set(sessionId, set = new Set());
+    set.add(ws);
+  }
+
+  private dropSocket(ws: WebSocket): void {
+    this.socketIds.delete(ws);
+    for (const s of this.active.values()) s.clients.delete(ws);
+    for (const [id, set] of this.watchers) {
+      set.delete(ws);
+      if (set.size > 0) continue;
+      this.watchers.delete(id);
+      if (!this.waking.has(id)) this.spawnHints.delete(id);
+    }
+  }
+
+  // The process is gone but its viewers stay attached, ready for the next wake.
+  private demoteClients(s: ActiveSession): void {
+    for (const ws of s.clients) this.addWatcher(this.socketIds.get(ws) ?? s.id, ws);
+    s.clients.clear();
   }
 
   // Replays missed events from `since`; if `since` predates earliestSeq, emits replay_gap so the client falls back to the HTTP transcript endpoint.
   private attachClient(s: ActiveSession, ws: WebSocket, since: number): void {
     s.clients.add(ws);
-    this.cancelIdleTimer(s);
 
     // Protocol frame, no _seq. `working`/`workingSince` are the authoritative turn state:
     // the client's thinking strip is otherwise a pure guess derived from the event stream,
@@ -215,6 +242,7 @@ export class SessionManager {
       spawnCwd: s.spawnCwd,
       working: this.isWorking(s.id),
       workingSince: this.workingSince(s.id),
+      live: true,
     }));
 
     if (since > 0 && since < s.eventLog.earliestSeq() - 1) {
@@ -228,26 +256,15 @@ export class SessionManager {
         ws.send(JSON.stringify({ ...(evt.message as object), _seq: evt.seq }));
       }
     }
-
-    ws.on('close', () => {
-      s.clients.delete(ws);
-      if (s.clients.size === 0) this.startIdleTimer(s);
-    });
   }
 
-  // `onDrop` fires only if a turn held for a worktree build is dropped because the build failed.
-  sendTurn(sessionId: string, turn: TurnInput, onDrop?: OnDrop): void {
-    const pending = this.pendingSpawn.get(sessionId);
-    if (pending) {
-      pending.held.push({ turn, onDrop });
-      return;
-    }
+  sendTurn(sessionId: string, turn: TurnInput): void {
     const s = this.active.get(sessionId);
     if (!s) throw new Error(`session ${sessionId} not active`);
     s.lastActivity = Date.now();
     // Don't restamp a turn already in flight — a queued follow-up message would
     // otherwise reset the strip's elapsed clock mid-turn.
-    if (!this.working.has(sessionId)) this.working.set(sessionId, Date.now());
+    this.startWorking(sessionId);
     this.opts.onTurnStart?.(sessionId);
     s.session.sendTurn(turn);
   }
@@ -255,7 +272,11 @@ export class SessionManager {
   // Routed through eventLog so reconnects replay daemon-originated messages (e.g. approval_mode changes) like any other event.
   broadcast(sessionId: string, message: unknown): void {
     const s = this.active.get(sessionId);
-    if (!s) return;
+    if (!s) {
+      const payload = JSON.stringify(message);
+      for (const ws of this.watchers.get(sessionId) ?? []) ws.send(payload);
+      return;
+    }
     const evt = s.eventLog.push(message);
     const payload = JSON.stringify({ ...(message as object), _seq: evt.seq });
     for (const ws of s.clients) ws.send(payload);
@@ -276,10 +297,16 @@ export class SessionManager {
     return this.active.has(sessionId);
   }
 
+  // Active and not being torn down: a message sent now reaches a process that will answer it.
+  isLive(sessionId: string): boolean {
+    const s = this.active.get(sessionId);
+    return !!s && !s.closeReason;
+  }
+
   // Cleared at the Stop hook: the assistant ended its turn. The proc may stay
   // alive (resume/replan), but it is no longer working.
   markTurnEnded(sessionId: string): void {
-    this.working.delete(sessionId);
+    this.stopWorking(sessionId);
     if (this.reloadWhenIdle.delete(sessionId)) void this.close(sessionId, 'reauth');
   }
 
@@ -350,9 +377,10 @@ export class SessionManager {
     s.closeReason = reason;
     if (s.idleTimer) clearTimeout(s.idleTimer);
     await s.session.kill();
-    for (const ws of s.clients) ws.close();
+    this.demoteClients(s);
+    if (this.active.get(sessionId) !== s) return;
     this.active.delete(sessionId);
-    this.working.delete(sessionId);
+    this.stopWorking(sessionId);
   }
 
   // Spawn a session with no WS attached. Orchestrator uses this for child sessions
@@ -361,12 +389,8 @@ export class SessionManager {
     if (this.active.has(sessionId)) return;
     if (extraEnv) this.opts.onLaunch?.(sessionId, cwd, extraEnv);
     if (permissionMode) this.permissionModes.set(sessionId, permissionMode);
-    const s = this.spawn(sessionId, cwd, extraEnv);
-    this.working.set(sessionId, Date.now());
-    // Detached sessions have no WS to trigger the idle timer on close — arm it at spawn
-    // so a session that finishes its turn and is never approved/rejected gets reaped.
-    // Subsequent PWA attach/detach cycles cancel and re-arm normally.
-    this.startIdleTimer(s);
+    this.spawn(sessionId, cwd, extraEnv);
+    this.startWorking(sessionId);
   }
 
   // Send a turn; respawn first if idle-reaped. extraEnv is applied only on respawn.
@@ -404,11 +428,14 @@ export class SessionManager {
         maxAgeMs: this.opts.eventLogMaxAgeMs ?? DEFAULT_EVENT_LOG_MAX_AGE_MS,
       }),
       lastActivity: Date.now(),
+      exited: null!,
       session: null!,
       spawnCwd: cwd,
       registeredIds: new Set(),
       stderrTail: '',
     };
+    let markExited!: () => void;
+    s.exited = new Promise((resolve) => { markExited = resolve; });
     const mode = this.opts.sessionStore.findSession(sessionId) ? 'resume' : 'new';
     const permissionMode = this.permissionModes.get(sessionId);
     const model = this.sessionModels.get(sessionId);
@@ -430,6 +457,9 @@ export class SessionManager {
         // Deltas are already in the native log, and they are most of a turn's frames
         if (e.type !== 'content.delta') log?.canonical(e);
         this.handleSessionStarted(s, e);
+        if (e.type === 'item.completed' && e.item.type === 'assistant_message' && !e.subagent && e.item.text.trim()) {
+          this.opts.onAssistantReply?.(s.id, s.lastActivity);
+        }
         const evt = s.eventLog.push(e);
         const payload = JSON.stringify({ ...e, _seq: evt.seq });
         for (const ws of s.clients) ws.send(payload);
@@ -456,13 +486,20 @@ export class SessionManager {
             ? { type: 'daemon_proc_exit', code, expected: true, reason: expected }
             : { type: 'daemon_proc_exit', code }));
         }
+        this.demoteClients(s);
+        if (s.idleTimer) clearTimeout(s.idleTimer);
         this.active.delete(s.id);
-        this.working.delete(s.id);
+        this.stopWorking(s.id);
         this.reloadWhenIdle.delete(s.id);
         this.opts.onSessionExit?.(s.id, code, { expected, stderrTail: s.stderrTail });
+        markExited();
       },
     });
     this.active.set(sessionId, s);
+    this.startIdleTimer(s);
+    const watching = this.watchers.get(sessionId);
+    this.watchers.delete(sessionId);
+    for (const ws of watching ?? []) this.attachClient(s, ws, 0);
     return s;
   }
 
@@ -504,7 +541,7 @@ export class SessionManager {
       // real work continues. Reap only once the turn has ended (Stop hook →
       // markTurnEnded clears `working`).
       const since = Date.now() - s.lastActivity;
-      if (since < IDLE_TIMEOUT_MS || this.working.has(s.id)) {
+      if (since < IDLE_TIMEOUT_MS || this.working.has(s.id) || this.opts.hasPendingApproval?.(s.id)) {
         this.startIdleTimer(s);
         return;
       }
@@ -512,10 +549,13 @@ export class SessionManager {
     }, IDLE_TIMEOUT_MS);
   }
 
-  private cancelIdleTimer(s: ActiveSession): void {
-    if (s.idleTimer) {
-      clearTimeout(s.idleTimer);
-      s.idleTimer = undefined;
-    }
+  private startWorking(sessionId: string): void {
+    if (this.working.has(sessionId)) return;
+    this.working.set(sessionId, Date.now());
+    this.opts.onWorkingChange?.(sessionId, true);
+  }
+
+  private stopWorking(sessionId: string): void {
+    if (this.working.delete(sessionId)) this.opts.onWorkingChange?.(sessionId, false);
   }
 }

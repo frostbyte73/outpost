@@ -23,20 +23,18 @@ beforeEach(() => {
 });
 
 describe('daemon_proc_exit', () => {
-  it('unexpected exit → crash tile with reopen', () => {
+  it('unexpected exit → crash tile, no reopen (typing wakes it)', () => {
     dispatchSession({ type: 'daemon_proc_exit', code: 143 }, SID);
     const e = lastEntry();
     expect(e.role).toBe('error');
-    expect(e.action).toBe('reopen');
+    expect(e.action).toBeUndefined();
     expect(e.text).toContain('143');
   });
 
-  it('daemon-initiated idle reap → calm resumable notice, no crash tile', () => {
-    dispatchSession({ type: 'daemon_proc_exit', code: 143, expected: true, reason: 'idle' }, SID);
-    const e = lastEntry();
-    expect(e.role).toBe('archived');
-    expect(e.action).toBeUndefined();
-    expect(e.text).toMatch(/resume/i);
+  it.each(['idle', 'reauth', 'shutdown'])('daemon-initiated %s exit appends nothing', (reason) => {
+    const before = sessions.getSlice(SID).transcript.length;
+    dispatchSession({ type: 'daemon_proc_exit', code: 143, expected: true, reason }, SID);
+    expect(sessions.getSlice(SID).transcript.length).toBe(before);
   });
 
   it('daemon-initiated teardown → archived notice', () => {

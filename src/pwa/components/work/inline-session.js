@@ -100,14 +100,7 @@ export function mountInlineSession(mount, sessionId, { step = null, live: sessio
   // (job.live.sessionIds — see src/work/job-liveness.ts for why it can't be derived here).
   let currentLive = sessionLive;
 
-  // A terminal step renders a static chip from persisted timing and never needs a
-  // live view, so we attach nothing for it:
-  //   - openSessionWs would make the daemon resume (respawn) the long-since-reaped
-  //     Claude subprocess, resurfacing every finished step as a backend-"active"
-  //     session on each job-detail open.
-  //   - mountView flips the slice's runState to 'foreground' (mountedCount > 0),
-  //     which the sessions-list vm treats as running — so a finished step would show
-  //     as active purely from being visible in the job timeline.
+  // A terminal step renders a static chip from persisted timing, so it needs no socket.
   // A retry can flip a step back to non-terminal, so syncLive re-runs on updateStep.
   let live = false;
   const syncLive = () => {

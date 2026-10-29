@@ -3,13 +3,14 @@
 // layered on top of session-filter.js's archived-handling (not a replacement
 // for it).
 //
-// The two live groups are the running set split by who is driving it — a person
-// ("Sessions") or Outpost running an action on their behalf ("Actions"). "Idle"
-// is non-archived and not running, either class; "Recent" is the archived tail
+// The two live groups are every non-idle session (see session-state.js) split by who
+// is driving it — a person ("Sessions") or Outpost running an action on their behalf
+// ("Actions"). "Idle" is the rest, either class; "Recent" is the archived tail
 // revealed by the show-archived toggle.
 
 import { partitionSessions } from '../session-filter.js';
 import { formatDuration } from '../utils/formatting.js';
+import { sessionState, sessionSignals } from './session-state.js';
 
 // "Action" = a session Outpost spawned to run a locked-down action on the user's
 // behalf (orchestrator, step, or action/skill edit), stamped server-side as
@@ -20,7 +21,7 @@ function isActionSession(item) {
 }
 
 function matchesTab(item, tab) {
-  if (tab === 'active') return item.runState === 'foreground' || item.runState === 'background';
+  if (tab === 'active') return item.state !== 'idle';
   if (tab === 'action') return isActionSession(item);
   if (tab === 'session') return !isActionSession(item);
   return true;
@@ -34,7 +35,7 @@ function matchesFilter(item, filter) {
 
 function bucketOf(item) {
   if (item.archived) return 'recent';
-  if (item.runState !== 'foreground' && item.runState !== 'background') return 'idle';
+  if (item.state === 'idle') return 'idle';
   return isActionSession(item) ? 'actions' : 'sessions';
 }
 
@@ -49,12 +50,14 @@ export function sessionGroups({
   subagentCountBySession = new Map(),
   approvalSessionIds = new Set(),
   previewBySession = new Map(),
+  activity = new Map(),
 } = {}) {
   const flat = [];
   for (const p of projects) {
     const { visible } = partitionSessions(p.sessions ?? [], 0, 0, { showArchived });
     for (const s of visible) {
-      const runtime = sessionsById.get(s.id);
+      const hasApproval = approvalSessionIds.has(s.id);
+      const unreadTracked = !isActionSession(s);
       flat.push({
         id: s.id,
         title: s.title,
@@ -66,14 +69,9 @@ export function sessionGroups({
         actionLabel: s.actionLabel ?? null,
         worktreePath: s.worktreePath,
         worktreeBranch: s.worktreeBranch,
-        // Live slice wins (this tab has direct WS signals); otherwise fall
-        // back to the daemon-reported liveness on the session row so running
-        // sessions survive a reload. Server 'foreground' means "mounted in
-        // some client", not this tab — treat as background here.
-        runState: runtime?.runState
-          ?? (s.runState === 'foreground' || s.runState === 'background' ? 'background' : 'inactive'),
+        state: sessionState({ hasApproval, unreadTracked, ...sessionSignals(s, sessionsById.get(s.id), activity) }),
         subagentCount: subagentCountBySession.get(s.id) ?? 0,
-        hasApproval: approvalSessionIds.has(s.id),
+        hasApproval,
         preview: previewBySession.get(s.id) ?? null,
       });
     }

@@ -80,7 +80,7 @@ describe('handleSessionMessage', () => {
   function deps() {
     return {
       queue: { decide: vi.fn() },
-      manager: { sendTurn: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
+      manager: { sendTurn: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn(), isLive: vi.fn(() => true), wake: vi.fn(async () => {}) },
       modes: { set: vi.fn() },
     } satisfies SessionMessageDeps;
   }
@@ -100,7 +100,7 @@ describe('handleSessionMessage', () => {
     const d = deps();
     const raw = Buffer.from(JSON.stringify({ type: 'user_message', content: 'hi' }));
     handleSessionMessage(raw, 's1', d);
-    expect(d.manager.sendTurn).toHaveBeenCalledWith('s1', { text: 'hi' }, expect.any(Function));
+    expect(d.manager.sendTurn).toHaveBeenCalledWith('s1', { text: 'hi' });
   });
 
   // SessionManager.send throws for a session that isn't active — reachable any time a
@@ -161,7 +161,7 @@ describe('handleSessionMessage', () => {
 describe('handleSessionMessage — engagement', () => {
   const deps = () => ({
     queue: { decide: vi.fn() },
-    manager: { sendTurn: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
+    manager: { sendTurn: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn(), isLive: vi.fn(() => true), wake: vi.fn(async () => {}) },
     modes: { set: vi.fn() },
     onUserMessage: vi.fn(),
   });
@@ -178,5 +178,70 @@ describe('handleSessionMessage — engagement', () => {
     d.manager.sendTurn.mockImplementation(() => { throw new Error('not active'); });
     handleSessionMessage(userMessage, 's1', d);
     expect(d.onUserMessage).not.toHaveBeenCalled();
+  });
+});
+
+describe('handleSessionMessage — waking', () => {
+  const deps = (active: boolean) => {
+    const calls: string[] = [];
+    return {
+      calls,
+      d: {
+        queue: { decide: vi.fn() },
+        manager: {
+          sendTurn: vi.fn(() => { calls.push('send'); }),
+          interrupt: vi.fn(),
+          broadcast: vi.fn(),
+          isLive: vi.fn(() => active),
+          wake: vi.fn(async () => { calls.push('wake'); }),
+        },
+        modes: { set: vi.fn() },
+        reply: vi.fn(),
+        shell: { drain: () => '', restore: vi.fn(), run: vi.fn(async () => {}) },
+      },
+    };
+  };
+  const frame = (o: object) => Buffer.from(JSON.stringify(o));
+
+  it('user_message to a non-live session wakes then sends', async () => {
+    const { d, calls } = deps(false);
+    handleSessionMessage(frame({ type: 'user_message', content: 'hi' }), 's1', d);
+    await vi.waitFor(() => expect(calls).toEqual(['wake', 'send']));
+  });
+
+  it('a wake frame calls manager.wake', () => {
+    const { d } = deps(false);
+    handleSessionMessage(frame({ type: 'wake' }), 's1', d);
+    expect(d.manager.wake).toHaveBeenCalledWith('s1');
+  });
+
+  it('replies a wake failure as daemon_error without throwing', async () => {
+    const { d } = deps(false);
+    d.manager.wake.mockImplementation(async () => { throw new Error('no transcript'); });
+    expect(() => handleSessionMessage(frame({ type: 'wake' }), 's1', d)).not.toThrow();
+    await vi.waitFor(() => expect(d.reply).toHaveBeenCalledWith({ type: 'daemon_error', message: 'no transcript' }));
+  });
+
+  it('refuses a user_message whose wake fails to every viewer, echoing its clientId', async () => {
+    const { d } = deps(false);
+    d.manager.wake.mockImplementation(async () => { throw new Error('no transcript'); });
+    handleSessionMessage(frame({ type: 'user_message', content: 'hi', clientId: 'c1' }), 's1', d);
+    await vi.waitFor(() => expect(d.manager.broadcast).toHaveBeenCalledWith('s1', { type: 'daemon_error', message: 'Message not sent — no transcript', clientId: 'c1' }));
+    expect(d.manager.sendTurn).not.toHaveBeenCalled();
+  });
+
+  it('a shell command runs once the session is awake', async () => {
+    const { d, calls } = deps(false);
+    d.manager.wake.mockImplementation(async () => { await new Promise((r) => setTimeout(r, 0)); calls.push('wake'); });
+    d.shell.run.mockImplementation(async () => { calls.push('run'); });
+    handleSessionMessage(frame({ type: 'shell_exec', execId: 'e1', command: 'ls' }), 's1', d);
+    await vi.waitFor(() => expect(calls).toEqual(['wake', 'run']));
+  });
+
+  it('a shell command still runs, and reports, when the wake fails', async () => {
+    const { d } = deps(false);
+    d.manager.wake.mockImplementation(async () => { throw new Error('no transcript'); });
+    handleSessionMessage(frame({ type: 'shell_exec', execId: 'e1', command: 'ls' }), 's1', d);
+    await vi.waitFor(() => expect(d.shell.run).toHaveBeenCalledWith('s1', 'e1', 'ls'));
   });
 });

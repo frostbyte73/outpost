@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect } from './harness/browser.js';
+import { test, expect, typeToWake } from './harness/browser.js';
 import { startDaemon, type DaemonHandle } from './harness/daemon.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -98,7 +98,7 @@ test('palette worktree toggle + branch select spawns a worktree on the selected 
   await branchSelect.selectOption('feature-x');
 
   await launchSessionViaKeyboard(outpostPage);
-  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
+  await typeToWake(outpostPage);
 
   const rec = await waitForWorktreeRecord(daemon);
   expect(rec.worktreePath).toContain('worktrees/');

@@ -14,7 +14,7 @@ const board = (over: Record<string, unknown> = {}) => ({
   started: [row('job:a'), row('job:b', { actions: [{ kind: 'gate' }] })],
   notStarted: [row('job:c')],
   backlog: [row('job:d')],
-  sessions: [row('session:s1'), row('session:s2', { actions: [{ kind: 'your-turn' }] })],
+  sessions: [row('session:s1'), row('session:s2', { actions: [{ kind: 'approval' }] })],
   other: [row('other:o1', { tone: 'you' }), row('other:o2', { tone: 'failed' })],
   ...over,
 });

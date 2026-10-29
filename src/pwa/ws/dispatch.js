@@ -28,10 +28,11 @@ import {
 import { usage } from '../state/usage.js';
 import { baseModelId } from '../utils/context-usage.js';
 import { work } from '../state/work.js';
+import { sessionActivity } from '../state/session-activity.js';
 import { settings } from '../state/settings.js';
 import { EDIT_TOOLS, TASK_TOOL_NAMES, isHighDetailTool } from '../components/tool-use-tile.js';
 import { TOOL_VERBS } from '../components/session-view/regions.js';
-import { sendApprovalModeSet, forceCloseSessionWs } from '../components/session-view/session-ws.js';
+import { sendApprovalModeSet } from '../components/session-view/session-ws.js';
 import { restoreRefused } from '../components/session-view/attachments.js';
 import { openSession } from '../app-bridge.js';
 import { agentResultSummary, toolUseEntry } from '../vm/session-events.js';
@@ -250,10 +251,8 @@ const sessionHandlers = {
     deps.stopThinking(sid);
     // Subprocess exit → this session's slice becomes 'inactive'. Background
     // sessions never get demoted otherwise, so this is where we detect death.
-    // Force-close its WS: keeping a socket open to an already-dead session
-    // wastes a connection and the daemon drops it anyway.
+    // The socket stays open: the daemon keeps it watching for the next wake.
     sessions.setRunState(sid, 'inactive');
-    forceCloseSessionWs(sid);
     const now = Date.now();
     for (const [agentId, bucket] of subagents.forSession(sid).byId) {
       if (!bucket.completion) subagents.setCompletion(agentId, sid, { status: 'killed', completedAt: now });
@@ -273,28 +272,14 @@ const sessionHandlers = {
       return;
     }
     if (msg.expected) {
-      // Daemon-initiated graceful shutdown (idle reap / step teardown), not a crash.
-      // The SIGTERM makes claude exit 143, which would otherwise read as a crash even
-      // though the session's work already landed. An idle-reaped session resumes on the
-      // next message; a teardown/archive is gone for good.
-      S.appendTranscript({
-        role: 'archived',
-        text: msg.reason === 'idle'
-          ? 'Session reaped after 15 min idle — send a message to resume.'
-          : msg.reason === 'reauth'
-            ? 'Reloaded to pick up the new credentials — send a message to resume.'
-            : msg.reason === 'shutdown'
-              ? 'The daemon restarted — send a message to resume.'
-              : 'Session archived.',
-      });
-      if (isCurrent) deps.renderSession();
+      // A reap, reload or restart resumes on the next keystroke, so only a teardown is worth saying.
+      if (msg.reason === 'archived') {
+        S.appendTranscript({ role: 'archived', text: 'Session archived.' });
+        if (isCurrent) deps.renderSession();
+      }
       return;
     }
-    S.appendTranscript({
-      role: 'error',
-      text: `Session subprocess exited (code ${msg.code}).`,
-      action: 'reopen',
-    });
+    S.appendTranscript({ role: 'error', text: `Session subprocess exited (code ${msg.code}).` });
     if (isCurrent) deps.renderSession();
   },
 
@@ -449,6 +434,10 @@ const broadcastHandlers = {
     // Tracked-job surfaces (Tracked list/detail) already react to work.applyWsEvent
     // via their own store subscription — no forced re-render needed here.
     work.applyWsEvent({ jobId: msg.jobId, job: msg.job });
+  },
+
+  session_activity(msg) {
+    sessionActivity.apply(msg);
   },
 
   sessions_changed() {

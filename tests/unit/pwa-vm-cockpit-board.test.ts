@@ -137,12 +137,38 @@ describe('session rows', () => {
     expect(r.feeds).toHaveLength(1);
   });
 
-  it('your turn when alive and idle, with no feed so the idle reaper still applies', () => {
+  it('a live, read, not-working session is idle with no feed', () => {
     const r = board({ projects: proj({ runState: 'background' }) }).sessions[0];
-    expect(r.tone).toBe('you');
-    expect(r.status.text).toBe('Your turn');
-    expect(r.actions.map((a: any) => a.kind)).toEqual(['your-turn']);
+    expect(r.tone).toBe('idle');
+    expect(r.status.text).toBe('Idle');
+    expect(r.actions).toEqual([]);
     expect(r.feeds).toEqual([]);
+  });
+
+  it('opening a session does not change its row', () => {
+    const closed = board({ projects: proj({}) }).sessions[0];
+    const opened = board({ projects: proj({ runState: 'foreground' }), slices: new Map([['m', { runState: 'foreground', thinking: false }]]) }).sessions[0];
+    expect(opened).toEqual(closed);
+  });
+
+  it('an unread session reads Unread in your-move tone with no action', () => {
+    const activity = new Map([['m', { working: false, lastReplyAt: NOW - 1000, seenAt: NOW - 5000 }]]);
+    const r = board({ projects: proj({}), activity }).sessions[0];
+    expect(r.tone).toBe('you');
+    expect(r.status).toEqual({ text: 'Unread', tone: 'you' });
+    expect(r.actions).toEqual([]);
+  });
+
+  it('a pending approval outranks unread', () => {
+    const activity = new Map([['m', { working: false, lastReplyAt: NOW - 1000, seenAt: NOW - 5000 }]]);
+    const r = board({ projects: proj({}), activity, pendingApprovals: [{ approvalId: 'p', sessionId: 'm', toolName: 'Bash' }] }).sessions[0];
+    expect(r.status.text).toBe('Approve Bash');
+  });
+
+  it('working from the daemon activity feed reads as live with a feed', () => {
+    const r = board({ projects: proj({}), activity: new Map([['m', { working: true, lastReplyAt: null, seenAt: 0 }]]) }).sessions[0];
+    expect(r.tone).toBe('live');
+    expect(r.feeds).toHaveLength(1);
   });
 
   it('feeds a session holding a pending approval', () => {

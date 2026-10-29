@@ -71,6 +71,7 @@ import { registerScheduleEditRoutes } from './routes/schedule-edits.js';
 import { runScript } from './schedules/script-runner.js';
 import { homeOrKnownCwd } from './git/known-cwd.js';
 import { PreferencesStore } from './storage/preferences-store.js';
+import { SessionSeenStore } from './storage/session-seen-store.js';
 import { registerPreferencesRoutes } from './routes/preferences.js';
 import { registerUpdateRoutes } from './routes/update.js';
 import { Updater, isSupervised } from './update/updater.js';
@@ -405,6 +406,13 @@ async function main() {
     eventLogMaxAgeMs,
     worktreeManager,
     onLaunch: (sessionId, _cwd, env) => captureRoundSnapshot(sessionId, env),
+    hasPendingApproval: (sessionId) => queue.listPending().some((a) => a.sessionId === sessionId && !a.agentId),
+    onWorkingChange: (sessionId, working) => {
+      try { notifyAll({ type: 'session_activity', sessionId, working }); } catch { /* pre-startup */ }
+    },
+    onAssistantReply: (sessionId, at) => {
+      try { notifyAll({ type: 'session_activity', sessionId, lastReplyAt: at }); } catch { /* pre-startup */ }
+    },
     // The mirror of the Stop hook's own rebroadcast below: a session starting a turn is a
     // liveness change no job mutation reports. A step resume writes its step BEFORE it
     // sends the prompt (resumeControllerRound's `run()`), so the broadcast that mutation
@@ -942,10 +950,14 @@ async function main() {
   const slashCommands = discoverSlashCommands();
   console.log(`[daemon] discovered ${slashCommands.length} slash commands`);
 
+  const seenStore = new SessionSeenStore(join(RUNTIME_DIR, 'session-seen.json'));
+  seenStore.retain(new Set(sessionStore.listProjects().flatMap((p) => p.sessions.map((s) => s.id))));
   registerSessionsRoutes(server, {
     sessionStore, manager, runtime, worktreeManager, queue, recurrence, allowlist,
     latestStatuslineBySession, cwdForSession, summarizeToolInput, captureSessionEnd,
     interactive,
+    seenStore,
+    notify: (m) => notifyAll(m),
     interactiveTarget: (id) => engine.interactiveTarget(id),
     jobIdForSession: (id) => engine.jobIdForSession(id),
     markJobEngaged: (id) => engine.markEngaged(id),

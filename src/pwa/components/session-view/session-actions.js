@@ -54,15 +54,14 @@ export function resolveSessionTitle(sessionId, meta) {
   return meta?.title || sessionId.slice(0, 8);
 }
 
-// Wall-clock "since we first noticed this session running" per sessionId —
+// Wall-clock "since we first noticed this session working" per sessionId —
 // same approximation sessions-surface/list.js's runningSince tracker uses for
 // its card duration badge (there's no true session-start timestamp on the
 // slice). Module-scoped so it survives unmount/remount.
 const runningSinceById = new Map();
 
 export function sessionRunMeta(slice, sessionId) {
-  const running = slice?.runState === 'foreground' || slice?.runState === 'background';
-  if (running) {
+  if (slice?.thinking) {
     if (!runningSinceById.has(sessionId)) runningSinceById.set(sessionId, Date.now());
     const ms = Date.now() - runningSinceById.get(sessionId);
     return { live: true, text: `Running · ${fmtElapsedDuration(ms) || '0s'}` };

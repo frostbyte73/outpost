@@ -104,6 +104,10 @@ function connect(id) {
       if (!sl || msg._seq > sl.lastSeenSeq) sessions.for(id).setLastSeenSeq(msg._seq);
     }
     if (msg.type === 'session_state') {
+      // A respawned process starts a fresh event log; a stale high-water mark would skip its events.
+      const sl = sessions.getSlice(id);
+      if (sl && typeof msg.latestSeq === 'number' && msg.latestSeq < sl.lastSeenSeq) sessions.for(id).setLastSeenSeq(msg.latestSeq);
+      if (msg.live && sl?.runState === 'inactive') sessions.setRunState(id, 'foreground');
       // spawnCwd lets first tool tile render project-relative paths before /api/sessions refreshes.
       if (typeof msg.spawnCwd === 'string' && msg.spawnCwd.length > 0
           && id === sessions.get().currentSessionId) {
@@ -225,21 +229,6 @@ export function closeSessionWs(id) {
   }, CLOSE_GRACE_MS);
 }
 
-// Force-close a session's WS regardless of refcount. Used when the daemon
-// reports the subprocess exited (runState → inactive) — no point keeping the
-// socket to an already-dead session alive.
-export function forceCloseSessionWs(id) {
-  if (!id) return;
-  const info = conns.get(id);
-  if (!info) return;
-  info.refCount = 0;
-  info.closingIntent = true;
-  if (info.graceTimer) { clearTimeout(info.graceTimer); info.graceTimer = null; }
-  if (info.timer) { clearTimeout(info.timer); info.timer = null; }
-  if (info.ws && info.ws.readyState === WebSocket.OPEN) info.ws.close();
-  else conns.delete(id);
-}
-
 // Send a user_message on the session's WS. Returns true if the send fired,
 // false if the socket isn't open (caller can toast + keep composer text so the
 // user can retry). Does NOT append to the transcript — that's the caller's job
@@ -271,20 +260,25 @@ export function sendShellExec(id, execId, command) {
   return true;
 }
 
-// Send a frame, reconnecting the session first if its socket is down. Used when
-// the user types into (or runs a `!` command in) an interrupted or exited
-// session: the WS was force-closed (see forceCloseSessionWs) so a plain send
-// would drop it. Re-opening the socket makes the daemon respawn the subprocess
-// in `resume` mode (session-manager.attach → spawn), and the frame is queued to
-// flush the moment the socket opens. Returns true if it sent immediately,
-// false if it was queued for the reconnect.
+const WAKE_THROTTLE_MS = 30_000;
+const lastWake = new Map();
+
+// Typing in the composer wakes the session so its process is up by the time the message is sent.
+export function sendWake(id) {
+  const info = conns.get(id);
+  if (!info?.ws || info.ws.readyState !== WebSocket.OPEN) return;
+  const now = Date.now();
+  if (now - (lastWake.get(id) ?? 0) < WAKE_THROTTLE_MS) return;
+  lastWake.set(id, now);
+  info.ws.send(JSON.stringify({ type: 'wake' }));
+}
+
+// Send a frame, queueing it behind a reconnect if the socket is down; true if it sent immediately.
 function reconnectAndQueue(id, frame) {
   if (!id) return false;
   let info = conns.get(id);
   if (!info) {
-    // The conn was torn down by forceCloseSessionWs — the mounted view lost its
-    // refcount with it. Re-open with a fresh ref for the still-mounted view;
-    // openSessionWs kicks off connect().
+    // Torn down (fatal attach or grace close) under a still-mounted view: re-open with a fresh ref.
     openSessionWs(id);
     info = conns.get(id);
     if (!info) return false;

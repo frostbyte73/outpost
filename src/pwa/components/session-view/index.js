@@ -28,14 +28,15 @@ import {
   forceReconnect,
   openAgentsForSession,
   openDiffForSession,
-  openSession,
   promoteSessionToJob,
 } from '../../app-bridge.js';
 import { escapeHtml } from './html.js';
 import { reconcileKeyedRows, resetKeyedRows, setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { minimalMsgHtml } from './message-html.js';
 import { createScrollIntent, getIntent, scrollTranscriptTo } from './scroll-intent.js';
-import { openSessionWs, closeSessionWs, sendUserMessage, reconnectAndSend, sendShellExec, reconnectAndRunShell, sendApprovalModeSet, sendInterrupt, sessionWsReadyState } from './session-ws.js';
+import { openSessionWs, closeSessionWs, sendUserMessage, reconnectAndSend, sendShellExec, reconnectAndRunShell, sendApprovalModeSet, sendInterrupt, sessionWsReadyState, sendWake } from './session-ws.js';
+import { createSeenReporter } from './seen.js';
+import { sessionActivity } from '../../state/session-activity.js';
 import { renderThinkingStrip, renderTodoPill, renderConnBanner } from './regions.js';
 import { renderMeterStrip } from './meter.js';
 import { bindAskCardHandlers } from '../ask-card.js';
@@ -386,10 +387,7 @@ function updateJumpPill(dom, sessionId) {
 // so the retry banner matches session-ws's backoff threshold.
 function sessionConnState(sessionId) {
   if (sessionWsReadyState(sessionId) === WebSocket.OPEN) return 'connected';
-  // A subprocess that exited (archive, crash, normal end) has its WS
-  // force-closed with no retry pending — reporting 'reconnecting' here would
-  // flash a banner for a socket that will never come back. Treat inactive
-  // sessions as idle (empty banner, send stays muted).
+  // An exited session whose socket is down has nothing to reconnect to until the user sends.
   if (sessions.getSlice(sessionId)?.runState === 'inactive') return 'idle';
   return conn.get().session === 'failed' ? 'failed' : 'reconnecting';
 }
@@ -512,11 +510,6 @@ function bindTranscriptHandlers(dom, sessionId) {
     const target = e.target instanceof Element ? e.target : null;
     if (!target) return;
 
-    // Rerun of session subprocess when the user taps the "Reopen" action on an
-    // error tile.
-    const reopen = target.closest('[data-msg-action="reopen"]');
-    if (reopen) { openSession({ id: sessionId }); return; }
-
     // Tap-to-toggle for tool_use-expandable tiles. Selection heuristic: if the
     // user is selecting text inside the tile, don't collapse — they're copying.
     const el = target.closest('.msg.tool_use-expandable');
@@ -575,6 +568,7 @@ function wireComposer(dom, sessionId, paletteState) {
     repaintPalette();
   };
   dom.composer.addEventListener('input', () => {
+    sendWake(sessionId);
     composerDraft.set(sessionId, dom.composer.innerText);
     armed();
     if (paletteState) evaluatePaletteState(dom, paletteState, repaintPalette);
@@ -857,7 +851,7 @@ export function mountSessionView(mount, sessionId, meta = {}) {
     // showing stale data (see D7 write-up — this was silently dropped when
     // the mobile shell switched to mounting this module).
     refreshTodosSheet();
-    const running = slice?.runState === 'foreground' || slice?.runState === 'background';
+    const running = Boolean(slice?.thinking);
     if (running && !headerTicker) {
       headerTicker = setInterval(() => renderHeader(dom, sessions.getSlice(sessionId), sessionId, meta), 1000);
     } else if (!running && headerTicker) {
@@ -930,8 +924,26 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   paint();
   paintAgents();
 
+  const seen = createSeenReporter({
+    sessionId,
+    isVisible: () => document.visibilityState === 'visible',
+    activityFor: (id) => sessionActivity.get().get(id),
+    postSeen: async (id) => {
+      const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/seen`, { method: 'POST' });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      return (await r.json()).seenAt;
+    },
+    applySeen: (id, seenAt) => sessionActivity.apply({ sessionId: id, seenAt }),
+  });
+  const onVisibility = () => seen.onVisible();
+  document.addEventListener('visibilitychange', onVisibility);
+  const unsubActivity = sessionActivity.subscribe(seen.onActivity);
+  seen.onVisible();
+
   return {
     unmount() {
+      document.removeEventListener('visibilitychange', onVisibility);
+      unsubActivity();
       unsubSlice();
       unsubApprovals();
       unsubSubagents();

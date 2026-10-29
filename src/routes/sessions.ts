@@ -7,6 +7,7 @@ import type { Allowlist } from '../permissions/allowlist.js';
 import type { RecurrenceTracker } from '../storage/recurrence-tracker.js';
 import type { InteractiveStore } from '../session/interactive-store.js';
 import type { AgentRuntime } from '../runtime/types.js';
+import type { SessionSeenStore } from '../storage/session-seen-store.js';
 import { readJsonObject } from './util.js';
 
 const TOOK_WHEEL = 'The user has taken the wheel on this session. Autopilot is paused: '
@@ -35,6 +36,8 @@ export interface SessionsRoutesDeps {
   // session-end event; runsCapture.onSessionEnd dedupes across them.
   captureSessionEnd(sessionId: string): void;
   interactive: InteractiveStore;
+  seenStore: SessionSeenStore;
+  notify(msg: object): void;
   // Resolves a session to the job/step it drives, or undefined when the user may not take
   // the wheel on it. Wired to WorkEngine.interactiveTarget.
   interactiveTarget(sessionId: string): { jobId: string; stepId?: string } | undefined;
@@ -53,12 +56,26 @@ export interface SessionsRoutesDeps {
   };
 }
 
+export function registerSessionSeenRoute(server: Server, deps: Pick<SessionsRoutesDeps, 'seenStore' | 'notify'>): void {
+  server.route('POST', '/api/sessions/:id/seen', (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/seen$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    const sessionId = m[1]!;
+    const seenAt = deps.seenStore.markSeen(sessionId);
+    deps.notify({ type: 'session_activity', sessionId, seenAt });
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ seenAt }));
+  });
+}
+
 export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps): void {
   const {
     sessionStore, manager, runtime, worktreeManager, queue, recurrence, allowlist,
     latestStatuslineBySession, cwdForSession, summarizeToolInput, captureSessionEnd, info,
-    interactive, interactiveTarget, jobIdForSession, tickJob, markJobEngaged,
+    interactive, interactiveTarget, jobIdForSession, tickJob, markJobEngaged, seenStore,
   } = deps;
+  registerSessionSeenRoute(server, deps);
 
   function sendHandover(sessionId: string, tookWheel: boolean): void {
     // Fire-and-forget: SessionManager.send throws for a session whose subprocess has been
@@ -132,7 +149,10 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
       for (let i = 0; i < p.sessions.length; i++) {
         const id = p.sessions[i]!.id;
         const k = manager.getKind(id);
-        p.sessions[i] = { ...p.sessions[i]!, ...(k ? { kind: k } : {}), runState: manager.runState(id) };
+        p.sessions[i] = {
+          ...p.sessions[i]!, ...(k ? { kind: k } : {}),
+          runState: manager.runState(id), working: manager.isWorking(id), seenAt: seenStore.seenAt(id),
+        };
       }
     }
     const titleById = new Map<string, string>();
@@ -191,6 +211,7 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
     captureSessionEnd(id);
     await manager.close(id);
     const removed = sessionStore.delete(id);
+    seenStore.forget(id);
     await worktreeManager.remove(id);
     latestStatuslineBySession.delete(id);
     console.log(`[api] delete session ${id.slice(0,8)} subprocess=killed file=${removed ? 'removed' : 'not-found'}`);

@@ -11,8 +11,8 @@ import { sessions } from '../../src/pwa/state/sessions.js';
 // subagent produced a message. Node identity across a repaint IS the invariant;
 // jsdom can't observe the animation itself.
 
-const RUNNING = { id: 'sess-running', title: 'one', lastModified: Date.now(), runState: 'background' };
-const OTHER = { id: 'sess-other', title: 'two', lastModified: Date.now(), runState: 'background' };
+const RUNNING = { id: 'sess-running', title: 'one', lastModified: Date.now(), working: true };
+const OTHER = { id: 'sess-other', title: 'two', lastModified: Date.now(), working: true };
 
 function seed(sessionList: unknown[]) {
   sessions.set((s: Record<string, unknown>) => ({
@@ -59,7 +59,7 @@ describe('sessions list repaints without re-creating cards', () => {
     const dot = card.querySelector('.o-row-icon')!;
     expect(card.querySelector('.o-row-title')?.textContent).toBe('one');
 
-    seed([{ ...RUNNING, title: 'renamed', runState: 'inactive' }]);
+    seed([{ ...RUNNING, title: 'renamed', working: false }]);
     await nextFrame();
 
     expect(mount.querySelector('.sess-card')).toBe(card);

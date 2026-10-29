@@ -1,7 +1,7 @@
 import { nav } from '../../state/nav.js';
 import { approvals } from '../../state/approvals.js';
 import { work } from '../../state/work.js';
-import { sessions } from '../../state/sessions.js';
+import { sessionActivity } from '../../state/session-activity.js';
 import { schedulesStore, enabledScheduleCount } from '../../state/schedules.js';
 import { usage } from '../../state/usage.js';
 import { usageTier, clampPct, usagePopoverHtml, queueActionFor, queueToggle, queueTag, heldWindow } from '../../utils/usage-bar.js';
@@ -38,11 +38,7 @@ function trackedCount() {
   return (work.get().jobs ?? []).filter((j) => !isTerminalJob(j)).length;
 }
 function sessionsCount() {
-  let n = 0;
-  for (const slice of sessions.get().sessionsById.values()) {
-    if (slice.runState === 'foreground' || slice.runState === 'background') n++;
-  }
-  return n;
+  return sessionActivity.workingCount();
 }
 function schedulesCount() {
   return enabledScheduleCount(schedulesStore.get());
@@ -158,7 +154,7 @@ export function mountSidebar(root) {
   const unsubNav = nav.subscribe(() => { applyActive(); applyCollapsed(); });
   const unsubApprovals = approvals.subscribe(paintCounts);
   const unsubWork = work.subscribe(() => { paintCounts(); paintQueue(); paintUsage(); });
-  const unsubSessions = sessions.subscribe(paintCounts);
+  const unsubSessions = sessionActivity.subscribe(paintCounts);
   const unsubSchedules = schedulesStore.subscribe(paintCounts);
   const unsubUsage = usage.subscribe(paintUsage);
   const unsubUpdate = updateStore.subscribe(paintUpdate);

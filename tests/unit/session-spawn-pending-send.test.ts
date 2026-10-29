@@ -57,7 +57,12 @@ function setup() {
       queue: {} as never, modes: {} as never, manager, reply: (m) => sock.ws.send(JSON.stringify(m)),
     });
   };
-  return { create, attach, userMessage, finish: () => finish(), fail: (e: Error) => fail(e) };
+  // The build starts a tick after the message, once wake() reaches it
+  return {
+    create, attach, userMessage,
+    finish: async () => { await flush(); finish(); },
+    fail: async (e: Error) => { await flush(); fail(e); },
+  };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
@@ -76,10 +81,10 @@ describe('a worktree session whose spawn is still pending', () => {
     expect(sends).toEqual([]);
     expect(refusals(sock.frames)).toEqual([]);
 
-    t.finish();
+    await t.finish();
     await flush();
     expect(userTexts()).toEqual(['first', 'second']);
-    expect(ofType(sock.frames, 'session_state')).toEqual([expect.objectContaining({ working: true })]);
+    expect(ofType(sock.frames, 'session_state').map((f) => f.live)).toEqual([false, true]);
     t.userMessage(sock, 'third', 'c3');
     expect(userTexts()).toEqual(['first', 'second', 'third']);
   });
@@ -92,39 +97,40 @@ describe('a worktree session whose spawn is still pending', () => {
     const second = t.attach();
     t.userMessage(second, 'after reconnect', 'c2');
 
-    t.finish();
+    await t.finish();
     await flush();
     expect(t.create).toHaveBeenCalledTimes(1);
     expect(spawned).toEqual(['wt-1']);
     expect(userTexts()).toEqual(['before reconnect', 'after reconnect']);
-    expect(ofType(second.frames, 'session_state')).toHaveLength(1);
+    expect(ofType(second.frames, 'session_state').map((f) => f.live)).toEqual([false, true]);
   });
 
-  it('attaches every socket still open when the build finishes', async () => {
+  it('promotes every socket still watching when the build finishes', async () => {
     const t = setup();
     const a = t.attach();
     const b = t.attach();
-    t.finish();
+    t.userMessage(a, 'go', 'c1');
+    await t.finish();
     await flush();
-    expect(ofType(a.frames, 'session_state')).toHaveLength(1);
-    expect(ofType(b.frames, 'session_state')).toHaveLength(1);
+    expect(ofType(a.frames, 'session_state').map((f) => f.live)).toEqual([false, true]);
+    expect(ofType(b.frames, 'session_state').map((f) => f.live)).toEqual([false, true]);
   });
 
-  it('refuses each held message with its clientId when the build fails, then stops holding', async () => {
+  it('refuses each held message with its clientId when the build fails, and retries on the next message', async () => {
     const t = setup();
     const sock = t.attach();
     t.userMessage(sock, 'one', 'c1');
     t.userMessage(sock, 'two', 'c2');
 
-    t.fail(new Error('boom'));
+    await t.fail(new Error('boom'));
     await flush();
     expect(spawned).toEqual([]);
     expect(refusals(sock.frames).map((f) => f.clientId)).toEqual(['c1', 'c2']);
-    expect(refusals(sock.frames)[0]!.message).toContain('boom');
-    expect(sock.frames.at(-1)).toMatchObject({ type: 'daemon_error', fatal: true, message: 'worktree creation failed: boom' });
+    expect(refusals(sock.frames)[0]!.message).toContain('worktree creation failed: boom');
 
     const later = t.attach();
     t.userMessage(later, 'later', 'c3');
+    await flush();
     expect(t.create).toHaveBeenCalledTimes(2);
   });
 
@@ -135,9 +141,8 @@ describe('a worktree session whose spawn is still pending', () => {
     first.ws.close();
     const second = t.attach();
 
-    t.fail(new Error('boom'));
+    await t.fail(new Error('boom'));
     await flush();
     expect(refusals(second.frames)).toEqual([expect.objectContaining({ clientId: 'c1' })]);
-    expect(second.frames.at(-1)).toMatchObject({ type: 'daemon_error', fatal: true });
   });
 });

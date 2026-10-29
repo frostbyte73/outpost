@@ -5,8 +5,9 @@ import { isTerminalStep, draftAwaitsUser, planIsLive } from './work-predicates.j
 import { implementAwaitingPush, orchestratedRows, phaseLabelOf } from './tracked.js';
 import { cockpitInbox } from './cockpit.js';
 import { shortName } from '../utils/formatting.js';
+import { sessionState, sessionSignals } from './session-state.js';
 
-export const OPENABLE = new Set(['plan-review', 'gate', 'draft', 'failed', 'wait', 'stall', 'driven', 'your-turn']);
+export const OPENABLE = new Set(['plan-review', 'gate', 'draft', 'failed', 'wait', 'stall', 'driven']);
 
 const OTHER_KINDS = new Set(['routine-failed', 'action-proposal', 'schedule-proposal']);
 const OTHER_KIND_LABEL = { 'routine-failed': 'routine', 'action-proposal': 'skill', 'schedule-proposal': 'schedule' };
@@ -101,7 +102,6 @@ const ACTION_TEXT = {
   push: () => 'Review diff & push',
   approval: (a) => `Approve ${a.toolName}`,
   driven: () => 'You have the wheel',
-  'your-turn': () => 'Your turn',
 };
 
 const ACTION_BUTTON = {
@@ -114,7 +114,6 @@ const ACTION_BUTTON = {
   push: () => 'Review diff',
   approval: () => 'Review',
   driven: () => 'Open',
-  'your-turn': () => 'Reply',
 };
 
 function actionsText(actions, j) {
@@ -178,27 +177,24 @@ function jobRow(j, pendingApprovals, openingWaits) {
   };
 }
 
-const ALIVE = new Set(['foreground', 'background']);
 
-function sessionRow(s, cwd, slice, pendingApprovals, localEngaged) {
-  const alive = ALIVE.has(slice?.runState ?? s.runState);
-  const working = !!slice?.thinking;
+function sessionRow(s, cwd, slice, pendingApprovals, localEngaged, activity) {
+  const signals = sessionSignals(s, slice, activity);
   const pending = pendingApprovals.filter((a) => a.sessionId === s.id && !a.agentId);
-  const actions = pending.length
-    ? pending.map((a) => ({ kind: 'approval', sessionId: s.id, approvalId: a.approvalId, toolName: a.toolName ?? 'tool' }))
-    : (alive && !working ? [{ kind: 'your-turn', sessionId: s.id }] : []);
-  const tone = working ? 'live' : actions.length ? 'you' : 'idle';
+  const actions = pending.map((a) => ({ kind: 'approval', sessionId: s.id, approvalId: a.approvalId, toolName: a.toolName ?? 'tool' }));
+  const state = sessionState({ hasApproval: pending.length > 0, ...signals });
+  const tone = state === 'thinking' ? 'live' : state === 'idle' ? 'idle' : 'you';
   let status;
-  if (working) status = { text: 'Working', tone: 'live' };
-  else if (actions.length) status = { text: actionsText(actions, null), tone: 'you' };
+  if (state === 'approval') status = { text: actionsText(actions, null), tone: 'you' };
+  else if (state === 'unread') status = { text: 'Unread', tone: 'you' };
+  else if (state === 'thinking') status = { text: 'Working', tone: 'live' };
   else status = { text: 'Idle', tone: 'mute' };
   return {
     key: `session:${s.id}`, kind: 'session', id: s.id,
     ref: shortName(cwd), refMono: true, kindLabel: null,
     title: s.title ?? 'Untitled session', tone, status, time: s.lastModified ?? 0,
     actions, actionLabel: actionLabel(actions),
-    // Only while there's something to watch: an attached feed cancels the daemon's idle reaper.
-    feeds: alive && (working || pending.length) ? [{ sessionId: s.id, stepId: null, repo: null, action: null }] : [],
+    feeds: signals.working || pending.length ? [{ sessionId: s.id, stepId: null, repo: null, action: null }] : [],
     engagedAt: Math.max(s.lastEngagedAt ?? s.lastModified ?? 0, localEngaged.get(s.id) ?? 0),
     createdAt: s.lastModified ?? 0, cwd, inboxItem: null,
   };
@@ -223,7 +219,7 @@ const byCreated = (a, b) => b.createdAt - a.createdAt;
 const byTime = (a, b) => b.time - a.time;
 
 export function cockpitBoard({
-  jobs = [], projects = [], slices = new Map(), pendingApprovals = [], localEngaged = new Map(),
+  jobs = [], projects = [], slices = new Map(), pendingApprovals = [], localEngaged = new Map(), activity = new Map(),
   actionEdits = [], scheduleDrafts = new Map(), runs = [], autoApplied = [], openingWaits = new Set(),
   launched = new Set(), now = Date.now(),
 } = {}) {
@@ -239,13 +235,13 @@ export function cockpitBoard({
   for (const p of projects) {
     for (const s of p.sessions ?? []) {
       if (s.archived || s.sessionClass === 'action' || (s.kind && s.kind !== 'normal')) continue;
-      sessions.push(sessionRow(s, p.cwd, slices.get(s.id), pendingApprovals, localEngaged));
+      sessions.push(sessionRow(s, p.cwd, slices.get(s.id), pendingApprovals, localEngaged, activity));
     }
   }
   for (const id of launched) {
     if (sessions.some((r) => r.id === id)) continue;
     const slice = slices.get(id);
-    sessions.push(sessionRow({ id, title: slice?.title, lastModified: now }, slice?.cwd, slice, pendingApprovals, localEngaged));
+    sessions.push(sessionRow({ id, title: slice?.title, lastModified: now }, slice?.cwd, slice, pendingApprovals, localEngaged, activity));
   }
   const inbox = cockpitInbox({ actionEdits, scheduleDrafts, runs, autoApplied, now });
   const other = [...inbox.decide, ...inbox.broken].filter((i) => OTHER_KINDS.has(i.kind)).map(otherRow);

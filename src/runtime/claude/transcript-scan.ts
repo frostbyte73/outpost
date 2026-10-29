@@ -98,7 +98,18 @@ export function cleanTitle(raw: string): string {
   return t || 'Untitled session';
 }
 
-type TailRecord = { type?: string; timestamp?: string; isMeta?: boolean; message?: { content?: unknown } };
+type TailRecord = { type?: string; timestamp?: string; isMeta?: boolean; isSidechain?: boolean; message?: { content?: unknown } };
+
+// Claude's own prose to the user is what makes a session unread
+function isAssistantReply(o: TailRecord): boolean {
+  if (o.type !== 'assistant' || o.isSidechain) return false;
+  const c = o.message?.content;
+  if (!Array.isArray(c)) return false;
+  return c.some((b) => {
+    const blk = b as { type?: string; text?: unknown };
+    return blk?.type === 'text' && typeof blk.text === 'string' && blk.text.trim() !== '';
+  });
+}
 
 function isTypedPrompt(o: TailRecord): boolean {
   if (o.type !== 'user' || o.isMeta) return false;
@@ -114,11 +125,11 @@ function isTypedPrompt(o: TailRecord): boolean {
 
 // Tail-scan for the newest user/assistant timestamp and the newest typed prompt; sort keys must be
 // real activity, not mtime — `claude --resume` appends non-content lines that bump mtime.
-export function tailTimestamps(path: string, size: number): { last: number | null; prompt: number | null } {
+export function tailTimestamps(path: string, size: number): { last: number | null; prompt: number | null; reply: number | null } {
   const TAIL_BYTES = 64 * 1024;
   const start = Math.max(0, size - TAIL_BYTES);
   const len = size - start;
-  if (len <= 0) return { last: null, prompt: null };
+  if (len <= 0) return { last: null, prompt: null, reply: null };
   const fd = openSync(path, 'r');
   try {
     const buf = Buffer.alloc(len);
@@ -129,7 +140,8 @@ export function tailTimestamps(path: string, size: number): { last: number | nul
     const lines = (firstNl === -1 ? text : text.slice(firstNl + 1)).split('\n');
     let last: number | null = null;
     let prompt: number | null = null;
-    for (let i = lines.length - 1; i >= 0 && (last === null || prompt === null); i--) {
+    let reply: number | null = null;
+    for (let i = lines.length - 1; i >= 0 && (last === null || prompt === null || reply === null); i--) {
       const line = lines[i];
       if (!line) continue;
       let o: TailRecord;
@@ -139,8 +151,9 @@ export function tailTimestamps(path: string, size: number): { last: number | nul
       if (!Number.isFinite(ms)) continue;
       if (last === null) last = ms;
       if (prompt === null && isTypedPrompt(o)) prompt = ms;
+      if (reply === null && isAssistantReply(o)) reply = ms;
     }
-    return { last, prompt };
+    return { last, prompt, reply };
   } finally {
     closeSync(fd);
   }

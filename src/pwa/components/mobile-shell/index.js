@@ -12,6 +12,7 @@ import { nav } from '../../state/nav.js';
 import { work } from '../../state/work.js';
 import { approvals } from '../../state/approvals.js';
 import { sessions } from '../../state/sessions.js';
+import { sessionActivity } from '../../state/session-activity.js';
 import { schedulesStore } from '../../state/schedules.js';
 import { actions } from '../../state/actions.js';
 import { runs } from '../../state/runs.js';
@@ -178,7 +179,7 @@ function setFabVisible(visible) {
 
 function paintCockpitHeader() {
   const groups = { waiting: waitingOnYouCount() };
-  const running = [...sessions.get().sessionsById.values()].filter((s) => s.runState === 'foreground' || s.runState === 'background').length;
+  const running = sessionActivity.workingCount();
   const hour = new Date().getHours();
   const greeting = hour < 5 ? 'Working late' : hour < 12 ? 'Good morning' : hour < 18 ? 'Good afternoon' : 'Good evening';
   const parts = [];
@@ -207,7 +208,7 @@ function paintTrackedHeader() {
 }
 
 function paintSessionsHeader() {
-  const running = [...sessions.get().sessionsById.values()].filter((s) => s.runState === 'foreground' || s.runState === 'background').length;
+  const running = sessionActivity.workingCount();
   setHeader('list-tab', { title: 'Sessions', sub: `${running} running` });
   setFabVisible(true);
 }
@@ -470,6 +471,7 @@ export function mountMobileShell(root) {
     work.subscribe(paint),
     approvals.subscribe(paint),
     sessions.subscribe(paint),
+    sessionActivity.subscribe(paint),
     schedulesStore.subscribe(paint),
     // The cockpit tab badge counts action proposals and routine failures too, so the
     // stores those come from have to repaint the tab bar like every other input.

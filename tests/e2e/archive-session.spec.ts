@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect, openSessionAtCwd } from './harness/browser.js';
+import { test, expect, openSessionAtCwd, typeToWake } from './harness/browser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolvePath(__dirname, 'fixtures', 'simple-text-response.jsonl');
@@ -46,6 +46,7 @@ async function waitForWorktreeRecord(daemon: { runtimeDir: string }, timeoutMs =
 
 test('POST /api/sessions/:id/archive removes worktree + branch, leaves index tombstone', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, testRepo, { spawnMode: 'worktree', baseBranch: 'main' });
+  await typeToWake(outpostPage);
   const rec = await waitForWorktreeRecord(daemon);
   expect(existsSync(rec.worktreePath)).toBe(true);
 
@@ -105,6 +106,7 @@ test('POST /api/sessions/:id/archive writes a tombstone for a non-worktree sessi
 
 test('DELETE /api/sessions/:id removes both worktree and branch', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, testRepo, { spawnMode: 'worktree', baseBranch: 'main' });
+  await typeToWake(outpostPage);
   const rec = await waitForWorktreeRecord(daemon);
 
   const res = await outpostPage.request.delete(`${daemon.baseUrl}/api/sessions/${rec.sessionId}`);

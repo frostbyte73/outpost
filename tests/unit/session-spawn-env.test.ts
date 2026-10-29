@@ -8,7 +8,7 @@ import { ClaudeTranscripts } from '../../src/runtime/claude/transcripts.js';
 import type { AgentRuntime, StartOpts } from '../../src/runtime/types.js';
 
 // A step session's `$OUTPOST_ENVELOPE` has to survive a respawn through ANY door, because the
-// door the user walks through is the one that drops it: attach() (the PWA opening the session)
+// door the user walks through is the one that drops it: wake() (the PWA resuming the session)
 // spawns with no env, and sendOrResume applies env only when it has to spawn. CS-2068's step
 // died on exactly that order — the user opened the session to read its gate question, the
 // gate denial then resumed an already-live env-less proc, and the controller woke blind
@@ -50,18 +50,20 @@ describe('spawn env stickiness', () => {
     await manager.close('step-1', 'idle');
 
     manager.attach('step-1', fakeWs(), { cwd });
+    await manager.wake('step-1');
 
     expect(spawned).toHaveLength(2);
     expect(spawned[1]!.env).toMatchObject(STEP_ENV);
   });
 
   // The failure itself: once the PWA has the proc alive again, sendOrResume never respawns,
-  // so a resume can only ever reach the env that attach() gave it.
+  // so a resume can only ever reach the env that wake() gave it.
   it('leaves a PWA-respawned session holding its envelope for the next resume', async () => {
     const { manager, cwd } = newManager();
     manager.spawnDetached('step-1', cwd, STEP_ENV);
     await manager.close('step-1', 'idle');
     manager.attach('step-1', fakeWs(), { cwd });
+    await manager.wake('step-1');
 
     manager.sendOrResume('step-1', cwd, { text: '' }, STEP_ENV);
 
@@ -77,6 +79,7 @@ describe('spawn env stickiness', () => {
     await manager.close('step-1', 'idle');
 
     manager.attach('step-1', fakeWs(), { cwd });
+    await manager.wake('step-1');
 
     expect(spawned.at(-1)!.env).toMatchObject(STEP_ENV);
   });
@@ -88,9 +91,10 @@ describe('spawn env stickiness', () => {
     expect(store.readSpawnEnv('step-1')).toEqual(STEP_ENV);
   });
 
-  it('leaves a plain interactive session with no step env', () => {
+  it('leaves a plain interactive session with no step env', async () => {
     const { manager, cwd } = newManager();
     manager.attach('chat-1', fakeWs(), { cwd });
+    await manager.wake('chat-1');
     expect(spawned[0]!.env.OUTPOST_ENVELOPE).toBeUndefined();
   });
 });
@@ -98,13 +102,15 @@ describe('spawn env stickiness', () => {
 describe('system prompt stickiness', () => {
   beforeEach(() => { spawned.length = 0; });
 
-  it('passes a persisted system prompt on the first attach and on a respawn after reap', async () => {
+  it('passes a persisted system prompt on the first wake and on a respawn after reap', async () => {
     const { manager, store, cwd } = newManager();
     store.writeSystemPrompt('wait-1', 'job context');
 
     manager.attach('wait-1', fakeWs(), { cwd });
+    await manager.wake('wait-1');
     await manager.close('wait-1', 'idle');
     manager.attach('wait-1', fakeWs(), { cwd });
+    await manager.wake('wait-1');
 
     expect(spawned.map((s) => s.appendSystemPrompt)).toEqual(['job context', 'job context']);
   });
@@ -117,9 +123,10 @@ describe('system prompt stickiness', () => {
     expect(store.readSystemPrompt('step-1')).toBe('ctx');
   });
 
-  it('passes no system prompt for a session that never had one', () => {
+  it('passes no system prompt for a session that never had one', async () => {
     const { manager, cwd } = newManager();
     manager.attach('chat-1', fakeWs(), { cwd });
+    await manager.wake('chat-1');
     expect(spawned[0]!.appendSystemPrompt).toBeUndefined();
   });
 });

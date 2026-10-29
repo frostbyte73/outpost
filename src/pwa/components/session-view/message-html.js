@@ -189,11 +189,8 @@ export function minimalMsgHtml(m, expandedTools, ctx) {
 
   const label = ROLE_LABELS[m.role] ?? String(m.role ?? '');
   const body = m.role === 'assistant' ? renderMarkdown(text) : escapeHtml(text);
-  const action = m.action === 'reopen'
-    ? `<button class="msg-action" type="button" data-msg-action="reopen">Reopen</button>`
-    : '';
   const pending = m.__pending ? ' is-pending' : '';
-  return `<div class="msg ${escapeHtml(m.role)}${pending}"><span class="role">${escapeHtml(label)}</span><span class="body-text">${attachments}${body}</span>${action}</div>`;
+  return `<div class="msg ${escapeHtml(m.role)}${pending}"><span class="role">${escapeHtml(label)}</span><span class="body-text">${attachments}${body}</span></div>`;
 }
 
 const PREVIEW_URL = /^data:image\/jpeg;base64,[A-Za-z0-9+/=]+$/;

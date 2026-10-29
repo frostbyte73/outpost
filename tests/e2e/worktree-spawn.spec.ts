@@ -3,7 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { test, expect, openSessionAtCwd } from './harness/browser.js';
+import { test, expect, openSessionAtCwd, typeToWake } from './harness/browser.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = resolvePath(__dirname, 'fixtures', 'simple-text-response.jsonl');
@@ -22,7 +22,7 @@ test.beforeEach(() => {
 
 test('worktree spawn: WorktreeManager creates a tree, session view opens', async ({ daemon, outpostPage }) => {
   await openSessionAtCwd(outpostPage, daemon, testRepo, { spawnMode: 'worktree', baseBranch: 'main' });
-  await expect(outpostPage.locator('.sv-composer')).toBeVisible({ timeout: 10_000 });
+  await typeToWake(outpostPage);
   // Worktree creation is async; poll until it shows up. ~few hundred ms in practice.
   await expect.poll(
     () => execFileSync('git', ['-C', testRepo, 'worktree', 'list']).toString(),
@@ -41,6 +41,7 @@ test('worktree spawn on a non-git repo does not create a worktree', async ({ dae
     // @ts-expect-error
     globalThis.__outpostOpenSession?.({ id: crypto.randomUUID(), cwd, spawn: 'worktree', base: 'main' });
   }, notRepo);
+  await typeToWake(outpostPage);
   // Give the daemon time to fail. The directly-observable consequence: no worktree
   // subdir gets created under <runtimeDir>/worktrees/.
   await outpostPage.waitForTimeout(1000);
