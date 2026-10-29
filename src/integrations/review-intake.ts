@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { runGh } from './gh-cli.js';
 import { repoFromRemoteUrl } from '../git/worktree-manager.js';
 import type { PrReviewIntake } from '../storage/preferences-store.js';
 import { PR_URL_RE } from '../work/pr-url.js';
@@ -44,9 +46,9 @@ export interface ReviewIntakeDeps {
   originOf?: (cwd: string) => Promise<string | null>;
 }
 
+// No repo of its own: a search names its repos in the query, a PR view by its URL.
 async function defaultRunGh(args: string[]): Promise<string> {
-  const { stdout } = await execFileP('gh', args, { maxBuffer: 4 * 1024 * 1024, timeout: 20_000 });
-  return stdout.toString();
+  return runGh(homedir(), args, { timeout: 20_000 });
 }
 
 async function defaultOriginOf(cwd: string): Promise<string | null> {

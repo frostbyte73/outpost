@@ -3,6 +3,7 @@ import { promisify } from 'node:util';
 import { statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { WorktreeManager, WorktreeRecord } from './worktree-manager.js';
+import { runGh } from '../integrations/gh-cli.js';
 
 const execFileP = promisify(execFile);
 
@@ -326,8 +327,8 @@ export async function gitOpenPr(cwd: string, opts?: { base?: string; title?: str
 // on a PR that is already open — that is an opened PR with a `warning`, not a failed open
 async function ghPrCreate(cwd: string, args: string[]): Promise<GitCommandResult & { url?: string; warning?: string }> {
   try {
-    const { stdout, stderr } = await execFileP('gh', ['pr', 'create', ...args], { cwd, maxBuffer: MAX_BUFFER, timeout: 30_000 });
-    return { ok: true, stdout: stdout.toString(), stderr: stderr.toString(), exitCode: 0, url: prUrlIn(stdout.toString()) };
+    const stdout = await runGh(cwd, ['pr', 'create', ...args], { maxBuffer: MAX_BUFFER, timeout: 30_000 });
+    return { ok: true, stdout, stderr: '', exitCode: 0, url: prUrlIn(stdout) };
   } catch (err) {
     const e = err as { stdout?: Buffer | string; stderr?: Buffer | string; code?: number };
     const stdout = e.stdout?.toString() ?? '';
@@ -578,12 +579,12 @@ export async function gitHasUnpushedWork(cwd: string): Promise<boolean | undefin
 async function branchHasOpenPr(cwd: string, branch: string): Promise<boolean> {
   if (!BRANCH_NAME_RE.test(branch)) return true;
   try {
-    const { stdout } = await execFileP(
-      'gh',
+    const stdout = await runGh(
+      cwd,
       ['pr', 'list', '--head', branch, '--state', 'open', '--json', 'url', '--limit', '1'],
-      { cwd, maxBuffer: MAX_BUFFER, timeout: 30_000 },
+      { maxBuffer: MAX_BUFFER, timeout: 30_000 },
     );
-    const arr = JSON.parse(stdout.toString().trim() || '[]');
+    const arr = JSON.parse(stdout.trim() || '[]');
     return Array.isArray(arr) && arr.length > 0;
   } catch {
     return true;
@@ -683,16 +684,12 @@ function readCurrentBranch(cwd: string): string | null {
   } catch { return null; }
 }
 
-// 4s timeout caps a hung gh from blocking the status response.
+// 4s timeout caps a hung GitHub call from blocking the status response.
 async function detectPrUrl(cwd: string, branch: string): Promise<string | null> {
   if (!BRANCH_NAME_RE.test(branch)) return null;
   try {
-    const { stdout } = await execFileP(
-      'gh',
-      ['pr', 'view', branch, '--json', 'url', '-q', '.url'],
-      { cwd, maxBuffer: 1024 * 1024, timeout: 4000 },
-    );
-    const url = stdout.toString().trim();
+    const stdout = await runGh(cwd, ['pr', 'view', branch, '--json', 'url'], { maxBuffer: 1024 * 1024, timeout: 4000 });
+    const url = (JSON.parse(stdout) as { url?: string }).url ?? '';
     if (!url.startsWith('http')) return null;
     return url;
   } catch (err) {

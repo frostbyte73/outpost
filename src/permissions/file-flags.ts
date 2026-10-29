@@ -40,6 +40,39 @@ function fieldFileTarget(token: string, next: string | undefined): { path: strin
   return { path: value.slice(at + 2), consumed: !eq };
 }
 
+// curl's body flags read a file when the value is `@`-prefixed (`-d @/tmp/pr.json`), and
+// `-T`/`--upload-file` always do. This is the spelling a GitHub API write takes when `gh` isn't
+// there to carry `--input`, so the same /tmp bar and digest pin apply. `--data-raw` never reads
+// a file — that is its whole point. `--data-urlencode` reads one from `name@path` as well as
+// `@path`; no rule grants it, but a reference it hides must still fail the bar, not slip past.
+const CURL_BODY_LONG = ['--data', '--data-binary', '--json', '--data-urlencode'] as const;
+const CURL_UPLOAD = ['-T', '--upload-file'] as const;
+
+function curlFileTarget(token: string, next: string | undefined): { path: string | null; consumed: boolean } | null {
+  let flag: string | undefined;
+  let value: string | undefined;
+  let consumed = false;
+  const long = [...CURL_BODY_LONG, ...CURL_UPLOAD].find((f) => token === f || token.startsWith(`${f}=`));
+  if (long) {
+    flag = long;
+    if (token === long) { value = next; consumed = true; } else value = token.slice(long.length + 1);
+  } else if (token === '-T') {
+    flag = '-T'; value = next; consumed = true;
+  } else {
+    // `-d`, clustered (`-sd`), or with the value attached (`-d@/tmp/x`, `-sd@/tmp/x`).
+    const m = /^-[A-Za-z]*d(.*)$/.exec(token);
+    if (!m || token.startsWith('--')) return null;
+    flag = '-d';
+    if (m[1]) value = m[1]; else { value = next; consumed = true; }
+  }
+  if (value === undefined) return { path: null, consumed };
+  const v = unquote(value);
+  if ((CURL_UPLOAD as readonly string[]).includes(flag)) return { path: v, consumed };
+  const at = flag === '--data-urlencode' ? v.indexOf('@') : (v.startsWith('@') ? 0 : -1);
+  if (at < 0) return null;
+  return { path: v.slice(at + 1), consumed };
+}
+
 function unquote(raw: string): string {
   if (raw.length >= 2 && ((raw[0] === '"' && raw.endsWith('"')) || (raw[0] === "'" && raw.endsWith("'")))) {
     return raw.slice(1, -1);
@@ -151,10 +184,25 @@ export function extractFileReferences(bash: string): string[] | null {
 
   const paths: string[] = [];
   for (const clause of clauses) {
-    const tokens = tokenize(clause.text);
+    // A `\`-newline is not a word: bash deletes it, joining what's either side. Left in, it
+    // reads as the VALUE of the flag before it, and `-d \<newline> @/etc/passwd` names a file the
+    // scan never sees.
+    const tokens = tokenize(clause.text.replace(/\\\n/g, ''));
     if (tokens === null) return null;
+    // Past any leading `VAR=value` words: `X=1 curl -d @/etc/passwd …` still runs curl.
+    const prog = tokens.find((t) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(t)) ?? '';
+    const isCurl = (unquote(prog).split('/').pop() ?? '') === 'curl';
     for (let i = 0; i < tokens.length; i++) {
       const tok = tokens[i]!;
+      if (isCurl && !/^["']/.test(tok)) {
+        const body = curlFileTarget(tok, tokens[i + 1]);
+        if (body) {
+          if (body.consumed) i++;
+          if (!body.path || /[$`]/.test(body.path)) return null;
+          paths.push(body.path);
+          continue;
+        }
+      }
       const field = fieldFileTarget(tok, tokens[i + 1] === undefined ? undefined : unquote(tokens[i + 1]!));
       if (field) {
         if (field.consumed) i++;

@@ -83,6 +83,7 @@ One line each; the full reasoning is in [`docs/design/gotchas.md`](docs/design/g
 - Every new endpoint in `src/permissions/hook-server.ts` must validate the secret header; only `server.ts` is exposed on the tailnet.
 - Persisted stores in `~/.outpost/` (override: `OUTPOST_RUNTIME_DIR`) write via atomic rename; keep that pattern in new ones.
 - launchd strips the shell env, so secrets reach subprocesses through `~/.outpost/.env` (`env-file.ts`), where an `op://` value is resolved through 1Password. Precedence: plist > .env > defaults.
+- The daemon's GitHub calls all go through `runGh` (`gh-cli.ts`), answered from the API when `gh` isn't installed and `GITHUB_TOKEN` is set; never spawn `gh` directly, and a new argv shape needs a shim case and a test.
 - Sessions learn the daemon's port only from `$OUTPOST_API_URL`; an action that calls back must allowlist both that spelling and `127.0.0.1:<port>`.
 - A step failure always journals a `blocked` entry against the action (pass `{ journal: false }` when the action didn't cause it). A denied write draft journals against whoever chose to run the action instead.
 - Every catalog action must exist in both the repo's `actions/` and `~/.outpost/actions/`; `ensureActionsInstalled` never overwrites an existing dir.

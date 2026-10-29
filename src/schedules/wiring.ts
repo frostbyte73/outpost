@@ -12,6 +12,7 @@ import type { RoutingDeps } from './routing.js';
 import type { SchedulerInlineDeps, SchedulerSpawnDeps } from './scheduler.js';
 import type { What } from './types.js';
 import { runScript } from './script-runner.js';
+import { runGh } from '../integrations/gh-cli.js';
 import type { NativeHandlerRegistry } from './native-handlers.js';
 import { writeScheduleEnvelope, type EnvelopeEnricherRegistry } from './schedule-envelope.js';
 import type { JournalEntry } from '../storage/journal-store.js';
@@ -229,10 +230,7 @@ export function createRoutingDeps(
       if (!existsSync(repo) || !isKnownCwd(repo, projectRegistry, worktreeManager)) {
         throw new Error(`Repo is not a registered project or known worktree: ${repo}`);
       }
-      const { stdout } = await execFileP(
-        'gh', ['issue', 'create', '--title', 'Outpost scheduled finding', '--body', body],
-        { cwd: repo, timeout: 20_000 },
-      );
+      const stdout = await runGh(repo, ['issue', 'create', '--title', 'Outpost scheduled finding', '--body', body], { timeout: 20_000 });
       const url = stdout.trim().split('\n').filter(Boolean).pop();
       return { url };
     },

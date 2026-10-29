@@ -635,13 +635,13 @@ export class Allowlist {
     // an unresolvable redirect target does.
     const fileRefs = extractFileReferences(cmd);
     if (fileRefs === null) {
-      return { kind: 'none', reason: 'a --input/--body-file/--notes-file path this checker cannot read literally' };
+      return { kind: 'none', reason: 'a --input/--body-file/--notes-file (or curl -d @file) path this checker cannot read literally' };
     }
     const offending = fileRefs.find((p) => !isValidTmpFilePath(p));
     if (offending !== undefined) {
       return {
         kind: 'none',
-        reason: `--input/--body-file/--notes-file must point under /tmp/ so the approval card can `
+        reason: `--input/--body-file/--notes-file and curl -d @file must point under /tmp/ so the approval card can `
           + `show the body being sent; got "${offending}"`,
       };
     }

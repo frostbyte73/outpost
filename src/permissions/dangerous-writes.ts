@@ -22,6 +22,7 @@
 
 import { clauseArgv } from './shell-safety.js';
 import { splitShellClauses } from './shell-split.js';
+import { credentialMisuse, withoutCredentialRefs } from './github-token.js';
 
 // Three tiers, and the line between them is about what the user can DO about it, not about
 // how bad the operation sounds:
@@ -214,6 +215,34 @@ function gitFindings(sub: string | undefined, rest: string[]): WriteFinding[] {
   return out;
 }
 
+// The method a curl clause writes with, or undefined for a read. A body makes it a POST unless
+// `-X` says otherwise; `-F`/`-T` are writes too, though no rule grants them. Short options
+// cluster (`-sd x`), which is why the body check is on argv and not a flag-equality.
+const CURL_WRITE_METHOD_RE = /^(?:POST|PUT|PATCH|DELETE)$/i;
+function curlMethod(argv: string[]): string | undefined {
+  const explicit = argv.find((w, i) => (argv[i - 1] === '-X' || argv[i - 1] === '--request') && CURL_WRITE_METHOD_RE.test(w))
+    ?? argv.map((w) => /^--request=(.+)$/.exec(w)?.[1]).find((m) => m !== undefined && CURL_WRITE_METHOD_RE.test(m));
+  if (explicit) return explicit.toUpperCase();
+  const body = argv.some((w) => /^--(?:data|data-binary|data-raw|data-urlencode|json|form|upload-file)(?:=|$)/.test(w)
+    || (/^-[A-Za-z]*[dFT]/.test(w) && !w.startsWith('--')));
+  return body ? 'POST' : undefined;
+}
+
+function curlFindings(argv: string[]): WriteFinding[] {
+  const method = curlMethod(argv);
+  if (!method) return [];
+  const url = argv.slice(1).find((w) => /^https?:\/\//.test(w)) ?? 'the URL';
+  const out: WriteFinding[] = [{
+    risk: 'warn',
+    code: 'api-write',
+    message: `This is a direct \`${method}\` to ${url} — it is not limited to the shapes the other commands allow.`,
+  }];
+  if (method === 'PUT' && /\/pulls\/\d+\/merge(?:[?#]|$)/.test(url)) {
+    out.push({ risk: 'warn', code: 'pr-merge', message: 'This merges the pull request.' });
+  }
+  return out;
+}
+
 // Whether this clause is an external write — the same set the `push` group's rules name, since
 // both answer "is this the kind of call that has to be approved". Kept here in code rather than
 // read off the group config so this module stays usable without it.
@@ -222,6 +251,7 @@ function isWriteClause(prog: string, sub: string | undefined, rest: string[], ar
     if (sub === 'push' || sub === 'commit') return true;
     return sub === 'tag' && rest.length > 0 && !['-l', '--list', '-n'].includes(rest[0]!);
   }
+  if (prog === 'curl') return curlMethod(argv) !== undefined;
   if (prog !== 'gh') return false;
   const verb = rest[0];
   if (sub === 'pr') return ['create', 'edit', 'merge', 'review', 'comment', 'close', 'ready'].includes(verb ?? '');
@@ -291,6 +321,10 @@ export function writeFindings(cmd: string): WriteFinding[] {
     const { prog, sub, rest } = head(argv);
     if (prog === 'git') out.push(...gitFindings(sub, rest));
     else if (prog === 'gh') out.push(...ghFindings(sub, rest, argv));
+    else if (prog === 'curl') out.push(...curlFindings(argv));
+    // Not only for writes: a GET that carries the token to another host ships it just the same.
+    const misuse = credentialMisuse(clause.text);
+    if (misuse) out.push({ risk: 'refuse', code: 'token-destination', message: misuse });
     if (!isWriteClause(prog, sub, rest, argv)) continue;
     if (hasCommandSubstitution(clause.text)) {
       out.push({
@@ -310,7 +344,9 @@ export function writeFindings(cmd: string): WriteFinding[] {
     // usually mid-string (`"repos/$OWNER/$REPO/pulls/7/reviews"`). No need to check that it IS
     // quoted: shell-safety refuses an unquoted expansion outright, so any that survives to be
     // shown on a draft is quoted. `$(` doesn't match — that is the refusal above, not a warning.
-    if (/\$\{?[A-Za-z_]/.test(clause.text)) {
+    // `$GITHUB_TOKEN` is exempt: credentialMisuse has already confined it to the auth header,
+    // and its value is no mystery to the person approving.
+    if (/\$\{?[A-Za-z_]/.test(withoutCredentialRefs(clause.text))) {
       out.push({
         risk: 'warn',
         code: 'opaque-expansion',

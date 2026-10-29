@@ -43,8 +43,13 @@ function unmergedOwnPr(step: OrchestratedStep, pre: EffectivePreapprovals): stri
 // Leading-anchored for the same reason the `push` group's rules are: a call that isn't reaches
 // `allows()` and denies there anyway, so there is no second spelling to chase.
 const PR_CREATE_RE = /^gh\s+pr\s+create(\s|$)/;
+// The same write through the REST API — `POST /repos/{owner}/{repo}/pulls`, by `gh api` or by
+// curl — which is how row 8 opens a PR where `gh` isn't installed. No method check: a draft is
+// a write by construction, and a GET of that endpoint never reaches one.
+const PULLS_ENDPOINT_RE = /^(?:curl|gh\s+api)\s[\s\S]*?(?:^|[\s"'/])repos\/[^/\s"']+\/[^/\s"']+\/pulls\/?(?:\?[^\s"']*)?["']?(?:\s|$)/;
+const opensPr = (bash: string) => PR_CREATE_RE.test(bash) || PULLS_ENDPOINT_RE.test(bash);
 
-// The PR a drafted `gh pr create` would duplicate, or undefined if opening one is legitimate.
+// The PR a drafted `gh pr create` (or its REST spelling) would duplicate, or undefined if opening one is legitimate.
 // Row 8 of `code.orchestrate-pr` is the only row that opens a PR and `pr.prUrl` is its falsifier,
 // but a controller that re-walks the ladder from its memo rather than from the envelope takes the
 // row anyway — the observed case drafted against a PR whose recorded `headRefOid` already matched
@@ -56,7 +61,7 @@ export function duplicatePrCreate(
 ): string | undefined {
   const pr = step.pr;
   if (!pr?.prUrl || pr.prState === 'closed') return undefined;
-  if (!calls.some((c) => typeof c.bash === 'string' && PR_CREATE_RE.test(c.bash.trim()))) return undefined;
+  if (!calls.some((c) => typeof c.bash === 'string' && opensPr(c.bash.trim()))) return undefined;
   return pr.prUrl;
 }
 

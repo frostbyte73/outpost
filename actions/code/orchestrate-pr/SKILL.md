@@ -400,6 +400,13 @@ mcp__outpost__submit_write_draft({
 })
 ```
 
+If `gh` isn't installed (a `gh` call fails with `command not found`), draft the same PR as
+`POST https://api.github.com/repos/<owner>/<repo>/pulls` with curl instead — the exact shape is
+in `SHARED-write-drafts.md` ("GitHub without `gh`"); `title`/`head`/`base`/`body` go in the JSON
+body. Reviewers are then a second call, `POST …/pulls/<n>/requested_reviewers`, drafted once the
+PR exists. It is the same row and the same falsifier: a curl `POST …/pulls` drafted while
+`pr.prUrl` is set is refused exactly like `gh pr create`.
+
 When the envelope carries `prReviewers`, append `--reviewer <prReviewers joined with ",">` —
 exactly that list, nothing added or dropped. Don't pick reviewers yourself; CODEOWNERS covers the
 rest.
