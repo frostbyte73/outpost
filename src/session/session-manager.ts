@@ -83,6 +83,10 @@ export interface SessionManagerOpts {
 
 export class SessionManager {
   private active = new Map<string, ActiveSession>();
+  // Messages sent while a worktree-mode session's worktree is still being built. The client's
+  // socket is open (and its composer live) for that whole window — 12s on a repo with a big
+  // node_modules — so a first message routinely lands before the session is in `active`.
+  private pendingSpawn = new Map<string, unknown[]>();
   // Persists across the session's lifetime so getCwd() works after the process exits (hook may fire mid-session).
   private sessionCwds = new Map<string, string>();
   // In-memory; lost on daemon restart. Only set when a session is spawned via the
@@ -158,17 +162,22 @@ export class SessionManager {
       const cwd = opts.cwd;
       const baseBranch = opts.baseBranch;
       const wtMgr = this.opts.worktreeManager;
+      this.pendingSpawn.set(sessionId, []);
       void (async () => {
         let worktreePath: string;
         try {
           const rec = await wtMgr.create({ sessionId, projectCwd: cwd, baseBranch });
           worktreePath = rec.worktreePath;
         } catch (e) {
+          this.pendingSpawn.delete(sessionId);
           this.rejectAttach(ws, `worktree creation failed: ${(e as Error).message}`);
           return;
         }
         const session = this.spawn(sessionId, worktreePath);
         this.attachClient(session, ws, since);
+        const held = this.pendingSpawn.get(sessionId) ?? [];
+        this.pendingSpawn.delete(sessionId);
+        for (const message of held) this.send(sessionId, message);
       })();
       return;
     }
@@ -214,6 +223,11 @@ export class SessionManager {
   }
 
   send(sessionId: string, message: unknown): void {
+    const held = this.pendingSpawn.get(sessionId);
+    if (held) {
+      held.push(message);
+      return;
+    }
     const s = this.active.get(sessionId);
     if (!s) throw new Error(`session ${sessionId} not active`);
     s.lastActivity = Date.now();
