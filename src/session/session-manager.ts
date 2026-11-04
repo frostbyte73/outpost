@@ -41,8 +41,10 @@ const STDERR_TAIL_CHARS = 2000;
 
 const WS_OPEN = 1;
 
+export type OnDrop = (e: Error, reply: (frame: unknown) => void) => void;
+
 interface PendingSpawn {
-  held: { message: unknown; onDrop?: (e: Error) => void }[];
+  held: { message: unknown; onDrop?: OnDrop }[];
   waiters: { ws: WebSocket; since: number }[];
 }
 
@@ -90,9 +92,7 @@ export interface SessionManagerOpts {
 
 export class SessionManager {
   private active = new Map<string, ActiveSession>();
-  // A worktree-mode session whose worktree is still being built. The client's socket is already
-  // open, so a message or a reconnect (which carries the same spawn hints) can arrive before the
-  // session is in `active`; both join this entry rather than failing or starting a second build.
+  // Worktree sessions still being built; messages and reconnects that arrive meanwhile wait here.
   private pendingSpawn = new Map<string, PendingSpawn>();
   // Persists across the session's lifetime so getCwd() works after the process exits (hook may fire mid-session).
   private sessionCwds = new Map<string, string>();
@@ -180,8 +180,7 @@ export class SessionManager {
     this.attachClient(s, ws, since);
   }
 
-  // Held messages go to the subprocess before any socket attaches, so the `session_state` each
-  // waiter receives already reports the turn they started as working.
+  // Held messages are sent before sockets attach, so `session_state` reports the turn as working.
   private async spawnInWorktree(wtMgr: WorktreeManager, sessionId: string, projectCwd: string, baseBranch: string, entry: PendingSpawn): Promise<void> {
     let session: ActiveSession;
     let stage = 'worktree creation';
@@ -193,16 +192,17 @@ export class SessionManager {
     } catch (e) {
       this.pendingSpawn.delete(sessionId);
       const err = new Error(`${stage} failed: ${(e as Error).message}`);
-      // Each refusal carries its message's clientId, which is what puts the text back in the composer
+      // To every open waiter: the socket a message arrived on may since have been replaced by a reconnect.
+      const open = entry.waiters.filter(({ ws }) => ws.readyState === WS_OPEN);
+      const reply = (frame: unknown) => { for (const { ws } of open) ws.send(JSON.stringify(frame)); };
       for (const { onDrop } of entry.held) {
-        try { onDrop?.(err); } catch { /* a dead socket must not strand the rest */ }
+        try { onDrop?.(err, reply); } catch { /* a throw here would be an unhandled rejection */ }
       }
       for (const { ws } of entry.waiters) this.rejectAttach(ws, err.message);
       return;
     }
     for (const { message } of entry.held) this.send(sessionId, message);
-    // A socket that closed during the build would never fire the close handler attachClient
-    // registers, pinning the session in `clients` and its idle timer off for good.
+    // A socket that closed mid-build never fires the close handler attachClient registers.
     const open = entry.waiters.filter(({ ws }) => ws.readyState === WS_OPEN);
     for (const { ws, since } of open) this.attachClient(session, ws, since);
     if (open.length === 0) this.startIdleTimer(session);
@@ -245,9 +245,8 @@ export class SessionManager {
     });
   }
 
-  // `onDrop` fires only for a message held during a worktree spawn that then failed; any other
-  // undeliverable message throws here, synchronously.
-  send(sessionId: string, message: unknown, onDrop?: (e: Error) => void): void {
+  // `onDrop` fires only if a message held for a worktree build is dropped because the build failed.
+  send(sessionId: string, message: unknown, onDrop?: OnDrop): void {
     const pending = this.pendingSpawn.get(sessionId);
     if (pending) {
       pending.held.push({ message, onDrop });

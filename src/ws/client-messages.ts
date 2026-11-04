@@ -55,7 +55,7 @@ export function handleNotificationsMessage(raw: RawFrame, deps: NotificationsMes
 }
 
 interface SessionMessageTarget {
-  send(sessionId: string, message: unknown, onDrop?: (e: Error) => void): void;
+  send(sessionId: string, message: unknown, onDrop?: (e: Error, reply: (frame: unknown) => void) => void): void;
   interrupt(sessionId: string): void;
   broadcast(sessionId: string, message: unknown): void;
 }
@@ -104,11 +104,11 @@ export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: Ses
     const blocks = deps.shell?.drain(sessionId) ?? '';
     // Echoed on a refusal so the PWA can put that message back in the composer
     const clientId = typeof msg.clientId === 'string' && msg.clientId.length <= 64 ? msg.clientId : undefined;
-    const refuse = (e: Error) => {
+    const refuse = (e: Error, reply = deps.reply) => {
       deps.shell?.restore(sessionId, blocks);
       log(`[api] user_message to ${sessionId.slice(0, 8)} refused: ${e.message}`);
       const frame = { type: 'daemon_error', message: `Message not sent — ${e.message}`, ...(clientId ? { clientId } : {}) };
-      if (deps.reply) deps.reply(frame);
+      if (reply) reply(frame);
       else deps.manager.broadcast(sessionId, frame);
     };
     let content: UserContent;
@@ -122,8 +122,7 @@ export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: Ses
     // can trigger any time by typing into a session whose subprocess has since exited
     // (a daemon restart drops every active entry while the PWA keeps showing them).
     // Unguarded, that throw unwinds through ws.on('message') and kills the daemon,
-    // which drops every other session too. Report it, don't die. A message held while the
-    // session's worktree is still building is refused the same way if that build fails.
+    // which drops every other session too. Report it, don't die.
     try {
       deps.manager.send(sessionId, { type: 'user', message: { role: 'user', content } }, refuse);
       deps.onUserMessage?.(sessionId);

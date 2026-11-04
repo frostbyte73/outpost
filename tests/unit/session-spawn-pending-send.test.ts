@@ -3,10 +3,6 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-// A worktree-mode session spawns only after its worktree is built, while the PWA's socket is
-// already open. Messages sent in that window are held and delivered once it spawns, and a
-// reconnect joins the build already running instead of starting a second one.
-
 const spawned: string[] = [];
 const sends: unknown[] = [];
 
@@ -24,12 +20,14 @@ const { SessionStore } = await import('../../src/session/session-store.js');
 const { handleSessionMessage } = await import('../../src/ws/client-messages.js');
 
 type Frame = Record<string, unknown>;
+type Sock = ReturnType<typeof fakeWs>;
 
+// Like `ws`, a send on a closed socket is silently dropped rather than thrown.
 function fakeWs() {
   const frames: Frame[] = [];
   const ws = {
     readyState: 1,
-    send: (raw: string) => frames.push(JSON.parse(raw)),
+    send: (raw: string) => { if (ws.readyState === 1) frames.push(JSON.parse(raw)); },
     close: () => { ws.readyState = 3; },
     on: () => {},
   };
@@ -58,20 +56,19 @@ function setup() {
     manager.attach('wt-1', sock.ws as never, { cwd: dir, spawnMode: 'worktree', baseBranch: 'main' });
     return sock;
   };
-  // The path the PWA's composer actually takes, refusal and all.
-  const userMessage = (text: string, clientId: string) => {
-    const replies: Frame[] = [];
+  // Wired as daemon.ts wires it: a refusal replies on the socket the message arrived on.
+  const userMessage = (sock: Sock, text: string, clientId: string) => {
     handleSessionMessage(Buffer.from(JSON.stringify({ type: 'user_message', content: text, clientId })), 'wt-1', {
-      queue: {} as never, modes: {} as never, manager, reply: (m) => replies.push(m as Frame),
+      queue: {} as never, modes: {} as never, manager, reply: (m) => sock.ws.send(JSON.stringify(m)),
     });
-    return replies;
   };
-  return { manager, create, attach, userMessage, finish: () => finish(), fail: (e: Error) => fail(e) };
+  return { create, attach, userMessage, finish: () => finish(), fail: (e: Error) => fail(e) };
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 const userTexts = () => sends.map((m) => (m as { message: { content: unknown } }).message.content);
-const sessionStates = (frames: Frame[]) => frames.filter((f) => f.type === 'session_state');
+const ofType = (frames: Frame[], type: string) => frames.filter((f) => f.type === type);
+const refusals = (frames: Frame[]) => ofType(frames, 'daemon_error').filter((f) => f.clientId);
 
 describe('a worktree session whose spawn is still pending', () => {
   beforeEach(() => { spawned.length = 0; sends.length = 0; });
@@ -79,36 +76,33 @@ describe('a worktree session whose spawn is still pending', () => {
   it('holds messages and delivers them in order once the session spawns', async () => {
     const t = setup();
     const sock = t.attach();
-    expect(t.userMessage('first', 'c1')).toEqual([]);
-    expect(t.userMessage('second', 'c2')).toEqual([]);
+    t.userMessage(sock, 'first', 'c1');
+    t.userMessage(sock, 'second', 'c2');
     expect(sends).toEqual([]);
+    expect(refusals(sock.frames)).toEqual([]);
 
     t.finish();
     await flush();
     expect(userTexts()).toEqual(['first', 'second']);
-    // Delivered before the socket attached, so the client isn't told the session is idle
-    expect(sessionStates(sock.frames)).toEqual([expect.objectContaining({ working: true })]);
-    // No longer pending: the next message goes straight through
-    t.userMessage('third', 'c3');
+    expect(ofType(sock.frames, 'session_state')).toEqual([expect.objectContaining({ working: true })]);
+    t.userMessage(sock, 'third', 'c3');
     expect(userTexts()).toEqual(['first', 'second', 'third']);
   });
 
   it('folds a reconnect into the build already running', async () => {
     const t = setup();
     const first = t.attach();
-    t.userMessage('before reconnect', 'c1');
+    t.userMessage(first, 'before reconnect', 'c1');
     first.ws.close();
     const second = t.attach();
-    t.userMessage('after reconnect', 'c2');
+    t.userMessage(second, 'after reconnect', 'c2');
 
     t.finish();
     await flush();
     expect(t.create).toHaveBeenCalledTimes(1);
     expect(spawned).toEqual(['wt-1']);
     expect(userTexts()).toEqual(['before reconnect', 'after reconnect']);
-    // The socket that closed mid-build is never attached — its close handler would never fire
-    expect(sessionStates(first.frames)).toEqual([]);
-    expect(sessionStates(second.frames)).toHaveLength(1);
+    expect(ofType(second.frames, 'session_state')).toHaveLength(1);
   });
 
   it('attaches every socket still open when the build finishes', async () => {
@@ -117,25 +111,38 @@ describe('a worktree session whose spawn is still pending', () => {
     const b = t.attach();
     t.finish();
     await flush();
-    expect(sessionStates(a.frames)).toHaveLength(1);
-    expect(sessionStates(b.frames)).toHaveLength(1);
+    expect(ofType(a.frames, 'session_state')).toHaveLength(1);
+    expect(ofType(b.frames, 'session_state')).toHaveLength(1);
   });
 
   it('refuses each held message with its clientId when the build fails, then stops holding', async () => {
     const t = setup();
-    const a = t.attach();
-    const b = t.attach();
-    const r1 = t.userMessage('one', 'c1');
-    const r2 = t.userMessage('two', 'c2');
+    const sock = t.attach();
+    t.userMessage(sock, 'one', 'c1');
+    t.userMessage(sock, 'two', 'c2');
 
     t.fail(new Error('boom'));
     await flush();
     expect(spawned).toEqual([]);
-    expect(r1).toEqual([expect.objectContaining({ type: 'daemon_error', clientId: 'c1', message: expect.stringContaining('boom') })]);
-    expect(r2).toEqual([expect.objectContaining({ type: 'daemon_error', clientId: 'c2' })]);
-    for (const sock of [a, b]) {
-      expect(sock.frames.at(-1)).toMatchObject({ type: 'daemon_error', fatal: true, message: 'worktree creation failed: boom' });
-    }
-    expect(t.userMessage('later', 'c3')).toEqual([expect.objectContaining({ clientId: 'c3', message: expect.stringMatching(/not active/) })]);
+    expect(refusals(sock.frames).map((f) => f.clientId)).toEqual(['c1', 'c2']);
+    expect(refusals(sock.frames)[0]!.message).toContain('boom');
+    expect(sock.frames.at(-1)).toMatchObject({ type: 'daemon_error', fatal: true, message: 'worktree creation failed: boom' });
+
+    const later = t.attach();
+    t.userMessage(later, 'later', 'c3');
+    expect(t.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('delivers the refusal to the reconnected socket when the sender has since closed', async () => {
+    const t = setup();
+    const first = t.attach();
+    t.userMessage(first, 'typed before the drop', 'c1');
+    first.ws.close();
+    const second = t.attach();
+
+    t.fail(new Error('boom'));
+    await flush();
+    expect(refusals(second.frames)).toEqual([expect.objectContaining({ clientId: 'c1' })]);
+    expect(second.frames.at(-1)).toMatchObject({ type: 'daemon_error', fatal: true });
   });
 });
