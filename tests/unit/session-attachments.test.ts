@@ -136,7 +136,7 @@ describe('user_message with attachments', () => {
     expect(d.manager.send).toHaveBeenCalledWith('s1', { type: 'user', message: { role: 'user', content: [
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.data } },
       { type: 'text', text: 'look' },
-    ] } });
+    ] } }, expect.any(Function));
   });
 
   it('writes a file under uploadsRoot and sends its path', () => {

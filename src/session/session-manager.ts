@@ -39,6 +39,15 @@ interface ActiveSession {
 
 const STDERR_TAIL_CHARS = 2000;
 
+const WS_OPEN = 1;
+
+export type OnDrop = (e: Error, reply: (frame: unknown) => void) => void;
+
+interface PendingSpawn {
+  held: { message: unknown; onDrop?: OnDrop }[];
+  waiters: { ws: WebSocket; since: number }[];
+}
+
 export interface SessionExit {
   expected?: SessionCloseReason;
   stderrTail: string;
@@ -83,6 +92,8 @@ export interface SessionManagerOpts {
 
 export class SessionManager {
   private active = new Map<string, ActiveSession>();
+  // Worktree sessions still being built; messages and reconnects that arrive meanwhile wait here.
+  private pendingSpawn = new Map<string, PendingSpawn>();
   // Persists across the session's lifetime so getCwd() works after the process exits (hook may fire mid-session).
   private sessionCwds = new Map<string, string>();
   // In-memory; lost on daemon restart. Only set when a session is spawned via the
@@ -117,6 +128,11 @@ export class SessionManager {
     let s = this.active.get(sessionId);
     if (s) {
       this.attachClient(s, ws, since);
+      return;
+    }
+    const pending = this.pendingSpawn.get(sessionId);
+    if (pending) {
+      pending.waiters.push({ ws, since });
       return;
     }
     const existingWt = this.opts.worktreeManager?.get(sessionId);
@@ -155,25 +171,41 @@ export class SessionManager {
         this.rejectAttach(ws, 'baseBranch required for spawnMode=worktree');
         return;
       }
-      const cwd = opts.cwd;
-      const baseBranch = opts.baseBranch;
-      const wtMgr = this.opts.worktreeManager;
-      void (async () => {
-        let worktreePath: string;
-        try {
-          const rec = await wtMgr.create({ sessionId, projectCwd: cwd, baseBranch });
-          worktreePath = rec.worktreePath;
-        } catch (e) {
-          this.rejectAttach(ws, `worktree creation failed: ${(e as Error).message}`);
-          return;
-        }
-        const session = this.spawn(sessionId, worktreePath);
-        this.attachClient(session, ws, since);
-      })();
+      const entry: PendingSpawn = { held: [], waiters: [{ ws, since }] };
+      this.pendingSpawn.set(sessionId, entry);
+      void this.spawnInWorktree(this.opts.worktreeManager, sessionId, opts.cwd, opts.baseBranch, entry);
       return;
     }
     s = this.spawn(sessionId, opts.cwd);
     this.attachClient(s, ws, since);
+  }
+
+  // Held messages are sent before sockets attach, so `session_state` reports the turn as working.
+  private async spawnInWorktree(wtMgr: WorktreeManager, sessionId: string, projectCwd: string, baseBranch: string, entry: PendingSpawn): Promise<void> {
+    let session: ActiveSession;
+    let stage = 'worktree creation';
+    try {
+      const rec = await wtMgr.create({ sessionId, projectCwd, baseBranch });
+      this.pendingSpawn.delete(sessionId);
+      stage = 'session spawn';
+      session = this.spawn(sessionId, rec.worktreePath);
+    } catch (e) {
+      this.pendingSpawn.delete(sessionId);
+      const err = new Error(`${stage} failed: ${(e as Error).message}`);
+      // To every open waiter: the socket a message arrived on may since have been replaced by a reconnect.
+      const open = entry.waiters.filter(({ ws }) => ws.readyState === WS_OPEN);
+      const reply = (frame: unknown) => { for (const { ws } of open) ws.send(JSON.stringify(frame)); };
+      for (const { onDrop } of entry.held) {
+        try { onDrop?.(err, reply); } catch { /* a throw here would be an unhandled rejection */ }
+      }
+      for (const { ws } of entry.waiters) this.rejectAttach(ws, err.message);
+      return;
+    }
+    for (const { message } of entry.held) this.send(sessionId, message);
+    // A socket that closed mid-build never fires the close handler attachClient registers.
+    const open = entry.waiters.filter(({ ws }) => ws.readyState === WS_OPEN);
+    for (const { ws, since } of open) this.attachClient(session, ws, since);
+    if (open.length === 0) this.startIdleTimer(session);
   }
 
   // Replays missed events from `since`; if `since` predates earliestSeq, emits replay_gap so the client falls back to the HTTP transcript endpoint.
@@ -213,7 +245,13 @@ export class SessionManager {
     });
   }
 
-  send(sessionId: string, message: unknown): void {
+  // `onDrop` fires only if a message held for a worktree build is dropped because the build failed.
+  send(sessionId: string, message: unknown, onDrop?: OnDrop): void {
+    const pending = this.pendingSpawn.get(sessionId);
+    if (pending) {
+      pending.held.push({ message, onDrop });
+      return;
+    }
     const s = this.active.get(sessionId);
     if (!s) throw new Error(`session ${sessionId} not active`);
     s.lastActivity = Date.now();
