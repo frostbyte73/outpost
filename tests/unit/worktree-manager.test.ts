@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -275,6 +275,54 @@ describe('WorktreeManager — git operations', () => {
 
     expect(readFileSync(join(rec.worktreePath, 'node_modules', 'foo', 'index.js'), 'utf8')).toBe('// dep\n');
     expect(existsSync(join(rec.worktreePath, 'secret.txt'))).toBe(false);
+  });
+
+  // `.claude/worktrees/` sits beside the config as gitignored runtime state; it holds whole
+  // checkouts, dependencies included. Covers both listing shapes: a wholly-ignored `.claude/`
+  // arrives as one `--directory` entry, per-path ignores arrive as separate children.
+  it.each([
+    ['wholly ignored', ['.claude/']],
+    ['ignored per path', ['.claude/settings.local.json', '.claude/commands/', '.claude/worktrees/']],
+  ])('create() copies .claude/ config but not .claude/worktrees/ when .claude/ is %s', async (_label, patterns) => {
+    const repo = makeGitRepo();
+    writeFileSync(join(repo, '.gitignore'), patterns.join('\n') + '\n');
+    execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+    execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'gitignore']);
+
+    mkdirSync(join(repo, '.claude', 'worktrees', 'other', 'node_modules', 'dep'), { recursive: true });
+    writeFileSync(join(repo, '.claude', 'worktrees', 'other', 'node_modules', 'dep', 'index.js'), '// dep\n');
+    writeFileSync(join(repo, '.claude', 'settings.local.json'), '{"local":true}\n');
+    mkdirSync(join(repo, '.claude', 'commands'));
+    writeFileSync(join(repo, '.claude', 'commands', 'foo.md'), 'foo\n');
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-claude-dir', projectCwd: repo, baseBranch: 'main' });
+
+    expect(readFileSync(join(rec.worktreePath, '.claude', 'settings.local.json'), 'utf8')).toBe('{"local":true}\n');
+    expect(readFileSync(join(rec.worktreePath, '.claude', 'commands', 'foo.md'), 'utf8')).toBe('foo\n');
+    expect(existsSync(join(rec.worktreePath, '.claude', 'worktrees'))).toBe(false);
+  });
+
+  it('create() copies an ignored .claude symlink as a link', async () => {
+    const repo = makeGitRepo();
+    writeFileSync(join(repo, '.gitignore'), '.claude\n');
+    execFileSync('git', ['-C', repo, 'add', '.gitignore']);
+    execFileSync('git', ['-C', repo, 'commit', '-q', '-m', 'gitignore']);
+
+    const shared = mkdtempSync(join(tmpdir(), 'wt-shared-claude-'));
+    writeFileSync(join(shared, 'settings.json'), '{}\n');
+    mkdirSync(join(shared, 'worktrees', 'other'), { recursive: true });
+    writeFileSync(join(shared, 'worktrees', 'other', 'big.txt'), 'big\n');
+    symlinkSync(shared, join(repo, '.claude'));
+
+    const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });
+    const rec = await m.create({ sessionId: 'sess-claude-link', projectCwd: repo, baseBranch: 'main' });
+
+    const link = join(rec.worktreePath, '.claude');
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(link)).toBe(shared);
+    expect(readdirSync(shared).sort()).toEqual(['settings.json', 'worktrees']);
+    expect(readdirSync(join(shared, 'worktrees'))).toEqual(['other']);
   });
 
   it('create() checks out an existing local branch instead of failing with -b', async () => {
