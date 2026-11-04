@@ -78,10 +78,18 @@ function wsUrl(id, sinceSeq, spawn) {
   return `${scheme}://${location.host}/ws/sessions/${id}${q ? `?${q}` : ''}`;
 }
 
+// Detach a socket being replaced. iOS can deliver a severed socket's onclose long after
+// we've moved on, and that late close would null out (and re-retry over) its successor.
+function abandon(ws) {
+  ws.onopen = ws.onmessage = ws.onclose = ws.onerror = null;
+  try { ws.close(); } catch { /* already dead */ }
+}
+
 function connect(id) {
   const info = conns.get(id);
   if (!info) return;
   if (info.timer) { clearTimeout(info.timer); info.timer = null; }
+  if (info.ws) abandon(info.ws);
   const slice = sessions.getSlice(id);
   const since = slice?.lastSeenSeq ?? 0;
   const ws = new WebSocket(wsUrl(id, since, info.spawn));
@@ -344,13 +352,17 @@ export function sendOnSessionWs(id, msg) {
 }
 
 // Force-reconnect every session WS. Called by the user-facing "reconnect"
-// button. Zeroes retry counters so backoff restarts from base, closes each
-// live socket, and lets the close handler schedule the immediate retry.
+// button and on every return to the foreground. Zeroes retry counters so backoff
+// restarts from base. A live socket is closed and its close handler schedules the
+// retry; anything else — closed with a retry pending, or severed by iOS without
+// an onclose — reconnects now.
 export function forceReconnectAll() {
-  for (const info of conns.values()) {
+  for (const [id, info] of conns) {
+    if (info.closingIntent) continue;
     info.retries = 0;
     if (info.timer) { clearTimeout(info.timer); info.timer = null; }
     if (info.ws && info.ws.readyState === WebSocket.OPEN) info.ws.close();
+    else connect(id);
   }
   republishConn();
 }
