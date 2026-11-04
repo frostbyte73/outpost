@@ -801,7 +801,7 @@ function resolveBaseBranch(cwd: string): string {
 // Allowlist (not deny-list) of gitignored files copied into a fresh worktree, to avoid dragging in node_modules/build dirs.
 function isAllowlisted(rel: string): boolean {
   if (rel === 'CLAUDE.md' || rel === 'CLAUDE.local.md') return true;
-  if (rel === '.claude' || rel.startsWith('.claude/')) return true;
+  if (rel === '.claude' || (rel.startsWith('.claude/') && rel !== '.claude/worktrees' && !rel.startsWith('.claude/worktrees/'))) return true;
   if (rel === 'docs' || rel.startsWith('docs/')) return true;
   if (/^\.env(\.[^/]+)?$/.test(rel)) return true; // root .env* only, not nested
   return false;
@@ -986,15 +986,21 @@ function copyAllowlistedIgnored(projectCwd: string, worktreePath: string): void 
   for (const raw of output.split('\0')) {
     if (!raw) continue;
     // `--directory` appends a trailing slash for entirely-ignored dirs; strip for allowlist match.
-    const rel = raw.endsWith('/') ? raw.slice(0, -1) : raw;
-    if (!isAllowlisted(rel)) continue;
-    const src = join(projectCwd, rel);
-    const dst = join(worktreePath, rel);
-    if (!existsSync(src)) continue;
-    try {
-      mkdirSync(dirname(dst), { recursive: true });
-      cpSync(src, dst, { recursive: true, force: true, verbatimSymlinks: true });
-    } catch { /* best-effort — a missing file or perm error shouldn't fail worktree creation */ }
+    const listed = raw.endsWith('/') ? raw.slice(0, -1) : raw;
+    let rels = [listed];
+    if (raw === '.claude/') {
+      try { rels = readdirSync(join(projectCwd, listed)).map((c) => `${listed}/${c}`); } catch { rels = []; }
+    }
+    for (const rel of rels) {
+      if (!isAllowlisted(rel)) continue;
+      const src = join(projectCwd, rel);
+      const dst = join(worktreePath, rel);
+      if (!existsSync(src)) continue;
+      try {
+        mkdirSync(dirname(dst), { recursive: true });
+        cpSync(src, dst, { recursive: true, force: true, verbatimSymlinks: true });
+      } catch { /* best-effort — a missing file or perm error shouldn't fail worktree creation */ }
+    }
   }
 }
 
