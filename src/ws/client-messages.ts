@@ -55,7 +55,7 @@ export function handleNotificationsMessage(raw: RawFrame, deps: NotificationsMes
 }
 
 interface SessionMessageTarget {
-  send(sessionId: string, message: unknown): void;
+  send(sessionId: string, message: unknown, onDrop?: (e: Error) => void): void;
   interrupt(sessionId: string): void;
   broadcast(sessionId: string, message: unknown): void;
 }
@@ -122,9 +122,10 @@ export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: Ses
     // can trigger any time by typing into a session whose subprocess has since exited
     // (a daemon restart drops every active entry while the PWA keeps showing them).
     // Unguarded, that throw unwinds through ws.on('message') and kills the daemon,
-    // which drops every other session too. Report it, don't die.
+    // which drops every other session too. Report it, don't die. A message held while the
+    // session's worktree is still building is refused the same way if that build fails.
     try {
-      deps.manager.send(sessionId, { type: 'user', message: { role: 'user', content } });
+      deps.manager.send(sessionId, { type: 'user', message: { role: 'user', content } }, refuse);
       deps.onUserMessage?.(sessionId);
     } catch (e) {
       refuse(e as Error);

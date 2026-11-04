@@ -100,7 +100,7 @@ describe('handleSessionMessage', () => {
     const d = deps();
     const raw = Buffer.from(JSON.stringify({ type: 'user_message', content: 'hi' }));
     handleSessionMessage(raw, 's1', d);
-    expect(d.manager.send).toHaveBeenCalledWith('s1', { type: 'user', message: { role: 'user', content: 'hi' } });
+    expect(d.manager.send).toHaveBeenCalledWith('s1', { type: 'user', message: { role: 'user', content: 'hi' } }, expect.any(Function));
   });
 
   // SessionManager.send throws for a session that isn't active — reachable any time a
