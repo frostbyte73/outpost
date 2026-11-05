@@ -63,7 +63,6 @@ describe('WorkEngine.applyPrFacts', () => {
     const job = queue.get(jobId)!;
     expect(job.updatedAt).toBe(SEEDED_AT);
     expect(job.steps[0]!.updatedAt).toBe(1000);
-    expect(job.linearStatusDirty).toBeFalsy();
   });
 
   it('records a sweep that learned something', () => {
@@ -76,7 +75,6 @@ describe('WorkEngine.applyPrFacts', () => {
     expect(job.updatedAt).toBeGreaterThan(SEEDED_AT);
     expect(job.steps[0]!.updatedAt).toBe(5000);
     expect((job.steps[0] as OrchestratedStep).pr?.ciState).toBe('failure');
-    expect(job.linearStatusDirty).toBe(true);
   });
 
   it('records a pruned iteration even when the facts are unchanged', () => {

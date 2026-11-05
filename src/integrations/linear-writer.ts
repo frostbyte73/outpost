@@ -1,5 +1,4 @@
 import { linearQuery as defaultQuery, LinearError } from './linear-api.js';
-import type { JobRecord, OrchestratedStep } from '../work/work-types.js';
 
 type QueryFn = typeof defaultQuery;
 
@@ -43,36 +42,6 @@ export function resolveStateId(
   // isn't the review one, so we don't accidentally park the ticket in review.
   const progress = prefer(started, /progress/i) ?? started.find((s) => s.id !== review?.id) ?? started[0];
   return progress?.id ?? null;
-}
-
-function shortRepoName(cwd: string): string {
-  const parts = cwd.split('/').filter(Boolean);
-  return parts.length >= 2 ? `${parts[parts.length - 2]}/${parts[parts.length - 1]}` : (parts[0] ?? cwd);
-}
-
-function prStepLine(s: OrchestratedStep): string {
-  const ws = s.workspace;
-  const name = ws.kind === 'none' ? s.title : shortRepoName(ws.repoCwd);
-  const pr = s.pr;
-  if (!pr?.prUrl) return `- ${name} — (no PR yet)`;
-  const stateBits: string[] = [];
-  if (pr.prState === 'merged') stateBits.push('merged');
-  else if (pr.prState === 'closed') stateBits.push('closed');
-  else stateBits.push('open');
-  if (pr.reviewState === 'changes_requested' && pr.comments?.length) {
-    stateBits.push(`${pr.comments.length} comment${pr.comments.length === 1 ? '' : 's'}`);
-  }
-  if (pr.ciState === 'success') stateBits.push('CI ✅');
-  else if (pr.ciState === 'failure') stateBits.push('CI ❌');
-  else if (pr.ciState === 'pending') stateBits.push('CI ⏳');
-  return `- ${name} — PR ${pr.prUrl} (${stateBits.join(', ')})`;
-}
-
-export function formatStatusBody(j: JobRecord): string {
-  const lines = ['Outpost status:'];
-  const prSteps = j.steps.filter((s): s is OrchestratedStep => s.type === 'orchestrated' && !s.cancelled);
-  for (const s of prSteps) lines.push(prStepLine(s));
-  return lines.join('\n');
 }
 
 export class LinearWriter {
@@ -130,26 +99,6 @@ export class LinearWriter {
       states: data.issue.team.states.nodes,
       attachmentUrls: data.issue.attachments.nodes.map((a) => a.url),
     };
-  }
-
-  async upsertStatusComment(j: JobRecord): Promise<string> {
-    const linearUuid = j.externalRef?.linearUuid;
-    if (!linearUuid) throw new Error('upsertStatusComment: job has no linear externalRef');
-    const body = formatStatusBody(j);
-    return await this.withRetry(async () => {
-      if (j.linearCommentId) {
-        const data = await this.query<{ commentUpdate: { comment: { id: string } } }>(
-          `mutation ($id: String!, $input: CommentUpdateInput!) { commentUpdate(id: $id, input: $input) { comment { id } } }`,
-          { id: j.linearCommentId, input: { body } },
-        );
-        return data.commentUpdate.comment.id;
-      }
-      const data = await this.query<{ commentCreate: { comment: { id: string } } }>(
-        `mutation ($input: CommentCreateInput!) { commentCreate(input: $input) { comment { id } } }`,
-        { input: { issueId: linearUuid, body } },
-      );
-      return data.commentCreate.comment.id;
-    });
   }
 
   private async withRetry<T>(fn: () => Promise<T>): Promise<T> {

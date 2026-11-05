@@ -819,8 +819,7 @@ export class WorkEngine {
       case 'write-linear-in-progress':
       case 'write-linear-in-review':
       case 'write-linear-done':
-      case 'upsert-status-comment':
-        // Linear writes are handled by tickOne directly; status-comment upsert is wired in linear-writer.
+        // Linear writes are handled by tickOne directly.
         break;
     }
   }
@@ -2891,10 +2890,6 @@ export class WorkEngine {
     return true;
   }
 
-  markStatusCommentClean(jobId: string): void {
-    this.mutate(jobId, (j) => ({ ...j, linearStatusDirty: false }));
-  }
-
   setOrchestratorSessionId(jobId: string, sessionId: string): void {
     this.mutate(jobId, (j) => j.orchestratorSessionId === sessionId ? j : { ...j, orchestratorSessionId: sessionId });
   }
@@ -2920,7 +2915,6 @@ export class WorkEngine {
         updatedAt: this.ctx.now(),
       }
       : s);
-    this.mutate(jobId, (j) => ({ ...j, linearStatusDirty: true }));
     // A PR the step didn't have before owes the Linear ticket its link (and maybe the move to In
     // Review). Nothing else ticks the job on a watcher sweep, so this is what gets it written now
     // rather than whenever the job next happens to move.

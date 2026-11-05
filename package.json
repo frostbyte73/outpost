@@ -16,13 +16,16 @@
     "ajv": "^8.17.1",
     "croner": "^10.0.1",
     "js-yaml": "^4.1.0",
+    "pg": "^8.23.1",
     "web-push": "^3.6.7",
     "ws": "^8.18.0"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.15",
     "@playwright/test": "^1.60.0",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.0.0",
+    "@types/pg": "^8.23.1",
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.5.13",
     "jsdom": "^29.1.1",

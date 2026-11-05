@@ -14,8 +14,7 @@ export type Action =
   | { kind: 'deliver-inbox'; jobId: string; stepId: string }
   | { kind: 'write-linear-in-progress'; linearUuid: string; jobId: string }
   | { kind: 'write-linear-in-review';   linearUuid: string; jobId: string }
-  | { kind: 'write-linear-done';        linearUuid: string; jobId: string }
-  | { kind: 'upsert-status-comment';    jobId: string };
+  | { kind: 'write-linear-done';        linearUuid: string; jobId: string };
 
 export interface HandlerCtx {
   jobsDir: string;

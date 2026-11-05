@@ -57,6 +57,7 @@ import { StopHookTracker } from './storage/stop-hook-tracker.js';
 import { UsagePoller, type AccountUsageSnapshot } from './integrations/usage-poller.js';
 import { loadConfig } from './config.js';
 import { loadEnvFile } from './env-file.js';
+import { bootStore, type BootedStore } from './db/lease.js';
 import { parseJsonObject } from './routes/util.js';
 import { parseDraftCalls, draftNotificationTag, type DraftRaisedBy } from './work/write-draft.js';
 import { handleNotificationsMessage, handleSessionMessage } from './ws/client-messages.js';
@@ -207,6 +208,15 @@ export function servePwa(server: Server, pwaDir: string): void {
 }
 
 async function main() {
+  let store: BootedStore;
+  try {
+    store = await bootStore(RUNTIME_DIR, process.env);
+  } catch (err) {
+    console.error(`[store] ${(err as Error).message}`);
+    process.exit(1);
+  }
+  console.log(`[store] ${store.backend.kind} lease epoch ${store.lease.epoch}`);
+
   // Tailscale discovery failure is non-fatal; the loopback listener is the floor.
   let tsEnv: { certPath: string; keyPath: string; hostname: string; ipv4: string } | null = null;
   if (config.certPath && config.keyPath && config.host) {
@@ -1411,7 +1421,8 @@ async function main() {
     updater.stop();
     evalHalt.abort();
     killOneShots();
-    void manager.closeAll('shutdown').then((n) => {
+    void manager.closeAll('shutdown').then(async (n) => {
+      await store.backend.close().catch((err: Error) => console.warn(`[store] close failed: ${err.message}`));
       console.log(`[daemon] ${signal} — closed ${n} session(s), exiting`);
       process.exit(0);
     });

@@ -234,15 +234,6 @@ export interface GateRequest {
   draft: string;
   question: string;
   requestedAt: number;
-  // Legacy read-only. The pre-run force-gate (removed by "Gate external writes at the payload,
-  // not before the action runs") parked a step BEFORE its move ran and stashed that move here,
-  // replaying it verbatim on approval. Nothing writes this field anymore — a voluntary `gate`
-  // move carries no move of its own, and the controller just re-decides on the round the
-  // approval wakes. But gates parked before that cutover survived the upgrade on disk holding a
-  // move nothing would ever run again: approving one silently dropped it and resumed the
-  // controller unbound, so the user's Approve ran nothing and the work had to be re-derived
-  // from the controller's memo. resolveGate still replays one when it finds it.
-  deferredMove?: NextMove;
 }
 
 export interface PrFacts {
@@ -454,8 +445,6 @@ export interface JobRecord {
   linearStateMarked?: { inProgress?: boolean; inReview?: boolean; done?: boolean };
   // PR URLs already attached to the Linear ticket (lifecycle.ts's link-linear-pr).
   linearLinkedPrs?: string[];
-  linearStatusDirty?: boolean;
-  linearCommentId?: string;
   // Set on jobs created via "promote to tracked" (POST /api/work/jobs/from-session/:id) —
   // links the manual job back to the interactive session it was spun out of.
   originSessionId?: string;

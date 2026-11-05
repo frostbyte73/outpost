@@ -202,9 +202,6 @@ export function resolveGate(
 ): void {
   const step = host.getStep(jobId, stepId);
   if (!step || step.state !== 'gate_pending_approval') return;
-  // Read before the mutation below clears `gate`. Legacy only (see GateRequest.deferredMove) —
-  // undefined for every gate opened by the current openGate.
-  const deferred = approved ? step.gate?.deferredMove : undefined;
   const item = stamp(host, { kind: 'gate-resolved', approved, ...(feedback ? { feedback } : {}) });
 
   host.mutateStep(jobId, stepId, (s) => ({
@@ -224,10 +221,6 @@ export function resolveGate(
   // actually shows why, without spending the consecutive-self-round budget the way a real new
   // event would.
   host.mutateStep(jobId, stepId, (s) => deliverImmediate(s, [item]));
-  // An approved legacy gate runs the move it was holding, exactly as the force-gate did —
-  // verbatim, without re-validating, or a gated write would be gated forever. deliverImmediate
-  // above already put the resolution in `lastDelivered`, so the replayed round still sees it.
-  if (deferred) { runMove(host, jobId, stepId, deferred); return; }
   host.resumeController(jobId, stepId, undefined, undefined);
 }
 
