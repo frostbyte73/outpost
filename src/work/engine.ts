@@ -59,7 +59,8 @@ import {
 } from './write-draft-runner.js';
 import { readMergeReadiness } from './merge-readiness.js';
 import { readRerunReadiness } from './rerun-readiness.js';
-import { clampToCeiling, describePreapprovals, effectivePreapprovals } from './preapprovals.js';
+import { clampToCeiling, describePreapprovals, effectivePreapprovals, preapprovedLocalGit } from './preapprovals.js';
+import type { AllowlistConfig } from '../permissions/allowlist.js';
 import { runGh as defaultRunGh, type RunGh } from '../integrations/gh-cli.js';
 import { gitHasUnpushedWork, gitMergingFromBase } from '../git/git-ops.js';
 import { reviewersForCwd } from '../git/pr-reviewers.js';
@@ -312,6 +313,18 @@ export class WorkEngine {
     if (!role || role.role !== 'step') return undefined;
     const rec = this.opts.worktreeManager.get(role.stepId);
     return rec && !rec.archivedAt ? rec.worktreePath : undefined;
+  }
+
+  // Only the controller's own live session: a dispatched child or a superseded session gets nothing.
+  preapprovedRulesFor(sessionId: string): AllowlistConfig | undefined {
+    const role = this.roleBySession.get(sessionId);
+    if (!role || role.role !== 'step') return undefined;
+    const j = this.opts.queue.get(role.jobId);
+    const s = j?.steps.find((x) => x.id === role.stepId);
+    if (s?.type !== 'orchestrated' || s.sessionId !== sessionId) return undefined;
+    const pre = effectivePreapprovals(this.opts.preapprovalDefaults?.(), j?.preapprovals, s.preapprovals);
+    const bash = preapprovedLocalGit(pre, s.baseBranch);
+    return bash.length ? { alwaysAllow: [], alwaysAllowBashPatterns: bash, alwaysAllowMcpPatterns: [] } : undefined;
   }
 
   // Same stepId indirection as worktreePathForSession, but returns the whole

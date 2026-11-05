@@ -36,6 +36,16 @@ export function anyPreapproved(e: EffectivePreapprovals): boolean {
   return KEYS.some((k) => e[k] !== GATED_PREAPPROVALS[k]);
 }
 
+// The local git a controller needs to land a pre-approved push; `edit` is not in its groups.
+export function preapprovedLocalGit(e: EffectivePreapprovals, baseBranch: string | undefined): string[] {
+  if (!e.push) return [];
+  const rules = ['^git add -A$'];
+  if (e.landing === 'direct' && baseBranch) {
+    rules.push(`^git rebase origin/${baseBranch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`);
+  }
+  return rules;
+}
+
 function stricter<T>(order: readonly T[], a: T, b: T): T {
   return order[Math.min(order.indexOf(a), order.indexOf(b))]!;
 }

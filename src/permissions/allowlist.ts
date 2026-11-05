@@ -150,6 +150,8 @@ export interface AllowlistOpts {
   actionRegistry?: ActionRegistry;
   // Hot-added override source for action names. Rules added via the API persist here.
   actionsStore?: ActionsStore;
+  // Read live per call so revoking the step's pre-approval revokes the grant mid-step.
+  preapprovedFor?: (sessionId: string) => AllowlistConfig | undefined;
 }
 
 // Match claude code's projects-dir sanitization so per-project allowlists key off
@@ -344,12 +346,14 @@ export class Allowlist {
   private readonly projectDir: string | undefined;
   private readonly actionRegistry: ActionRegistry | undefined;
   private readonly actionsStore: ActionsStore | undefined;
+  private readonly preapprovedFor: AllowlistOpts['preapprovedFor'];
 
   constructor(cfg: AllowlistConfig, opts: AllowlistOpts = {}) {
     this.global = compileFromConfig(cfg);
     this.projectDir = opts.projectAllowlistDir;
     this.actionRegistry = opts.actionRegistry;
     this.actionsStore = opts.actionsStore;
+    this.preapprovedFor = opts.preapprovedFor;
   }
 
   private loadProject(cwd: string): CompiledRules {
@@ -399,6 +403,8 @@ export class Allowlist {
       if (action) scopes.push(compileFromConfig(action.allowlist));
       // Then hot-added user overrides (~/.outpost/actions.json).
       if (this.actionsStore) scopes.push(compileFromConfig(this.actionsStore.get(actionName).allowlist));
+      const preapproved = sessionId ? this.preapprovedFor?.(sessionId) : undefined;
+      if (preapproved) scopes.push(compileFromConfig(preapproved));
     } else {
       scopes.push(this.global);
       if (projectCwd) scopes.push(this.loadProject(projectCwd));

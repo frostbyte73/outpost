@@ -36,7 +36,7 @@ The invariants from those docs that are easiest to break without noticing:
 - **Catalog.** `buildActionCatalog` is scoped (`plannable` vs `controller`). An action reached only from a controller round, a UI button, or a schedule sets `outpost.plannable: false`; a controller lists its sub-actions in `outpost.roster`.
 - **Permissions.** Groups are `core` (implicit), `read`, `pull`, `edit`, `push`. `push` is gated: every matching call also needs a pin from a write draft the user approved.
 - A write belongs in `push`, never in an action's colocated `allowlist.json` — `assertNotWriteShaped` refuses it at load. A `push` rule must match writes only, or it makes a read need approval.
-- An action-bound call gets `core ∪ its declared groups ∪ its allowlist.json ∪ session scope` and never falls back to global or project scope.
+- An action-bound call gets `core ∪ its declared groups ∪ its allowlist.json ∪ session scope` and never falls back to global or project scope. The one live extra is a controller's local landing git (`git add -A`, rebase onto base), granted only while its step's `push` is pre-approved (`preapprovedLocalGit`).
 - Which files a bash clause touches (redirects, file ops, reads, `--body-file`-style flags) is decided by structural bars in `allows()`, not by regex. Don't try to encode it in a rule.
 
 ## Commands

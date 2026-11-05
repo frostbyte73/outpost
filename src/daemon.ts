@@ -329,7 +329,10 @@ async function main() {
   console.log(`[work] action registry: ${loadedActionCount} action${loadedActionCount === 1 ? '' : 's'}`);
 
   const evalSessions = new EvalSessions();
-  const allowlist = new Allowlist(loadRuntimeAllowlist(ALLOWLIST_PATH), { projectAllowlistDir, actionsStore, actionRegistry });
+  const allowlist = new Allowlist(loadRuntimeAllowlist(ALLOWLIST_PATH), {
+    projectAllowlistDir, actionsStore, actionRegistry,
+    preapprovedFor: (sessionId) => engine.preapprovedRulesFor(sessionId),
+  });
   const queue = new ApprovalQueue({ timeoutMs: APPROVAL_TIMEOUT_MS });
   const modes = new ApprovalModeStore(join(RUNTIME_DIR, 'approval-modes.json'));
   const recurrence = new RecurrenceTracker();

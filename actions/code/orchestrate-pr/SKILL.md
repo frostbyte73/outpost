@@ -236,10 +236,12 @@ user like any other.
 - **`landing: "approved"`** — row 15a: the step is done when the PR is approved and green. A repo
   owner merges it; do not bind `code.merge-pr`.
 - **`landing: "direct"`** — there is no PR. Once the review is clean (rows 5-7 still run), replace
-  rows 8 onward with: `git fetch origin`, `git rebase origin/<baseBranch>` (a conflict binds
-  `code.resolve-conflicts`), `git add -A`, then one draft of `git commit -F /tmp/…` and
+  rows 8 onward with: `git add -A`, then one draft of `git commit -F /tmp/…` and
   `git push origin HEAD:<baseBranch>`, then `resolve`. A rejected push means the base moved:
-  rebase and redraft once, then `gate` with what happened.
+  `git fetch origin`, `git rebase origin/<baseBranch>` (a conflict binds
+  `code.resolve-conflicts`), redraft the push alone once, then `gate` with what happened. The
+  staging and that rebase are granted only while `push` is pre-approved; without it, `gate` and
+  ask the user to land it.
 
 ### 3a. Rows 5-7 in detail — the review loop
 
