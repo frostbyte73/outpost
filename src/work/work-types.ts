@@ -1,4 +1,5 @@
 import type { WriteDraft } from './write-draft.js';
+import type { RuntimeId } from '../runtime/types.js';
 
 export type JobState =
   | 'planning'
@@ -463,6 +464,8 @@ export interface JobRecord {
   highPriority?: boolean;
   preapprovals?: Preapprovals;
   planReview?: 'gate' | 'auto';
+  // The harness for this job's sessions; an action's own `outpost.runtime` wins over it.
+  runtime?: RuntimeId;
   specGateMigrated?: true;
   // A done/failed job stays on the cockpit until this is set; cleared if the job leaves done/failed.
   dismissedAt?: number;

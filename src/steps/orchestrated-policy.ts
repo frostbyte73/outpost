@@ -20,6 +20,8 @@ export type SideEffects = 'none' | 'gated-write' | 'worktree-edit' | 'external-w
 // testable without constructing a registry.
 export interface ActionInfo {
   sideEffects(action: string): SideEffects | undefined;
+  // A self-round runs on the controller's own session, so its runtime is the one that must enforce the action.
+  runtimeRefusal?(action: string, via: 'self-round' | 'dispatch'): string | undefined;
 }
 
 export type PolicyVerdict =
@@ -123,6 +125,8 @@ export function validateNext(
       if (!info.sideEffects(move.action)) {
         return { kind: 'reject', reason: `unknown action ${JSON.stringify(move.action)}` };
       }
+      const refusal = info.runtimeRefusal?.(move.action, 'self-round');
+      if (refusal) return { kind: 'reject', reason: refusal };
       if (specGateBlocks(step, pre, move.action)) return { kind: 'reject', reason: SPEC_GATE_REASON };
     }
     return { kind: 'allow', move };
@@ -142,6 +146,8 @@ export function validateNext(
       if (!info.sideEffects(d.action)) {
         return { kind: 'reject', reason: `unknown action ${JSON.stringify(d.action)}` };
       }
+      const refusal = info.runtimeRefusal?.(d.action, 'dispatch');
+      if (refusal) return { kind: 'reject', reason: refusal };
       if (specGateBlocks(step, pre, d.action)) return { kind: 'reject', reason: SPEC_GATE_REASON };
       // A malformed ref is a dead end past this point: provision() throws on a readonly with no
       // repoCwd, and treats any *unknown* kind as readonly — so a typo silently downgrades the

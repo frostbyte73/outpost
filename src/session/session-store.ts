@@ -4,8 +4,9 @@ import { join } from 'node:path';
 import { removeNdjsonLogs } from '../runtime/event-ndjson.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
-import type {
-  CanonicalItem, ProjectInfo, SessionLocation, SubagentInfo, TranscriptReader,
+import {
+  isRuntimeId, type CanonicalItem, type ProjectInfo, type RuntimeId, type SessionLocation, type SubagentInfo,
+  type TranscriptReader,
 } from '../runtime/types.js';
 
 // Sessions older than this with no active worktree are stamped archived at read time.
@@ -84,6 +85,26 @@ export class SessionStore {
   readSystemPrompt(id: string): string | null {
     const text = this.readSessionMeta(id)?.systemPrompt;
     return typeof text === 'string' ? text : null;
+  }
+
+  // The harness a session runs on, fixed at first spawn so a respawn never switches it.
+  writeRuntime(sessionId: string, runtime: RuntimeId): void {
+    this.mergeSessionMeta(sessionId, { runtime });
+  }
+
+  readRuntime(id: string): RuntimeId | null {
+    const runtime = this.readSessionMeta(id)?.runtime;
+    return isRuntimeId(runtime) ? runtime : null;
+  }
+
+  // The runtime's own id for this session's history, when it can't take Outpost's (Codex mints its thread ids).
+  writeNativeSessionId(sessionId: string, nativeId: string): void {
+    this.mergeSessionMeta(sessionId, { nativeSessionId: nativeId });
+  }
+
+  readNativeSessionId(id: string): string | null {
+    const native = this.readSessionMeta(id)?.nativeSessionId;
+    return typeof native === 'string' ? native : null;
   }
 
   // Both writers own their own keys of one shared sidecar, and the action stamp lands right

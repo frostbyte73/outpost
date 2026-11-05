@@ -9,6 +9,8 @@ export interface McpServerConfig {
   type?: string;
   url?: string;
   command?: string;
+  args?: string[];
+  env?: Record<string, string>;
   headers?: Record<string, string>;
 }
 

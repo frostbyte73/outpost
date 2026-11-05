@@ -24,7 +24,8 @@ export interface ClaudeRuntimeOpts {
 const CAPABILITIES: RuntimeCapabilities = {
   sessions: { supportsResume: true },
   streaming: { streamsAssistantText: true },
-  tools: { supportsMcpTools: true },
+  tools: { supportsMcpTools: true, gatesMcpTools: true, gatesFileChanges: true, gatesAllCalls: true },
+  subagents: { enabled: true },
   approvals: {
     supportsCommandApproval: true,
     supportsFileChangeApproval: true,
@@ -49,6 +50,7 @@ export function toUserFrame(turn: TurnInput, sessionId: string): SDKUserMessage 
 export class ClaudeRuntime implements AgentRuntime {
   readonly id = 'claude';
   readonly capabilities = CAPABILITIES;
+  readonly available = true;
   readonly transcripts: TranscriptReader;
 
   constructor(private readonly opts: ClaudeRuntimeOpts) {

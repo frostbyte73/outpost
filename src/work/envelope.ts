@@ -94,13 +94,13 @@ export type CatalogScope =
 // dispatch — reads the catalog from the same place, so a controller's turn 1 sees exactly what
 // its later decision turns see.
 export function buildActionCatalog(
-  reg: ActionRegistry | undefined, scope: CatalogScope,
+  reg: ActionRegistry | undefined, scope: CatalogScope, refused?: (a: ActionDef) => boolean,
 ): ActionCatalogEntry[] | undefined {
   if (!reg) return undefined;
   const visible = scope.kind === 'plannable'
     ? (a: ActionDef) => a.frontmatter.outpost.plannable !== false
     : rosterFilter(reg, scope.controller);
-  return reg.listActions().filter(visible).map((a) => ({
+  return reg.listActions().filter((a) => visible(a) && !refused?.(a)).map((a) => ({
     name: a.name,
     description: a.frontmatter.description,
     kind: a.frontmatter.outpost.kind,

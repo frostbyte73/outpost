@@ -30,6 +30,12 @@ import type { JobRecord } from './work/work-types.js';
 import { ensureActionsInstalled, bundledRepoDir } from './actions/install.js';
 import { ClaudeRuntime } from './runtime/claude/runtime.js';
 import { ClaudeTranscripts } from './runtime/claude/transcripts.js';
+import { codexVersion, resolveCodexBin } from './runtime/codex/bin.js';
+import { CodexRuntime } from './runtime/codex/runtime.js';
+import { CodexTranscripts } from './runtime/codex/transcripts.js';
+import { resolveRuntime, RuntimeRegistry } from './runtime/registry.js';
+import { CompositeTranscripts } from './runtime/transcripts.js';
+import { mergeMcpServers } from './integrations/mcp-config.js';
 import { pruneNdjsonLogs } from './runtime/event-ndjson.js';
 import { ActionsStore } from './storage/actions-store.js';
 import { InteractiveStore } from './session/interactive-store.js';
@@ -247,6 +253,25 @@ async function main() {
     hookPort: config.hookPort,
     transcripts: new ClaudeTranscripts(projectsRoot),
   });
+  const codexBin = resolveCodexBin();
+  const codexVer = codexBin ? codexVersion(codexBin) : null;
+  console.log(codexVer ? `[daemon] codex ${codexVer} at ${codexBin}` : '[daemon] codex not installed; actions set to run on it are refused');
+  const codexTranscripts = new CodexTranscripts(join(RUNTIME_DIR, 'transcripts', 'codex'));
+  const codex = new CodexRuntime({
+    bin: codexVer ? codexBin : null,
+    host: () => runtimeHost!,
+    mcpServers: () => mergeMcpServers(daemonMcpServers),
+    approvalTimeoutMs: APPROVAL_TIMEOUT_MS,
+    daemonAuthSecret: secret,
+    hookPort: HOOK_PORT,
+    transcripts: codexTranscripts,
+    nativeIds: {
+      read: (id) => sessionStore.readNativeSessionId(id),
+      write: (id, threadId) => sessionStore.writeNativeSessionId(id, threadId),
+    },
+    actionBody: (name) => actionRegistry.getAction(name)?.body,
+  });
+  const runtimes = new RuntimeRegistry(runtime, [codex]);
   const deliverActions = (actionsDir: string) => runtime.deliverActions(actionsDir);
   const runtimeLogDir = join(RUNTIME_DIR, 'runtime-logs');
   pruneNdjsonLogs(runtimeLogDir, RUNTIME_LOG_MAX_AGE_MS);
@@ -317,7 +342,7 @@ async function main() {
   const projectRegistry = new ProjectRegistry(join(RUNTIME_DIR, 'projects.json'));
   const worktreeManager = new WorktreeManager({ root: join(RUNTIME_DIR, 'worktrees'), projectsRoot });
   const sessionStore = new SessionStore({
-    transcripts: runtime.transcripts,
+    transcripts: new CompositeTranscripts(runtime.transcripts, [{ root: codexTranscripts.root, reader: codexTranscripts }]),
     registry: projectRegistry,
     worktreeManager,
     sessionMetaDir: join(RUNTIME_DIR, 'session-meta'),
@@ -395,7 +420,7 @@ async function main() {
   const claudeLogin = new ClaudeLoginFlows(onReauthorized);
 
   const manager = new SessionManager({
-    runtime,
+    runtimes,
     runtimeLogDir,
     sessionStore,
     eventLogMaxEvents,
@@ -510,6 +535,7 @@ async function main() {
     sessionManager: manager,
     worktreeManager,
     jobsDir: join(RUNTIME_DIR, 'jobs'),
+    runtimes,
     actionsStore,
     modes,
     interactive,
@@ -639,6 +665,11 @@ async function main() {
       secret,
       enrichers: envelopeEnrichers,
       recentLessons: (skill) => journalStore.recent(skill),
+      runtimeFor: (skill) => {
+        const runtime = resolveRuntime(actionRegistry.getAction(skill), undefined);
+        const refuse = runtimes.refusal(runtime, skill, actionRegistry.inheritedGroups(skill) ?? []);
+        return refuse ? { refuse } : runtime;
+      },
     }),
     inline: createInlineDeps(scriptEnv, nativeHandlers, projectRegistry, worktreeManager),
     routing: createRoutingDeps(() => process.env.OUTPOST_SLACK_WEBHOOK_URL || undefined, projectRegistry, worktreeManager),
@@ -788,6 +819,7 @@ async function main() {
       });
     },
     onEvalMcp: (path, body) => handleEvalMcp(path, body, { sessions: evalSessions, blob: (ref) => runBlobs.get(ref) }),
+    ...(codex.available ? { onCodexPreTool: (body: string) => codex.handlePreToolUse(body) } : {}),
     onMcp: (body) => handleMcpRequest(body, OUTPOST_MCP_TOOLS, {
       submit_plan: async (a) => {
         // No stepId: an orchestrator's plan is refused against the JOB's orchestrator session.
@@ -961,7 +993,7 @@ async function main() {
   });
   registerGitRoutes(server, { sessionStore, worktreeManager, engine, prWatcher, preferencesStore, jobQueue });
   registerProjectsRoutes(server, { sessionStore, projectRegistry });
-  registerJobsRoutes(server, { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, projectRegistry, jobsDir: join(RUNTIME_DIR, 'jobs'), interactive });
+  registerJobsRoutes(server, { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, projectRegistry, jobsDir: join(RUNTIME_DIR, 'jobs'), interactive, runtimes });
   registerPushRoutes(server, { pushStore, pushSender, userPrsWatcher });
   registerMetaRoutes(server, {
     actionRegistry, permissionGroups, allowlist, allowlistPath: ALLOWLIST_PATH, projectAllowlistDir,

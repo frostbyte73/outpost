@@ -1,5 +1,12 @@
 import type { NdjsonLog } from './event-ndjson.js';
 
+export const RUNTIME_IDS = ['claude', 'codex'] as const;
+export type RuntimeId = (typeof RUNTIME_IDS)[number];
+
+export function isRuntimeId(v: unknown): v is RuntimeId {
+  return typeof v === 'string' && (RUNTIME_IDS as readonly string[]).includes(v);
+}
+
 export type ToolKind =
   | 'command_execution'
   | 'file_read'
@@ -133,7 +140,14 @@ export interface RuntimeHost {
 export interface RuntimeCapabilities {
   sessions: { supportsResume: boolean };
   streaming: { streamsAssistantText: boolean };
-  tools: { supportsMcpTools: boolean };
+  tools: {
+    supportsMcpTools: boolean;
+    gatesMcpTools: boolean;
+    gatesFileChanges: boolean;
+    // False when the runtime has a tool that reaches no gate, so no write can be pinned on it.
+    gatesAllCalls: boolean;
+  };
+  subagents: { enabled: boolean };
   approvals: {
     supportsCommandApproval: boolean;
     supportsFileChangeApproval: boolean;
@@ -235,6 +249,8 @@ export interface TranscriptReader {
 export interface AgentRuntime {
   readonly id: string;
   readonly capabilities: RuntimeCapabilities;
+  // False when the harness isn't installed; such a runtime refuses every action.
+  readonly available: boolean;
   start(opts: StartOpts, cb: StartCallbacks): RuntimeSession;
   readonly transcripts: TranscriptReader;
   deliverActions(actionsDir: string): void;

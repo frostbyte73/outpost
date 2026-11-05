@@ -4,8 +4,9 @@ import { EventLog } from './event-log.js';
 import { openNdjsonLog, type NdjsonLog } from '../runtime/event-ndjson.js';
 import type { WebSocket } from 'ws';
 import type { WorktreeManager } from '../git/worktree-manager.js';
+import type { RuntimeRegistry } from '../runtime/registry.js';
 import type {
-  AgentRuntime, CanonicalEvent, PermissionMode, RuntimeSession, SessionKind, SessionModel, TurnInput,
+  CanonicalEvent, PermissionMode, RuntimeId, RuntimeSession, SessionKind, SessionModel, TurnInput,
 } from '../runtime/types.js';
 
 // Why the daemon itself is tearing a session down, threaded into daemon_proc_exit
@@ -47,7 +48,7 @@ export interface SessionExit {
 }
 
 export interface SessionManagerOpts {
-  runtime: AgentRuntime;
+  runtimes: RuntimeRegistry;
   sessionStore: import('./session-store.js').SessionStore;
   worktreeManager?: WorktreeManager;
   // Where each session's native + canonical event streams are appended; absent, nothing is logged.
@@ -385,19 +386,32 @@ export class SessionManager {
 
   // Spawn a session with no WS attached. Orchestrator uses this for child sessions
   // (investigator, implementer, responder), prompted via sendTurn. Idempotent — no-op if already active.
-  spawnDetached(sessionId: string, cwd: string, extraEnv?: Record<string, string>, permissionMode?: PermissionMode): void {
+  // `runtime` binds a new session's harness; a session that already has one keeps it.
+  spawnDetached(
+    sessionId: string, cwd: string, extraEnv?: Record<string, string>, permissionMode?: PermissionMode, runtime?: RuntimeId,
+  ): void {
     if (this.active.has(sessionId)) return;
     if (extraEnv) this.opts.onLaunch?.(sessionId, cwd, extraEnv);
     if (permissionMode) this.permissionModes.set(sessionId, permissionMode);
+    if (runtime) this.bindRuntime(sessionId, runtime);
     this.spawn(sessionId, cwd, extraEnv);
     this.startWorking(sessionId);
   }
 
   // Send a turn; respawn first if idle-reaped. extraEnv is applied only on respawn.
-  sendOrResume(sessionId: string, cwd: string, turn: TurnInput, extraEnv?: Record<string, string>): void {
+  sendOrResume(sessionId: string, cwd: string, turn: TurnInput, extraEnv?: Record<string, string>, runtime?: RuntimeId): void {
     if (extraEnv) this.opts.onLaunch?.(sessionId, cwd, extraEnv);
+    if (runtime) this.bindRuntime(sessionId, runtime);
     if (!this.active.has(sessionId)) this.spawn(sessionId, cwd, extraEnv);
     this.sendTurn(sessionId, turn);
+  }
+
+  runtimeOf(sessionId: string): RuntimeId {
+    return this.opts.sessionStore.readRuntime(sessionId) ?? 'claude';
+  }
+
+  private bindRuntime(sessionId: string, runtime: RuntimeId): void {
+    if (!this.opts.sessionStore.readRuntime(sessionId)) this.opts.sessionStore.writeRuntime(sessionId, runtime);
   }
 
   private readonly permissionModes = new Map<string, PermissionMode>();
@@ -441,7 +455,8 @@ export class SessionManager {
     const model = this.sessionModels.get(sessionId);
     const systemPrompt = this.opts.sessionStore.readSystemPrompt(sessionId);
     const log: NdjsonLog | undefined = this.opts.runtimeLogDir ? openNdjsonLog(this.opts.runtimeLogDir, sessionId) : undefined;
-    s.session = this.opts.runtime.start({
+    const runtime = this.opts.runtimes.get(this.runtimeOf(sessionId)) ?? this.opts.runtimes.claude;
+    s.session = runtime.start({
       sessionId,
       mode,
       cwd,

@@ -42,7 +42,7 @@ Backend is clustered by concern under `src/`; nothing new goes at the root.
 | `src/server.ts` | HTTPS + WS surface for the PWA (loopback + optional tailnet listener over one handler) |
 | `src/mcp-server.ts` | MCP surface spawned Claude sessions report results through |
 | `src/routes/` | HTTP route factories, one file per resource group |
-| `src/runtime/` | the `AgentRuntime` boundary — canonical tools/events, and `claude/`, the Claude Code runtime behind every session |
+| `src/runtime/` | the `AgentRuntime` boundary — canonical tools/events, `claude/` (the default runtime) and `codex/` (OpenAI Codex, opt-in per action or job) |
 | `src/session/` | session lifecycle — spawn via the runtime, WS fanout, replay, session sidecar meta |
 | `src/work/` | job orchestration — the engine, envelopes, write drafts, the controller runtime |
 | `src/steps/` | per-step-kind handlers, incl. the orchestrated policy that bounds a controller |

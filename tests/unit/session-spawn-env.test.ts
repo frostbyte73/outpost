@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { SessionManager } from '../../src/session/session-manager.js';
 import { SessionStore } from '../../src/session/session-store.js';
 import { ClaudeTranscripts } from '../../src/runtime/claude/transcripts.js';
+import { RuntimeRegistry } from '../../src/runtime/registry.js';
 import type { AgentRuntime, StartOpts } from '../../src/runtime/types.js';
 
 // A step session's `$OUTPOST_ENVELOPE` has to survive a respawn through ANY door, because the
@@ -33,7 +34,7 @@ const STEP_ENV = {
 function newManager() {
   const dir = mkdtempSync(join(tmpdir(), 'outpost-spawn-env-'));
   const store = new SessionStore({ transcripts: new ClaudeTranscripts(join(dir, 'projects')), sessionMetaDir: join(dir, 'session-meta') });
-  const manager = new SessionManager({ runtime, sessionStore: store });
+  const manager = new SessionManager({ runtimes: new RuntimeRegistry(runtime), sessionStore: store });
   return { manager, store, cwd: dir };
 }
 

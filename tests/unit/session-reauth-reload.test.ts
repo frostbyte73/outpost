@@ -11,7 +11,7 @@ function managerWithSessions(ids: string[], working: string[] = []): {
   kills: Map<string, ReturnType<typeof vi.fn>>;
 } {
   const manager = new SessionManager({
-    runtime: {} as never,
+    runtimes: {} as never,
     sessionStore: { findSession: () => undefined } as never,
   });
   const kills = new Map<string, ReturnType<typeof vi.fn>>();

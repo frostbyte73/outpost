@@ -1,6 +1,8 @@
 // Outpost's two primitives, on-disk and in-memory. See CLAUDE.md for the
 // conceptual overview; this file is the canonical TS shape.
 
+import type { RuntimeId } from '../runtime/types.js';
+
 export type ActionCategory = 'read' | 'write' | 'code' | 'meta';
 export type SideEffects = 'none' | 'gated-write' | 'worktree-edit' | 'external-write';
 export type ActionRunner = 'claude' | 'builtin';
@@ -28,6 +30,8 @@ export interface ActionFrontmatter {
     // step-orchestrator only: the sub-actions this controller may rebind to or dispatch. Its
     // decision turns see exactly these plus itself. Omitted means the whole catalog.
     roster?: string[];
+    // The harness a session for this action runs on; unset defers to the job's, then Claude.
+    runtime?: RuntimeId;
     timeout_sec?: number;
     retries?: number;
   };

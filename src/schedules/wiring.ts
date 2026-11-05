@@ -16,6 +16,7 @@ import { runGh } from '../integrations/gh-cli.js';
 import type { NativeHandlerRegistry } from './native-handlers.js';
 import { writeScheduleEnvelope, type EnvelopeEnricherRegistry } from './schedule-envelope.js';
 import type { JournalEntry } from '../storage/journal-store.js';
+import type { RuntimeId } from '../runtime/types.js';
 
 // Daemon-specific implementations of the dependency-injection interfaces schedules/*.ts
 // define, kept out of daemon.ts per the "keep wiring thin" rule — daemon.ts just calls
@@ -102,12 +103,14 @@ export interface SpawnDepsOpts {
   secret: string;
   enrichers: EnvelopeEnricherRegistry;
   recentLessons: (skill: string) => JournalEntry[];
+  // The harness a scheduled skill runs on, or why it can't run on the one it names.
+  runtimeFor: (skill: string) => RuntimeId | { refuse: string };
 }
 
 export function createSpawnDeps(opts: SpawnDepsOpts): SchedulerSpawnDeps {
   const {
     engine, sessionManager, projectRegistry, worktreeManager,
-    runtimeDir, apiUrl, hookPort, secret, enrichers, recentLessons,
+    runtimeDir, apiUrl, hookPort, secret, enrichers, recentLessons, runtimeFor,
   } = opts;
   return {
     createJob: (input) => {
@@ -152,6 +155,9 @@ export function createSpawnDeps(opts: SpawnDepsOpts): SchedulerSpawnDeps {
         cwd = repo;
       }
 
+      const runtime = runtimeFor(input.skill);
+      if (typeof runtime === 'object') throw new Error(runtime.refuse);
+
       const sessionId = randomUUID();
       const envelopePath = writeScheduleEnvelope(runtimeDir, sessionId, {
         kind: 'schedule',
@@ -171,7 +177,7 @@ export function createSpawnDeps(opts: SpawnDepsOpts): SchedulerSpawnDeps {
         OUTPOST_ENVELOPE: envelopePath,
         OUTPOST_HOOK_PORT: String(hookPort),
         DAEMON_AUTH: secret,
-      }, 'default');
+      }, 'default', runtime);
       // Before the send: whatever daemon-side state the skill's first turn depends on (an
       // ActionEdit for its proposal to land on) has to exist by then.
       enriched?.onSpawned?.(sessionId);

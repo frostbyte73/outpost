@@ -21,6 +21,7 @@ export interface OrchestratedHost {
   // a later call replaces an earlier one.
   scheduleDelivery(jobId: string, stepId: string, at: number): void;
   actionInfo: ActionInfo;
+  runtimeRefusal?(jobId: string, stepId: string, action: string, via: 'self-round' | 'dispatch'): string | undefined;
   preapprovalsFor(jobId: string, stepId: string): EffectivePreapprovals;
   newId(): string;
   now(): number;
@@ -88,7 +89,11 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
   const productive = isProductive(step, p);
   host.mutateStep(jobId, stepId, (s) => recordProgress(s, p));
 
-  const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, host.actionInfo, productive, host.preapprovalsFor(jobId, stepId));
+  const info: ActionInfo = {
+    ...host.actionInfo,
+    runtimeRefusal: (action, via) => host.runtimeRefusal?.(jobId, stepId, action, via),
+  };
+  const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, info, productive, host.preapprovalsFor(jobId, stepId));
 
   if (verdict.kind === 'reject') {
     // One corrective turn. A controller that violates policy twice running (with no accepted

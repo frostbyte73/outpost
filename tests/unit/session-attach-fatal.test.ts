@@ -9,7 +9,7 @@ import { SessionManager } from '../../src/session/session-manager.js';
 
 function attachAndCapture(opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string }) {
   const manager = new SessionManager({
-    runtime: {} as never,
+    runtimes: {} as never,
     sessionStore: { findSession: () => null } as never,
   });
   const sent: Record<string, unknown>[] = [];

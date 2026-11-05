@@ -33,6 +33,9 @@ import { readonlyView, waitWorkspaceError, workspaceError } from './workspace.js
 import { waitSessionContext } from './wait-session-context.js';
 import { expectRepoOf, parsePrUrl, PR_URL_RE } from './pr-url.js';
 import type { ActionRegistry } from '../actions/index.js';
+import type { ActionDef } from '../actions/types.js';
+import { resolveRuntime, type RuntimeRegistry } from '../runtime/registry.js';
+import type { RuntimeId } from '../runtime/types.js';
 import { handlerFor, initialStateForType, isTerminalStep } from '../steps/index.js';
 import { orchestratedHandler } from '../steps/orchestrated.js';
 import type { Action, HandlerCtx } from '../steps/types.js';
@@ -201,6 +204,8 @@ export interface WorkEngineOpts {
   interactive?: InteractiveStore;
   journalStore?: JournalStore;
   actionRegistry?: ActionRegistry;
+  // Absent in unit harnesses: every session runs on Claude and nothing is refused for its runtime.
+  runtimes?: RuntimeRegistry;
   // Token-aware launch queue. Every autonomous launch routes through it via submitLaunch;
   // reactive rounds and high-priority jobs fire immediately, everything else waits for token
   // headroom + a free concurrency slot. Optional so the unit harnesses (which omit it) keep
@@ -823,6 +828,7 @@ export class WorkEngine {
     highPriority?: boolean;
     preapprovals?: Preapprovals;
     planReview?: 'gate' | 'auto';
+    runtime?: RuntimeId;
   }): JobRecord {
     const id = input.id ?? this.ctx.newId();
     const now = this.ctx.now();
@@ -836,6 +842,7 @@ export class WorkEngine {
       ...(input.highPriority ? { highPriority: true } : {}),
       ...(input.preapprovals ? { preapprovals: input.preapprovals } : {}),
       ...(input.planReview ? { planReview: input.planReview } : {}),
+      ...(input.runtime ? { runtime: input.runtime } : {}),
       specGateMigrated: true,
       dismissMigrated: true,
       state: 'planning',
@@ -1185,7 +1192,7 @@ export class WorkEngine {
     // orchestrator explicitly declared this as an initial plan (e.g. after a
     // rejection wiped the steps). `drops` is meaningless here.
     if (mode === 'initial' || activeSteps.length === 0) {
-      const steps = proposed.map((p) => this.materialize(p));
+      const steps = proposed.map((p) => this.materialize(p, j));
       this.mutate(jobId, (jj) => this.appendEvent({
         ...jj,
         state: 'plan_pending_review',
@@ -1270,7 +1277,7 @@ export class WorkEngine {
       jobId,
       job: { source: after.source, title: after.title, description: after.description, externalRef: after.externalRef },
       stepTypeCatalog: STEP_TYPE_CATALOG,
-      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }),
+      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }, after),
       userFeedback: trimmed,
       rejectedIterations: after.plan?.iterationsRejected,
       recentLessons: this.opts.journalStore?.recent(actionName) ?? [],
@@ -1289,7 +1296,7 @@ export class WorkEngine {
       jobId,
       job: { source: j.source, title: j.title, description: j.description, externalRef: j.externalRef },
       stepTypeCatalog: STEP_TYPE_CATALOG,
-      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }),
+      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }, j),
       currentSteps: j.steps.map(planStepView),
       jobFile: this.opts.queue.jobFile(jobId),
       userFeedback: feedback,
@@ -1341,7 +1348,7 @@ export class WorkEngine {
         const withProposal = proposal && patched.type === 'orchestrated' ? { ...patched, proposedPreapprovals: proposal } : patched;
         return opts.auto ? this.autoApprovedPreapprovals(j, withProposal) : withUserPreapprovals(withProposal, stepPreapprovals?.[cur.id]);
       }
-      const fresh = this.materialize(p);
+      const fresh = this.materialize(p, j);
       return opts.auto ? this.autoApprovedPreapprovals(j, fresh) : withUserPreapprovals(fresh, stepPreapprovals?.[`#${i}`]);
     });
 
@@ -2221,6 +2228,15 @@ export class WorkEngine {
       actionInfo: {
         sideEffects: (a) => this.opts.actionRegistry?.getAction(a)?.frontmatter.outpost.side_effects,
       },
+      runtimeRefusal: (jobId, stepId, action, via) => {
+        if (!this.opts.runtimes) return undefined;
+        const job = this.opts.queue.get(jobId);
+        const step = job?.steps.find((x) => x.id === stepId);
+        const runtime = via === 'self-round' && step?.sessionId
+          ? this.opts.sessionManager.runtimeOf(step.sessionId)
+          : this.runtimeFor(action, job);
+        return this.runtimeRefusal(action, runtime);
+      },
       newId: () => this.ctx.newId(),
       now: () => this.ctx.now(),
     };
@@ -2585,7 +2601,7 @@ export class WorkEngine {
         });
         this.opts.sessionManager.spawnDetached(sessionId, cwd, {
           OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: dispatch.id, STEP_TYPE: 'action',
-        }, 'default');
+        }, 'default', this.runtimeFor(dispatch.action, this.opts.queue.get(jobId)));
         this.opts.sessionManager.sendTurn(sessionId, { text: `/${dispatch.action}` });
         return true;
       },
@@ -2693,7 +2709,7 @@ export class WorkEngine {
   addStepManually(jobId: string, proposed: ProposedStep, opts?: { afterStepId?: string }): Step | undefined {
     const j = this.opts.queue.get(jobId);
     if (!j) return undefined;
-    const step = this.materialize(proposed);
+    const step = this.materialize(proposed, j);
     this.mutate(jobId, (jj) => {
       const steps = [...jj.steps];
       if (opts?.afterStepId) {
@@ -2946,7 +2962,7 @@ export class WorkEngine {
       jobId,
       job: { source: j.source, title: j.title, description: j.description, externalRef: j.externalRef },
       stepTypeCatalog: STEP_TYPE_CATALOG,
-      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }),
+      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }, j),
       currentSteps: j.steps.map(planStepView),
       jobFile: this.opts.queue.jobFile(jobId),
       completedStepId,
@@ -2986,7 +3002,7 @@ export class WorkEngine {
       jobId: j.id,
       job: { source: j.source, title: j.title, description: j.description, externalRef: j.externalRef },
       stepTypeCatalog: STEP_TYPE_CATALOG,
-      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }),
+      actionCatalog: this.buildActionCatalog({ kind: 'plannable' }, j),
       ...(launchContext ? { launchContext } : {}),
       recentLessons: this.opts.journalStore?.recent(actionName) ?? [],
     };
@@ -2994,8 +3010,22 @@ export class WorkEngine {
     await this.spawnOrchestratorSession(j.id, 'initial', path, actionName, opts);
   }
 
-  private buildActionCatalog(scope: CatalogScope): ActionCatalogEntry[] | undefined {
-    return buildActionCatalog(this.opts.actionRegistry, scope);
+  // A planner never sees an action the job's runtime would refuse to run.
+  private buildActionCatalog(scope: CatalogScope, job?: JobRecord): ActionCatalogEntry[] | undefined {
+    const refused = scope.kind === 'plannable' && job
+      ? (a: ActionDef) => !!this.runtimeRefusal(a.name, resolveRuntime(a, job))
+      : undefined;
+    return buildActionCatalog(this.opts.actionRegistry, scope, refused);
+  }
+
+  private runtimeRefusal(action: string, runtime: RuntimeId): string | undefined {
+    if (!this.opts.runtimes) return undefined;
+    const groups = this.opts.actionRegistry?.inheritedGroups(action);
+    return groups && this.opts.runtimes.refusal(runtime, action, groups);
+  }
+
+  private runtimeFor(action: string, job: JobRecord | undefined): RuntimeId {
+    return resolveRuntime(this.opts.actionRegistry?.getAction(action), job);
   }
 
   // Cwd for orchestrator sessions: the daemon's cwd (Outpost repo) is fine — the
@@ -3015,7 +3045,9 @@ export class WorkEngine {
       run: () => {
         const cur = this.opts.queue.get(jobId);
         if (!cur || cur.state === 'abandoned' || cur.state === 'done' || cur.state === 'failed') return false;
-        this.opts.sessionManager.spawnDetached(sessionId, cwd, { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId }, 'default');
+        this.opts.sessionManager.spawnDetached(
+          sessionId, cwd, { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId }, 'default', this.runtimeFor(actionName, cur),
+        );
         this.roleBySession.set(sessionId, { role: 'orchestrator', jobId });
         this.bindAction(sessionId, actionName);
         this.stampActionSession(sessionId, actionName, cur.title || 'Job');
@@ -3089,7 +3121,7 @@ export class WorkEngine {
           JOB_ID: jobId,
           STEP_ID: stepId,
           STEP_TYPE: s.type,
-        }, 'default');
+        }, 'default', this.runtimeFor(actionName, this.opts.queue.get(jobId)));
         this.stampActionSession(sessionId, actionName, s.title || 'Step');
         this.mutateStep(jobId, stepId, (st) => this.appendStepEvent({ ...st, sessionId } as Step, 'spawned', 'orchestrator'));
         this.mutate(jobId, (j) => this.appendEvent(j, {
@@ -3130,11 +3162,14 @@ export class WorkEngine {
     return { ...j, events };
   }
 
-  private materialize(p: ProposedStep): Step {
+  private materialize(p: ProposedStep, job: JobRecord): Step {
     const id = this.ctx.newId();
     const now = this.ctx.now();
     const wsErr = workspaceError(p.workspace) ?? waitWorkspaceError(p.type === 'action' ? p.action : undefined, p.workspace);
     if (wsErr) throw new Error(wsErr);
+    const bound = p.type === 'action' ? p.action : p.type === 'orchestrated' ? p.controller : undefined;
+    const refusal = bound && this.runtimeRefusal(bound, this.runtimeFor(bound, job));
+    if (refusal) throw new Error(refusal);
     switch (p.type) {
       case 'action': {
         if (this.opts.actionRegistry && !this.opts.actionRegistry.getAction(p.action)) {

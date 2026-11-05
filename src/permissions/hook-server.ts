@@ -14,6 +14,8 @@ export interface HookServerOpts {
   onActionProposal: (body: string) => Promise<void>;
   onWorkJournal: (body: string) => Promise<void>;
   onMcp: (body: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
+  // Codex's PreToolUse hook command; the returned body is the exact text PRETOOL_HOOK_SCRIPT matches on.
+  onCodexPreTool?: (body: string) => Promise<string>;
   // An eval replay's own MCP surfaces: `/mcp/eval/<sid>` stands in for outpost, `/mcp/replay/<sid>/<server>` for the rest.
   onEvalMcp?: (path: string, body: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
   // Held by eval replays: opens their own MCP routes, nothing that changes daemon state.
@@ -53,6 +55,7 @@ export class HookServer {
       '/work/journal',
       '/work/create-job',
       '/mcp',
+      '/hook/codex/pretool',
     ]);
     const isEvalMcp = /^\/mcp\/(eval|replay)\//.test(req.url ?? '');
     if (req.method !== 'POST' || !(KNOWN_ROUTES.has(req.url ?? '') || isEvalMcp)) {
@@ -125,6 +128,15 @@ export class HookServer {
           res.statusCode = 200;
           res.setHeader('content-type', 'application/json');
           res.end(JSON.stringify(result));
+        } else if (url === '/hook/codex/pretool') {
+          if (!this.opts.onCodexPreTool) {
+            res.statusCode = 404;
+            res.end('not found');
+            return;
+          }
+          res.statusCode = 200;
+          res.setHeader('content-type', 'text/plain');
+          res.end(await this.opts.onCodexPreTool(body));
         } else if (isEvalMcp && this.opts.onEvalMcp) {
           const reply = await this.opts.onEvalMcp(url!, body);
           res.statusCode = reply.status;

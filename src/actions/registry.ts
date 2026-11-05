@@ -7,6 +7,7 @@ import type {
   PermissionGroupMap, SideEffects,
 } from './types.js';
 import { assertNotWriteShaped } from '../permissions/write-shape.js';
+import { isRuntimeId, RUNTIME_IDS } from '../runtime/types.js';
 
 export const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
 // Groups whose grants mean "may propose this write for approval", not "may run it".
@@ -241,6 +242,11 @@ export class ActionRegistry {
         throw new Error('outpost.roster is only meaningful on kind: step-orchestrator');
     }
 
+    if (o.runtime !== undefined) {
+      if (!isRuntimeId(o.runtime)) throw new Error(`outpost.runtime must be one of ${RUNTIME_IDS.join('|')}`);
+      if (o.runner === 'builtin') throw new Error('outpost.runtime is meaningless on a builtin runner');
+    }
+
     return {
       name: r.name,
       description: r.description,
@@ -252,6 +258,7 @@ export class ActionRegistry {
         permissions: permissions as string[] | undefined,
         plannable: o.plannable as boolean | undefined,
         roster: roster as string[] | undefined,
+        ...(isRuntimeId(o.runtime) ? { runtime: o.runtime } : {}),
         timeout_sec: typeof o.timeout_sec === 'number' ? o.timeout_sec : undefined,
         retries: typeof o.retries === 'number' ? o.retries : undefined,
       },

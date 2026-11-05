@@ -20,6 +20,8 @@ import { d2ThemeFor, renderDiagram, themeOverrides } from '../work/plan-diagram.
 import type { DraftDecisionResult } from '../work/write-draft-runner.js';
 import { parsePlanReview, parsePreapprovals } from '../work/preapprovals.js';
 import type { Preapprovals } from '../work/work-types.js';
+import { isRuntimeId, RUNTIME_IDS } from '../runtime/types.js';
+import type { RuntimeRegistry } from '../runtime/registry.js';
 
 export interface JobsRoutesDeps {
   jobQueue: JobQueue;
@@ -32,6 +34,7 @@ export interface JobsRoutesDeps {
   projectRegistry: ProjectRegistry;
   jobsDir: string;
   interactive: InteractiveStore;
+  runtimes?: RuntimeRegistry;
 }
 
 const DEFAULT_EVENT_LIMIT = 500;
@@ -114,7 +117,7 @@ async function handleDraftDecision(
 }
 
 export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
-  const { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, projectRegistry, jobsDir, interactive } = deps;
+  const { jobQueue, engine, prWatcher, prFilePatches, scheduler, sessionStore, worktreeManager, projectRegistry, jobsDir, interactive, runtimes } = deps;
 
   const serialize = (j: JobRecord) =>
     serializeJob(j, (id) => engine.isSessionWorking(id), (job) => engine.launchStatusFor(job),
@@ -242,10 +245,20 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
 
   server.route('POST', '/api/work/jobs', async (req, res) => {
     const payload = await readJsonObject<{
-      title?: string; description?: string; externalUrl?: string; preapprovals?: unknown; planReview?: unknown;
+      title?: string; description?: string; externalUrl?: string; preapprovals?: unknown; planReview?: unknown; runtime?: unknown;
     }>(req, res);
     if (!payload) return;
     if (typeof payload.title !== 'string' || !payload.title.trim()) { res.statusCode = 400; res.end('title required'); return; }
+    if (payload.runtime !== undefined && !isRuntimeId(payload.runtime)) {
+      res.statusCode = 400;
+      res.end(`runtime must be one of ${RUNTIME_IDS.join('|')}`);
+      return;
+    }
+    if (isRuntimeId(payload.runtime) && !runtimes?.get(payload.runtime)?.available) {
+      res.statusCode = 400;
+      res.end(`runtime ${payload.runtime} isn't installed on this machine`);
+      return;
+    }
     const pre = parsePreapprovals(payload.preapprovals);
     if (!pre.ok) { res.statusCode = 400; res.end(pre.error); return; }
     const review = parsePlanReview(payload.planReview);
@@ -257,6 +270,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
       externalRef: payload.externalUrl ? { url: payload.externalUrl } : undefined,
       ...(pre.value ? { preapprovals: pre.value } : {}),
       ...(review.value ? { planReview: review.value } : {}),
+      ...(isRuntimeId(payload.runtime) ? { runtime: payload.runtime } : {}),
     });
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');

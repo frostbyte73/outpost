@@ -15,7 +15,9 @@ src/
     tools.ts               # canonical tool names; Claude spellings are permanent aliases
     event-ndjson.ts        # per-session native + canonical event logs (runtime-logs/, 14-day retention)
     daemon-host.ts         # RuntimeHost: the daemon's answers to gating, turn ends, usage
-    claude/                # Claude Code on the Agent SDK — the only implementation
+    registry.ts            # RuntimeRegistry, resolveRuntime (action > job > claude), capability refusal
+    transcripts.ts         # CompositeTranscripts: every runtime's history behind one reader
+    claude/                # Claude Code on the Agent SDK — the default runtime
       runtime.ts, sdk-session.ts, bin.ts   # ClaudeRuntime, one streaming-input query() per session, binary lookup
       events.ts              # SDK messages → canonical events
       hooks.ts               # in-process SDK hooks → RuntimeHost calls (the PreToolUse gate)
@@ -23,6 +25,12 @@ src/
       once.ts                # one-shot runs: PR draft, eval judge, eval replay
       transcripts.ts, transcript-{parse,scan}.ts  # ~/.claude/projects JSONL → canonical items
       skills.ts, config.ts   # action delivery as skills, ~/.claude.json
+    codex/                 # OpenAI Codex over `codex app-server` JSON-RPC
+      runtime.ts, app-server.ts, bin.ts  # CodexRuntime + session, the stdio client, binary lookup
+      pretool-hook.ts, pretool.ts         # the fail-closed PreToolUse command (inline sh) and its endpoint handler
+      thread-config.ts, hook-trust.ts     # `--config` overrides; the trust + feature handshake
+      items.ts, events.ts, call-tracker.ts  # v2 items → canonical; ungated-call tripwire, pin release
+      transcripts.ts, tools.ts            # Outpost-owned canonical item log; tool-name mapping
 
   routes/                # HTTP route factories: registerXRoutes(server, deps)
     {git,jobs,sessions,projects,push,runs,schedules,meta,util,actions,preferences,update}.ts

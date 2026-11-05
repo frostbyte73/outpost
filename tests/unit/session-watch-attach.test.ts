@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { SessionManager } from '../../src/session/session-manager.js';
+import { RuntimeRegistry } from '../../src/runtime/registry.js';
 import type { AgentRuntime, CanonicalEvent, StartCallbacks, StartOpts } from '../../src/runtime/types.js';
 
 interface FakeSession { sessionId: string; cwd: string; onEvent: (e: CanonicalEvent) => void; onExit: (code: number | null) => void }
@@ -30,12 +31,13 @@ function newManager(opts: { known?: boolean; hasPendingApproval?: (id: string) =
   const onWorkingChange = vi.fn();
   const onAssistantReply = vi.fn();
   const manager = new SessionManager({
-    runtime,
+    runtimes: new RuntimeRegistry(runtime),
     sessionStore: {
       findSession: () => (opts.known ? { cwd: '/tmp' } : undefined),
       readSpawnEnv: () => undefined,
       writeSpawnEnv: () => {},
       readSystemPrompt: () => undefined,
+      readRuntime: () => null,
     } as never,
     hasPendingApproval: opts.hasPendingApproval,
     onWorkingChange,

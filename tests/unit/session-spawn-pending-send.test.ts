@@ -6,6 +6,7 @@ import { SessionManager } from '../../src/session/session-manager.js';
 import { SessionStore } from '../../src/session/session-store.js';
 import { handleSessionMessage } from '../../src/ws/client-messages.js';
 import { ClaudeTranscripts } from '../../src/runtime/claude/transcripts.js';
+import { RuntimeRegistry } from '../../src/runtime/registry.js';
 import type { AgentRuntime, StartOpts, TurnInput } from '../../src/runtime/types.js';
 
 const spawned: string[] = [];
@@ -42,7 +43,7 @@ function setup() {
     fail = rej;
   }));
   const manager = new SessionManager({
-    runtime,
+    runtimes: new RuntimeRegistry(runtime),
     sessionStore: new SessionStore({ transcripts: new ClaudeTranscripts(join(dir, 'projects')), sessionMetaDir: join(dir, 'session-meta') }),
     worktreeManager: { get: () => undefined, create } as never,
   });
