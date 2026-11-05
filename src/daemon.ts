@@ -32,7 +32,10 @@ import { ClaudeRuntime } from './runtime/claude/runtime.js';
 import { ClaudeTranscripts } from './runtime/claude/transcripts.js';
 import { codexVersion, resolveCodexBin } from './runtime/codex/bin.js';
 import { CodexRuntime } from './runtime/codex/runtime.js';
-import { CodexTranscripts } from './runtime/codex/transcripts.js';
+import { loadAcpAgents } from './runtime/acp/config.js';
+import { AcpRuntime } from './runtime/acp/runtime.js';
+import { findOnPath } from './runtime/bin.js';
+import { JsonlTranscripts } from './runtime/jsonl-transcripts.js';
 import { resolveRuntime, RuntimeRegistry } from './runtime/registry.js';
 import { CompositeTranscripts } from './runtime/transcripts.js';
 import { mergeMcpServers } from './integrations/mcp-config.js';
@@ -256,7 +259,11 @@ async function main() {
   const codexBin = resolveCodexBin();
   const codexVer = codexBin ? codexVersion(codexBin) : null;
   console.log(codexVer ? `[daemon] codex ${codexVer} at ${codexBin}` : '[daemon] codex not installed; actions set to run on it are refused');
-  const codexTranscripts = new CodexTranscripts(join(RUNTIME_DIR, 'transcripts', 'codex'));
+  const codexTranscripts = new JsonlTranscripts(join(RUNTIME_DIR, 'transcripts', 'codex'));
+  const nativeIds = {
+    read: (id: string) => sessionStore.readNativeSessionId(id),
+    write: (id: string, nativeId: string) => sessionStore.writeNativeSessionId(id, nativeId),
+  };
   const codex = new CodexRuntime({
     bin: codexVer ? codexBin : null,
     host: () => runtimeHost!,
@@ -265,13 +272,23 @@ async function main() {
     daemonAuthSecret: secret,
     hookPort: HOOK_PORT,
     transcripts: codexTranscripts,
-    nativeIds: {
-      read: (id) => sessionStore.readNativeSessionId(id),
-      write: (id, threadId) => sessionStore.writeNativeSessionId(id, threadId),
-    },
+    nativeIds,
     actionBody: (name) => actionRegistry.getAction(name)?.body,
   });
-  const runtimes = new RuntimeRegistry(runtime, [codex]);
+  const acpRuntimes = loadAcpAgents(join(RUNTIME_DIR, 'acp-agents.json')).map((agent) => {
+    const bin = findOnPath(agent.command);
+    console.log(bin ? `[daemon] acp:${agent.id} at ${bin}` : `[daemon] acp:${agent.id} not installed; actions set to run on it are refused`);
+    return new AcpRuntime({
+      agent,
+      bin,
+      host: () => runtimeHost!,
+      mcpServers: () => mergeMcpServers(daemonMcpServers),
+      transcripts: new JsonlTranscripts(join(RUNTIME_DIR, 'transcripts', `acp-${agent.id}`)),
+      nativeIds,
+      actionBody: (name) => actionRegistry.getAction(name)?.body,
+    });
+  });
+  const runtimes = new RuntimeRegistry(runtime, [codex, ...acpRuntimes]);
   const deliverActions = (actionsDir: string) => runtime.deliverActions(actionsDir);
   const runtimeLogDir = join(RUNTIME_DIR, 'runtime-logs');
   pruneNdjsonLogs(runtimeLogDir, RUNTIME_LOG_MAX_AGE_MS);
@@ -342,7 +359,8 @@ async function main() {
   const projectRegistry = new ProjectRegistry(join(RUNTIME_DIR, 'projects.json'));
   const worktreeManager = new WorktreeManager({ root: join(RUNTIME_DIR, 'worktrees'), projectsRoot });
   const sessionStore = new SessionStore({
-    transcripts: new CompositeTranscripts(runtime.transcripts, [{ root: codexTranscripts.root, reader: codexTranscripts }]),
+    transcripts: new CompositeTranscripts(runtime.transcripts, [codexTranscripts, ...acpRuntimes.map((r) => r.transcripts)]
+      .map((t) => ({ root: t.root, reader: t }))),
     registry: projectRegistry,
     worktreeManager,
     sessionMetaDir: join(RUNTIME_DIR, 'session-meta'),

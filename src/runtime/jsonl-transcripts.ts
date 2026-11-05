@@ -1,11 +1,11 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
-import type { CanonicalItem, SessionInfo, SubagentInfo, TranscriptProject, TranscriptReader } from '../types.js';
+import type { CanonicalItem, SessionInfo, SubagentInfo, TranscriptProject, TranscriptReader } from './types.js';
 
 const TITLE_CHARS = 80;
 
-// Outpost's own record of each Codex session: line 1 is `{cwd}`, then one canonical item per line.
-export class CodexTranscripts implements TranscriptReader {
+// Outpost's own record of a non-Claude session: line 1 is `{cwd}`, then one canonical item per line.
+export class JsonlTranscripts implements TranscriptReader {
   constructor(readonly root: string) {}
 
   projectDirFor(cwd: string): string {

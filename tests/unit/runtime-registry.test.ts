@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { ACP_CAPABILITIES } from '../../src/runtime/acp/runtime.js';
 import { RuntimeRegistry, unenforceableGroups } from '../../src/runtime/registry.js';
 import type { AgentRuntime, RuntimeCapabilities } from '../../src/runtime/types.js';
 
@@ -33,6 +34,10 @@ describe('unenforceableGroups', () => {
 
   it('refuses push when some tool reaches no gate', () => {
     expect(unenforceableGroups(rt('codex', { caps: { tools: { ...FULL.tools, gatesAllCalls: false } } }), GROUPS)).toEqual(['push']);
+  });
+
+  it('refuses push, and only push, on an ACP runtime', () => {
+    expect(unenforceableGroups(rt('acp:gemini', { caps: ACP_CAPABILITIES }), ['core', 'read', 'edit', 'push'])).toEqual(['push']);
   });
 
   it('refuses every group on a runtime that polices itself or is not installed', () => {

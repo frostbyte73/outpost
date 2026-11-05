@@ -13,7 +13,8 @@ import { decideCodexPreTool, type CodexPreToolPayload } from './pretool.js';
 import { PRETOOL_HOOK_COMMAND } from './pretool-hook.js';
 import { codexConfigArgs, REQUIRED_OFF_FEATURES } from './thread-config.js';
 import { codexCanonicalTool } from './tools.js';
-import type { CodexTranscripts } from './transcripts.js';
+import { expandActionTurn } from '../action-turn.js';
+import type { JsonlTranscripts } from '../jsonl-transcripts.js';
 import type { McpServerConfig } from '../../integrations/mcp-config.js';
 import type {
   AgentRuntime, RuntimeCapabilities, RuntimeHost, RuntimeSession, StartCallbacks, StartOpts, TurnInput,
@@ -26,7 +27,7 @@ export interface CodexRuntimeOpts {
   approvalTimeoutMs: number;
   daemonAuthSecret: string;
   hookPort: number;
-  transcripts: CodexTranscripts;
+  transcripts: JsonlTranscripts;
   nativeIds: { read(sessionId: string): string | null; write(sessionId: string, threadId: string): void };
   actionBody: (name: string) => string | undefined;
 }
@@ -45,26 +46,14 @@ const CAPABILITIES: RuntimeCapabilities = {
   runtimePolicy: { enforcement: 'client-boundary' },
 };
 
-const ACTION_TURN = /^\/([a-z]+\.[a-z0-9-]+)(\s[\s\S]*)?$/;
-
 interface ThreadStartResult { thread: { id: string }; model: string }
-
-// A daemon-spawned turn names an action as `/<name>`; Codex has no such command, so it gets the SKILL.md body.
-export function expandActionTurn(text: string, actionBody: (name: string) => string | undefined): string {
-  const m = ACTION_TURN.exec(text);
-  const body = m ? actionBody(m[1]!) : undefined;
-  if (!m || body === undefined) return text;
-  return `Run the Outpost action \`${m[1]}\`. Its instructions follow. The \`mcp__outpost__*\` tools are already `
-    + 'available in this session, so skip any step that loads them through ToolSearch or a deferred-tool lookup.'
-    + `\n\n${body.trim()}${m[2] ? `\n\n${m[2].trim()}` : ''}`;
-}
 
 // OpenAI Codex behind Outpost's sessions, driven through `codex app-server` and gated by a PreToolUse hook.
 export class CodexRuntime implements AgentRuntime {
   readonly id = 'codex';
   readonly capabilities = CAPABILITIES;
   readonly available: boolean;
-  readonly transcripts: CodexTranscripts;
+  readonly transcripts: JsonlTranscripts;
   private trust: HookTrust | undefined;
   private readonly threads = new Map<string, { sessionId: string; cwd: string; tracker: CallTracker }>();
   private readonly hookTimeoutSec: number;

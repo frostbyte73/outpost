@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { HookServer } from '../../src/permissions/hook-server.js';
 import { codexVersion, resolveCodexBin } from '../../src/runtime/codex/bin.js';
 import { CodexRuntime } from '../../src/runtime/codex/runtime.js';
-import { CodexTranscripts } from '../../src/runtime/codex/transcripts.js';
+import { JsonlTranscripts } from '../../src/runtime/jsonl-transcripts.js';
 import type { CanonicalEvent, GateDecision, GateRequest, RuntimeHost, RuntimeSession } from '../../src/runtime/types.js';
 
 const bin = process.env.OUTPOST_CODEX_LIVE ? resolveCodexBin() : null;
@@ -27,7 +27,7 @@ describe.skipIf(!bin || !codexVersion(bin))('Codex runtime (live)', () => {
   const runtime = new CodexRuntime({
     bin, host: () => host, mcpServers: () => new Map(),
     approvalTimeoutMs: 60_000, daemonAuthSecret: SECRET, hookPort: PORT,
-    transcripts: new CodexTranscripts(join(dir, 'transcripts')),
+    transcripts: new JsonlTranscripts(join(dir, 'transcripts')),
     nativeIds: { read: () => null, write: () => {} },
     actionBody: () => undefined,
   });

@@ -17,6 +17,8 @@ src/
     daemon-host.ts         # RuntimeHost: the daemon's answers to gating, turn ends, usage
     registry.ts            # RuntimeRegistry, resolveRuntime (action > job > claude), capability refusal
     transcripts.ts         # CompositeTranscripts: every runtime's history behind one reader
+    jsonl-transcripts.ts   # Outpost-owned canonical item log for runtimes that keep no usable history
+    action-turn.ts, bin.ts # `/<action>` → SKILL.md body for non-Claude runtimes; PATH lookup past launchd
     claude/                # Claude Code on the Agent SDK — the default runtime
       runtime.ts, sdk-session.ts, bin.ts   # ClaudeRuntime, one streaming-input query() per session, binary lookup
       events.ts              # SDK messages → canonical events
@@ -30,7 +32,11 @@ src/
       pretool-hook.ts, pretool.ts         # the fail-closed PreToolUse command (inline sh) and its endpoint handler
       thread-config.ts, hook-trust.ts     # `--config` overrides; the trust + feature handshake
       items.ts, events.ts, call-tracker.ts  # v2 items → canonical; ungated-call tripwire, pin release
-      transcripts.ts, tools.ts            # Outpost-owned canonical item log; tool-name mapping
+      tools.ts                            # tool-name mapping
+    acp/                   # any Agent Client Protocol agent over stdio JSON-RPC, one runtime per configured agent
+      runtime.ts, connection.ts           # AcpRuntime + session (gate, tripwire, pins), the bidirectional stdio client
+      config.ts                           # ~/.outpost/acp-agents.json: seeded, validated, read at boot
+      permission.ts, events.ts            # request_permission → gate calls + reply; session/update → canonical
 
   routes/                # HTTP route factories: registerXRoutes(server, deps)
     {git,jobs,sessions,projects,push,runs,schedules,meta,util,actions,preferences,update}.ts

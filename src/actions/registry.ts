@@ -7,7 +7,7 @@ import type {
   PermissionGroupMap, SideEffects,
 } from './types.js';
 import { assertNotWriteShaped } from '../permissions/write-shape.js';
-import { isRuntimeId, RUNTIME_IDS } from '../runtime/types.js';
+import { isRuntimeId, RUNTIME_ID_HINT } from '../runtime/types.js';
 
 export const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
 // Groups whose grants mean "may propose this write for approval", not "may run it".
@@ -243,7 +243,7 @@ export class ActionRegistry {
     }
 
     if (o.runtime !== undefined) {
-      if (!isRuntimeId(o.runtime)) throw new Error(`outpost.runtime must be one of ${RUNTIME_IDS.join('|')}`);
+      if (!isRuntimeId(o.runtime)) throw new Error(`outpost.runtime must be one of ${RUNTIME_ID_HINT}`);
       if (o.runner === 'builtin') throw new Error('outpost.runtime is meaningless on a builtin runner');
     }
 

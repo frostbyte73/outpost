@@ -20,7 +20,7 @@ import { d2ThemeFor, renderDiagram, themeOverrides } from '../work/plan-diagram.
 import type { DraftDecisionResult } from '../work/write-draft-runner.js';
 import { parsePlanReview, parsePreapprovals } from '../work/preapprovals.js';
 import type { Preapprovals } from '../work/work-types.js';
-import { isRuntimeId, RUNTIME_IDS } from '../runtime/types.js';
+import { isRuntimeId, RUNTIME_ID_HINT } from '../runtime/types.js';
 import type { RuntimeRegistry } from '../runtime/registry.js';
 
 export interface JobsRoutesDeps {
@@ -251,7 +251,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     if (typeof payload.title !== 'string' || !payload.title.trim()) { res.statusCode = 400; res.end('title required'); return; }
     if (payload.runtime !== undefined && !isRuntimeId(payload.runtime)) {
       res.statusCode = 400;
-      res.end(`runtime must be one of ${RUNTIME_IDS.join('|')}`);
+      res.end(`runtime must be one of ${RUNTIME_ID_HINT}`);
       return;
     }
     if (isRuntimeId(payload.runtime) && !runtimes?.get(payload.runtime)?.available) {

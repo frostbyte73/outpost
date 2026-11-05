@@ -1,10 +1,14 @@
 import type { NdjsonLog } from './event-ndjson.js';
 
 export const RUNTIME_IDS = ['claude', 'codex'] as const;
-export type RuntimeId = (typeof RUNTIME_IDS)[number];
+export type RuntimeId = (typeof RUNTIME_IDS)[number] | `acp:${string}`;
+export const RUNTIME_ID_HINT = `${RUNTIME_IDS.join('|')}|acp:<id>`;
+
+export const ACP_AGENT_ID = /^[a-z0-9][a-z0-9-]*$/;
 
 export function isRuntimeId(v: unknown): v is RuntimeId {
-  return typeof v === 'string' && (RUNTIME_IDS as readonly string[]).includes(v);
+  if (typeof v !== 'string') return false;
+  return (RUNTIME_IDS as readonly string[]).includes(v) || (v.startsWith('acp:') && ACP_AGENT_ID.test(v.slice('acp:'.length)));
 }
 
 export type ToolKind =
