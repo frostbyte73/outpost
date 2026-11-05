@@ -5,8 +5,7 @@
 // Ported from the legacy mobile-session-view.js singleton (D7 convergence).
 // Two differences from the original: (1) reads statusline/lastUsage off the
 // session slice by sessionId instead of the global "current session"
-// snapshot, matching how session-view's renderModelChip already sources model
-// info — correct even though today only one session-view is ever mounted at a
+// snapshot — correct even though today only one session-view is ever mounted at a
 // time; (2) tier coloring comes from utils/usage-bar.js's unified 70/90
 // thresholds (D8) instead of this module's old private 60/80 cutoffs.
 import { escapeHtml } from '../../util.js';

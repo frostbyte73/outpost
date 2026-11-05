@@ -52,7 +52,7 @@ function infoCardHtml(sessionId, mcpServers) {
   // Statusline is authoritative, but doesn't fire in --print mode / before the
   // first hook. Fall back to the model/tokens seeded from message_start (same
   // source the meter strip uses) so the row isn't stuck on "—".
-  let modelLabel = sl?.model?.display_name || sl?.model?.id || cu.modelDisplay || null;
+  let modelLabel = sl?.model?.display_name || cu.modelDisplay || null;
   const size = fmtSize(sl?.contextWindow?.context_window_size ?? (cu.known ? cu.total : null));
   const used = fmtSize(cu.known ? cu.used : null);
   const tokensLabel = (size && used) ? `${used} / ${size}` : null;

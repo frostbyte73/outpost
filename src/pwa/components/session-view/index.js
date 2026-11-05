@@ -105,7 +105,6 @@ function buildSkeleton(mount) {
         <input class="sv-attach-input" type="file" multiple hidden>
         <div class="sv-composer" contenteditable="true" role="textbox" aria-multiline="true"
              aria-label="Message" autocapitalize="sentences" data-placeholder="Type a message…"></div>
-        <span class="sv-model-chip" hidden></span>
         <button class="sv-send" type="button" aria-label="Send">↵</button>
         <button class="sv-stop" type="button" aria-label="Stop" hidden></button>
       </div>
@@ -128,7 +127,6 @@ function buildSkeleton(mount) {
     attach:    mount.querySelector('.sv-attach'),
     attachInput: mount.querySelector('.sv-attach-input'),
     attachments: mount.querySelector('.sv-attachments'),
-    modelChip: mount.querySelector('.sv-model-chip'),
     modeChip:  mount.querySelector('.sv-mode-chip'),
     modeSelect:mount.querySelector('.sv-mode-select'),
     jumpWrap:  mount.querySelector('.sv-jump-wrap'),
@@ -345,21 +343,6 @@ function renderModeChip(dom, slice) {
   const mode = slice?.approvalMode ?? 'ask';
   if (dom.modeSelect.value !== mode) dom.modeSelect.value = mode;
   dom.modeChip.setAttribute('data-mode', mode);
-}
-
-// Composer model chip — read-only. session-ws.js's user_message wire format
-// (checked directly) carries no model-override field, and there's no per-
-// message model picker anywhere in the protocol, so this displays whatever
-// model this session is actually running rather than offering a control that
-// wouldn't do anything.
-function renderModelChip(dom, sessionId) {
-  if (!dom.modelChip) return;
-  const sl = sessions.getSlice(sessionId)?.statusline ?? null;
-  const label = sl?.model?.display_name || sl?.model?.id || null;
-  if (!label) { dom.modelChip.hidden = true; return; }
-  dom.modelChip.hidden = false;
-  dom.modelChip.textContent = label;
-  dom.modelChip.title = 'Model for this session — no per-message override (the session protocol carries no model-override field).';
 }
 
 // In-memory composer draft keyed by sessionId. Survives unmount/remount so
@@ -840,7 +823,6 @@ export function mountSessionView(mount, sessionId, meta = {}) {
     const slice = sessions.getSlice(sessionId);
     renderModeChip(dom, slice);
     renderHeader(dom, slice, sessionId, meta);
-    renderModelChip(dom, sessionId);
     renderTranscript(dom, slice, sessionId);
     renderThinkingStrip(dom.thinking, slice);
     renderTodoPill(dom.todos, slice, sessionId);
@@ -909,7 +891,6 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   // repaint just the header rather than the whole paint() pipeline.
   const unsubNavHeader = nav.subscribe(() => renderHeader(dom, sessions.getSlice(sessionId), sessionId, meta));
   const unsubUsage = usage.subscribe(() => {
-    renderModelChip(dom, sessionId);
     renderMeterStrip(dom, sessionId);
   });
   // Its own subscriber rather than a line in paint(): the only settings change this view

@@ -325,21 +325,6 @@ html[data-layout="mobile"] .sv-composer { font-size: 16px; }
   color: var(--text-dim);
   pointer-events: none;
 }
-/* Read-only — session-ws.js's user_message wire format has no model-override
-   field, so this displays the session's actual model rather than offering a
-   picker that wouldn't do anything (see renderModelChip's doc comment). */
-.sv-model-chip {
-  flex: none;
-  align-self: center;
-  font-family: var(--font-mono);
-  font-size: 11px;
-  color: var(--text-mute);
-  background: var(--bg-elev-2);
-  padding: 4px 8px;
-  border-radius: var(--r-control);
-  cursor: default;
-}
-.sv-model-chip[hidden] { display: none; }
 .sv-send {
   flex: 0 0 auto;
   min-width: 40px;

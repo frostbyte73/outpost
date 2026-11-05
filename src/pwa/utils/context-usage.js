@@ -58,7 +58,7 @@ export function contextUsage(statusline, lastUsage, { fallbackTotal } = {}) {
       known: true, used, total, pct,
       breakdown: { input, output, cacheCreate, cacheRead },
       modelLabel: statusline.model?.id ?? statusline.model?.display_name ?? null,
-      modelDisplay: statusline.model?.display_name ?? null,
+      modelDisplay: statusline.model?.display_name ?? prettyModelName(statusline.model?.id),
     };
   }
   if (lastUsage) {
