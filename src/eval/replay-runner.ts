@@ -4,8 +4,8 @@ import { cpSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeF
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { rekeyRead } from '../permissions/read-recording.js';
-import { resolveClaudeBin } from '../session/claude-proc.js';
-import { writeEvalMcpConfig, writeEvalSettings } from '../settings-gen.js';
+import { resolveClaudeBin } from '../runtime/claude/bin.js';
+import { writeEvalMcpConfig, writeEvalSettings } from '../runtime/claude/settings.js';
 import type { ActionRunRecord } from '../storage/action-runs-store.js';
 import { CODE_ROUND_ACTIONS } from '../work/action-run-links.js';
 import { replayServerNames } from './eval-mcp.js';

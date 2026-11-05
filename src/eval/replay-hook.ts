@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { gatedMatch } from '../permissions/allowlist.js';
-import { denyResp, type HookInput, type HookResponse } from '../permissions/hook-handler.js';
+import { denyResp, type HookInput, type HookResponse } from '../runtime/claude/hooks.js';
 import { readInputKey, recordableRead } from '../permissions/read-recording.js';
 import { splitShellClauses, stripLeadingAssignments } from '../permissions/shell-split.js';
 import type { ActionAllowlist } from '../actions/types.js';

@@ -2,22 +2,21 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SessionManager } from '../../src/session/session-manager.js';
+import { SessionStore } from '../../src/session/session-store.js';
+import { handleSessionMessage } from '../../src/ws/client-messages.js';
+import { ClaudeTranscripts } from '../../src/runtime/claude/transcripts.js';
+import type { AgentRuntime, StartOpts, TurnInput } from '../../src/runtime/types.js';
 
 const spawned: string[] = [];
-const sends: unknown[] = [];
+const sends: TurnInput[] = [];
 
-vi.mock('../../src/session/claude-proc.js', () => ({
-  ClaudeProc: class {
-    constructor(opts: { sessionId: string }) { spawned.push(opts.sessionId); }
-    send(message: unknown): void { sends.push(message); }
-    interrupt(): void {}
-    async kill(): Promise<void> {}
+const runtime = {
+  start(opts: StartOpts) {
+    spawned.push(opts.sessionId);
+    return { sendTurn: (t: TurnInput) => { sends.push(t); }, interrupt() {}, async kill() {} };
   },
-}));
-
-const { SessionManager } = await import('../../src/session/session-manager.js');
-const { SessionStore } = await import('../../src/session/session-store.js');
-const { handleSessionMessage } = await import('../../src/ws/client-messages.js');
+} as unknown as AgentRuntime;
 
 type Frame = Record<string, unknown>;
 type Sock = ReturnType<typeof fakeWs>;
@@ -43,12 +42,8 @@ function setup() {
     fail = rej;
   }));
   const manager = new SessionManager({
-    settingsPath: '/tmp/settings.json',
-    mcpConfigPath: '/tmp/mcp.json',
-    daemonAuthSecret: 'secret',
-    daemonHost: '127.0.0.1',
-    hookPort: 1,
-    sessionStore: new SessionStore({ root: join(dir, 'projects'), sessionMetaDir: join(dir, 'session-meta') }),
+    runtime,
+    sessionStore: new SessionStore({ transcripts: new ClaudeTranscripts(join(dir, 'projects')), sessionMetaDir: join(dir, 'session-meta') }),
     worktreeManager: { get: () => undefined, create } as never,
   });
   const attach = () => {
@@ -66,7 +61,7 @@ function setup() {
 }
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
-const userTexts = () => sends.map((m) => (m as { message: { content: unknown } }).message.content);
+const userTexts = () => sends.map((t) => t.text);
 const ofType = (frames: Frame[], type: string) => frames.filter((f) => f.type === type);
 const refusals = (frames: Frame[]) => ofType(frames, 'daemon_error').filter((f) => f.clientId);
 

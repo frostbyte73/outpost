@@ -34,6 +34,7 @@ import { TOOL_VERBS } from '../components/session-view/regions.js';
 import { sendApprovalModeSet, forceCloseSessionWs } from '../components/session-view/session-ws.js';
 import { restoreRefused } from '../components/session-view/attachments.js';
 import { openSession } from '../app-bridge.js';
+import { agentResultSummary, toolUseEntry } from '../vm/session-events.js';
 
 let deps = /** @type {any} */ (null);
 
@@ -68,18 +69,9 @@ export function installDispatchDeps(d) {
   deps = d;
 }
 
-// Entry point for per-session WS messages. Filters out sidechain content
-// (subagent-generated frames that the agents sheet feed already handles) and
-// stamps out pendingNewSession on the first non-error frame so a bad-cwd spawn
-// bounces back to the picker via daemon_error.
+// Canonical session events (src/runtime/types.ts) plus daemon frames; subagent events belong to the agents sheet.
 export function dispatchSession(msg, sid) {
-  if (
-    msg.isSidechain === true
-    || msg.parent_tool_use_id
-    || msg.parentToolUseId
-    || msg.agent_id
-    || msg.agentId
-  ) return;
+  if (msg.subagent) return;
   const resolvedSid = sid ?? sessions.get().currentSessionId;
   const isCurrent = resolvedSid === sessions.get().currentSessionId;
   if (msg.type !== 'daemon_error' && deps.state.pendingNewSession && deps.state.pendingNewSession.id === resolvedSid) {
@@ -97,218 +89,127 @@ export function dispatchBroadcast(msg) {
 }
 
 const sessionHandlers = {
-  assistant(msg, sid, isCurrent) {
-    const S = sessions.for(sid);
-    const msgId = msg.message?.id;
-    const blocks = msg.message?.content ?? [];
-    let processed = false;
-    for (const b of blocks) {
-      if (b.type === 'text') {
-        const sig = `${msgId}|${b.text}`;
-        if (subagents.hasBlockSig(sig)) continue;
-        subagents.markBlockSigSeen(sig);
-        S.appendTranscript({ role: 'assistant', text: b.text, msgId });
-        processed = true;
-      } else if (b.type === 'tool_use') {
-        if (b.id && subagents.hasBlockSig(b.id)) continue;
-        if (b.id) subagents.markBlockSigSeen(b.id);
-        if (b.name && TASK_TOOL_NAMES.has(b.name)) {
-          applyTaskUse(b.name, b.input, b.id, sid);
-          processed = true;
-          continue;
-        }
-        if (b.name === 'AskUserQuestion') {
-          deps.ensureAskInlineTile({ toolInput: b.input, msgId, toolUseId: b.id }, sid);
-          processed = true;
-          continue;
-        }
-        // hook stream only carries agent_id+agent_type; capture parent description for binding
-        if (b.name === 'Agent' && b.input && typeof b.input === 'object') {
-          recordParentAgentInvocation({
-            toolUseId: b.id,
-            subagentType: b.input.subagent_type,
-            description: b.input.description,
-          });
-        }
-        // a send to a finished agent resumes it — un-stick its bucket from "done"
-        if (b.name === 'SendMessage' && b.input && typeof b.input === 'object') {
-          applyAgentMessageUse(b.input, sid);
-        }
-        // approval card races content_block_stop; pre-stamp if already rejected
-        const preReject = b.id ? approvals.get().rejectionReasons.get(b.id) : undefined;
-        S.appendTranscript({
-          role: 'tool_use',
-          text: `${b.name}(${JSON.stringify(b.input).slice(0, 200)})`,
-          toolName: b.name,
-          toolInput: b.input,
-          ...(b.id ? { toolUseId: b.id } : {}),
-          ...(preReject ? { decision: 'deny', rejectReason: preReject.reason } : {}),
-          msgId,
-        });
-        applyPendingExpand(b.name, b.input, b.id, sid);
-        if (b.id) {
-          S.recordActiveTool({ toolUseId: b.id, toolName: b.name });
-          if (deps.state.lingeringTimer) clearTimeout(deps.state.lingeringTimer);
-          S.setLingeringVerb(null);
-          deps.state.lingeringTimer = null;
-        }
-        // auto-expansion is driven by tool_auto_allowed, NOT tool_use arrival — otherwise
-        // user-approved calls would expand whenever tool_use raced ahead of the click
-        processed = true;
-      }
-    }
-    if (!processed) return; // thinking-only delivery
-    deps.recordUsage(msg.message?.usage, msg.message?.model, sid);
-    // only terminal stop_reasons stop the thinking strip; tool_use means more turns coming
-    const reason = msg.message?.stop_reason;
-    if (reason && reason !== 'tool_use') {
-      deps.stopThinking(sid);
-    } else if (!sessions.getSlice(sid)?.thinking) {
-      deps.startThinking(sid);
-    }
+  // claude -p holds the turn's first API request until every pending MCP server connects; the
+  // session start is the only event that says so
+  'session.started'(e, sid, isCurrent) {
+    if (!e.mcpServers?.some((s) => s.status === 'pending')) return;
+    sessions.for(sid).setMcpPending(true);
+    if (!sessions.getSlice(sid)?.thinking) deps.startThinking(sid);
     if (isCurrent) deps.renderSession();
   },
 
-  stream_event(msg, sid, isCurrent) {
-    sessions.for(sid).setMcpPending(false);
-    // message_stop fires at the end of EVERY assistant turn; message_delta is canonical
-    const ev = msg.event ?? msg;
-    const deltaReason = ev?.delta?.stop_reason;
-    if (deltaReason && deltaReason !== 'tool_use') {
-      deps.stopThinking(sid);
-      if (isCurrent) deps.renderSession();
-    }
-    if (!sessions.getSlice(sid)?.thinking && ev?.type && ev.type !== 'message_stop' && ev.type !== 'message_delta') {
-      deps.startThinking(sid);
-      if (isCurrent) deps.renderSession();
-    }
-    const slice = sessions.getSlice(sid);
-    if (!slice?.thinking) return;
-    const u = ev?.usage ?? ev?.message?.usage;
-    const out = u?.output_tokens;
-    if (typeof out === 'number') {
-      if (out > slice.thinkingOutputTokens) {
-        sessions.for(sid).updateThinking({ tokens: out });
-      }
-    }
-    // estimate ~4 chars/token between message_deltas to keep the counter climbing.
-    // No eager repaint here — the per-mount 200ms metaTicker repaints the strip;
-    // painting per-delta made the digits shimmer sub-frame.
-    if (ev?.type === 'content_block_delta') {
-      const d = ev?.delta;
-      let added = 0;
-      if (d?.type === 'text_delta' && typeof d.text === 'string') added = d.text.length;
-      else if (d?.type === 'input_json_delta' && typeof d.partial_json === 'string') added = d.partial_json.length;
-      else if (d?.type === 'thinking_delta' && typeof d.thinking === 'string') added = d.thinking.length;
-      if (added > 0) {
-        const sl = sessions.getSlice(sid);
-        const chars = (sl?.thinkingOutputChars ?? 0) + added;
-        const estimated = Math.ceil(chars / 4);
-        if (estimated > (sl?.thinkingOutputTokens ?? 0)) {
-          sessions.for(sid).updateThinking({ chars, tokens: estimated });
-        } else {
-          sessions.for(sid).updateThinking({ chars });
-        }
-      }
-    }
+  'turn.started'(_e, sid, isCurrent) {
+    noteStreaming(sid, isCurrent);
   },
 
-  system(msg, sid, isCurrent) {
-    if (msg.subtype === 'task_notification' && applyTaskNotification(msg) && isCurrent) deps.renderSession();
-    // claude -p holds the turn's first API request until every pending server connects; init is the only frame that says so
-    if (msg.subtype === 'init' && msg.mcp_servers?.some((s) => s.status === 'pending')) {
-      sessions.for(sid).setMcpPending(true);
+  // Estimate ~4 chars/token between usage updates to keep the counter climbing. No eager
+  // repaint here — the per-mount 200ms metaTicker repaints the strip; painting per-delta
+  // made the digits shimmer sub-frame.
+  'content.delta'(e, sid, isCurrent) {
+    noteStreaming(sid, isCurrent);
+    const sl = sessions.getSlice(sid);
+    if (!sl?.thinking || !e.text) return;
+    const chars = (sl.thinkingOutputChars ?? 0) + e.text.length;
+    const estimated = Math.ceil(chars / 4);
+    sessions.for(sid).updateThinking(estimated > (sl.thinkingOutputTokens ?? 0) ? { chars, tokens: estimated } : { chars });
+  },
+
+  'item.started'(e, sid, isCurrent) {
+    const item = e.item;
+    if (item?.type !== 'tool_call') return;
+    if (subagents.hasBlockSig(item.id)) return;
+    subagents.markBlockSigSeen(item.id);
+    const S = sessions.for(sid);
+    if (TASK_TOOL_NAMES.has(item.tool)) {
+      applyTaskUse(item.tool, item.input, item.id, sid);
+    } else if (item.tool === 'ask_user') {
+      deps.ensureAskInlineTile({ toolInput: item.input, msgId: item.messageId, toolUseId: item.id }, sid);
+    } else {
+      // hook stream only carries agent_id+agent_type; capture parent description for binding
+      if (item.tool === 'subagent' && item.input && typeof item.input === 'object') {
+        recordParentAgentInvocation({
+          toolUseId: item.id,
+          subagentType: item.input.subagent_type,
+          description: item.input.description,
+        });
+      }
+      // a send to a finished agent resumes it — un-stick its bucket from "done"
+      if (item.tool === 'send_message' && item.input && typeof item.input === 'object') {
+        applyAgentMessageUse(item.input, sid);
+      }
+      // approval card races the tool call's arrival; pre-stamp if already rejected
+      const preReject = approvals.get().rejectionReasons.get(item.id);
+      S.appendTranscript({
+        ...toolUseEntry(item),
+        ...(preReject ? { decision: 'deny', rejectReason: preReject.reason } : {}),
+      });
+      applyPendingExpand(item.rawName, item.input, item.id, sid);
+      S.recordActiveTool({ toolUseId: item.id, toolName: item.rawName, tool: item.tool });
+      if (deps.state.lingeringTimer) clearTimeout(deps.state.lingeringTimer);
+      S.setLingeringVerb(null);
+      deps.state.lingeringTimer = null;
+      // auto-expansion is driven by tool_auto_allowed, NOT tool call arrival — otherwise
+      // user-approved calls would expand whenever the call raced ahead of the click
+    }
+    if (!sessions.getSlice(sid)?.thinking) deps.startThinking(sid);
+    if (isCurrent) deps.renderSession();
+  },
+
+  'item.completed'(e, sid, isCurrent) {
+    const item = e.item;
+    if (item?.type === 'assistant_message') {
+      const sig = `${item.messageId}|${item.text}`;
+      if (subagents.hasBlockSig(sig)) return;
+      subagents.markBlockSigSeen(sig);
+      sessions.for(sid).appendTranscript({ role: 'assistant', text: item.text, msgId: item.messageId });
       if (!sessions.getSlice(sid)?.thinking) deps.startThinking(sid);
       if (isCurrent) deps.renderSession();
+      return;
+    }
+    if (item?.type === 'tool_call' && completeToolCall(item, sid) && isCurrent) deps.renderSession();
+  },
+
+  'usage.updated'(e, sid) {
+    const u = e.usage ?? {};
+    if (u.response) deps.recordUsage(u.response, u.model, sid);
+    if (!sid) return;
+    // The only place --print mode states a model's context window — statusLine never fires there
+    for (const [model, size] of Object.entries(u.contextWindows ?? {})) {
+      sessions.for(sid).setContextWindow(baseModelId(model), size);
+    }
+    if (typeof u.streamingOutputTokens === 'number') {
+      sessions.for(sid).setMcpPending(false);
+      const slice = sessions.getSlice(sid);
+      if (slice?.thinking && u.streamingOutputTokens > slice.thinkingOutputTokens) {
+        sessions.for(sid).updateThinking({ tokens: u.streamingOutputTokens });
+      }
+    }
+    // authoritative; carries real context_window_size so 1M Opus doesn't look 5× over.
+    // Attributed to the socket's own session id, not the mobile-singleton
+    // `currentSessionId` pointer — desktop's multi-live sessions each have
+    // their own per-session WS and need their own statusline entry (the
+    // Sessions right rail's info card reads the slice's statusline per session).
+    const sl = u.statusline;
+    if (sl) {
+      sessions.for(sid).setStatusline({
+        model: sl.model ?? null,
+        contextWindow: sl.contextWindow ?? null,
+        cost: sl.cost ?? null,
+        rateLimits: sl.rateLimits ?? null,
+        effort: sl.effort ?? null,
+        exceeds200k: !!sl.exceeds200k,
+      });
     }
   },
 
-  // The only place --print mode states a model's context window — statusLine never fires there
-  result(msg, sid) {
-    const byModel = msg.modelUsage;
-    if (!sid || !byModel || typeof byModel !== 'object') return;
-    for (const [model, u] of Object.entries(byModel)) {
-      if (typeof u?.contextWindow === 'number' && u.contextWindow > 0) {
-        sessions.for(sid).setContextWindow(baseModelId(model), u.contextWindow);
-      }
-    }
+  'turn.completed'(_e, sid, isCurrent) {
+    sessions.for(sid).setMcpPending(false);
+    deps.stopThinking(sid);
+    if (isCurrent) deps.renderSession();
   },
 
-  user(msg, sid, isCurrent) {
-    const S = sessions.for(sid);
-    const blocks = msg.message?.content;
-    if (!Array.isArray(blocks)) return;
-    let touched = false;
-    for (const b of blocks) {
-      if (b?.type !== 'tool_result') continue;
-      const useId = b.tool_use_id;
-      if (!useId) continue;
-      // pop the matching in-flight entry; thinking-strip verb falls back to next active or lingers
-      const sliceForTools = sessions.getSlice(sid);
-      const activeTools = sliceForTools?.activeTools ?? [];
-      const idx = activeTools.findIndex((t) => t.toolUseId === useId);
-      if (idx >= 0) {
-        const popped = activeTools[idx];
-        S.clearActiveTool(useId);
-        // empty stack: hold the verb long enough to read; next push clears lingering immediately
-        const remaining = sessions.getSlice(sid)?.activeTools ?? [];
-        if (remaining.length === 0 && TOOL_VERBS[popped.toolName]) {
-          S.setLingeringVerb(TOOL_VERBS[popped.toolName]);
-          if (deps.state.lingeringTimer) clearTimeout(deps.state.lingeringTimer);
-          // S.setLingeringVerb(null) below is the only side effect that
-          // matters — session-view's own slice subscription already repaints
-          // the thinking strip from it, on both layouts.
-          deps.state.lingeringTimer = setTimeout(() => {
-            S.setLingeringVerb(null);
-            deps.state.lingeringTimer = null;
-          }, VERB_LINGER_MS);
-        }
-        touched = true;
-      }
-      const innerBlocks = Array.isArray(b.content) ? b.content : null;
-      const text = typeof b.content === 'string'
-        ? b.content
-        : innerBlocks
-          ? innerBlocks.filter((x) => x?.type === 'text').map((x) => x.text).join('\n')
-          : '';
-      // A name-addressed SendMessage only names the agent it woke here, in its result.
-      if (applyAgentMessageResult(text, sid)) touched = true;
-      // stream-JSON has no toolUseResult sidecar; agentId regex is the only completion signal
-      const agentMatch = /agentId:\s*([a-f0-9]+)/i.exec(text);
-      if (agentMatch) {
-        const agentId = agentMatch[1];
-        const bucket = subagents.forSession(sid).byId.get(agentId);
-        if (bucket && !bucket.completion) {
-          let summary = null;
-          if (innerBlocks) {
-            for (const inner of innerBlocks) {
-              if (inner?.type === 'text' && typeof inner.text === 'string' && !inner.text.startsWith('agentId:')) {
-                summary = inner.text.trim();
-                break;
-              }
-            }
-          }
-          subagents.setCompletion(agentId, sid, {
-            status: 'completed',
-            summary,
-            result: null,
-            completedAt: Date.now(),
-          });
-          touched = true;
-        }
-      }
-      if (subagents.get().pendingCreates.has(useId)) {
-        applyTaskResult(useId, text, sid);
-        touched = true;
-      } else if (approvals.get().pendingAsks.has(useId)) {
-        const entry = approvals.get().pendingAsks.get(useId);
-        entry.answer = text;
-        approvals.resolvePendingAsk(useId);
-        approvals.markTaskResultConsumed(useId);
-        touched = true;
-      }
-    }
-    if (touched && isCurrent) deps.renderSession();
+  'task.notification'(e, _sid, isCurrent) {
+    if (applyTaskNotification(e) && isCurrent) deps.renderSession();
   },
 
   // The daemon's Stop hook fired: the assistant ended its turn. The stream's own
@@ -397,23 +298,6 @@ const sessionHandlers = {
     if (isCurrent) deps.renderSession();
   },
 
-  daemon_statusline(msg, sid) {
-    // authoritative; carries real context_window_size so 1M Opus doesn't look 5× over
-    const sl = {
-      model: msg.model ?? null,
-      contextWindow: msg.contextWindow ?? null,
-      cost: msg.cost ?? null,
-      rateLimits: msg.rateLimits ?? null,
-      effort: msg.effort ?? null,
-      exceeds200k: !!msg.exceeds200k,
-    };
-    // Attribute to the socket's own session id, not the mobile-singleton
-    // `currentSessionId` pointer — desktop's multi-live sessions each have
-    // their own per-session WS and need their own statusline entry (the
-    // Sessions right rail's info card reads the slice's statusline per session).
-    if (sid) sessions.for(sid).setStatusline(sl);
-  },
-
   // A `!` command finished — fill in the tile the composer appended when it was sent.
   // Matched on execId rather than position: several can be in flight at once. Nothing
   // matches when this is a replay into a reloaded page (or a second client that didn't
@@ -458,6 +342,70 @@ const sessionHandlers = {
   },
 };
 
+// Any sign the model is streaming means the MCP wait is over and the turn is live.
+function noteStreaming(sid, isCurrent) {
+  sessions.for(sid).setMcpPending(false);
+  if (sessions.getSlice(sid)?.thinking) return;
+  deps.startThinking(sid);
+  if (isCurrent) deps.renderSession();
+}
+
+// Applies a finished tool call to the active-tool stack, tasks, asks and subagents; true if the view changed.
+function completeToolCall(item, sid) {
+  const S = sessions.for(sid);
+  const useId = item.id;
+  const text = item.resultText ?? '';
+  let touched = false;
+  // pop the matching in-flight entry; thinking-strip verb falls back to next active or lingers
+  const activeTools = sessions.getSlice(sid)?.activeTools ?? [];
+  const popped = activeTools.find((t) => t.toolUseId === useId);
+  if (popped) {
+    S.clearActiveTool(useId);
+    // empty stack: hold the verb long enough to read; next push clears lingering immediately
+    const remaining = sessions.getSlice(sid)?.activeTools ?? [];
+    if (remaining.length === 0 && TOOL_VERBS[popped.tool]) {
+      S.setLingeringVerb(TOOL_VERBS[popped.tool]);
+      if (deps.state.lingeringTimer) clearTimeout(deps.state.lingeringTimer);
+      // S.setLingeringVerb(null) below is the only side effect that
+      // matters — session-view's own slice subscription already repaints
+      // the thinking strip from it, on both layouts.
+      deps.state.lingeringTimer = setTimeout(() => {
+        S.setLingeringVerb(null);
+        deps.state.lingeringTimer = null;
+      }, VERB_LINGER_MS);
+    }
+    touched = true;
+  }
+  // A name-addressed SendMessage only names the agent it woke here, in its result.
+  if (applyAgentMessageResult(text, sid)) touched = true;
+  // the live stream has no toolUseResult sidecar; agentId regex is the only completion signal
+  const agentMatch = /agentId:\s*([a-f0-9]+)/i.exec(text);
+  if (agentMatch) {
+    const agentId = agentMatch[1];
+    const bucket = subagents.forSession(sid).byId.get(agentId);
+    if (bucket && !bucket.completion) {
+      subagents.setCompletion(agentId, sid, {
+        status: 'completed',
+        summary: agentResultSummary(text),
+        result: null,
+        completedAt: Date.now(),
+      });
+      touched = true;
+    }
+  }
+  if (subagents.get().pendingCreates.has(useId)) {
+    applyTaskResult(useId, text, sid);
+    touched = true;
+  } else if (approvals.get().pendingAsks.has(useId)) {
+    const entry = approvals.get().pendingAsks.get(useId);
+    entry.answer = text;
+    approvals.resolvePendingAsk(useId);
+    approvals.markTaskResultConsumed(useId);
+    touched = true;
+  }
+  return touched;
+}
+
 const broadcastHandlers = {
   daemon_account_usage(msg) {
     // `breakdown` (per-model cost/burn-rate/runway) rides alongside rateLimits
@@ -474,7 +422,7 @@ const broadcastHandlers = {
     for (const a of approvals.get().pending) {
       // Each approval carries its own sessionId — route the "expand this tool"
       // marker to that session's slice, not the current mobile session.
-      if (isHighDetailTool(a.toolName) && a.sessionId) {
+      if (isHighDetailTool(a.tool) && a.sessionId) {
         sessions.for(a.sessionId).markToolExpanded(`approval-${a.approvalId}`, true);
       }
     }
@@ -488,7 +436,7 @@ const broadcastHandlers = {
       if (!a.sessionId || !known.has(a.sessionId)) continue;
       if (a.agentId) {
         addSubagentEntry(a);
-      } else if (a.toolName === 'AskUserQuestion') {
+      } else if (a.tool === 'ask_user') {
         deps.ensureAskInlineTile({ toolInput: a.toolInput }, a.sessionId);
       }
     }
@@ -577,7 +525,7 @@ const broadcastHandlers = {
 
   action_edit_activity(msg) {
     import('../state/actions.js').then(({ actions: actStore }) => {
-      actStore.pushActivity(msg.sessionId, msg.toolName, msg.at);
+      actStore.pushActivity(msg.sessionId, msg.tool, msg.at);
     });
   },
 
@@ -588,6 +536,7 @@ const broadcastHandlers = {
     // the activity came from a background session).
     addSubagentEntry({
       toolUseId: msg.toolUseId,
+      tool: msg.tool,
       toolName: msg.toolName,
       toolInput: msg.toolInput,
       agentId: msg.agentId,
@@ -603,10 +552,10 @@ const broadcastHandlers = {
   },
 
   tool_auto_allowed(msg) {
-    // Hook can fire before or after content_block_stop — expandToolByContent matches
+    // Hook can fire before or after the tool call arrives — expandToolByContent matches
     // now or queues for later, either order works. Route to the source session's slice
     // so background sessions keep their expand-on-arrival behavior.
-    if (isHighDetailTool(msg.toolName) && msg.sessionId) {
+    if (isHighDetailTool(msg.tool) && msg.sessionId) {
       expandToolByContent(msg.toolName, msg.toolInput, msg.sessionId);
       if (msg.sessionId === sessions.get().currentSessionId && sessions.get().view === 'session') {
         deps.renderSession();
@@ -618,10 +567,10 @@ const broadcastHandlers = {
     if (approvals.get().pending.some((a) => a.approvalId === msg.approvalId)) return;
     // Mark the target session's tool as expanded so its details are visible
     // when the user lands on the approval.
-    if (isHighDetailTool(msg.toolName) && msg.sessionId) {
+    if (isHighDetailTool(msg.tool) && msg.sessionId) {
       sessions.for(msg.sessionId).markToolExpanded(`approval-${msg.approvalId}`, true);
     }
-    if (settings.get().acceptEdits && EDIT_TOOLS.has(msg.toolName)) {
+    if (settings.get().acceptEdits && EDIT_TOOLS.has(msg.tool)) {
       // Decide on the notifications WS — the only channel that survives iOS backgrounding.
       // Session WS would re-introduce the silent-drop bug where a backgrounded close
       // caused the hook to time out 10min later with a denied edit.
@@ -657,7 +606,7 @@ const broadcastHandlers = {
       void wasNew;
       return;
     }
-    if (msg.toolName === 'AskUserQuestion' && msg.sessionId === sessions.get().currentSessionId) {
+    if (msg.tool === 'ask_user' && msg.sessionId === sessions.get().currentSessionId) {
       deps.ensureAskInlineTile({ toolInput: msg.toolInput });
     }
     const view = sessions.get().view;

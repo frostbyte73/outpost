@@ -79,7 +79,7 @@ export function subagentCardHtml(agentId, bucket, { maxLines = 6 } = {}) {
   // spawn — otherwise the strip reports the hours it spent finished.
   const lastTool = [...bucket.entries].reverse().find((e) => e.toolName);
   const thinking = !isDone ? `<div class="rail-subagent-thinking">${thinkingStripHtml(
-    (lastTool && TOOL_VERBS[lastTool.toolName]) || 'thinking',
+    (lastTool && TOOL_VERBS[lastTool.tool]) || 'thinking',
     fmtStripDuration(bucket.resumedAt || bucket.firstSeenAt),
   )}</div>` : '';
   return (

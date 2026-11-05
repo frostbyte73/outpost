@@ -78,7 +78,7 @@ export function registerScheduleEditRoutes(server: Server, deps: ScheduleEditDep
     manager.tagKind(sessionId, 'schedule-edit');
     engine.bindAction(sessionId, 'meta.build-schedule');
     engine.stampActionSession(sessionId, 'meta.build-schedule', 'New schedule');
-    manager.send(sessionId, { type: 'user', message: { role: 'user', content: '/meta.build-schedule' } });
+    manager.sendTurn(sessionId, { text: '/meta.build-schedule' });
   }
 
   server.route('POST', '/api/schedules/new', async (req, res) => {
@@ -136,7 +136,7 @@ export function registerScheduleEditRoutes(server: Server, deps: ScheduleEditDep
       // review turn) — feed it the error + draft rather than spawning a duplicate builder.
       manager.sendOrResume(
         sessionId, runtimeDir,
-        { type: 'user', message: { role: 'user', content: '/meta.build-schedule' } },
+        { text: '/meta.build-schedule' },
         scheduleEditEnv(sessionId, envelopePath),
       );
     } else {

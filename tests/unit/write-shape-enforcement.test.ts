@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Allowlist } from '../../src/permissions/allowlist.js';
 import { ActionsStore } from '../../src/storage/actions-store.js';
-import { handleHook } from '../../src/permissions/hook-handler.js';
+import { handleHook } from '../../src/runtime/claude/hooks.js';
 import { ApprovalModeStore } from '../../src/permissions/approval-mode.js';
 
 const EMPTY = {

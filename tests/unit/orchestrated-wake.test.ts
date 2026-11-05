@@ -16,7 +16,7 @@ function bootedEngine(dir: string) {
   const engine = new WorkEngine({
     queue,
     sessionManager: {
-      spawnDetached() {}, send() {}, isWorking() { return false; },
+      spawnDetached() {}, sendTurn() {}, isWorking() { return false; },
       sendOrResume(sessionId: string) { resumed.push(sessionId); },
       close: async () => {},
     } as never,

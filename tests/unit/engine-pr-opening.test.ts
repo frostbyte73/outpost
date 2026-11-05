@@ -19,7 +19,7 @@ function makeEngine(linearWriter: object = { setState: async () => undefined }) 
   const queue = new JobQueue(dir);
   const engine = new WorkEngine({
     queue,
-    sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {} } as never,
+    sessionManager: { spawnDetached() {}, sendTurn() {}, isWorking() { return false; }, sendOrResume() {} } as never,
     worktreeManager: { get: () => undefined, provision: async () => ({ path: dir }) } as never,
     linearWriter: linearWriter as never,
     actionsStore: {} as never,

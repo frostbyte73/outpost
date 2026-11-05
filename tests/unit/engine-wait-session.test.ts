@@ -21,7 +21,7 @@ function makeEngine() {
   const prompts = new Map<string, string>();
   const sessionManager = {
     spawnDetached(sessionId: string) { spawned.push(sessionId); },
-    send() {}, isWorking() { return false; }, sendOrResume() {},
+    sendTurn() {}, isWorking() { return false; }, sendOrResume() {},
   } as never;
   const worktreeManager = {
     get: () => undefined,

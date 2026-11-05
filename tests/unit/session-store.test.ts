@@ -3,6 +3,8 @@ import { existsSync, mkdtempSync, mkdirSync, writeFileSync, utimesSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../src/session/session-store.js';
+import { ClaudeTranscripts } from '../../src/runtime/claude/transcripts.js';
+import type { ToolCallItem } from '../../src/runtime/types.js';
 
 describe('SessionStore', () => {
   let rootDir: string;
@@ -27,21 +29,21 @@ describe('SessionStore', () => {
   });
 
   it('lists sessions with id + mtime', () => {
-    const store = new SessionStore({ root: rootDir });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(rootDir) });
     const projects = store.listProjects();
     const sessions = projects[0]!.sessions;
     expect(sessions.map((s) => s.id).sort()).toEqual(['sess-aaaaaaaa', 'sess-bbbbbbbb']);
   });
 
   it('reads the title from summary records when present', () => {
-    const store = new SessionStore({ root: rootDir });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(rootDir) });
     const sessions = store.listProjects()[0]!.sessions;
     const a = sessions.find((s) => s.id === 'sess-aaaaaaaa')!;
     expect(a.title).toBe('Investigating INC-540');
   });
 
   it('falls back to first-user-message preview when no summary record exists', () => {
-    const store = new SessionStore({ root: rootDir });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(rootDir) });
     const sessions = store.listProjects()[0]!.sessions;
     const b = sessions.find((s) => s.id === 'sess-bbbbbbbb')!;
     // Titles get cleaned: first-letter capitalization is applied.
@@ -64,7 +66,7 @@ describe('SessionStore', () => {
       join(proj, 'sess-cmd.jsonl'),
       JSON.stringify({ type: 'user', cwd: tmp, message: { content: '<command-name>/goal</command-name><command-args>ship gamekit by tomorrow morning</command-args>' } }) + '\n',
     );
-    const sessions = new SessionStore({ root }).listProjects()[0]!.sessions;
+    const sessions = new SessionStore({ transcripts: new ClaudeTranscripts(root) }).listProjects()[0]!.sessions;
     const filler = sessions.find((s) => s.id === 'sess-filler')!;
     const cmd = sessions.find((s) => s.id === 'sess-cmd')!;
     // "can you look into" → stripped, then "the cluster outage…" capitalized.
@@ -90,7 +92,7 @@ describe('SessionStore', () => {
       join(proj, 'sess-plain.jsonl'),
       JSON.stringify({ type: 'user', cwd: tmp, message: { content: 'poke around the repo' } }) + '\n',
     );
-    const store = new SessionStore({ root, sessionMetaDir: metaDir });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), sessionMetaDir: metaDir });
     store.writeActionMeta('sess-orch', { action: 'meta.orchestrate', title: 'Ship the login flow' });
 
     const sessions = store.listProjects()[0]!.sessions;
@@ -138,15 +140,15 @@ describe('SessionStore', () => {
         },
       }) + '\n',
     );
-    const msgs = new SessionStore({ root }).readMessages('sess-task');
-    const create = msgs.find((m) => m.toolName === 'TaskCreate');
-    expect(create?.toolUseId).toBe('toolu_create');
-    expect((create?.toolInput as { subject: string }).subject).toBe('Ship feature');
-    const result = msgs.find((m) => m.role === 'tool_result');
-    expect(result?.toolUseId).toBe('toolu_create');
-    expect(result?.text).toContain('Task #1 created');
+    const items = new SessionStore({ transcripts: new ClaudeTranscripts(root) }).readItems('sess-task');
+    const call = (rawName: string) => items.find((i): i is ToolCallItem => i.type === 'tool_call' && i.rawName === rawName);
+    const create = call('TaskCreate');
+    expect(create?.id).toBe('toolu_create');
+    expect(create?.tool).toBe('task_create');
+    expect((create?.input as { subject: string }).subject).toBe('Ship feature');
+    expect(create?.resultText).toContain('Task #1 created');
     // Read's tool_result must NOT leak through — that's the existing behavior we're preserving.
-    expect(msgs.some((m) => m.role === 'tool_result' && m.toolUseId === 'toolu_read')).toBe(false);
+    expect(call('Read')?.resultText).toBeUndefined();
   });
 
   it('stamps msgId on assistant + tool_use entries so the PWA can dedupe WS replays', () => {
@@ -169,14 +171,13 @@ describe('SessionStore', () => {
         },
       }) + '\n',
     );
-    const store = new SessionStore({ root });
-    const msgs = store.readMessages('sess-cccccccc');
-    const assistantText = msgs.find((m) => m.role === 'assistant');
-    const toolUse = msgs.find((m) => m.role === 'tool_use');
-    const userMsg = msgs.find((m) => m.role === 'user');
-    expect(assistantText?.msgId).toBe('msg_01abc');
-    expect(toolUse?.msgId).toBe('msg_01abc');
-    expect(userMsg?.msgId).toBeUndefined();
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root) });
+    const items = store.readItems('sess-cccccccc');
+    const messageIdOf = (type: string) => (items.find((i) => i.type === type) as { messageId?: string } | undefined)?.messageId;
+    expect(messageIdOf('assistant_message')).toBe('msg_01abc');
+    expect(messageIdOf('tool_call')).toBe('msg_01abc');
+    expect(items.some((i) => i.type === 'user_message')).toBe(true);
+    expect(messageIdOf('user_message')).toBeUndefined();
   });
 
   it('reads a message absorbed mid-turn back as a user message, in order', () => {
@@ -197,11 +198,11 @@ describe('SessionStore', () => {
       JSON.stringify({ type: 'assistant', message: { id: 'msg_02', role: 'assistant', content: [{ type: 'text', text: 'done, and linted' }] } }) + '\n' +
       JSON.stringify({ type: 'attachment', attachment: { type: 'queued_command', prompt: 'ls', commandMode: 'bash' } }) + '\n',
     );
-    const msgs = new SessionStore({ root }).readMessages('sess-dddddddd');
-    expect(msgs.map((m) => [m.role, m.text])).toEqual([
-      ['user', 'run the tests'],
-      ['user', 'also lint'],
-      ['assistant', 'done, and linted'],
+    const items = new SessionStore({ transcripts: new ClaudeTranscripts(root) }).readItems('sess-dddddddd');
+    expect(items.map((i) => [i.type, (i as { text?: string }).text])).toEqual([
+      ['user_message', 'run the tests'],
+      ['user_message', 'also lint'],
+      ['assistant_message', 'done, and linted'],
     ]);
   });
 
@@ -217,10 +218,10 @@ describe('SessionStore', () => {
       // An image Read returned nests inside its tool_result — not something the user sent.
       JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [img] }] } }) + '\n',
     );
-    const msgs = new SessionStore({ root }).readMessages('sess-eeeeeeee');
-    expect(msgs).toEqual([
-      { role: 'user', text: 'which is better?', images: 2 },
-      { role: 'user', text: '', images: 1 },
+    const items = new SessionStore({ transcripts: new ClaudeTranscripts(root) }).readItems('sess-eeeeeeee');
+    expect(items.map(({ id: _id, ...rest }) => rest)).toEqual([
+      { type: 'user_message', text: 'which is better?', images: 2 },
+      { type: 'user_message', text: '', images: 1 },
     ]);
   });
 
@@ -234,7 +235,7 @@ describe('SessionStore', () => {
       mkdirSync(join(runtimeDir, 'uploads', id), { recursive: true });
       writeFileSync(join(runtimeDir, 'uploads', id, '1-0-report.pdf'), '%PDF');
     }
-    expect(new SessionStore({ root, runtimeDir }).delete('sess-gone')).toBe(true);
+    expect(new SessionStore({ transcripts: new ClaudeTranscripts(root), runtimeDir }).delete('sess-gone')).toBe(true);
     expect(existsSync(join(runtimeDir, 'uploads', 'sess-gone'))).toBe(false);
     expect(existsSync(join(runtimeDir, 'uploads', 'sess-kept', '1-0-report.pdf'))).toBe(true);
   });
@@ -247,8 +248,7 @@ describe('SessionStore', () => {
       join(proj, 'sess-aa.jsonl'),
       JSON.stringify({ type: 'user', cwd: '/Users/alice/project', message: { content: 'hi' } }) + '\n',
     );
-    const store = new SessionStore({ root });
-    expect(store.readCwdFromProject(proj)).toBe('/Users/alice/project');
+    expect(new ClaudeTranscripts(root).readCwdFromProject(proj)).toBe('/Users/alice/project');
   });
 
   it('returns null when no jsonl in the project dir has a cwd', () => {
@@ -259,7 +259,7 @@ describe('SessionStore', () => {
       join(proj, 'sess-aa.jsonl'),
       JSON.stringify({ type: 'user', message: { content: 'no cwd here' } }) + '\n',
     );
-    expect(new SessionStore({ root }).readCwdFromProject(proj)).toBeNull();
+    expect(new ClaudeTranscripts(root).readCwdFromProject(proj)).toBeNull();
   });
 
   it('walks to the next jsonl when the most-recent has no cwd', () => {
@@ -274,7 +274,7 @@ describe('SessionStore', () => {
     writeFileSync(newerPath, JSON.stringify({ type: 'summary', summary: 'no cwd here' }) + '\n');
     const future = new Date(Date.now() + 2000);
     utimesSync(newerPath, future, future);
-    expect(new SessionStore({ root }).readCwdFromProject(proj)).toBe('/Users/alice/projectA');
+    expect(new ClaudeTranscripts(root).readCwdFromProject(proj)).toBe('/Users/alice/projectA');
   });
 
   it('lists projects under a root, each with cwd + sessions', () => {
@@ -293,7 +293,7 @@ describe('SessionStore', () => {
       join(projB, 'sess-b1.jsonl'),
       JSON.stringify({ type: 'user', cwd: cwdB, message: { content: 'b1' } }) + '\n',
     );
-    const projects = new SessionStore({ root }).listProjects();
+    const projects = new SessionStore({ transcripts: new ClaudeTranscripts(root) }).listProjects();
     expect(projects.length).toBe(2);
     expect(projects.map((p) => p.projectDir).sort()).toEqual([projA, projB].sort());
     const a = projects.find((p) => p.projectDir === projA)!;
@@ -309,7 +309,7 @@ describe('SessionStore', () => {
       join(proj, 'sess-o.jsonl'),
       JSON.stringify({ type: 'user', cwd: '/this/path/does/not/exist', message: { content: 'x' } }) + '\n',
     );
-    expect(new SessionStore({ root }).listProjects()).toEqual([]);
+    expect(new SessionStore({ transcripts: new ClaudeTranscripts(root) }).listProjects()).toEqual([]);
   });
 
   it('sorts projects by max session mtime descending', () => {
@@ -330,7 +330,7 @@ describe('SessionStore', () => {
     );
     const future = new Date(Date.now() + 5000);
     utimesSync(join(projNew, 'sess-new.jsonl'), future, future);
-    const projects = new SessionStore({ root }).listProjects();
+    const projects = new SessionStore({ transcripts: new ClaudeTranscripts(root) }).listProjects();
     expect(projects[0]!.projectDir).toBe(projNew);
     expect(projects[1]!.projectDir).toBe(projOld);
   });
@@ -344,7 +344,7 @@ describe('SessionStore', () => {
       join(projA, 'sess-target.jsonl'),
       JSON.stringify({ type: 'user', cwd: tmp, message: { content: 'hi' } }) + '\n',
     );
-    const found = new SessionStore({ root }).findSession('sess-target');
+    const found = new SessionStore({ transcripts: new ClaudeTranscripts(root) }).findSession('sess-target');
     expect(found?.cwd).toBe(tmp);
     expect(found?.projectDir).toBe(projA);
   });
@@ -352,7 +352,7 @@ describe('SessionStore', () => {
   it('findSession returns null for an unknown id', () => {
     const root = mkdtempSync(join(tmpdir(), 'sstest-find-miss-'));
     mkdirSync(join(root, '-Users-alice-empty'));
-    expect(new SessionStore({ root }).findSession('nope')).toBeNull();
+    expect(new SessionStore({ transcripts: new ClaudeTranscripts(root) }).findSession('nope')).toBeNull();
   });
 });
 
@@ -370,7 +370,7 @@ describe('SessionStore — subagent completions', () => {
       join(projectDir, 'sess-agent', 'subagents', 'agent-a1.meta.json'),
       JSON.stringify({ agentType: 'Explore', description: 'dig' }),
     );
-    return new SessionStore({ root });
+    return new SessionStore({ transcripts: new ClaudeTranscripts(root) });
   }
 
   const launch = { type: 'user', cwd: tmpdir(), message: { content: 'go' } };
@@ -438,7 +438,7 @@ describe('SessionStore — registry merge + isGitRepo', () => {
     const cwd = makeCwd(cwdHost, 'projectA');
     const registry = new ProjectRegistry(registryPath);
     registry.add(cwd);
-    const store = new SessionStore({ root, registry });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), registry });
     const match = store.listProjects().find((p) => p.cwd === cwd);
     expect(match).toBeDefined();
     expect(match!.source).toBe('registry');
@@ -457,7 +457,7 @@ describe('SessionStore — registry merge + isGitRepo', () => {
       JSON.stringify({ type: 'user', cwd, message: { content: 'hi' } }) + '\n',
     );
     const registry = new ProjectRegistry(registryPath);
-    const store = new SessionStore({ root, registry });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), registry });
     const match = store.listProjects().find((p) => p.cwd === cwd);
     expect(match).toBeDefined();
     expect(match!.source).toBe('claude');
@@ -477,7 +477,7 @@ describe('SessionStore — registry merge + isGitRepo', () => {
     );
     const registry = new ProjectRegistry(registryPath);
     registry.add(cwd);
-    const store = new SessionStore({ root, registry });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), registry });
     const match = store.listProjects().find((p) => p.cwd === cwd);
     expect(match).toBeDefined();
     expect(match!.source).toBe('both');
@@ -489,7 +489,7 @@ describe('SessionStore — registry merge + isGitRepo', () => {
     const { root, registryPath } = makeRoot();
     const registry = new ProjectRegistry(registryPath);
     registry.add('/this/path/does/not/exist');
-    const store = new SessionStore({ root, registry });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), registry });
     expect(store.listProjects().find((p) => p.cwd === '/this/path/does/not/exist')).toBeUndefined();
   });
 
@@ -502,7 +502,7 @@ describe('SessionStore — registry merge + isGitRepo', () => {
     execFileSync('git', ['init', '-q', cwd]);
     const registry = new ProjectRegistry(registryPath);
     registry.add(cwd);
-    const store = new SessionStore({ root, registry });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), registry });
     const match = store.listProjects().find((p) => p.cwd === cwd);
     expect(match!.isGitRepo).toBe(true);
   });
@@ -514,7 +514,7 @@ describe('SessionStore — registry merge + isGitRepo', () => {
     const cwd = makeCwd(cwdHost, 'projectPlain');
     const registry = new ProjectRegistry(registryPath);
     registry.add(cwd);
-    const store = new SessionStore({ root, registry });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), registry });
     const match = store.listProjects().find((p) => p.cwd === cwd);
     expect(match!.isGitRepo).toBe(false);
   });
@@ -529,7 +529,7 @@ describe('SessionStore — registry merge + isGitRepo', () => {
       join(projectDir, 'ccc.jsonl'),
       JSON.stringify({ type: 'user', cwd, message: { content: 'hi' } }) + '\n',
     );
-    const store = new SessionStore({ root });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root) });
     const match = store.listProjects().find((p) => p.cwd === cwd);
     expect(match!.source).toBe('claude');
     expect(typeof match!.isGitRepo).toBe('boolean');
@@ -550,7 +550,7 @@ describe('SessionStore — registry merge + isGitRepo', () => {
         JSON.stringify({ type: 'user', cwd, message: { content: 'hi' } }) + '\n',
       );
     }
-    const projects = new SessionStore({ root, runtimeDir }).listProjects();
+    const projects = new SessionStore({ transcripts: new ClaudeTranscripts(root), runtimeDir }).listProjects();
     expect(projects.find((p) => p.cwd === inside)!.internal).toBe(true);
     expect(projects.find((p) => p.cwd === sibling)!.internal).toBeUndefined();
   });
@@ -597,7 +597,7 @@ describe('SessionStore — worktree merge', () => {
       baseBranch: 'main',
       createdAt: 100,
     });
-    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), worktreeManager: wtMgr });
     const projects = store.listProjects();
     // Only ONE row in the merged view (worktree got folded in).
     expect(projects.find((p) => p.cwd === parentCwd)).toBeDefined();
@@ -637,7 +637,7 @@ describe('SessionStore — worktree merge', () => {
       baseBranch: 'main',
       createdAt: 100,
     });
-    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), worktreeManager: wtMgr });
     const projects = store.listProjects();
     const parent = projects.find((p) => p.cwd === parentCwd);
     expect(parent).toBeDefined();
@@ -674,7 +674,7 @@ describe('SessionStore — worktree merge', () => {
       createdAt: 100,
       archivedAt: 200,
     });
-    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), worktreeManager: wtMgr });
     const parent = store.listProjects().find((p) => p.cwd === parentCwd)!;
     const sess = parent.sessions.find((s) => s.id === 'sessarc');
     expect(sess?.archived).toBe(true);
@@ -694,7 +694,7 @@ describe('SessionStore — worktree merge', () => {
     const eightDaysAgoSec = (Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000;
     utimesSync(stalePath, eightDaysAgoSec, eightDaysAgoSec);
 
-    const store = new SessionStore({ root });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root) });
     const project = store.listProjects().find((p) => p.cwd === cwd)!;
     const stale = project.sessions.find((s) => s.id === 'sessstale')!;
     const fresh = project.sessions.find((s) => s.id === 'sessfresh')!;
@@ -717,7 +717,7 @@ describe('SessionStore — worktree merge', () => {
     utimesSync(p1, oldSec, oldSec);
     utimesSync(p2, oldSec, oldSec);
 
-    const store = new SessionStore({ root });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root) });
     const project = store.listProjects().find((p) => p.cwd === cwd);
     expect(project).toBeDefined();
     expect(project!.sessions).toHaveLength(2);
@@ -747,7 +747,7 @@ describe('SessionStore — worktree merge', () => {
       baseBranch: 'main',
       createdAt: 100,
     });
-    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), worktreeManager: wtMgr });
     const parent = store.listProjects().find((p) => p.cwd === parentCwd)!;
     const sess = parent.sessions.find((s) => s.id === 'sessstalewt')!;
     expect(sess.worktreePath).toBe(worktreePath);
@@ -773,7 +773,7 @@ describe('SessionStore — worktree merge', () => {
     mkdirSync(staleDir, { recursive: true });
     writeFileSync(join(staleDir, 'sess-wt.jsonl'), JSON.stringify({ type: 'user', cwd, message: { content: 'worktree session' } }) + '\n');
 
-    const store = new SessionStore({ root });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root) });
     const projects = store.listProjects();
     const project = projects.find((p) => p.cwd === cwd)!;
     expect(project).toBeDefined();
@@ -808,7 +808,7 @@ describe('SessionStore — worktree merge', () => {
       baseBranch: 'main',
       createdAt: 100,
     });
-    const store = new SessionStore({ root, worktreeManager: wtMgr });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root), worktreeManager: wtMgr });
     const found = store.findSession('sessphys');
     expect(found).toBeDefined();
     // Physical projectDir = the worktree-derived dir (where the JSONL actually lives).

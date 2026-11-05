@@ -1,5 +1,4 @@
 import { writeFileSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
 
 export interface DaemonSettingsOpts {
   outPath: string;
@@ -38,7 +37,7 @@ function loopbackHook(hookPort: number, route: string, timeout: number, matcher 
 // one-liner to stdout that's visible in the CLI status bar. The PWA's context-window
 // meter is driven by the POSTed payload, not the stdout text.
 //
-// $DAEMON_AUTH is exported into claude's env by ClaudeProc (src/claude-proc.ts) — shell
+// $DAEMON_AUTH is exported into claude's env by ClaudeRuntime (runtime.ts) — shell
 // subprocesses inherit it, so no allowedEnvVars declaration is needed (that's an HTTP
 // hook concern, not a command-hook one).
 function statusLineCommand(hookPort: number): string {
@@ -102,8 +101,4 @@ export function writeEvalMcpConfig(opts: McpConfigOpts & { sessionId: string; re
   const mcpServers: Record<string, unknown> = { outpost: server(`/mcp/eval/${sid}`) };
   for (const name of opts.replayServers) mcpServers[name] = server(`/mcp/replay/${sid}/${encodeURIComponent(name)}`);
   writeFileSync(opts.outPath, JSON.stringify({ mcpServers }, null, 2), { mode: 0o600 });
-}
-
-export function generateSecret(): string {
-  return randomBytes(32).toString('hex');
 }

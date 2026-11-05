@@ -4,7 +4,11 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pruneStaleActions } from '../../src/setup-actions.js';
+import { pruneStaleActions } from '../../src/actions/install.js';
+import { pruneSkillSymlink } from '../../src/runtime/claude/skills.js';
+
+const prune = (srcDir: string, dstDir: string, skillsDir: string) =>
+  pruneStaleActions(srcDir, dstDir, (category, name, root) => pruneSkillSymlink(skillsDir, category, name, root));
 
 function tempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix));
@@ -27,7 +31,7 @@ describe('pruneStaleActions', () => {
     symlinkSync(join(dstDir, 'meta', 'orchestrate'), join(skillsDir, 'meta.orchestrate'), 'dir');
     symlinkSync(join(dstDir, 'meta', 'plan-job'), join(skillsDir, 'meta.plan-job'), 'dir');
 
-    pruneStaleActions(srcDir, dstDir, skillsDir);
+    prune(srcDir, dstDir, skillsDir);
 
     expect(existsSync(join(dstDir, 'meta', 'plan-job'))).toBe(false);
     expect(existsSync(join(skillsDir, 'meta.plan-job'))).toBe(false);
@@ -42,7 +46,7 @@ describe('pruneStaleActions', () => {
     makeAction(join(dstDir, 'meta', 'orchestrate'));
     symlinkSync(join(dstDir, 'meta', 'orchestrate'), join(skillsDir, 'meta.orchestrate'), 'dir');
 
-    pruneStaleActions(srcDir, dstDir, skillsDir);
+    prune(srcDir, dstDir, skillsDir);
 
     expect(existsSync(join(dstDir, 'meta', 'orchestrate'))).toBe(true);
     expect(existsSync(join(skillsDir, 'meta.orchestrate'))).toBe(true);
@@ -59,7 +63,7 @@ describe('pruneStaleActions', () => {
     makeAction(join(srcDir, 'read', 'investigate'));
     makeAction(join(dstDir, 'read', 'investigate'));
 
-    pruneStaleActions(srcDir, dstDir, skillsDir);
+    prune(srcDir, dstDir, skillsDir);
 
     expect(existsSync(join(dstDir, 'meta', 'plan-job'))).toBe(false);
     expect(existsSync(join(dstDir, 'read', 'investigate'))).toBe(true);
@@ -76,7 +80,7 @@ describe('pruneStaleActions', () => {
     makeAction(join(dstDir, 'meta', 'plan-job'));
     symlinkSync(foreignDir, join(skillsDir, 'meta.plan-job'), 'dir');
 
-    pruneStaleActions(srcDir, dstDir, skillsDir);
+    prune(srcDir, dstDir, skillsDir);
 
     expect(existsSync(join(dstDir, 'meta', 'plan-job'))).toBe(false);
     const link = lstatSync(join(skillsDir, 'meta.plan-job'));
@@ -91,7 +95,7 @@ describe('pruneStaleActions', () => {
     const skillsDir = tempDir('outpost-skills-');
     makeAction(join(dstDir, 'meta', 'plan-job'));
 
-    pruneStaleActions(join(dstDir, 'does-not-exist'), dstDir, skillsDir);
+    prune(join(dstDir, 'does-not-exist'), dstDir, skillsDir);
 
     expect(existsSync(join(dstDir, 'meta', 'plan-job'))).toBe(true);
   });
@@ -102,7 +106,7 @@ describe('pruneStaleActions', () => {
     const skillsDir = tempDir('outpost-skills-');
     makeAction(join(dstDir, 'meta', 'plan-job'));
 
-    pruneStaleActions(srcDir, dstDir, skillsDir);
+    prune(srcDir, dstDir, skillsDir);
 
     expect(existsSync(join(dstDir, 'meta', 'plan-job'))).toBe(true);
   });

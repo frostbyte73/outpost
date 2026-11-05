@@ -336,7 +336,7 @@ export class WorkEngine {
     });
   }
 
-  // Binds a spawned session to an action name. The hook-handler reads this binding
+  // Binds a spawned session to an action name. The tool gate reads this binding
   // and enforces deny-on-allowlist-miss for the session — no per-action mode.
   // Public so the daemon can bind sessions it spawns directly (e.g. action-builder
   // edits) without routing through a step handler.
@@ -492,7 +492,7 @@ export class WorkEngine {
         this.opts.sessionManager.sendOrResume(
           sessionId,
           this.orchestratorCwd(),
-          { type: 'user', message: { role: 'user', content: `/${actionName}` } },
+          { text: `/${actionName}` },
           { OUTPOST_ENVELOPE: join(this.ctx.jobsDir, jobId, 'orchestrator', 'envelope.json'), JOB_ID: jobId },
         );
         return true;
@@ -634,7 +634,7 @@ export class WorkEngine {
   // roleBySession/actionBySession are in-memory only, but orchestratorSessionId and
   // step.sessionId are persisted on the job. On daemon restart the maps come back
   // empty while those ids survive, so any resumed session (orchestrator reopen, step
-  // continuation) would miss its action binding — the hook-handler then treats it
+  // continuation) would miss its action binding — the tool gate then treats it
   // as an interactive session and enqueues approval cards instead of auto-allowing
   // its action's reads. Rebind every persisted session at boot so the maps reflect
   // what's on disk, mirroring what the spawn paths set. Call once at startup.
@@ -1308,7 +1308,7 @@ export class WorkEngine {
       this.opts.sessionManager.sendOrResume(
         midTurn,
         this.orchestratorCwd(),
-        { type: 'user', message: { role: 'user', content: followup } },
+        { text: followup },
         { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId },
       );
       return;
@@ -1639,7 +1639,7 @@ export class WorkEngine {
         this.mutate(jobId, (j) => this.appendEvent(j, {
           kind: 'step_started', who: 'orchestrator', stepId, body: `${this.stepLabel(jobId, stepId)} — your session started`,
         }));
-        this.opts.sessionManager.send(sessionId, { type: 'user', message: { role: 'user', content: prompt } });
+        this.opts.sessionManager.sendTurn(sessionId, { text: prompt });
         return true;
       },
     });
@@ -1903,7 +1903,7 @@ export class WorkEngine {
         this.opts.sessionManager.sendOrResume(
           sessionId,
           cwd,
-          { type: 'user', message: { role: 'user', content: this.resumePrompt(sessionId, actionName) } },
+          { text: this.resumePrompt(sessionId, actionName) },
           { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'action' },
         );
         return true;
@@ -1963,7 +1963,7 @@ export class WorkEngine {
         this.bindAction(sessionId, d.action);
         this.opts.sessionManager.sendOrResume(
           sessionId, cwd,
-          { type: 'user', message: { role: 'user', content: this.resumePrompt(sessionId, d.action) } },
+          { text: this.resumePrompt(sessionId, d.action) },
           { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: dispatchId, STEP_TYPE: 'action' },
         );
         return true;
@@ -2067,7 +2067,7 @@ export class WorkEngine {
     const draft = this.draftForSession(sessionId);
     const tag = `${sessionId.slice(0, 8)} ${toolName}`;
     // No draft is the ORDINARY case, not a signal: PostToolUseFailure is registered globally
-    // (settings-gen.ts) and this runs unconditionally for every failed tool call anywhere in
+    // (runtime/claude/settings.ts) and this runs unconditionally for every failed tool call anywhere in
     // the system — a typo in an interactive session, any non-lenient command exiting non-zero
     // outside a gated step. Logging that at warn would dwarf every other [work] warn in this
     // file (all scoped to rare engine-internal failures) and bury the two cases below that
@@ -2493,7 +2493,7 @@ export class WorkEngine {
         this.opts.sessionManager.sendOrResume(
           sessionId,
           cwd,
-          { type: 'user', message: { role: 'user', content: this.resumePrompt(sessionId, boundAction) } },
+          { text: this.resumePrompt(sessionId, boundAction) },
           { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'orchestrated' },
         );
         return true;
@@ -2586,10 +2586,7 @@ export class WorkEngine {
         this.opts.sessionManager.spawnDetached(sessionId, cwd, {
           OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: dispatch.id, STEP_TYPE: 'action',
         }, 'default');
-        this.opts.sessionManager.send(sessionId, {
-          type: 'user',
-          message: { role: 'user', content: `/${dispatch.action}` },
-        });
+        this.opts.sessionManager.sendTurn(sessionId, { text: `/${dispatch.action}` });
         return true;
       },
     });
@@ -3035,10 +3032,7 @@ export class WorkEngine {
         ));
         // spawnDetached only launches the proc — without a user turn, the orchestrator skill
         // never activates and the envelope sits unread. Kick it.
-        this.opts.sessionManager.send(sessionId, {
-          type: 'user',
-          message: { role: 'user', content: `/${actionName} ${jobId}` },
-        });
+        this.opts.sessionManager.sendTurn(sessionId, { text: `/${actionName} ${jobId}` });
         return true;
       },
     });
@@ -3101,10 +3095,7 @@ export class WorkEngine {
         this.mutate(jobId, (j) => this.appendEvent(j, {
           kind: 'step_started', who: 'orchestrator', stepId, body: this.stepLabel(jobId, stepId),
         }));
-        this.opts.sessionManager.send(sessionId, {
-          type: 'user',
-          message: { role: 'user', content: `/${actionName}${retryPreamble(cur)}` },
-        });
+        this.opts.sessionManager.sendTurn(sessionId, { text: `/${actionName}${retryPreamble(cur)}` });
         return true;
       },
     });

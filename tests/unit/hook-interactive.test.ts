@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { handleHook } from '../../src/permissions/hook-handler.js';
+import { handleHook } from '../../src/runtime/claude/hooks.js';
 import { ApprovalModeStore } from '../../src/permissions/approval-mode.js';
 
 const PUSH = {

@@ -1,11 +1,12 @@
 import { statSync } from 'node:fs';
 import { isAuthFailure } from '../integrations/claude-login.js';
-import { ClaudeProc } from './claude-proc.js';
 import { EventLog } from './event-log.js';
+import { openNdjsonLog, type NdjsonLog } from '../runtime/event-ndjson.js';
 import type { WebSocket } from 'ws';
 import type { WorktreeManager } from '../git/worktree-manager.js';
-
-export type SessionModel = 'sonnet' | 'opus' | 'haiku' | 'fable';
+import type {
+  AgentRuntime, CanonicalEvent, PermissionMode, RuntimeSession, SessionKind, SessionModel, TurnInput,
+} from '../runtime/types.js';
 
 // Why the daemon itself is tearing a session down, threaded into daemon_proc_exit
 // so the PWA can tell a graceful shutdown from a crash. 'idle' = reaped for
@@ -22,7 +23,7 @@ const DEFAULT_EVENT_LOG_MAX_EVENTS = 5000;
 
 interface ActiveSession {
   id: string;
-  proc: ClaudeProc;
+  session: RuntimeSession;
   clients: Set<WebSocket>;
   eventLog: EventLog;
   idleTimer?: NodeJS.Timeout;
@@ -44,7 +45,7 @@ const WS_OPEN = 1;
 export type OnDrop = (e: Error, reply: (frame: unknown) => void) => void;
 
 interface PendingSpawn {
-  held: { message: unknown; onDrop?: OnDrop }[];
+  held: { turn: TurnInput; onDrop?: OnDrop }[];
   waiters: { ws: WebSocket; since: number }[];
 }
 
@@ -53,23 +54,12 @@ export interface SessionExit {
   stderrTail: string;
 }
 
-function isInitMessage(msg: unknown): boolean {
-  if (typeof msg !== 'object' || msg === null) return false;
-  const m = msg as { type?: string; subtype?: string };
-  return m.type === 'system' && m.subtype === 'init';
-}
-
 export interface SessionManagerOpts {
-  settingsPath: string;
-  // Used instead of settingsPath for a session spawned with an envelope, i.e. one running an action.
-  actionSettingsPath?: string;
-  mcpConfigPath: string;
-  daemonAuthSecret: string;
-  daemonHost: string;
-  hookPort: number;
+  runtime: AgentRuntime;
   sessionStore: import('./session-store.js').SessionStore;
   worktreeManager?: WorktreeManager;
-  onProcMessage?: (sessionId: string, msg: unknown) => void;
+  // Where each session's native + canonical event streams are appended; absent, nothing is logged.
+  runtimeLogDir?: string;
   // Tests shrink these to force replay_gap fallback paths without producing 5000 fixtures.
   eventLogMaxEvents?: number;
   eventLogMaxAgeMs?: number;
@@ -78,7 +68,7 @@ export interface SessionManagerOpts {
   // Fires when a spawned claude subprocess exits. Used by the work orchestrator to detect
   // investigator/implementer/responder sessions that died without signalling completion.
   onSessionExit?: (sessionId: string, code: number | null, exit: SessionExit) => void;
-  // Fires the first time claude emits its system/init message (JSONL is on disk by then).
+  // Fires the first time the runtime reports the session started (its transcript is on disk by then).
   // Daemon fans this out as a `sessions_changed` notification so the PWA can refresh its
   // list without waiting for a full reload.
   onSessionRegistered?: (sessionId: string) => void;
@@ -99,13 +89,13 @@ export class SessionManager {
   // In-memory; lost on daemon restart. Only set when a session is spawned via the
   // agent / skill edit endpoints. Used by GET /api/sessions to surface kind for
   // PWA-side filtering of the Projects view.
-  private sessionKinds = new Map<string, import('./session-store.js').SessionKind>();
+  private sessionKinds = new Map<string, SessionKind>();
 
-  tagKind(sessionId: string, kind: import('./session-store.js').SessionKind): void {
+  tagKind(sessionId: string, kind: SessionKind): void {
     this.sessionKinds.set(sessionId, kind);
   }
 
-  getKind(sessionId: string): import('./session-store.js').SessionKind | undefined {
+  getKind(sessionId: string): SessionKind | undefined {
     return this.sessionKinds.get(sessionId);
   }
 
@@ -201,7 +191,7 @@ export class SessionManager {
       for (const { ws } of entry.waiters) this.rejectAttach(ws, err.message);
       return;
     }
-    for (const { message } of entry.held) this.send(sessionId, message);
+    for (const { turn } of entry.held) this.sendTurn(sessionId, turn);
     // A socket that closed mid-build never fires the close handler attachClient registers.
     const open = entry.waiters.filter(({ ws }) => ws.readyState === WS_OPEN);
     for (const { ws, since } of open) this.attachClient(session, ws, since);
@@ -245,11 +235,11 @@ export class SessionManager {
     });
   }
 
-  // `onDrop` fires only if a message held for a worktree build is dropped because the build failed.
-  send(sessionId: string, message: unknown, onDrop?: OnDrop): void {
+  // `onDrop` fires only if a turn held for a worktree build is dropped because the build failed.
+  sendTurn(sessionId: string, turn: TurnInput, onDrop?: OnDrop): void {
     const pending = this.pendingSpawn.get(sessionId);
     if (pending) {
-      pending.held.push({ message, onDrop });
+      pending.held.push({ turn, onDrop });
       return;
     }
     const s = this.active.get(sessionId);
@@ -258,12 +248,8 @@ export class SessionManager {
     // Don't restamp a turn already in flight — a queued follow-up message would
     // otherwise reset the strip's elapsed clock mid-turn.
     if (!this.working.has(sessionId)) this.working.set(sessionId, Date.now());
-    if (typeof message === 'object' && message !== null
-        && (message as { type?: string }).type === 'user'
-        && this.opts.onTurnStart) {
-      this.opts.onTurnStart(sessionId);
-    }
-    s.proc.send(message);
+    this.opts.onTurnStart?.(sessionId);
+    s.session.sendTurn(turn);
   }
 
   // Routed through eventLog so reconnects replay daemon-originated messages (e.g. approval_mode changes) like any other event.
@@ -278,7 +264,7 @@ export class SessionManager {
   interrupt(sessionId: string): void {
     const s = this.active.get(sessionId);
     if (!s) return;
-    s.proc.interrupt();
+    s.session.interrupt();
   }
 
   // Lets allowlist lookups work before the session's JSONL is flushed (first tool call of a new session).
@@ -363,16 +349,15 @@ export class SessionManager {
     if (!s) return;
     s.closeReason = reason;
     if (s.idleTimer) clearTimeout(s.idleTimer);
-    await s.proc.kill();
+    await s.session.kill();
     for (const ws of s.clients) ws.close();
     this.active.delete(sessionId);
     this.working.delete(sessionId);
   }
 
   // Spawn a session with no WS attached. Orchestrator uses this for child sessions
-  // (investigator, implementer, responder). Reachable via manager.send() for prompts,
-  // observed via opts.onProcMessage. Idempotent — no-op if already active.
-  spawnDetached(sessionId: string, cwd: string, extraEnv?: Record<string, string>, permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'): void {
+  // (investigator, implementer, responder), prompted via sendTurn. Idempotent — no-op if already active.
+  spawnDetached(sessionId: string, cwd: string, extraEnv?: Record<string, string>, permissionMode?: PermissionMode): void {
     if (this.active.has(sessionId)) return;
     if (extraEnv) this.opts.onLaunch?.(sessionId, cwd, extraEnv);
     if (permissionMode) this.permissionModes.set(sessionId, permissionMode);
@@ -384,14 +369,14 @@ export class SessionManager {
     this.startIdleTimer(s);
   }
 
-  // Send a message; respawn first if idle-reaped. extraEnv is applied only on respawn.
-  sendOrResume(sessionId: string, cwd: string, message: unknown, extraEnv?: Record<string, string>): void {
+  // Send a turn; respawn first if idle-reaped. extraEnv is applied only on respawn.
+  sendOrResume(sessionId: string, cwd: string, turn: TurnInput, extraEnv?: Record<string, string>): void {
     if (extraEnv) this.opts.onLaunch?.(sessionId, cwd, extraEnv);
     if (!this.active.has(sessionId)) this.spawn(sessionId, cwd, extraEnv);
-    this.send(sessionId, message);
+    this.sendTurn(sessionId, turn);
   }
 
-  private readonly permissionModes = new Map<string, 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'>();
+  private readonly permissionModes = new Map<string, PermissionMode>();
   private readonly sessionModels = new Map<string, SessionModel>();
   // Sessions currently executing a turn → the ms timestamp that turn started. Set
   // when a session is spawned or sent a prompt; cleared at the Stop hook
@@ -419,7 +404,7 @@ export class SessionManager {
         maxAgeMs: this.opts.eventLogMaxAgeMs ?? DEFAULT_EVENT_LOG_MAX_AGE_MS,
       }),
       lastActivity: Date.now(),
-      proc: null!,
+      session: null!,
       spawnCwd: cwd,
       registeredIds: new Set(),
       stderrTail: '',
@@ -428,28 +413,28 @@ export class SessionManager {
     const permissionMode = this.permissionModes.get(sessionId);
     const model = this.sessionModels.get(sessionId);
     const systemPrompt = this.opts.sessionStore.readSystemPrompt(sessionId);
-    s.proc = new ClaudeProc({
+    const log: NdjsonLog | undefined = this.opts.runtimeLogDir ? openNdjsonLog(this.opts.runtimeLogDir, sessionId) : undefined;
+    s.session = this.opts.runtime.start({
       sessionId,
       mode,
-      settingsPath: env.OUTPOST_ENVELOPE && this.opts.actionSettingsPath ? this.opts.actionSettingsPath : this.opts.settingsPath,
-      mcpConfigPath: this.opts.mcpConfigPath,
       cwd,
-      env: { DAEMON_AUTH: this.opts.daemonAuthSecret, DAEMON_HOST: this.opts.daemonHost, OUTPOST_HOOK_PORT: String(this.opts.hookPort), ...env },
+      env,
+      isAction: !!env.OUTPOST_ENVELOPE,
       ...(permissionMode ? { permissionMode } : {}),
       ...(model ? { model } : {}),
       ...(systemPrompt ? { appendSystemPrompt: systemPrompt } : {}),
-      onMessage: (msg) => {
+      ...(log ? { log } : {}),
+    }, {
+      onEvent: (e) => {
         s.lastActivity = Date.now();
-        this.handleProcInit(s, msg);
-        const evt = s.eventLog.push(msg);
-        const payload = JSON.stringify({ ...(msg as object), _seq: evt.seq });
+        // Deltas are already in the native log, and they are most of a turn's frames
+        if (e.type !== 'content.delta') log?.canonical(e);
+        this.handleSessionStarted(s, e);
+        const evt = s.eventLog.push(e);
+        const payload = JSON.stringify({ ...e, _seq: evt.seq });
         for (const ws of s.clients) ws.send(payload);
-        this.opts.onProcMessage?.(s.id, msg);
-        // system/init arrives after claude has written the JSONL for this session,
-        // so the daemon can safely broadcast "the list on disk changed" now. Fires
-        // once per (re-keyed) id: /clear rekeys s.id in handleProcInit and the next
-        // init lands with the new id, so both get surfaced.
-        if (isInitMessage(msg) && !s.registeredIds.has(s.id)) {
+        // Fires once per id, /clear's rekey included, after the runtime has the transcript on disk
+        if (e.type === 'session.started' && !e.subagent && !s.registeredIds.has(s.id)) {
           s.registeredIds.add(s.id);
           this.opts.onSessionRegistered?.(s.id);
         }
@@ -464,6 +449,7 @@ export class SessionManager {
         }
       },
       onExit: (code) => {
+        log?.close();
         const expected = s.closeReason;
         for (const ws of s.clients) {
           ws.send(JSON.stringify(expected
@@ -480,16 +466,14 @@ export class SessionManager {
     return s;
   }
 
-  // /clear creates a fresh internal session_id while the proc keeps running. Re-key the
+  // /clear creates a fresh internal session id while the process keeps running. Re-key the
   // active session, tell attached clients to snap to the new id, and reset the event log
-  // so reconnects to the new id don't replay pre-/clear history. The first init event
-  // (where session_id matches s.id) is a no-op.
-  private handleProcInit(s: ActiveSession, msg: unknown): void {
-    if (typeof msg !== 'object' || msg === null) return;
-    const m = msg as { type?: string; subtype?: string; session_id?: string };
-    if (m.type !== 'system' || m.subtype !== 'init') return;
-    const newId = m.session_id;
-    if (typeof newId !== 'string' || newId === s.id) return;
+  // so reconnects to the new id don't replay pre-/clear history. The first start event
+  // (where the id matches s.id) is a no-op.
+  private handleSessionStarted(s: ActiveSession, e: CanonicalEvent): void {
+    if (e.type !== 'session.started' || e.subagent) return;
+    const newId = e.sessionId;
+    if (newId === s.id) return;
     const oldId = s.id;
     this.active.delete(oldId);
     s.id = newId;

@@ -40,7 +40,7 @@ export function splitEditorCommand(command: string): string[] {
 
 // launchd strips the shell PATH, so a bare `code` / `goland` usually ENOENTs from the
 // daemon even though it's installed — the same problem resolveClaudeBin solves in
-// claude-proc.ts. Re-checked on every open so a Toolbox or cask upgrade that relocates the
+// runtime/claude/bin.ts. Re-checked on every open so a Toolbox or cask upgrade that relocates the
 // launcher is picked up without a daemon bounce.
 function resolveEditorBin(name: string): string {
   if (name.includes('/')) return name;

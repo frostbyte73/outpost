@@ -9,11 +9,7 @@ import { SessionManager } from '../../src/session/session-manager.js';
 
 function attachAndCapture(opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string }) {
   const manager = new SessionManager({
-    settingsPath: '/tmp/settings.json',
-    mcpConfigPath: '/tmp/mcp.json',
-    daemonAuthSecret: 's',
-    daemonHost: '127.0.0.1',
-    hookPort: 1,
+    runtime: {} as never,
     sessionStore: { findSession: () => null } as never,
   });
   const sent: Record<string, unknown>[] = [];

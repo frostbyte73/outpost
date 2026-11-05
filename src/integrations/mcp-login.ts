@@ -1,7 +1,7 @@
 import { type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { resolveClaudeBin } from '../session/claude-proc.js';
+import { resolveClaudeBin } from '../runtime/claude/bin.js';
 import {
   LoginError, awaitExit, failureReason, killGroup, lastLine, spawnLoginPty, stripAnsi, urlAfter,
 } from './cli-login.js';

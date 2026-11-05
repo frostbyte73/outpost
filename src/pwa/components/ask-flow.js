@@ -82,7 +82,7 @@ export function askApprovalCardHtml(a) {
 // transcript array — we push into it rather than into the slice directly so
 // the reconstructor can interleave with other transcript rebuild logic.
 export function applyAskTranscriptMessage(m, sink) {
-  if (m.role === 'tool_use' && m.toolName === 'AskUserQuestion') {
+  if (m.role === 'tool_use' && m.tool === 'ask_user') {
     const questions = Array.isArray(m.toolInput?.questions) ? m.toolInput.questions : [];
     const entry = {
       role: 'ask',

@@ -23,23 +23,16 @@ beforeEach(() => {
   installDispatchDeps({ state: {}, stopThinking() {}, renderSession() {} });
 });
 
-describe('system task_notification', () => {
+describe('task.notification', () => {
   it('stamps completion on the background agent it names', () => {
-    dispatchSession({
-      type: 'system',
-      subtype: 'task_notification',
-      task_id: AGENT,
-      tool_use_id: 'toolu_1',
-      status: 'completed',
-      summary: 'ok',
-    }, SID);
+    dispatchSession({ type: 'task.notification', taskId: AGENT, status: 'completed', summary: 'ok' }, SID);
     const c = subagents.forSession(SID).byId.get(AGENT).completion;
     expect(c.status).toBe('completed');
     expect(c.summary).toBe('ok');
   });
 
   it('ignores a task id that is not a known agent', () => {
-    dispatchSession({ type: 'system', subtype: 'task_notification', task_id: 'bash-123', status: 'completed' }, SID);
+    dispatchSession({ type: 'task.notification', taskId: 'bash-123', status: 'completed' }, SID);
     expect(subagents.forSession(SID).byId.get(AGENT).completion).toBeFalsy();
   });
 });

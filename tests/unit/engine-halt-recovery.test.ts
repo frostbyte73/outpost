@@ -10,7 +10,7 @@ function makeEngine(dir = mkdtempSync(join(tmpdir(), 'halt-'))) {
   const queue = new JobQueue(dir);
   const archived: Array<{ stepId: string }> = [];
   const sessionManager = {
-    spawnDetached() {}, send() {}, isWorking() { return false; },
+    spawnDetached() {}, sendTurn() {}, isWorking() { return false; },
     sendOrResume() {}, close() {}, archive() {},
   } as never;
   const worktreeManager = {
@@ -90,7 +90,7 @@ describe('engine.worktreeRecordForSession', () => {
     } as never;
     const engine = new WorkEngine({
       queue,
-      sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {}, close() {}, archive() {} } as never,
+      sessionManager: { spawnDetached() {}, sendTurn() {}, isWorking() { return false; }, sendOrResume() {}, close() {}, archive() {} } as never,
       worktreeManager, linearWriter: { setState: async () => undefined } as never, actionsStore: {} as never,
       jobsDir: join(dir, 'jobs'), newId: (() => { let n = 0; return () => `id-${++n}`; })(), now: () => 1,
     });

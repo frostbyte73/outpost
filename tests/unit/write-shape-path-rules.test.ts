@@ -5,6 +5,7 @@ import {
   assertNotWriteShaped, backtrackingDegree, classifyPathShape, classifyRuleShape,
   lintPermissionRule, MCP_WRITE_PROBES, PATH_SCOPED_TOOLS, PATH_WRITE_TOOLS,
 } from '../../src/permissions/write-shape.js';
+import { ruleSpelling } from '../../src/runtime/tools.js';
 
 const shaped = (v: string) => classifyPathShape(v).writeShaped;
 
@@ -251,7 +252,7 @@ describe('a whole-tool write grant is refused like the path rule it stands in fo
     expect(classifyRuleShape('tool', 'Bash').writeShaped).toBe(true);
     // Failing here means a tool was dropped from PATH_WRITE_TOOLS: the set drives both this
     // refusal and the path lint's confinement, so neither can be narrowed on its own.
-    for (const tool of PATH_WRITE_TOOLS) {
+    for (const tool of [...PATH_WRITE_TOOLS].map(ruleSpelling)) {
       expect(classifyRuleShape('tool', tool).writeShaped, tool).toBe(true);
       expect(lintPermissionRule('tool', tool, false).ok, tool).toBe(false);
       expect(() => assertNotWriteShaped('tool', tool)).toThrow();

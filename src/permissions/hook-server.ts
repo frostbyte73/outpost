@@ -5,7 +5,7 @@
 
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { parseJsonObject } from '../routes/util.js';
-import { denyResp } from './hook-handler.js';
+import { denyResp } from '../runtime/claude/hooks.js';
 
 export interface HookServerOpts {
   port: number;

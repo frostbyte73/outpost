@@ -20,7 +20,7 @@ function makeEngine() {
     queue,
     sessionManager: {
       spawnDetached(sessionId: string, _cwd: string, env: Record<string, string>) { spawned.push({ sessionId, env }); },
-      send() {}, isWorking() { return false; },
+      sendTurn() {}, isWorking() { return false; },
       sendOrResume(sessionId: string, _cwd: string, msg: never, env: Record<string, string>) {
         resumed.push({ sessionId, text: (msg as { message: { content: string } }).message.content, env });
       },

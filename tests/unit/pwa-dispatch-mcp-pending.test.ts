@@ -9,12 +9,11 @@ import { renderThinkingStrip } from '../../src/pwa/components/session-view/regio
 
 const SID = 'sess-mcp';
 
-// Trimmed from a real `claude -p` 2.1.292 init
 function init(statuses: string[]) {
   return {
-    type: 'system',
-    subtype: 'init',
-    mcp_servers: statuses.map((status, i) => ({ name: `server-${i}`, status })),
+    type: 'session.started',
+    sessionId: SID,
+    mcpServers: statuses.map((status, i) => ({ name: `server-${i}`, status })),
   };
 }
 
@@ -40,7 +39,7 @@ describe('init with pending MCP servers → thinking strip', () => {
     dispatchSession(init(['connected', 'pending', 'needs-auth']), SID);
     expect(stripLabel()).toBe('loading MCPs');
 
-    dispatchSession({ type: 'stream_event', event: { type: 'message_start' } }, SID);
+    dispatchSession({ type: 'turn.started' }, SID);
     expect(stripLabel()).toBe('thinking');
   });
 

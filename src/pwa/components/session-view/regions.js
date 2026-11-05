@@ -10,19 +10,19 @@ import { escapeHtml } from '../../util.js';
 import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { openTodosSheet } from '../todos-sheet.js';
 
+// Keyed by canonical tool name (src/runtime/tools.ts).
 export const TOOL_VERBS = {
-  Bash: 'running',
-  Read: 'reading',
-  Write: 'writing',
-  Edit: 'editing',
-  MultiEdit: 'editing',
-  Grep: 'searching',
-  Glob: 'searching',
-  WebFetch: 'fetching',
-  WebSearch: 'searching',
-  Task: 'delegating',
-  Skill: 'using skill',
-  ToolSearch: 'searching',
+  shell: 'running',
+  file_read: 'reading',
+  file_write: 'writing',
+  file_edit: 'editing',
+  file_multi_edit: 'editing',
+  file_grep: 'searching',
+  file_glob: 'searching',
+  web_fetch: 'fetching',
+  web_search: 'searching',
+  skill: 'using skill',
+  tool_search: 'searching',
 };
 
 // Duration formatting mirrors the legacy thinkingMetaText: sub-10s to one
@@ -74,7 +74,7 @@ export function renderThinkingStrip(region, slice) {
   const activeTools = slice.activeTools ?? [];
   const top = activeTools.length ? activeTools[activeTools.length - 1] : null;
   const verb = slice.mcpPending ? 'loading MCPs'
-    : top ? (TOOL_VERBS[top.toolName] || 'thinking')
+    : top ? (TOOL_VERBS[top.tool] || 'thinking')
     : (slice.lingeringVerb || 'thinking');
   const meta = fmtDuration(slice.thinkingStartedAt);
   const existing = region.firstElementChild;

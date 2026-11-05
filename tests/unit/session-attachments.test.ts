@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  buildUserContent,
+  buildTurnInput,
   makeUploadSaver,
   parseAttachments,
   safeFileName,
@@ -13,6 +13,12 @@ import {
   MAX_USER_MESSAGE_FRAME_BYTES,
 } from '../../src/session/attachments.js';
 import { handleSessionMessage, type SessionMessageDeps } from '../../src/ws/client-messages.js';
+import { toUserFrame } from '../../src/runtime/claude/runtime.js';
+import type { TurnInput } from '../../src/runtime/types.js';
+
+// What Claude receives for a turn: the content blocks of its stream-json user message.
+const claudeContent = (turn: TurnInput) => (toUserFrame(turn) as { message: { content: unknown } }).message.content;
+const buildUserContent = (...args: Parameters<typeof buildTurnInput>) => claudeContent(buildTurnInput(...args));
 
 const b64 = (s: string) => Buffer.from(s).toString('base64');
 const png = { kind: 'image', name: 'IMG_0001.png', mediaType: 'image/png', data: b64('png-bytes') };
@@ -124,26 +130,25 @@ describe('makeUploadSaver', () => {
 describe('user_message with attachments', () => {
   const deps = (uploadsRoot?: string) => ({
     queue: { decide: vi.fn() },
-    manager: { send: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
+    manager: { sendTurn: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
     modes: { set: vi.fn() },
     uploadsRoot,
   }) satisfies SessionMessageDeps;
   const frame = (body: object) => Buffer.from(JSON.stringify({ type: 'user_message', ...body }));
 
-  it('sends images as content blocks', () => {
+  it('sends images alongside the text', () => {
     const d = deps();
     handleSessionMessage(frame({ content: 'look', attachments: [png] }), 's1', d);
-    expect(d.manager.send).toHaveBeenCalledWith('s1', { type: 'user', message: { role: 'user', content: [
-      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: png.data } },
-      { type: 'text', text: 'look' },
-    ] } }, expect.any(Function));
+    expect(d.manager.sendTurn).toHaveBeenCalledWith('s1', {
+      text: 'look', images: [{ mediaType: 'image/png', data: png.data }],
+    }, expect.any(Function));
   });
 
   it('writes a file under uploadsRoot and sends its path', () => {
     const root = mkdtempSync(join(tmpdir(), 'uploads-'));
     const d = deps(root);
     handleSessionMessage(frame({ content: 'read this', attachments: [pdf] }), 's1', d);
-    const content = d.manager.send.mock.calls[0]![1].message.content as string;
+    const content = d.manager.sendTurn.mock.calls[0]![1].text as string;
     const path = /\[Attached file: (\S+) /.exec(content)![1]!;
     expect(path.startsWith(join(root, 's1') + '/')).toBe(true);
     expect(readFileSync(path, 'utf8')).toBe('%PDF-1.7');
@@ -152,7 +157,7 @@ describe('user_message with attachments', () => {
   it('refuses the whole message, and says why, when one attachment is bad', () => {
     const d = deps();
     handleSessionMessage(frame({ content: 'look', attachments: [png, { ...png, mediaType: 'image/heic' }] }), 's1', d);
-    expect(d.manager.send).not.toHaveBeenCalled();
+    expect(d.manager.sendTurn).not.toHaveBeenCalled();
     expect(d.manager.broadcast).toHaveBeenCalledWith('s1', expect.objectContaining({
       type: 'daemon_error', message: expect.stringContaining('unsupported image type'),
     }));
@@ -161,7 +166,7 @@ describe('user_message with attachments', () => {
   it('refuses a file when there is nowhere to put it', () => {
     const d = deps();
     handleSessionMessage(frame({ content: '', attachments: [pdf] }), 's1', d);
-    expect(d.manager.send).not.toHaveBeenCalled();
+    expect(d.manager.sendTurn).not.toHaveBeenCalled();
     expect(d.manager.broadcast).toHaveBeenCalledWith('s1', expect.objectContaining({ type: 'daemon_error' }));
   });
 
@@ -178,7 +183,7 @@ describe('user_message with attachments', () => {
   it('also refuses, rather than only logging, a message the session could not take', () => {
     const reply = vi.fn();
     const d = { ...deps(), reply };
-    d.manager.send.mockImplementation(() => { throw new Error('session s1 not active'); });
+    d.manager.sendTurn.mockImplementation(() => { throw new Error('session s1 not active'); });
     handleSessionMessage(frame({ content: 'hi', clientId: 'c-2' }), 's1', d);
     expect(reply).toHaveBeenCalledWith({ type: 'daemon_error', message: 'Message not sent — session s1 not active', clientId: 'c-2' });
   });

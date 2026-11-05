@@ -289,15 +289,15 @@ export const subagents = {
 // stores; app.js and ws/dispatch.js consume them.
 
 // TaskCreate / TaskUpdate handling. Todos live on the session's slice.
-export function applyTaskUse(name, input, useId, sessionId) {
+export function applyTaskUse(tool, input, useId, sessionId) {
   const sid = sessionId ?? sessions.get().currentSessionId;
   const S = sessions.for(sid);
   if (useId) subagents.markTaskToolUse(useId);
-  if (name === 'TaskCreate') {
+  if (tool === 'task_create') {
     if (useId) subagents.recordPendingCreate(useId, input ?? {});
     return;
   }
-  if (name === 'TaskUpdate') {
+  if (tool === 'task_update') {
     const id = input && input.taskId;
     if (!id || !sid) return;
     if (input.status === 'deleted') {
@@ -368,8 +368,8 @@ export function applyTaskResult(useId, text, sessionId) {
 // Route a transcript-replay message through the task-tool handlers. Returns
 // true if the message was consumed (caller can skip further processing).
 export function applyTaskTranscriptMessage(m, sessionId) {
-  if (m.role === 'tool_use' && m.toolName && TASK_TOOL_NAMES.has(m.toolName)) {
-    applyTaskUse(m.toolName, m.toolInput, m.toolUseId, sessionId);
+  if (m.role === 'tool_use' && m.tool && TASK_TOOL_NAMES.has(m.tool)) {
+    applyTaskUse(m.tool, m.toolInput, m.toolUseId, sessionId);
     return true;
   }
   if (m.role === 'tool_result' && m.toolUseId) {
@@ -382,11 +382,11 @@ export function applyTaskTranscriptMessage(m, sessionId) {
   return false;
 }
 
-// stream-json carries a background agent's completion as a `system`/`task_notification`
-// frame — the <task-notification> user message exists only in the JSONL. task_id is
-// either an agent_id or a background Bash task id; Bash ones return false.
+// A background agent's completion arrives live as a `task.notification` event — the
+// <task-notification> user message exists only in the transcript. taskId is either an
+// agentId or a background shell task id; shell ones return false.
 export function applyTaskNotification(msg) {
-  const taskId = msg.task_id;
+  const taskId = msg.taskId;
   if (!taskId) return false;
   // agentId is globally unique, so search every session's slice.
   let bucketSid = null;
@@ -503,12 +503,13 @@ export function addSubagentEntry(a) {
   subagents.addEntry(a.agentId, {
     approvalId: a.approvalId ?? null,
     toolUseId: a.toolUseId ?? null,
+    tool: a.tool,
     toolName: a.toolName,
     toolInput: a.toolInput,
     decision: a.decision ?? null,
     enqueuedAt: a.enqueuedAt || Date.now(),
   }, sid);
-  if (isHighDetailTool(a.toolName)) {
+  if (isHighDetailTool(a.tool)) {
     if (a.decision === null && a.approvalId) {
       sessions.for(sid).markToolExpanded(`approval-${a.approvalId}`, true);
     } else if (a.decision === 'allow' && a.toolUseId) {
@@ -529,12 +530,13 @@ export function applyDiskSubagents(disk, sessionId) {
     if (!s || !s.agentId) continue;
     const existing = slice0.byId.get(s.agentId);
     const diskEntries = (s.entries || [])
-      .filter((m) => m && m.role === 'tool_use' && m.toolName)
-      .map((m) => ({
+      .filter((item) => item && item.type === 'tool_call')
+      .map((item) => ({
         approvalId: null,
-        toolUseId: m.toolUseId ?? null,
-        toolName: m.toolName,
-        toolInput: m.toolInput,
+        toolUseId: item.id ?? null,
+        tool: item.tool,
+        toolName: item.rawName,
+        toolInput: item.input,
         decision: 'allow',
         enqueuedAt: 0,
       }));

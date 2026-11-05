@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HookServer, type HookServerOpts } from '../../src/permissions/hook-server.js';
-import { writeDaemonSettings } from '../../src/settings-gen.js';
+import { writeDaemonSettings } from '../../src/runtime/claude/settings.js';
 import { parseJsonObject } from '../../src/routes/util.js';
 import { handleMcpRequest } from '../../src/mcp-server.js';
 import { freePort } from '../e2e/harness/port.js';
@@ -102,10 +102,10 @@ describe('HookServer — status mapping when a handler throws on a bad body', ()
 
   // Round 0 shipped the wrong event name (`PostToolUse` instead of `PostToolUseFailure`)
   // and every test still passed, because all of them called handlePostToolFailureHook
-  // directly — nothing traversed settings-gen's event key/URL through to a live
-  // HookServer route. This does: derive the path settings-gen actually writes, and prove
+  // directly — nothing traversed the settings file's event key/URL through to a live
+  // HookServer route. This does: derive the path writeDaemonSettings actually writes, and prove
   // it resolves to something other than a 404 on the real route table.
-  it('the URL settings-gen writes for PostToolUseFailure resolves to a live HookServer route', async () => {
+  it('the URL writeDaemonSettings writes for PostToolUseFailure resolves to a live HookServer route', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'set-'));
     const settingsPath = join(dir, 'daemon-settings.json');
     const port = await freePort();
@@ -160,26 +160,42 @@ describe('the real hook callbacks guard their bodies', () => {
   const srcDir = fileURLToPath(new URL('../../src/', import.meta.url));
   const daemon = readFileSync(`${srcDir}daemon.ts`, 'utf8');
 
-  const BODY_CALLBACKS = [
+  const BODY_CALLBACKS = ['onWorkPlanReady', 'onWorkStepResolved', 'onWorkStepFailed', 'onWorkJournal'];
+  const CLAUDE_HOOK_CALLBACKS = [
     'onStatusLineHook', 'onStopHook', 'onStopFailureHook', 'onPreToolHook', 'onPostToolFailureHook', 'onPostToolHook',
-    'onWorkPlanReady', 'onWorkStepResolved', 'onWorkStepFailed', 'onWorkJournal',
   ];
+  const claudeHooks = readFileSync(`${srcDir}runtime/claude/hooks.ts`, 'utf8');
 
   // From the callback's key to the next sibling key at the same indent — its whole body.
-  function callbackBody(src: string, name: string): string {
-    const at = src.indexOf(`${name}: async (body) => {`);
-    expect(at, `${name} is not wired in daemon.ts with the expected shape`).toBeGreaterThan(-1);
-    const next = src.indexOf('\n    on', at + 1);
+  function callbackBody(src: string, name: string, signature: string, indent: string): string {
+    const at = src.indexOf(`${name}: ${signature}`);
+    expect(at, `${name} is not wired with the expected shape`).toBeGreaterThan(-1);
+    const next = src.indexOf(`\n${indent}on`, at + 1);
     return src.slice(at, next > at ? next : at + 4000);
   }
 
   it.each(BODY_CALLBACKS)('%s parses via parseJsonObject and throws on a non-object', (name) => {
-    const body = callbackBody(daemon, name);
+    const body = callbackBody(daemon, name, 'async (body) => {', '    ');
     expect(body).toContain('parseJsonObject(body)');
     const guard = body.indexOf("throw new Error('invalid json body')");
     expect(guard, `${name} accepts a body that is not a plain object`).toBeGreaterThan(-1);
     // …and before anything reads a field off it.
     expect(body.slice(0, guard)).not.toMatch(/payload\.|hookInput\./);
+  });
+
+  it('parseBody refuses a body that is not a plain object', () => {
+    const at = claudeHooks.indexOf('function parseBody');
+    expect(at).toBeGreaterThan(-1);
+    const head = claudeHooks.slice(at, at + 250);
+    expect(head).toContain('parseJsonObject(body)');
+    expect(head).toContain("throw new Error('invalid json body')");
+  });
+
+  it.each(CLAUDE_HOOK_CALLBACKS)('%s parses its body through parseBody before reading it', (name) => {
+    const body = callbackBody(claudeHooks, name, 'async (body: string)', '    ');
+    const guard = body.indexOf('parseBody<');
+    expect(guard, `${name} reads its body without the parseBody guard`).toBeGreaterThan(-1);
+    expect(body.slice(0, guard)).not.toMatch(/JSON\.parse|body\./);
   });
 
   it('onActionProposal delegates to a handler that carries the same guard', () => {

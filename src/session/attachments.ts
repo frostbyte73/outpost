@@ -1,7 +1,8 @@
-// Photos go inline as image blocks (what the CLI sends for a paste); any other file is saved and
+// Photos go inline as images (what the CLI sends for a paste); any other file is saved and
 // its path handed to the model, so Read handles every type without Outpost knowing them.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import type { TurnInput } from '../runtime/types.js';
 
 export interface Attachment {
   kind: 'image' | 'file';
@@ -9,11 +10,6 @@ export interface Attachment {
   mediaType: string;
   data: string; // base64
 }
-
-export type UserContent = string | Array<
-  | { type: 'image'; source: { type: 'base64'; media_type: string; data: string } }
-  | { type: 'text'; text: string }
->;
 
 export const MAX_ATTACHMENTS = 10;
 const MB = 1024 * 1024;
@@ -80,8 +76,8 @@ function fmtBytes(n: number): string {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function buildUserContent(text: string, attachments: Attachment[], save: (a: Attachment, index: number) => string): UserContent {
-  if (attachments.length === 0) return text;
+export function buildTurnInput(text: string, attachments: Attachment[], save: (a: Attachment, index: number) => string): TurnInput {
+  if (attachments.length === 0) return { text };
   const fileLines = attachments.flatMap((a, i) => {
     if (a.kind !== 'file') return [];
     const path = save(a, i);
@@ -89,10 +85,6 @@ export function buildUserContent(text: string, attachments: Attachment[], save: 
   });
   const fullText = [text, ...fileLines].filter(Boolean).join('\n\n');
   const images = attachments.filter((a) => a.kind === 'image');
-  if (images.length === 0) return fullText;
-  return [
-    ...images.map((a) => ({ type: 'image' as const, source: { type: 'base64' as const, media_type: a.mediaType, data: a.data } })),
-    // The API rejects an empty text block, so a photo sent on its own carries none.
-    ...(fullText ? [{ type: 'text' as const, text: fullText }] : []),
-  ];
+  if (images.length === 0) return { text: fullText };
+  return { text: fullText, images: images.map((a) => ({ mediaType: a.mediaType, data: a.data })) };
 }

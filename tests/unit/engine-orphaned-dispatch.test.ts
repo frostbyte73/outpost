@@ -23,7 +23,7 @@ function makeEngine() {
     queue,
     sessionManager: {
       spawnDetached(sessionId: string) { spawned.push(sessionId); },
-      send() {}, isWorking() { return false; }, sendOrResume() {},
+      sendTurn() {}, isWorking() { return false; }, sendOrResume() {},
     } as never,
     worktreeManager: { get: () => undefined, provision: async () => ({ path: dir }) } as never,
     linearWriter: { setState: async () => undefined } as never,

@@ -7,7 +7,7 @@ describe('ApprovalQueue', () => {
 
   it('resolves enqueue when decide is called with matching id', async () => {
     const q = new ApprovalQueue({ timeoutMs: 60_000 });
-    const pending = q.enqueue({ sessionId: 's', toolName: 'Bash', toolInput: {} });
+    const pending = q.enqueue({ sessionId: 's', tool: 'shell', toolName: 'Bash', toolInput: {} });
     const ids = q.listPending();
     expect(ids).toHaveLength(1);
     q.decide(ids[0]!.id, { allow: true });
@@ -17,7 +17,7 @@ describe('ApprovalQueue', () => {
 
   it('times out to deny with reason when no decision arrives', async () => {
     const q = new ApprovalQueue({ timeoutMs: 1000 });
-    const pending = q.enqueue({ sessionId: 's', toolName: 'Bash', toolInput: {} });
+    const pending = q.enqueue({ sessionId: 's', tool: 'shell', toolName: 'Bash', toolInput: {} });
     vi.advanceTimersByTime(1500);
     const decision = await pending;
     expect(decision.allow).toBe(false);
@@ -31,8 +31,8 @@ describe('ApprovalQueue', () => {
 
   it('two concurrent approvals do not cross-resolve', async () => {
     const q = new ApprovalQueue({ timeoutMs: 60_000 });
-    const a = q.enqueue({ sessionId: 's', toolName: 'Bash', toolInput: { cmd: 'a' } });
-    const b = q.enqueue({ sessionId: 's', toolName: 'Bash', toolInput: { cmd: 'b' } });
+    const a = q.enqueue({ sessionId: 's', tool: 'shell', toolName: 'Bash', toolInput: { cmd: 'a' } });
+    const b = q.enqueue({ sessionId: 's', tool: 'shell', toolName: 'Bash', toolInput: { cmd: 'b' } });
     const ids = q.listPending();
     expect(ids).toHaveLength(2);
     q.decide(ids[0]!.id, { allow: true });
@@ -45,7 +45,7 @@ describe('ApprovalQueue', () => {
 
   it('after decide, the entry leaves listPending()', () => {
     const q = new ApprovalQueue({ timeoutMs: 60_000 });
-    q.enqueue({ sessionId: 's', toolName: 'Bash', toolInput: {} });
+    q.enqueue({ sessionId: 's', tool: 'shell', toolName: 'Bash', toolInput: {} });
     const id = q.listPending()[0]!.id;
     q.decide(id, { allow: true });
     expect(q.listPending()).toHaveLength(0);

@@ -98,6 +98,7 @@ import {
 } from './components/approvals-mobile.js';
 import { lookupContextWindow } from './utils/context-usage.js';
 import { EDIT_TOOLS, isHighDetailTool } from './components/tool-use-tile.js';
+import { itemToEntries } from './vm/session-events.js';
 import { mountShell, unmountShell } from './components/shell/index.js';
 import { mountMobileShell, unmountMobileShell, repaintMobileShell } from './components/mobile-shell/index.js';
 import { initPalette } from './components/palette/index.js';
@@ -178,7 +179,7 @@ async function loadSessions() {
     seedRunStates(data.projects ?? []);
     approvals.setPending(data.pending ?? []);
     for (const a of approvals.get().pending) {
-      if (isHighDetailTool(a.toolName) && a.sessionId) {
+      if (isHighDetailTool(a.tool) && a.sessionId) {
         sessions.for(a.sessionId).markToolExpanded(`approval-${a.approvalId}`, true);
       }
     }
@@ -429,7 +430,7 @@ async function openSession(id, opts) {
     try {
       const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages`);
       if (r.ok) {
-        const { messages } = await r.json();
+        const messages = (await r.json()).items.flatMap(itemToEntries);
         if (sessions.get().currentSessionId === id) {
           // seed seenBlockSigs so the WS replay buffer can't double-push the last ~30s
           const filtered = [];
@@ -439,7 +440,7 @@ async function openSession(id, opts) {
             if (applyTaskTranscriptMessage(m, id)) continue;
             if (applyAskTranscriptMessage(m, filtered, id)) continue;
             // hook payloads carry agent_type but not the parent's description
-            if (m.role === 'tool_use' && m.toolName === 'Agent' && m.toolInput && typeof m.toolInput === 'object') {
+            if (m.role === 'tool_use' && m.tool === 'subagent' && m.toolInput && typeof m.toolInput === 'object') {
               recordParentAgentInvocation({
                 toolUseId: m.toolUseId,
                 subagentType: m.toolInput.subagent_type,
@@ -471,7 +472,7 @@ async function catchUpFromDisk(id) {
   try {
     const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages`);
     if (!r.ok || !sessions.getSlice(id)) return;
-    const { messages } = await r.json();
+    const messages = (await r.json()).items.flatMap(itemToEntries);
     if (!sessions.getSlice(id)) return;
     const isCurrent = id === sessions.get().currentSessionId;
     const S = sessions.for(id);
@@ -517,7 +518,7 @@ async function catchUpFromDisk(id) {
       }
       if (applyTaskTranscriptMessage(m, id)) { added = true; continue; }
       if (applyAskTranscriptMessage(m, sessions.getSlice(id)?.transcript ?? [], id)) { added = true; continue; }
-      if (m.role === 'tool_use' && m.toolName === 'Agent' && m.toolInput && typeof m.toolInput === 'object') {
+      if (m.role === 'tool_use' && m.tool === 'subagent' && m.toolInput && typeof m.toolInput === 'object') {
         recordParentAgentInvocation({
           toolUseId: m.toolUseId,
           subagentType: m.toolInput.subagent_type,
@@ -571,7 +572,7 @@ function rebuildTranscriptFromDisk(messages, sessionId) {
     if (m.role === 'assistant' && m.msgId) subagents.markBlockSigSeen(`${m.msgId}|${m.text}`);
     if (applyTaskTranscriptMessage(m, sid)) continue;
     if (applyAskTranscriptMessage(m, filtered, sid)) continue;
-    if (m.role === 'tool_use' && m.toolName === 'Agent' && m.toolInput && typeof m.toolInput === 'object') {
+    if (m.role === 'tool_use' && m.tool === 'subagent' && m.toolInput && typeof m.toolInput === 'object') {
       recordParentAgentInvocation({
         toolUseId: m.toolUseId,
         subagentType: m.toolInput.subagent_type,
@@ -688,16 +689,17 @@ function stopThinking(sid) {
   }
 }
 
-function recordUsage(u, model, sid) {
-  if (!u) return;
+// `response` is a canonical usage.updated response block (src/runtime/types.ts).
+function recordUsage(response, model, sid) {
+  if (!response) return;
   // Synthetic assistant messages (rate-limit notices) carry model "<synthetic>" — don't
   // let that overwrite the real model id.
   const realModel = (typeof model === 'string' && !model.startsWith('<')) ? model : null;
   const lu = {
-    inputTokens: u.input_tokens ?? 0,
-    outputTokens: u.output_tokens ?? 0,
-    cacheCreate: u.cache_creation_input_tokens ?? 0,
-    cacheRead: u.cache_read_input_tokens ?? 0,
+    inputTokens: response.inputTokens,
+    outputTokens: response.outputTokens,
+    cacheCreate: response.cacheCreationTokens,
+    cacheRead: response.cacheReadTokens,
     model: realModel ?? (sid ? sessions.getSlice(sid)?.lastUsage?.model : null) ?? null,
   };
   // Attribute to the delivering socket's own session id — desktop's multi-live
@@ -729,7 +731,7 @@ function renderSession() {}
 
 // Reject-with-note flow. The transcript reject button no longer decides immediately —
 // it swaps the card's actions for a textarea so the user can tell Claude WHY. The
-// reason is plumbed as permissionDecisionReason (hook-handler.ts), which Claude reads
+// reason is plumbed as permissionDecisionReason (runtime/claude/hooks.ts), which Claude reads
 // as feedback instead of looping into another tool attempt.
 
 

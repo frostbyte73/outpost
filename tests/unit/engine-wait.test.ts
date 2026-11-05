@@ -22,7 +22,7 @@ function makeEngine() {
   const clock = { now: 1000 };
   const sessionManager = {
     spawnDetached(sessionId: string) { spawned.push(sessionId); },
-    send() {}, isWorking() { return false; }, sendOrResume() {},
+    sendTurn() {}, isWorking() { return false; }, sendOrResume() {},
   } as never;
   const worktreeManager = { get: () => undefined, provision: async () => ({ path: dir }) } as never;
   const linearWriter = { setState: async () => undefined } as never;

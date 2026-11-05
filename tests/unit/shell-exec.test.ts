@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bashBlocks, splitBashBlocks, SessionShell } from '../../src/session/shell-exec.js';
 import { SessionStore } from '../../src/session/session-store.js';
+import { ClaudeTranscripts } from '../../src/runtime/claude/transcripts.js';
 
 describe('bash block round-trip', () => {
   it('recovers the run and leaves the user text the blocks were prepended to', () => {
@@ -84,10 +85,10 @@ describe('SessionStore transcript', () => {
       JSON.stringify({ type: 'user', cwd: tmpdir(), message: { content: `${blocks}what changed?` } }) + '\n',
     );
 
-    const messages = new SessionStore({ root }).readMessages('sess-shell01');
-    expect(messages).toEqual([
-      { role: 'shell', text: 'git status', stdout: 'clean\n', stderr: '' },
-      { role: 'user', text: 'what changed?' },
+    const items = new SessionStore({ transcripts: new ClaudeTranscripts(root) }).readItems('sess-shell01');
+    expect(items.map(({ id: _id, ...rest }) => rest)).toEqual([
+      { type: 'user_shell', command: 'git status', stdout: 'clean\n', stderr: '' },
+      { type: 'user_message', text: 'what changed?' },
     ]);
   });
 });

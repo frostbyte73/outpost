@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { resolveClaudeBin } from '../session/claude-proc.js';
+import { resolveClaudeBin } from '../runtime/claude/bin.js';
 import type { JobRecord } from '../work/work-types.js';
 import type { PrDraftGitContext } from './git-ops.js';
 

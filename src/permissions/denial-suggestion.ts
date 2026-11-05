@@ -4,6 +4,7 @@
 
 import type { BashDenialCause, RuleKind } from './allowlist.js';
 import { readWordAt, stripLeadingAssignments } from './shell-split.js';
+import { canonicalToolName, isMcpTool, legacyMcpSpelling, ruleSpelling } from '../runtime/tools.js';
 
 // `none` is a real answer, not a failure: some calls are denied by a gate no rule lifts, and
 // `value` then carries the reason so the user fixes the action's command instead of hunting
@@ -16,9 +17,9 @@ export interface RuleSuggestion {
 // Tools whose input names a file, and the fields to look in. Same table as the checker's,
 // deliberately re-stated: a tool the checker doesn't path-scope must not be suggested one.
 const PATH_FIELDS: Record<string, ReadonlyArray<string>> = {
-  Read: ['file_path'], Write: ['file_path'], Edit: ['file_path'],
-  MultiEdit: ['file_path'], NotebookEdit: ['notebook_path', 'file_path'],
-  Glob: ['path'], Grep: ['path'],
+  file_read: ['file_path'], file_write: ['file_path'], file_edit: ['file_path'],
+  file_multi_edit: ['file_path'], notebook_edit: ['notebook_path', 'file_path'],
+  file_glob: ['path'], file_grep: ['path'],
 };
 
 function escapeRe(s: string): string {
@@ -116,7 +117,8 @@ export function suggestRule(
   toolInput: unknown,
   bashCause: (cmd: string) => BashDenialCause,
 ): RuleSuggestion {
-  if (toolName === 'Bash') {
+  const tool = canonicalToolName(toolName);
+  if (tool === 'shell') {
     const cmd = (toolInput as { command?: string })?.command ?? '';
     const cause = bashCause(cmd);
     if (cause.kind === 'none') return { kind: 'none', value: cause.reason };
@@ -130,13 +132,13 @@ export function suggestRule(
     const words = [head, ...operationWords(head, clause.slice(head.length))];
     return { kind: 'bash', value: `^${words.map(escapeRe).join(' ')}(\\s|$)` };
   }
-  if (toolName.startsWith('mcp__')) {
-    return { kind: 'mcp', value: `^${escapeRe(toolName)}$` };
+  if (isMcpTool(tool)) {
+    return { kind: 'mcp', value: `^${escapeRe(legacyMcpSpelling(tool))}$` };
   }
   const input = toolInput as Record<string, unknown> | null;
-  for (const f of PATH_FIELDS[toolName] ?? []) {
+  for (const f of PATH_FIELDS[tool] ?? []) {
     const v = input && typeof input === 'object' ? input[f] : undefined;
-    if (typeof v === 'string' && v.length > 0) return dirRule(toolName, v);
+    if (typeof v === 'string' && v.length > 0) return dirRule(ruleSpelling(tool), v);
   }
-  return { kind: 'tool', value: toolName };
+  return { kind: 'tool', value: ruleSpelling(tool) };
 }

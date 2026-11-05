@@ -5,6 +5,7 @@ import {
   FILE_REFERENCING_FLAGS, extractFileReferences, isValidTmpFilePath, tokenize,
 } from '../permissions/file-flags.js';
 import { writeFindings, type WriteFinding } from '../permissions/dangerous-writes.js';
+import { canonicalToolName } from '../runtime/tools.js';
 
 // The file-flag parser and the `/tmp` path shape moved to the permissions layer, where
 // `allows()` also needs them (see file-flags.ts). Re-exported so a caller reasoning about a
@@ -274,16 +275,17 @@ export function matchPinnedCall(
   draft: WriteDraft, toolName: string, toolInput: unknown,
 ): PinnedCall | undefined {
   if (!draft.approvedAt) return undefined;
+  const tool = canonicalToolName(toolName);
   return draft.calls.find((c) => {
     // `!== undefined`, not truthy — consistent with releaseConsumedPin's own consumedAt check
     // (engine.ts). Harmless either way since an epoch-0 timestamp never occurs, but one spelling.
     if (c.consumedAt !== undefined) return false;
-    if (toolName === 'Bash') {
+    if (tool === 'shell') {
       const cmd = (toolInput as { command?: unknown })?.command;
       return typeof c.bash === 'string' && typeof cmd === 'string'
         && normalizeBash(c.bash) === normalizeBash(cmd);
     }
-    return c.tool?.name === toolName && deepEqual(c.tool.args, toolInput ?? {});
+    return c.tool !== undefined && canonicalToolName(c.tool.name) === tool && deepEqual(c.tool.args, toolInput ?? {});
   });
 }
 

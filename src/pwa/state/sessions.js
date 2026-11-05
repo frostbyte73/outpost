@@ -550,7 +550,7 @@ function makeSliceApi(id) {
 // seedEditExpansions history path).
 function seedEditExpansion(expandedTools, msg) {
   if (!msg || msg.role !== 'tool_use') return null;
-  if (msg.toolName !== 'Edit' && msg.toolName !== 'Write') return null;
+  if (msg.tool !== 'file_edit' && msg.tool !== 'file_write') return null;
   if (typeof msg.toolUseId !== 'string' || expandedTools.has(msg.toolUseId)) return null;
   const next = new Set(expandedTools);
   next.add(msg.toolUseId);

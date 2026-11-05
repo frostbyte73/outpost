@@ -417,6 +417,7 @@ function agentEntryHtml(entry, isLast, ctx, sessionId) {
     const pending = approvals.get().pending.find((a) => a.approvalId === entry.approvalId);
     return _deps.approvalCardHtml({
       approvalId: entry.approvalId,
+      tool: entry.tool,
       toolName: entry.toolName,
       toolInput: entry.toolInput,
       summary: '',
@@ -455,6 +456,7 @@ function agentEntryHtml(entry, isLast, ctx, sessionId) {
   const tileHtml = toolUseHtml({
     role: 'tool_use',
     text: `${entry.toolName}(${JSON.stringify(entry.toolInput).slice(0, 200)})`,
+    tool: entry.tool,
     toolName: entry.toolName,
     toolInput: entry.toolInput,
     toolUseId: entry.toolUseId || entry.approvalId,

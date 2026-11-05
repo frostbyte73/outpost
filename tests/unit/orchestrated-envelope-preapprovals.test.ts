@@ -33,7 +33,7 @@ describe('provisioning a controller step', () => {
     const queue = new JobQueue(dir);
     const engine = new WorkEngine({
       queue,
-      sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {} } as never,
+      sessionManager: { spawnDetached() {}, sendTurn() {}, isWorking() { return false; }, sendOrResume() {} } as never,
       worktreeManager: { provision: async () => ({ path: dir }), get: () => ({ baseBranch: 'develop' }) } as never,
       linearWriter: { setState: async () => undefined } as never,
       actionsStore: {} as never,

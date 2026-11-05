@@ -16,7 +16,7 @@ import { join } from 'node:path';
 // The body-changing events for one action form a contiguous chain — each event's "before" is
 // the previous chain entry's body, never a separately stored copy. applyWrite holds that
 // invariant by recording a `drifted` event whenever the on-disk text doesn't match the chain
-// head, which is what turns writes the daemon didn't make (setup-actions' cpSync reseed, a
+// head, which is what turns writes the daemon didn't make (actions/install.ts' cpSync reseed, a
 // hand edit, a worktree/runtime desync) into visible history rather than silent holes.
 
 export type ActionEventKind =

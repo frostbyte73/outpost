@@ -40,7 +40,7 @@ export function initApprovalsMobile(deps) {
 // wraps around it. Expand-state uses "approval-<id>" so it doesn't collide
 // with the tool_use_id state used by transcript tiles.
 export function approvalCardHtml(a) {
-  if (a.toolName === 'AskUserQuestion') return askApprovalCardHtml(a);
+  if (a.tool === 'ask_user') return askApprovalCardHtml(a);
   // Resolve path context from the approval's own sessionId (parent or
   // subagent-tagged, always a real session id) rather than a shared
   // "currently viewed" pointer — this card can be rendered for a background
@@ -315,7 +315,7 @@ export function flushPendingDecides() {
 
 // Reject-with-note flow. The reject button swaps the card's actions for a
 // textarea so the user can tell Claude WHY. The reason is plumbed as
-// permissionDecisionReason (hook-handler.ts), which Claude reads as feedback.
+// permissionDecisionReason (runtime/claude/hooks.ts), which Claude reads as feedback.
 export function beginRejectWithNote(id) {
   approvals.setRejectionDraft(id, '');
   _deps.renderSession();

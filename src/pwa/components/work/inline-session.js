@@ -50,7 +50,7 @@ function renderTail(slice, sessionId) {
   const cards = approvals.get().pending.filter((a) => a.sessionId === sessionId && !a.agentId);
   if (cards.length > 0) {
     return cards.map((a) => (
-      a.toolName === 'AskUserQuestion' ? askApprovalCardHtml(a) : inlineApprovalCardHtml(a)
+      a.tool === 'ask_user' ? askApprovalCardHtml(a) : inlineApprovalCardHtml(a)
     )).join('');
   }
   const pendingIds = new Set(cards.map((a) => a.toolUseId).filter(Boolean));

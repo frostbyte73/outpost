@@ -7,22 +7,34 @@ src/
   daemon.ts              # entrypoint; wires modules; installs route factories
   server.ts              # HTTPS + WS surface for the PWA
   mcp-server.ts          # MCP surface for spawned Claude sessions
-  config.ts, env-file.ts, claude-config.ts, settings-gen.ts, tailscale.ts
-  setup-actions.ts
+  config.ts, env-file.ts, tailscale.ts
   push-{keys,sender,subscriptions}.ts
+
+  runtime/               # the AgentRuntime boundary: what every session runs on
+    types.ts               # AgentRuntime, RuntimeHost, canonical items/events, capabilities
+    tools.ts               # canonical tool names; Claude spellings are permanent aliases
+    event-ndjson.ts        # per-session native + canonical event logs (runtime-logs/, 14-day retention)
+    daemon-host.ts         # RuntimeHost: the daemon's answers to gating, turn ends, usage
+    claude/                # the Claude Code CLI runtime — the only implementation
+      runtime.ts, proc.ts, bin.ts   # ClaudeRuntime, the stream-json subprocess, launchd-safe binary lookup
+      events.ts              # stream-json → canonical events
+      hooks.ts               # loopback hook payloads → RuntimeHost calls
+      transcripts.ts, transcript-{parse,scan}.ts  # ~/.claude/projects JSONL → canonical items
+      settings.ts, skills.ts, config.ts            # --settings/--mcp-config files, action delivery as skills, ~/.claude.json
 
   routes/                # HTTP route factories: registerXRoutes(server, deps)
     {git,jobs,sessions,projects,push,runs,schedules,meta,util,actions,preferences,update}.ts
     action-revisions.ts, schedule-edits.ts
   session/               # session lifecycle
-    session-{manager,store}.ts, claude-proc.ts, stream-json.ts, event-log.ts
+    session-{manager,store}.ts, stream-json.ts, event-log.ts, attachments.ts
   work/                  # job orchestration
     engine.ts, work-{queue,types}.ts, envelope.ts, reconcile.ts, write-draft{,-runner}.ts
     orchestrated-runner.ts # the controller loop's runtime (see [controller-loop.md](controller-loop.md))
     launch-governor.ts     # who gets to spawn next, under token headroom
     job-liveness.ts, workspace.ts, pr-url.ts, action-run-{derive,ledger}.ts
   permissions/           # hook plumbing + gates
-    hook-{handler,server}.ts, approval-mode.ts, approvals.ts
+    gate.ts                # gateToolCall: the per-call decision every runtime's tool calls reach
+    hook-server.ts, approval-mode.ts, approvals.ts
     allowlist.ts           # scopes + rules; shell-{split,safety}.ts are its bash lexer +
                            # argv/expansion bar, denial-suggestion.ts the rule offered on a miss
     file-flags.ts          # which flags name a FILE, and the /tmp shape one may name — the
@@ -52,7 +64,7 @@ src/
     stop-hook-tracker.ts, recurrence-tracker.ts, job-event-log.ts, jobs-migrate.ts
     action-{revisions,edits}-store.ts  # SKILL.md version history + revert; durable half of the in-flight edit map
     action-runs-store.ts, denials-store.ts  # per-round run rows + every allowlist miss — the improvement loop's evidence
-  actions/               # registry + types; scorecard.ts, improvement-pack.ts, proposal-intake.ts, skill-diff.ts
+  actions/               # registry + types; install.ts, scorecard.ts, improvement-pack.ts, proposal-intake.ts, skill-diff.ts
   steps/                 # step handlers: action.ts, orchestrated{,-policy,-inbox}.ts
   jobs/                  # lifecycle.ts
 
@@ -76,7 +88,8 @@ src/
       mobile-header.js, approvals-mobile.js, cwd-picker.js, theme-picker.js,
       diff-review-format.js
     vm/                    # view-models (D2): pure derivations from raw store snapshots → row/card shapes.
-                           # One file per surface ({cockpit,tracked,sessions,schedules,library,settings,runs}.js) + work-predicates.js.
+                           # One file per surface ({cockpit,tracked,sessions,schedules,library,settings,runs}.js) + work-predicates.js;
+                           # session-events.js maps canonical session items to transcript entries.
                            # Zero DOM. Renderers are layout-agnostic; mobile-shell arranges the SAME renderers
                            # desktop's shell/surfaces.js uses — never a second copy.
     state/                 # store singletons (sessions, approvals, subagents, work, usage, settings, git,

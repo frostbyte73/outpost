@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { lintPermissionRule } from '../permissions/write-shape.js';
+import { canonicalToolName, isMcpTool, legacyMcpSpelling } from '../runtime/tools.js';
 
 export interface ResolutionRecord {
   cwd: string;
@@ -100,14 +101,15 @@ export class RecurrenceTracker {
     if (!triggerWindow) return null;
 
     const suggestion = ((): Suggestion | null => {
-      if (toolName === 'Bash') {
+      const tool = canonicalToolName(toolName);
+      if (tool === 'shell') {
         const cmd = (toolInput as { command?: string })?.command;
         const re = typeof cmd === 'string' ? deriveBashRegex(cmd) : null;
         if (!re) return null;
         return { kind: 'bash', suggestedValue: re, matchCount, triggerWindow };
       }
-      if (toolName.startsWith('mcp__')) {
-        return { kind: 'mcp', suggestedValue: `^${toolName}$`, matchCount, triggerWindow };
+      if (isMcpTool(tool)) {
+        return { kind: 'mcp', suggestedValue: `^${legacyMcpSpelling(tool)}$`, matchCount, triggerWindow };
       }
       return { kind: 'tool', suggestedValue: toolName, matchCount, triggerWindow };
     })();

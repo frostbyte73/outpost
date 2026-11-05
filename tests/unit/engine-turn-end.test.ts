@@ -19,10 +19,10 @@ function makeEngine(unresolvedGraceMs?: number, now: () => number = () => 1) {
   const working = new Set<string>();
   const sessionManager = {
     spawnDetached() { /* not exercised by these transitions */ },
-    send() { /* not exercised by these transitions */ },
+    sendTurn() { /* not exercised by these transitions */ },
     isWorking(sessionId: string) { return working.has(sessionId); },
-    sendOrResume(sessionId: string, _cwd: string, msg: { message: { content: string } }) {
-      resumed.push({ sessionId, content: msg.message.content });
+    sendOrResume(sessionId: string, _cwd: string, turn: { text: string }) {
+      resumed.push({ sessionId, content: turn.text });
     },
   } as never;
   const worktreeManager = { get: () => undefined, provision: async () => ({ path: dir }) } as never;

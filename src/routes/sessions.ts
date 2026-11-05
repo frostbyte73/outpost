@@ -6,7 +6,7 @@ import type { ApprovalQueue } from '../permissions/approvals.js';
 import type { Allowlist } from '../permissions/allowlist.js';
 import type { RecurrenceTracker } from '../storage/recurrence-tracker.js';
 import type { InteractiveStore } from '../session/interactive-store.js';
-import { readProjectContextWindow } from '../claude-config.js';
+import type { AgentRuntime } from '../runtime/types.js';
 import { readJsonObject } from './util.js';
 
 const TOOK_WHEEL = 'The user has taken the wheel on this session. Autopilot is paused: '
@@ -23,11 +23,12 @@ const GAVE_WHEEL = 'The user has handed control back. Autopilot resumes. State i
 export interface SessionsRoutesDeps {
   sessionStore: SessionStore;
   manager: SessionManager;
+  runtime: AgentRuntime;
   worktreeManager: WorktreeManager;
   queue: ApprovalQueue;
   recurrence: RecurrenceTracker;
   allowlist: Allowlist;
-  latestStatuslineBySession: Map<string, object>;
+  latestStatuslineBySession: Map<string, unknown>;
   cwdForSession(sessionId: string): string | undefined;
   summarizeToolInput(toolName: string, toolInput: unknown): string;
   // Shared with daemon.ts's onSessionExit — both are call sites for the same
@@ -54,7 +55,7 @@ export interface SessionsRoutesDeps {
 
 export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps): void {
   const {
-    sessionStore, manager, worktreeManager, queue, recurrence, allowlist,
+    sessionStore, manager, runtime, worktreeManager, queue, recurrence, allowlist,
     latestStatuslineBySession, cwdForSession, summarizeToolInput, captureSessionEnd, info,
     interactive, interactiveTarget, jobIdForSession, tickJob, markJobEngaged,
   } = deps;
@@ -63,10 +64,7 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
     // Fire-and-forget: SessionManager.send throws for a session whose subprocess has been
     // reaped, and a reaped session picks the flag up from its envelope on the next resume.
     try {
-      manager.send(sessionId, {
-        type: 'user',
-        message: { role: 'user', content: tookWheel ? TOOK_WHEEL : GAVE_WHEEL },
-      });
+      manager.sendTurn(sessionId, { text: tookWheel ? TOOK_WHEEL : GAVE_WHEEL });
     } catch (e) {
       console.warn(`[api] handover to ${sessionId.slice(0, 8)} failed: ${(e as Error).message}`);
     }
@@ -125,7 +123,7 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
     const projects = sessionStore.listProjects();
     // Project contextWindowSize is 1M iff the user ever ran the [1m] Opus variant there.
     for (const p of projects) {
-      const cw = readProjectContextWindow(p.cwd);
+      const cw = runtime.contextWindowHint(p.cwd);
       if (cw) p.contextWindowSize = cw;
     }
     // Annotate sessions with their kind (so the PWA can filter action-edit /
@@ -145,6 +143,7 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
       return {
         approvalId: a.id,
         sessionId: a.sessionId,
+        tool: a.tool,
         toolName: a.toolName,
         toolInput: a.toolInput,
         toolUseId: a.toolUseId,
@@ -164,10 +163,10 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
   server.route('GET', '/api/sessions/:id/messages', (req, res) => {
     const m = (req.url ?? '').match(/^\/api\/sessions\/([\w-]+)\/messages$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
-    const messages = sessionStore.readMessages(m[1]!);
+    const items = sessionStore.readItems(m[1]!);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ messages }));
+    res.end(JSON.stringify({ items }));
   });
 
   server.route('GET', '/api/sessions/:id/subagents', (req, res) => {

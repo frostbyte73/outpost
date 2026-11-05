@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, statSync, createReadStream, writeFileSync, renameSync, readdirSync, readFileSync } from 'node:fs';
 import { Allowlist, type AllowlistConfig } from './permissions/allowlist.js';
 import { loadRuntimePermissionGroups } from './permissions/permission-groups-loader.js';
@@ -13,9 +14,9 @@ import { Server } from './server.js';
 import { HookServer } from './permissions/hook-server.js';
 import { handleMcpRequest, OUTPOST_MCP_TOOLS } from './mcp-server.js';
 import { discoverTailscaleEnv } from './tailscale.js';
-import { writeDaemonSettings, writeMcpConfig, generateSecret } from './settings-gen.js';
+import { writeDaemonSettings, writeMcpConfig } from './runtime/claude/settings.js';
 import { JobQueue } from './work/work-queue.js';
-import { AUTH_STOP_ERRORS, serializeJob } from './work/job-liveness.js';
+import { serializeJob } from './work/job-liveness.js';
 import { JournalStore } from './storage/journal-store.js';
 import { LinearWriter } from './integrations/linear-writer.js';
 import { PrWatcher } from './integrations/pr-watcher.js';
@@ -27,13 +28,18 @@ import { sessionGrantRefusal } from './work/preapprovals.js';
 import { checkPlanDiagram } from './work/plan-diagram.js';
 import { LaunchGovernor } from './work/launch-governor.js';
 import type { JobRecord } from './work/work-types.js';
-import { ensureActionsInstalled, bundledRepoDir } from './setup-actions.js';
+import { ensureActionsInstalled, bundledRepoDir } from './actions/install.js';
+import { ClaudeRuntime } from './runtime/claude/runtime.js';
+import { ClaudeTranscripts } from './runtime/claude/transcripts.js';
+import { pruneNdjsonLogs } from './runtime/event-ndjson.js';
 import { ActionsStore } from './storage/actions-store.js';
 import { InteractiveStore } from './session/interactive-store.js';
 import { ActionRegistry } from './actions/index.js';
 import { actionDirFor } from './actions/registry.js';
 import type { PermissionGroupMap } from './actions/types.js';
-import { handleHook, handlePostToolFailureHook, type HookInput, type PostToolFailureHookInput } from './permissions/hook-handler.js';
+import { claudeHookHandlers } from './runtime/claude/hooks.js';
+import { createRuntimeHost, summarizeToolInput } from './runtime/daemon-host.js';
+import type { StatuslineUsage } from './runtime/types.js';
 import { type ApprovalMode, ApprovalModeStore } from './permissions/approval-mode.js';
 import { RecurrenceTracker } from './storage/recurrence-tracker.js';
 import { WorktreeManager } from './git/worktree-manager.js';
@@ -76,7 +82,6 @@ import { ActionRevisionsStore } from './storage/action-revisions-store.js';
 import { PermissionGroupRevisionsStore } from './storage/permission-group-revisions-store.js';
 import { ActionRunLedger } from './work/action-run-ledger.js';
 import { BlobStore } from './storage/blob-store.js';
-import { readInputKey, recordableRead } from './permissions/read-recording.js';
 import { CODE_ROUND_ACTIONS } from './work/action-run-links.js';
 import { diffSince, reconcileSnapshotRefs, snapshotWorktree } from './eval/run-output.js';
 import { EvalSessions } from './eval/eval-sessions.js';
@@ -121,6 +126,7 @@ mkdirSync(RUNTIME_DIR, { recursive: true });
 
 // PWA reads this via /api/info so the countdown UI matches the server's expiry deadline.
 const APPROVAL_TIMEOUT_MS = config.approvalTimeoutMs;
+const RUNTIME_LOG_MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 // Read before main() exports its own OUTPOST_API_URL
@@ -216,7 +222,7 @@ async function main() {
     process.exit(1);
   }
 
-  // Every spawned session inherits process.env (claude-proc merges it under its own
+  // Every spawned session inherits process.env (runtime/claude/proc.ts merges it under its own
   // per-session vars), so exporting the loopback base URL here is what makes
   // $OUTPOST_API_URL resolvable inside action steps — they POST back to the daemon
   // (e.g. write.add-project registering a fresh clone) and have no other way to
@@ -225,8 +231,8 @@ async function main() {
     process.env.OUTPOST_API_URL = `http://127.0.0.1:${config.httpPort}`;
   }
 
-  const secret = generateSecret();
-  const evalSecret = generateSecret();
+  const secret = randomBytes(32).toString('hex');
+  const evalSecret = randomBytes(32).toString('hex');
   const HOOK_PORT = config.hookPort;
   const settingsPath = join(RUNTIME_DIR, 'daemon-settings.json');
   const mcpConfigPath = join(RUNTIME_DIR, 'daemon-mcp.json');
@@ -234,6 +240,20 @@ async function main() {
   const actionSettingsPath = join(RUNTIME_DIR, 'daemon-action-settings.json');
   writeDaemonSettings({ outPath: actionSettingsPath, hookPort: HOOK_PORT, recordReads: true });
   writeMcpConfig({ outPath: mcpConfigPath, hookPort: HOOK_PORT, daemonAuthSecret: secret });
+  const projectsRoot = config.projectsRoot;
+  const runtime = new ClaudeRuntime({
+    settingsPath,
+    actionSettingsPath,
+    mcpConfigPath,
+    daemonAuthSecret: secret,
+    daemonHost: config.host ?? tsEnv?.hostname ?? '127.0.0.1',
+    hookPort: config.hookPort,
+    transcripts: new ClaudeTranscripts(projectsRoot),
+  });
+  const deliverActions = (actionsDir: string) => runtime.deliverActions(actionsDir);
+  const runtimeLogDir = join(RUNTIME_DIR, 'runtime-logs');
+  pruneNdjsonLogs(runtimeLogDir, RUNTIME_LOG_MAX_AGE_MS);
+  setInterval(() => pruneNdjsonLogs(runtimeLogDir, RUNTIME_LOG_MAX_AGE_MS), 24 * 60 * 60 * 1000).unref();
 
   const projectAllowlistDir = join(RUNTIME_DIR, 'allowlists');
   const outpostActionsDir = join(RUNTIME_DIR, 'actions');
@@ -251,7 +271,7 @@ async function main() {
   // reads it — user-modified action dirs are left alone, so LiveKit-specific edits
   // survive upgrades and never touch the repo. The registry is rooted at this live
   // copy (NOT the repo) so user-authored/edited actions actually reach the catalog.
-  try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); }
+  try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions); }
   catch (e) { console.warn(`[work] seeding actions failed: ${(e as Error).message}`); }
   const actionRegistry = new ActionRegistry(outpostActionsDir, {
     permissionGroups,
@@ -297,10 +317,16 @@ async function main() {
   });
   console.log(`[daemon] push subscriptions: ${pushStore.list().length} loaded from ${config.pushSubscriptionsPath}`);
 
-  const projectsRoot = config.projectsRoot;
   const projectRegistry = new ProjectRegistry(join(RUNTIME_DIR, 'projects.json'));
   const worktreeManager = new WorktreeManager({ root: join(RUNTIME_DIR, 'worktrees'), projectsRoot });
-  const sessionStore = new SessionStore({ root: projectsRoot, registry: projectRegistry, worktreeManager, sessionMetaDir: join(RUNTIME_DIR, 'session-meta'), runtimeDir: RUNTIME_DIR });
+  const sessionStore = new SessionStore({
+    transcripts: runtime.transcripts,
+    registry: projectRegistry,
+    worktreeManager,
+    sessionMetaDir: join(RUNTIME_DIR, 'session-meta'),
+    runtimeDir: RUNTIME_DIR,
+    runtimeLogDir,
+  });
   console.log(`[daemon] projects root: ${projectsRoot}`);
 
   function findSessionTitle(id: string): string | undefined {
@@ -372,12 +398,8 @@ async function main() {
   const claudeLogin = new ClaudeLoginFlows(onReauthorized);
 
   const manager = new SessionManager({
-    settingsPath,
-    actionSettingsPath,
-    mcpConfigPath,
-    daemonAuthSecret: secret,
-    daemonHost: config.host ?? tsEnv?.hostname ?? '127.0.0.1',
-    hookPort: config.hookPort,
+    runtime,
+    runtimeLogDir,
     sessionStore,
     eventLogMaxEvents,
     eventLogMaxAgeMs,
@@ -423,7 +445,7 @@ async function main() {
       const kind = manager.getKind(sessionId);
       if (kind === 'action-edit' || kind === 'skill-edit') {
         if (kind === 'action-edit') {
-          try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); }
+          try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions); }
           catch (e) { console.warn(`[work] post-edit re-symlink failed: ${(e as Error).message}`); }
           // Drop any action-edit tracking entry so the card stops showing a "review"
           // pill against a dead session. If the user already approved, the entry was
@@ -521,7 +543,7 @@ async function main() {
     }
   })();
   const reloadActions = () => {
-    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); } catch { /* tolerate */ }
+    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions); } catch { /* tolerate */ }
     try { actionRegistry.load(); } catch (e) { console.warn(`[action-revert] registry reload failed: ${(e as Error).message}`); }
   };
   const actionRunLedger = new ActionRunLedger({
@@ -685,7 +707,7 @@ async function main() {
 
   // Cache last statusline per session so the meter renders immediately on reattach after
   // the claude subprocess (and its event log) has exited. Memory-only by design.
-  const latestStatuslineBySession = new Map<string, object>();
+  const latestStatuslineBySession = new Map<string, StatuslineUsage>();
 
   // action-edit/skill-edit sessions aren't user-facing "runs" — exclude them from the ledger.
   // Called from onSessionExit (ordinary completion/idle-reap/crash) and from the sessions
@@ -696,7 +718,7 @@ async function main() {
     if (kind === 'action-edit' || kind === 'skill-edit' || kind === 'schedule-edit') return;
     const found = sessionStore.findSession(id);
     if (!found) return;
-    const sl = latestStatuslineBySession.get(id) as { cost?: { total_cost_usd?: number; total_duration_ms?: number } } | undefined;
+    const sl = latestStatuslineBySession.get(id);
     runsCapture.onSessionEnd({
       sessionId: id,
       title: found.session.title,
@@ -720,256 +742,28 @@ async function main() {
 
   // Hook endpoints are loopback-only and authenticated by a per-launch secret —
   // see hook-server.ts. Any new endpoint added there must validate the secret header.
+  const runtimeHost = createRuntimeHost({
+    engine, manager, allowlist, queue, modes, actionRegistry, worktreeManager, interactive,
+    recurrence, stopTracker, pushSender, runBlobs, actionRunLedger, runsCapture,
+    latestStatuslineBySession,
+    pullBashPatterns: () => permissionGroups.pull?.alwaysAllowBashPatterns ?? [],
+    cwdForSession, findSessionTitle, notifyAll, endTurn, noteAuthFailure,
+    // Reassigned once the action-edit handlers exist further down main().
+    recordActionDenial: (denial) => recordActionDenial(denial),
+  });
   const hookServer = new HookServer({
     port: HOOK_PORT,
     daemonAuthSecret: secret,
     evalSecret,
-    onStatusLineHook: async (body) => {
-      // Schema: https://code.claude.com/docs/en/statusline#available-data.
-      const payload = parseJsonObject(body) as {
-        session_id?: string;
-        model?: { id?: string; display_name?: string };
-        context_window?: {
-          context_window_size?: number;
-          used_percentage?: number | null;
-          remaining_percentage?: number | null;
-          total_input_tokens?: number;
-          total_output_tokens?: number;
-          current_usage?: {
-            input_tokens?: number;
-            output_tokens?: number;
-            cache_creation_input_tokens?: number;
-            cache_read_input_tokens?: number;
-          } | null;
-        };
-        cost?: {
-          total_cost_usd?: number;
-          total_duration_ms?: number;
-          total_api_duration_ms?: number;
-          total_lines_added?: number;
-          total_lines_removed?: number;
-        };
-        rate_limits?: {
-          five_hour?: { used_percentage?: number; resets_at?: number };
-          seven_day?: { used_percentage?: number; resets_at?: number };
-        };
-        effort?: { level?: string };
-        exceeds_200k_tokens?: boolean;
-      } | null;
-      if (!payload) throw new Error('invalid json body');
-      const sessionId = payload.session_id;
-      if (!sessionId) return;
-      const msg = {
-        type: 'daemon_statusline',
-        sessionId,
-        model: payload.model,
-        contextWindow: payload.context_window,
-        cost: payload.cost,
-        rateLimits: payload.rate_limits,
-        effort: payload.effort,
-        exceeds200k: payload.exceeds_200k_tokens,
-      };
-      latestStatuslineBySession.set(sessionId, msg);
-      manager.broadcast(sessionId, msg);
-      runsCapture.onStatusline(sessionId, msg);
-      if (typeof payload.cost?.total_cost_usd === 'number') {
-        actionRunLedger.noteSessionCost(sessionId, payload.cost.total_cost_usd);
-      }
-      if (typeof payload.model?.id === 'string' && payload.model.id) actionRunLedger.noteSessionModel(sessionId, payload.model.id);
-    },
-    onStopHook: async (body) => {
-      const payload = parseJsonObject(body) as { session_id?: string } | null;
-      if (!payload) throw new Error('invalid json body');
-      const sessionId = payload.session_id;
-      if (!sessionId) return;
-      endTurn(sessionId);
-      engine.clearStall(sessionId);
-      const { shouldNotify, turnDurationMs } = stopTracker.consume(sessionId);
-      console.log(`[hook] stop session=${sessionId.slice(0,8)} durationMs=${turnDurationMs ?? 'n/a'} push=${shouldNotify}`);
-      // A resume queued behind an in-flight turn (e.g. a fast spec approval dispatching
-      // /code.plan before the spec turn's Stop landed) leaves a trailing Stop that belongs
-      // to the superseded round. Attributing it to the current round would spuriously fail
-      // a step that's actively running — drop it here and wait for the real turn-end Stop.
-      if (engine.consumeStaleTurnStop(sessionId)) {
-        console.log(`[work] stop session=${sessionId.slice(0,8)} → stale (superseded round), ignored`);
-      } else {
-        // If this session is bound to an unresolved step, the assistant ended its turn
-        // without calling submit_step_output. Arm the failure rather than applying it —
-        // a round that yielded to background subagents gets re-invoked, and the next tool
-        // call on the session calls the check off (see WorkEngine.armUnresolvedCheck).
-        if (engine.armUnresolvedCheck(
-          sessionId,
-          'Session ended without submitting output via mcp__outpost__submit_step_output',
-        )) {
-          console.log(`[work] stop session=${sessionId.slice(0,8)} → unresolved-step check armed`);
-        }
-        engine.onControllerTurnEnded(sessionId);
-      }
-      if (!shouldNotify) return;
-      const title = findSessionTitle(sessionId);
-      void pushSender.send({
-        title: title ? `Claude finished: ${title}` : 'Claude finished',
-        body: turnDurationMs
-          ? `Turn took ${(turnDurationMs / 1000).toFixed(0)}s. Tap to continue.`
-          : 'Tap to continue.',
-        tag: `stop-${sessionId}`,
-        data: { kind: 'stop', sessionId },
-      });
-    },
-    // Fired by Claude Code INSTEAD of Stop when an API error ended the turn (auth, rate limit,
-    // overload, billing). Unregistered, every such turn left its session `working` forever: the
-    // job read Running, its governor slot stayed held, and a lapsed sign-in mid-run went
-    // unannounced because the CLI reports that one on stdout, not the stderr isAuthFailure reads.
-    onStopFailureHook: async (body) => {
-      const payload = parseJsonObject(body) as { session_id?: string; error?: string; error_details?: string } | null;
-      if (!payload) throw new Error('invalid json body');
-      const sessionId = payload.session_id;
-      if (!sessionId) return;
-      const error = payload.error ?? 'unknown';
-      endTurn(sessionId);
-      stopTracker.consume(sessionId);
-      console.warn(`[hook] stop-failure session=${sessionId.slice(0, 8)} error=${error}${payload.error_details ? ` (${payload.error_details})` : ''}`);
-      const auth = AUTH_STOP_ERRORS.has(error);
-      if (auth) noteAuthFailure(sessionId, payload.error_details ?? error);
-      // The trailing turn end of a round a queued resume already superseded — that resume is
-      // the live round now, so there is nothing to park.
-      if (engine.consumeStaleTurnStop(sessionId)) return;
-      // Auth already pushed its one card above; anything else gets its own, tagged per error so
-      // a rate limit hitting every running job at once lands as one notification.
-      if (!engine.onApiStop(sessionId, error) || auth) return;
-      const title = findSessionTitle(sessionId);
-      void pushSender.send({
-        title: `Stopped on an API error: ${error.replace(/_/g, ' ')}`,
-        body: `${title ? `${title} — ` : ''}open the job to resume it.`,
-        tag: `api-error-${error}`,
-        data: { kind: 'stop', sessionId },
-      });
-    },
-    onPreToolHook: async (body) => {
-      const hookInput = parseJsonObject(body) as HookInput | null;
-      if (!hookInput) throw new Error('invalid json body');
-      console.log(`[hook] ${hookInput.tool_name} session=${hookInput.session_id?.slice(0,8)}${hookInput.agent_id ? ` agent=${hookInput.agent_type ?? '?'}/${hookInput.agent_id.slice(0,8)}` : ''} input=${JSON.stringify(hookInput.tool_input).slice(0, 200)}`);
-      const evalSession = evalSessions.get(hookInput.session_id);
-      if (evalSession) {
-        return JSON.stringify(replayPreTool(hookInput, evalSession, {
-          allows: (tool, input, action, worktree, sid) => allowlist.allows(tool, input, undefined, action, worktree, sid),
-          gated: (name) => actionRegistry.gatedFor(name),
-          pullPatterns: permissionGroups.pull?.alwaysAllowBashPatterns ?? [],
-          blob: (ref) => runBlobs.get(ref),
-        }));
-      }
-      // Proof of life for the session — disarms any "ended without submitting" check left
-      // by an earlier Stop. Subagent calls count (they carry the parent's session id).
-      if (hookInput.session_id) engine.noteSessionActivity(hookInput.session_id);
-      // Light "what is meta.build-action doing right now" ping for the inline edit
-      // card. Carries just the tool name — the PWA derives a verb (reading/editing/
-      // writing/bashing) and animates a glowy ellipsis. Skip subagent calls; we only
-      // care about the parent session for this indicator.
-      if (!hookInput.agent_id && manager.getKind(hookInput.session_id) === 'action-edit') {
-        notifyAll({
-          type: 'action_edit_activity',
-          sessionId: hookInput.session_id,
-          toolName: hookInput.tool_name,
-          at: Date.now(),
-        });
-      }
-      // Auto-allowed calls bypass the approval queue, so emit dedicated mirror events:
-      // subagent buckets need agent_activity (their feed would otherwise be empty for
-      // read-only agents), and parent transcripts need tool_auto_allowed for expand-by-default.
-      if (allowlist.allows(hookInput.tool_name, hookInput.tool_input)) {
-        if (hookInput.agent_id) {
-          notifyAll({
-            type: 'agent_activity',
-            sessionId: hookInput.session_id,
-            toolName: hookInput.tool_name,
-            toolInput: hookInput.tool_input,
-            agentId: hookInput.agent_id,
-            agentType: hookInput.agent_type,
-            toolUseId: hookInput.tool_use_id,
-          });
-        } else {
-          notifyAll({
-            type: 'tool_auto_allowed',
-            sessionId: hookInput.session_id,
-            toolName: hookInput.tool_name,
-            // PreToolUse hook doesn't include tool_use_id; JSON-equality of toolInput
-            // is the only stable correlation against the streamed tool_use block.
-            toolInput: hookInput.tool_input,
-          });
-        }
-      }
-      const result = await handleHook({
-        hookInput,
-        allowlist,
-        queue,
-        modes,
-        cwdForSession,
-        worktreePathForSession: (id) => {
-          // Step sessions: sessionId ≠ stepId; ask the orchestrator to resolve session → step → worktree.
-          const viaOrch = engine.worktreePathForSession(id);
-          if (viaOrch) return viaOrch;
-          // Interactive/adopted sessions where the record is keyed directly by session id.
-          const rec = worktreeManager.get(id);
-          return rec && !rec.archivedAt ? rec.worktreePath : undefined;
-        },
-        actionForSession: (id) => engine.actionForSession(id),
-        interactiveFor: (id) => interactive.isInteractive(id),
-        gatedForAction: (name) => actionRegistry.gatedFor(name),
-        pinFor: (sid, tool, input) => engine.pinFor(sid, tool, input),
-        onPinConsumed: (sid, callId, toolUseId) => engine.consumePin(sid, callId, toolUseId),
-        draftStateFor: (sid) => engine.draftStateFor(sid),
-        onGatedDenial: (sid, act, reason) => engine.journalGatedDenial(sid, act, reason),
-        onNotify: (approval) => {
-          console.log(`[hook] enqueued approval ${approval.id.slice(0,8)} for ${approval.toolName}`);
-          const summary = summarizeToolInput(approval.toolName, approval.toolInput);
-          const sessionTitle = findSessionTitle(approval.sessionId);
-          const cwd = cwdForSession(approval.sessionId);
-          const suggestion = cwd ? recurrence.suggestionFor(cwd, approval.toolName, approval.toolInput) : null;
-          notifyAll({
-            type: 'approval_pending',
-            approvalId: approval.id,
-            sessionId: approval.sessionId,
-            toolName: approval.toolName,
-            // AskUserQuestion popup needs the full questions/options structure.
-            toolInput: approval.toolInput,
-            toolUseId: approval.toolUseId,
-            // Subagent provenance routes the approval into the agents feed.
-            agentId: approval.agentId,
-            agentType: approval.agentType,
-            summary,
-            sessionTitle,
-            suggestion,
-          });
-          // Web Push so devices ring when backgrounded; tag collapses repeats per approval.
-          void pushSender.send({
-            title: sessionTitle ? `Approval: ${approval.toolName} (${sessionTitle})` : `Approval: ${approval.toolName}`,
-            body: summary,
-            tag: `approval-${approval.id}`,
-            data: { kind: 'approval', sessionId: approval.sessionId, approvalId: approval.id },
-          });
-        },
-        onActionDenial: recordActionDenial,
-      });
-      console.log(`[hook] decision: ${result.hookSpecificOutput.permissionDecision} for ${hookInput.tool_name}`);
-      return JSON.stringify(result);
-    },
-    onPostToolFailureHook: async (body) => {
-      const input = parseJsonObject(body) as PostToolFailureHookInput | null;
-      if (!input) throw new Error('invalid json body');
-      handlePostToolFailureHook(input, (sid, tool, toolInput, toolUseId) => engine.releaseConsumedPin(sid, tool, toolInput, toolUseId));
-      return '{}';
-    },
-    onPostToolHook: async (body) => {
-      const input = parseJsonObject(body) as { session_id?: string; tool_name?: string; tool_input?: unknown; tool_response?: unknown } | null;
-      if (!input) throw new Error('invalid json body');
-      if (!input.session_id || !input.tool_name || !engine.actionForSession(input.session_id)) return;
-      if (!recordableRead(input.tool_name, input.tool_input, permissionGroups.pull?.alwaysAllowBashPatterns ?? [])) return;
-      const responseRef = runBlobs.put(JSON.stringify(input.tool_response ?? null));
-      if (!responseRef) return;
-      actionRunLedger.noteRead(input.session_id, {
-        tool: input.tool_name, inputKey: readInputKey(input.tool_name, input.tool_input), responseRef,
-      });
-    },
+    ...claudeHookHandlers(runtimeHost, (h) => {
+      const evalSession = evalSessions.get(h.session_id);
+      return evalSession ? replayPreTool(h, evalSession, {
+        allows: (tool, input, action, worktree, sid) => allowlist.allows(tool, input, undefined, action, worktree, sid),
+        gated: (name) => actionRegistry.gatedFor(name),
+        pullPatterns: permissionGroups.pull?.alwaysAllowBashPatterns ?? [],
+        blob: (ref) => runBlobs.get(ref),
+      }) : undefined;
+    }),
     onWorkPlanReady: async (body) => {
       const payload = parseJsonObject(body) as { jobId: string; mode?: 'initial' | 'replan'; steps: unknown[]; drops?: string[]; feedback?: string; findings?: unknown } | null;
       if (!payload) throw new Error('invalid json body');
@@ -1149,7 +943,7 @@ async function main() {
   console.log(`[daemon] discovered ${slashCommands.length} slash commands`);
 
   registerSessionsRoutes(server, {
-    sessionStore, manager, worktreeManager, queue, recurrence, allowlist,
+    sessionStore, manager, runtime, worktreeManager, queue, recurrence, allowlist,
     latestStatuslineBySession, cwdForSession, summarizeToolInput, captureSessionEnd,
     interactive,
     interactiveTarget: (id) => engine.interactiveTarget(id),
@@ -1256,6 +1050,7 @@ async function main() {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
     actionRevisionsStore, manager, engine, notifyAll,
+    deliverActions,
     permissionGroups, applyGroup,
     evaluateProposal: (input, onDone) => {
       const rec = evalStore.forEdit(input.editSessionId, input.proposal.postedAt);
@@ -1443,6 +1238,7 @@ async function main() {
           return {
             approvalId: a.id,
             sessionId: a.sessionId,
+            tool: a.tool,
             toolName: a.toolName,
             toolInput: a.toolInput,
             toolUseId: a.toolUseId,
@@ -1512,7 +1308,7 @@ async function main() {
     ws.send(JSON.stringify({ type: 'approval_mode', sessionId, mode: modes.get(sessionId) }));
     // Replay last statusline so the meter renders before claude's next fire; PWA handler is idempotent.
     const cachedSl = latestStatuslineBySession.get(sessionId);
-    if (cachedSl) ws.send(JSON.stringify(cachedSl));
+    if (cachedSl) ws.send(JSON.stringify({ type: 'usage.updated', usage: { statusline: cachedSl } }));
     // Backstop: nothing thrown while dispatching a client frame may unwind through
     // ws.on('message'), where an uncaught error takes the whole daemon down and with
     // it every other session. handleSessionMessage guards its own known throwers;
@@ -1640,15 +1436,6 @@ async function main() {
   }).then((reaped) => {
     if (reaped.length) console.log(`[daemon] swept ${reaped.length} orphaned worktree(s)`);
   }).catch((e) => console.error(`[daemon] worktree sweep: ${(e as Error).message}`));
-}
-
-function summarizeToolInput(toolName: string, toolInput: unknown): string {
-  try {
-    if (toolName === 'Bash') return (toolInput as { command?: string }).command?.slice(0, 200) ?? toolName;
-    return `${toolName}: ${JSON.stringify(toolInput).slice(0, 200)}`;
-  } catch {
-    return toolName;
-  }
 }
 
 type SlashCommand = { name: string; source: string; description?: string };

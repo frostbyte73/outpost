@@ -22,7 +22,7 @@ function makeEngine() {
   const stamped = new Map<string, { action: string; title: string }>();
   const sessionManager = {
     spawnDetached(id: string, cwd: string, env?: unknown) { spawned.push({ id, cwd, env }); },
-    send(id: string, msg: { message: { content: unknown } }) { sent.push({ id, content: msg.message.content }); },
+    sendTurn(id: string, turn: { text: string }) { sent.push({ id, content: turn.text }); },
     isWorking() { return false; }, sendOrResume() {},
   } as never;
   const worktreeManager = { get: () => undefined, provision: async () => ({ path: '/wt/readonly' }) } as never;

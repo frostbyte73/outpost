@@ -13,7 +13,7 @@ function makeEngine() {
   const dir = mkdtempSync(join(tmpdir(), 'engine-external-job-'));
   const queue = new JobQueue(dir);
   const sessionManager = {
-    spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {},
+    spawnDetached() {}, sendTurn() {}, isWorking() { return false; }, sendOrResume() {},
   } as never;
   const worktreeManager = { get: () => undefined, provision: async () => ({ path: dir }) } as never;
   const linearWriter = { setState: async () => undefined } as never;

@@ -80,7 +80,7 @@ describe('handleSessionMessage', () => {
   function deps() {
     return {
       queue: { decide: vi.fn() },
-      manager: { send: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
+      manager: { sendTurn: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
       modes: { set: vi.fn() },
     } satisfies SessionMessageDeps;
   }
@@ -89,26 +89,26 @@ describe('handleSessionMessage', () => {
     it(`does not throw and is a no-op for a "${body}" frame`, () => {
       const d = deps();
       expect(() => handleSessionMessage(Buffer.from(body), 's1', d)).not.toThrow();
-      expect(d.manager.send).not.toHaveBeenCalled();
+      expect(d.manager.sendTurn).not.toHaveBeenCalled();
       expect(d.manager.interrupt).not.toHaveBeenCalled();
       expect(d.manager.broadcast).not.toHaveBeenCalled();
       expect(d.queue.decide).not.toHaveBeenCalled();
     });
   }
 
-  it('forwards user_message content to manager.send', () => {
+  it('forwards user_message content to manager.sendTurn', () => {
     const d = deps();
     const raw = Buffer.from(JSON.stringify({ type: 'user_message', content: 'hi' }));
     handleSessionMessage(raw, 's1', d);
-    expect(d.manager.send).toHaveBeenCalledWith('s1', { type: 'user', message: { role: 'user', content: 'hi' } }, expect.any(Function));
+    expect(d.manager.sendTurn).toHaveBeenCalledWith('s1', { text: 'hi' }, expect.any(Function));
   });
 
   // SessionManager.send throws for a session that isn't active — reachable any time a
   // client types into a session whose subprocess exited. The throw used to unwind
   // through ws.on('message') and kill the daemon, taking every other session with it.
-  it('does not rethrow when manager.send rejects an inactive session', () => {
+  it('does not rethrow when manager.sendTurn rejects an inactive session', () => {
     const d = deps();
-    d.manager.send.mockImplementation(() => { throw new Error('session s1 not active'); });
+    d.manager.sendTurn.mockImplementation(() => { throw new Error('session s1 not active'); });
     const raw = Buffer.from(JSON.stringify({ type: 'user_message', content: 'hi' }));
     expect(() => handleSessionMessage(raw, 's1', d)).not.toThrow();
   });
@@ -161,7 +161,7 @@ describe('handleSessionMessage', () => {
 describe('handleSessionMessage — engagement', () => {
   const deps = () => ({
     queue: { decide: vi.fn() },
-    manager: { send: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
+    manager: { sendTurn: vi.fn(), interrupt: vi.fn(), broadcast: vi.fn() },
     modes: { set: vi.fn() },
     onUserMessage: vi.fn(),
   });
@@ -175,7 +175,7 @@ describe('handleSessionMessage — engagement', () => {
 
   it('does not report a message the manager refused', () => {
     const d = deps();
-    d.manager.send.mockImplementation(() => { throw new Error('not active'); });
+    d.manager.sendTurn.mockImplementation(() => { throw new Error('not active'); });
     handleSessionMessage(userMessage, 's1', d);
     expect(d.onUserMessage).not.toHaveBeenCalled();
   });

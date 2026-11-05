@@ -3,76 +3,10 @@ import type { ApprovalQueue, PendingApproval } from './approvals.js';
 import { ApprovalModeStore, PLAN_MODE_ALWAYS, isPlanModeReadableMcpTool } from './approval-mode.js';
 import type { ActionAllowlist } from '../actions/types.js';
 import { verifyFileDigests } from '../work/write-draft.js';
+import { isMcpTool } from '../runtime/tools.js';
+import type { GateDecision, GateRequest } from '../runtime/types.js';
 
-export interface HookInput {
-  tool_name: string;
-  tool_input: unknown;
-  session_id: string;
-  // Claude's stream-json id for the tool_use block this hook is gating. We forward it
-  // to the PWA so the client can match an approval-card decision against the eventual
-  // tool_use entry that arrives over the session WS (used by the "expand-by-default
-  // unless user approved" logic).
-  tool_use_id?: string;
-  // Claude Code's PreToolUse hook sets these for tool calls coming from a subagent
-  // (Explore / general-purpose / etc.). Absent for the parent session's own calls.
-  // We pass them through so the PWA can route subagent approvals into a dedicated
-  // agents feed instead of mixing them into the parent transcript.
-  agent_id?: string;
-  agent_type?: string;
-}
-
-export interface HookResponse {
-  hookSpecificOutput: {
-    hookEventName: 'PreToolUse';
-    permissionDecision: 'allow' | 'deny';
-    permissionDecisionReason?: string;
-    updatedInput?: unknown;
-  };
-}
-
-// Claude Code dispatches tool completion through TWO distinct hook events, not one event with
-// a result flag: `PostToolUse` fires on the tool's normal-completion path, with a
-// `tool_response` whose shape is tool-specific and, for Bash, has no success/failure field at
-// all. `PostToolUseFailure` fires separately — no `tool_response`, just `error`/`is_interrupt`
-// — when the tool's own call() throws. A Bash command throws whenever its exit code classifies
-// as an error (Claude Code's own default classifier: any non-zero exit, with a short allowlist
-// of commands like `grep`/`find`/`diff`/`git diff`/`git grep` where a specific non-zero code
-// has a documented non-error meaning — `git push` is not on that list), which is why a rejected
-// `git push` lands here rather than on the unwired `PostToolUse`. That makes this the event
-// worth listening on for the write-gate: no result-field guessing, the event itself IS the
-// failure signal. Verified against the shipped `claude` binary's Bash tool call() and its exit
-// classifier (round 0/1 of the Task 7 review).
-export interface PostToolFailureHookInput {
-  session_id?: string;
-  tool_name?: string;
-  tool_input?: unknown;
-  // Claude's id for the tool_use block that failed — the same id PreToolUse saw for the same
-  // call. Threaded through to releaseConsumedPin so it can release the pin THIS call actually
-  // spent rather than merely one whose payload matches; see the comment there.
-  tool_use_id?: string;
-  error?: string;
-  // Set when the call was cut short by an abort rather than run to a determinate failure — an
-  // aborted controller, or the session's abort signal firing mid-call — not (for Bash) a plain
-  // Ctrl-C on the command itself, which returns normally and would fire the unwired
-  // `PostToolUse` instead (the throw here is gated on `!isInterrupted`, so a genuine interrupt
-  // never reaches this path via that route). Whether the write reached its destination before
-  // the abort is genuinely unknown, and releasing anyway risks the unsafe direction: an
-  // already-executed write could run a second time. Leaving the pin consumed only costs the
-  // user one extra re-approval, so that's the side to fail on.
-  is_interrupt?: boolean;
-}
-
-export function handlePostToolFailureHook(
-  input: PostToolFailureHookInput,
-  releaseConsumedPin: (sessionId: string, toolName: string, toolInput: unknown, toolUseId?: string) => void,
-): void {
-  if (!input.session_id || !input.tool_name) return;
-  if (input.is_interrupt) return;
-  releaseConsumedPin(input.session_id, input.tool_name, input.tool_input, input.tool_use_id);
-}
-
-export interface HandleHookOpts {
-  hookInput: HookInput;
+export interface GateDeps {
   allowlist: Allowlist;
   queue: ApprovalQueue;
   modes: ApprovalModeStore;
@@ -96,7 +30,7 @@ export interface HandleHookOpts {
   // write-draft.ts's FILE_REFERENCING_FLAGS) — verified below before the pin is honoured.
   pinFor?: (sessionId: string, toolName: string, toolInput: unknown) =>
     { id: string; fileDigests?: Record<string, string> } | undefined;
-  // `toolUseId` is recorded on the pin so a later PostToolUseFailure can prove it's releasing
+  // `toolUseId` is recorded on the pin so a later tool failure can prove it's releasing
   // the pin THIS call spent — see WorkEngine.consumePin/releaseConsumedPin.
   onPinConsumed?: (sessionId: string, callId: string, toolUseId?: string) => void;
   // The session's draft state, consulted only to pick the right deny-reason wording when a
@@ -107,7 +41,7 @@ export interface HandleHookOpts {
   // offers a rule suggestion that makes no sense here (no rule would "fix" an unpinned
   // write). `action` is passed explicitly rather than left for the callee to derive from the
   // session's step: for a dispatch session, the bound step is the parent orchestrated step,
-  // whose action is the CONTROLLER, not the child action the hook actually denied.
+  // whose action is the CONTROLLER, not the child action the gate actually denied.
   onGatedDenial?: (sessionId: string, action: string, reason: string) => void;
   // Has the user taken the wheel on this session? A driven session is gated as a manual one —
   // its action binding is ignored until the user hands it back.
@@ -123,24 +57,13 @@ export interface HandleHookOpts {
   }) => void;
 }
 
-function allowResp(): HookResponse {
-  return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
-}
-
-export function denyResp(reason: string): HookResponse {
-  return {
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: 'deny',
-      permissionDecisionReason: reason,
-    },
-  };
-}
+const ALLOW: GateDecision = { allow: true };
+const deny = (reason: string): GateDecision => ({ allow: false, reason });
 
 // Kept in sync with the PWA's EDIT_TOOLS (src/pwa/components/tool-use-tile.js) —
 // accept-edits mirrors --permission-mode=acceptEdits: file-mutating tools skip
 // the prompt, everything else still gates.
-const EDIT_TOOLS: ReadonlySet<string> = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+const EDIT_TOOLS: ReadonlySet<string> = new Set(['file_edit', 'file_write', 'file_multi_edit', 'notebook_edit']);
 
 // The deny reason a gated miss gets, branched on why it missed — a model denied here reliably
 // retries with a different spelling or a helper script unless told plainly not to, and the
@@ -188,21 +111,23 @@ function fileDigestMismatchReason(): string {
     + 'mcp__outpost__submit_write_draft and wait for a new approval.';
 }
 
-export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
+// Decides one tool call from any runtime: approval mode, then the action's pins and allowlist, else the user.
+export async function gateToolCall(req: GateRequest, deps: GateDeps): Promise<GateDecision> {
   const {
-    hookInput, allowlist, queue, modes, cwdForSession, worktreePathForSession, actionForSession,
+    allowlist, queue, modes, cwdForSession, worktreePathForSession, actionForSession,
     gatedForAction, pinFor, onPinConsumed, draftStateFor, onGatedDenial, onNotify, onActionDenial,
     interactiveFor,
-  } = opts;
-  const mode = modes.get(hookInput.session_id);
-  const action = interactiveFor?.(hookInput.session_id) ? undefined : actionForSession?.(hookInput.session_id);
+  } = deps;
+  const { sessionId, tool, input } = req;
+  const mode = modes.get(sessionId);
+  const action = interactiveFor?.(sessionId) ? undefined : actionForSession?.(sessionId);
 
   // Bypass: short-circuit before any check — except for an action-bound session. A step
   // session is never put in bypass deliberately (it has no mode selector of its own), but
   // nothing stops a stray approval_mode_set / `?mode=` from reaching its session id anyway
   // (see src/ws/client-messages.ts's approval_mode_set, which has no action-bound guard);
   // that must not silently disable the write gate for the rest of the step.
-  if (mode === 'bypass' && !action) return allowResp();
+  if (mode === 'bypass' && !action) return ALLOW;
 
   // Plan: allow read-shaped only; deny everything else with a clear reason. Plan mode
   // overrides even the allowlist — we want it to be a positive "lock the session into
@@ -211,26 +136,22 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
   // pattern today, but an action-bound session has no business getting Read/WebFetch/
   // WebSearch through a mode gesture instead of its own (possibly narrower) allowlist.
   if (mode === 'plan' && !action) {
-    if (PLAN_MODE_ALWAYS.has(hookInput.tool_name)) return allowResp();
-    if (hookInput.tool_name.startsWith('mcp__') && isPlanModeReadableMcpTool(hookInput.tool_name)) {
-      return allowResp();
-    }
-    return denyResp('Plan mode — read-only');
+    if (PLAN_MODE_ALWAYS.has(tool)) return ALLOW;
+    if (isMcpTool(tool) && isPlanModeReadableMcpTool(tool)) return ALLOW;
+    return deny('Plan mode — read-only');
   }
 
   // Accept-edits: file-mutating tools auto-allow without going through the allowlist
   // or the interactive queue. Enforced server-side so the mode works even when the PWA
   // is closed / disconnected. Action-bound sessions still fall through to allowlist
   // checking below (action steps set mode='ask' by construction).
-  if (mode === 'accept-edits' && EDIT_TOOLS.has(hookInput.tool_name) && !action) {
-    return allowResp();
-  }
+  if (mode === 'accept-edits' && EDIT_TOOLS.has(tool) && !action) return ALLOW;
 
   // Action sessions run with explicit allowlist only: hit → allow, miss → deny
   // and record a denial so the user can review what was attempted. We never enqueue
   // for interactive approval because there's no human attached to an action step.
-  const projectCwd = cwdForSession?.(hookInput.session_id);
-  const worktreePath = worktreePathForSession?.(hookInput.session_id);
+  const projectCwd = cwdForSession?.(sessionId);
+  const worktreePath = worktreePathForSession?.(sessionId);
   if (action) {
     const gated = gatedForAction?.(action);
     if (gatedForAction && !gated) {
@@ -242,8 +163,8 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
         + 'have been deleted or renamed while this job was running. Do not retry this or any '
         + 'other write, and do not try a workaround; stop and let the user know the job needs '
         + 'attention.';
-      onGatedDenial?.(hookInput.session_id, action, reason);
-      return denyResp(reason);
+      onGatedDenial?.(sessionId, action, reason);
+      return deny(reason);
     }
     // Gated calls match the ordinary allowlist too (that's how they were auto-approved
     // before drafts existed), so this must run before the plain allows() check below or every
@@ -252,11 +173,11 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
     // by construction (it only got gated because a gated rule matched it), so this only ever
     // rejects a smuggling shape the drafting/pinning path never validated (e.g. an unquoted
     // `$VAR` or a `>` redirect outside the worktree, see Critical 1 in review round 1).
-    if (gated && gatedMatch(gated, hookInput.tool_name, hookInput.tool_input)) {
-      const pin = pinFor?.(hookInput.session_id, hookInput.tool_name, hookInput.tool_input);
+    if (gated && gatedMatch(gated, tool, input)) {
+      const pin = pinFor?.(sessionId, tool, input);
       const pinMatched = !!pin;
-      if (!pin || !allowlist.allows(hookInput.tool_name, hookInput.tool_input, projectCwd, action, worktreePath, hookInput.session_id)) {
-        const draftState = draftStateFor?.(hookInput.session_id) ?? 'none';
+      if (!pin || !allowlist.allows(tool, input, projectCwd, action, worktreePath, sessionId)) {
+        const draftState = draftStateFor?.(sessionId) ?? 'none';
         const reason = gatedDenyReason(pinMatched, draftState);
         // Only the states that indicate an actual problem are worth a journal entry.
         // 'none' (attempted before drafting) and 'pending' (attempted while awaiting the
@@ -266,10 +187,8 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
         // fails the allowlist) and draftState 'approved' (an approved payload the model
         // can't reproduce — including a pin it already spent) are the wedge M6 exists to
         // surface.
-        if (pinMatched || draftState === 'approved') {
-          onGatedDenial?.(hookInput.session_id, action, reason);
-        }
-        return denyResp(reason);
+        if (pinMatched || draftState === 'approved') onGatedDenial?.(sessionId, action, reason);
+        return deny(reason);
       }
       // The pin matched command TEXT; a file it references (--input/--body-file/
       // --notes-file) could still have been rewritten since approval — verified here, not at
@@ -278,46 +197,41 @@ export async function handleHook(opts: HandleHookOpts): Promise<HookResponse> {
       // below is what guarantees that).
       if (pin.fileDigests && !(await verifyFileDigests(pin.fileDigests))) {
         const reason = fileDigestMismatchReason();
-        onGatedDenial?.(hookInput.session_id, action, reason);
-        return denyResp(reason);
+        onGatedDenial?.(sessionId, action, reason);
+        return deny(reason);
       }
-      onPinConsumed?.(hookInput.session_id, pin.id, hookInput.tool_use_id);
-      return allowResp();
+      onPinConsumed?.(sessionId, pin.id, req.toolUseId);
+      return ALLOW;
     }
-    if (allowlist.allows(hookInput.tool_name, hookInput.tool_input, projectCwd, action, worktreePath, hookInput.session_id)) {
-      return allowResp();
-    }
-    onActionDenial?.({
-      actionName: action,
-      sessionId: hookInput.session_id,
-      toolName: hookInput.tool_name,
-      toolInput: hookInput.tool_input,
-    });
-    return denyResp(`Not in action \`${action}\` allowlist — review the suggestion in the PWA.`);
+    if (allowlist.allows(tool, input, projectCwd, action, worktreePath, sessionId)) return ALLOW;
+    onActionDenial?.({ actionName: action, sessionId, toolName: req.rawName, toolInput: input });
+    return deny(`Not in action \`${action}\` allowlist — review the suggestion in the PWA.`);
   }
 
   // Ask / accept-edits (interactive sessions): consult allowlist; on miss, enqueue for
   // interactive approval.
-  if (allowlist.allows(hookInput.tool_name, hookInput.tool_input, projectCwd, action, worktreePath, hookInput.session_id)) {
-    return allowResp();
-  }
+  if (allowlist.allows(tool, input, projectCwd, action, worktreePath, sessionId)) return ALLOW;
 
   const decisionPromise = queue.enqueue({
-    sessionId: hookInput.session_id,
-    toolName: hookInput.tool_name,
-    toolInput: hookInput.tool_input,
-    toolUseId: hookInput.tool_use_id,
-    agentId: hookInput.agent_id,
-    agentType: hookInput.agent_type,
+    sessionId,
+    tool,
+    toolName: req.rawName,
+    toolInput: input,
+    toolUseId: req.toolUseId,
+    agentId: req.subagent?.agentId,
+    agentType: req.subagent?.agentType,
   });
   const pending = queue.listPending().at(-1);
   if (pending) onNotify(pending);
   const decision = await decisionPromise;
-  return {
-    hookSpecificOutput: {
-      hookEventName: 'PreToolUse',
-      permissionDecision: decision.allow ? 'allow' : 'deny',
-      ...(decision.reason ? { permissionDecisionReason: decision.reason } : {}),
-    },
-  };
+  return decision.allow ? ALLOW : { allow: false, ...(decision.reason ? { reason: decision.reason } : {}) };
+}
+
+// Not on an interrupt: whether the write landed is unknown, and a release could let it run twice.
+export function onToolFailed(
+  r: { sessionId: string; toolUseId?: string; tool: string; input: unknown; interrupted: boolean },
+  releaseConsumedPin: (sessionId: string, toolName: string, toolInput: unknown, toolUseId?: string) => void,
+): void {
+  if (r.interrupted) return;
+  releaseConsumedPin(r.sessionId, r.tool, r.input, r.toolUseId);
 }

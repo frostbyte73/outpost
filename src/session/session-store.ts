@@ -1,531 +1,12 @@
-import { readdirSync, readFileSync, statSync, unlinkSync, openSync, readSync, closeSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { readFileSync, statSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs';
 import { uploadsRootFor } from './attachments.js';
 import { join } from 'node:path';
-import { LineParser } from './stream-json.js';
-import { splitBashBlocks } from './shell-exec.js';
+import { removeNdjsonLogs } from '../runtime/event-ndjson.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
-
-export type SessionKind = 'normal' | 'action-edit' | 'skill-edit' | 'schedule-edit';
-
-export interface SessionInfo {
-  id: string;
-  title: string;
-  lastModified: number;
-  // Newest prompt dc typed, else the session file's creation.
-  lastEngagedAt?: number;
-  path: string;
-  worktreePath?: string;
-  worktreeBranch?: string;
-  archived?: boolean;
-  // Set when this session was spawned for action / skill authoring; lets the
-  // Projects view filter them out. Tracked in-memory on SessionManager; lost on
-  // daemon restart (acceptable — these are short-lived sessions).
-  kind?: SessionKind;
-  // Set from the durable session-meta sidecar for any session Outpost spawned to
-  // run an action on the user's behalf (orchestrator, step, or action/skill edit).
-  // 'action' vs a plain interactive 'session' drives the sessions-list tabs + badge.
-  sessionClass?: 'action' | 'session';
-  // The action a `sessionClass: 'action'` session runs (e.g. `meta.orchestrate`,
-  // `code.implement`, `meta.build-action`), surfaced as the list card's badge.
-  actionLabel?: string;
-  // Live proc state, annotated by GET /api/sessions from SessionManager.
-  runState?: 'foreground' | 'background' | 'idle';
-}
-
-export interface ProjectInfo {
-  projectDir: string;
-  cwd: string;
-  lastModified: number;
-  sessions: SessionInfo[];
-  isGitRepo: boolean;
-  source: 'claude' | 'registry' | 'both';
-  // Populated only when the user has run a `[1m]` model variant; lets the PWA pick 1M over the 200k default.
-  contextWindowSize?: number;
-  // A cwd the daemon itself created under the runtime dir — an installed action dir or a step
-  // worktree. Still in the payload because session lookups resolve through the project row, but
-  // never offered as a place to start new work.
-  internal?: boolean;
-}
-
-export interface SubagentCompletion {
-  status: string;
-  summary?: string;
-  result?: string;
-  completedAt: number;
-}
-
-export interface SubagentInfo {
-  agentId: string;
-  agentType: string;
-  description?: string;
-  parentToolUseId?: string;
-  firstSeenAt: number;
-  entries: TranscriptMessage[];
-  completion: SubagentCompletion | null;
-}
-
-export interface TranscriptMessage {
-  // 'shell' is a `!` command the user ran themselves — `text` is the command, output in
-  // stdout/stderr. See shell-exec.ts.
-  role: 'user' | 'assistant' | 'tool_use' | 'tool_result' | 'shell';
-  text: string;
-  stdout?: string;
-  stderr?: string;
-  // Owning assistant message's API id (`msg_*`); used by the PWA to dedupe WS replay vs disk load.
-  msgId?: string;
-  // Raw tool_use input alongside rendered string so the PWA can rebuild UI without re-parsing `text`.
-  toolName?: string;
-  toolInput?: unknown;
-  // `toolu_*` id linking a tool_use entry to its tool_result; used to resolve TaskCreate → task id.
-  toolUseId?: string;
-  // Rejection status back-annotated from the paired user tool_result's `toolUseResult` sidecar; keeps
-  // the rejection frame visible after a disk-side transcript rebuild.
-  decision?: 'allow' | 'deny';
-  rejectReason?: string;
-  // Photos the user attached — a count, so history loads don't ship the image bytes back
-  images?: number;
-}
-
-// Tools whose tool_result we surface (instead of dropping) because the PWA renders the pair specially.
-const PAIRED_TOOL_NAMES = new Set([
-  'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet',
-  'AskUserQuestion',
-]);
-
-// Skip Claude Code's synthetic "user" messages (command echoes, reminders, task-notifications, skill loadouts).
-function isSystemInjection(text: string): boolean {
-  const t = text.trimStart();
-  return t.startsWith('<local-command-') ||
-    t.startsWith('<command-') ||
-    t.startsWith('<system-reminder>') ||
-    t.startsWith('<task-notification>') ||
-    t.startsWith('Base directory for this skill:') ||
-    t.startsWith('Caveat: ');
-}
-
-// `!` runs ride into the next user message ahead of whatever the user typed (see
-// shell-exec.ts), so both halves have to come back out: a tile per run, then the message.
-function extractShellRuns(text: string, msgId?: string): TranscriptMessage[] | null {
-  const { runs, rest } = splitBashBlocks(text);
-  if (runs.length === 0) return null;
-  const parts: TranscriptMessage[] = runs.map((r) => ({
-    role: 'shell' as const,
-    text: r.command,
-    stdout: r.stdout,
-    stderr: r.stderr,
-  }));
-  if (rest) parts.push({ role: 'user', text: rest, ...(msgId ? { msgId } : {}) });
-  return parts;
-}
-
-// Extract <command-args> from a slash-command invocation so the transcript shows what the human typed.
-// Returns null if not a slash-command invocation.
-function rewriteSlashCommandInvocation(text: string): string | null {
-  if (!text.trimStart().startsWith('<command-message>')) return null;
-  const m = /<command-args>([\s\S]*?)<\/command-args>/.exec(text);
-  if (!m) return null;
-  const args = m[1]!.trim();
-  return args.length > 0 ? args : null;
-}
-
-interface RawContentBlock {
-  type?: string;
-  text?: string;
-  name?: string;
-  id?: string;
-  input?: unknown;
-  tool_use_id?: string;
-  content?: unknown;
-}
-
-interface RawSessionRecord {
-  type?: string;
-  message?: {
-    id?: string;
-    role?: string;
-    content?: string | RawContentBlock[];
-  };
-  attachment?: { type?: string; prompt?: unknown; commandMode?: string };
-}
-
-// A message sent mid-turn is stored as a `queued_command` attachment, never as a `user` record
-function absorbedUserRecord(o: RawSessionRecord): RawSessionRecord | null {
-  const a = o.attachment;
-  if (o.type !== 'attachment' || a?.type !== 'queued_command' || a.commandMode !== 'prompt') return null;
-  if (typeof a.prompt !== 'string' && !Array.isArray(a.prompt)) return null;
-  return { type: 'user', message: { role: 'user', content: a.prompt as string | RawContentBlock[] } };
-}
-
-// Chunked scan that bails as soon as both title sources are found; avoids parsing multi-MB session files.
-function scanTitleSources(path: string): { summary?: string; firstUserMsg?: string } {
-  const fd = openSync(path, 'r');
-  try {
-    const CHUNK = 16 * 1024;
-    const MAX = 256 * 1024; // bound so a freak file can't pin the CPU
-    const buf = Buffer.alloc(CHUNK);
-    let leftover = '';
-    let offset = 0;
-    let summary: string | undefined;
-    let firstUserMsg: string | undefined;
-
-    while (offset < MAX) {
-      const bytes = readSync(fd, buf, 0, CHUNK, offset);
-      if (bytes === 0) break;
-      offset += bytes;
-      const text = leftover + buf.subarray(0, bytes).toString('utf8');
-      const lastNl = text.lastIndexOf('\n');
-      const consumable = lastNl === -1 ? text : text.slice(0, lastNl);
-      leftover = lastNl === -1 ? text : text.slice(lastNl + 1);
-
-      for (const line of consumable.split('\n')) {
-        if (!line) continue;
-        let obj: unknown;
-        try { obj = JSON.parse(line); } catch { continue; }
-        const o = obj as { type?: string; summary?: string; message?: { content?: string | unknown[] } };
-        if (o.type === 'summary' && typeof o.summary === 'string' && !summary) summary = o.summary;
-        if (o.type === 'user' && !firstUserMsg) {
-          const c = o.message?.content;
-          let t: string | undefined;
-          if (typeof c === 'string') t = c;
-          else if (Array.isArray(c)) {
-            const tb = c.find((b): b is { type: 'text'; text: string } => (b as { type?: string })?.type === 'text');
-            if (tb) t = tb.text;
-          }
-          if (t) {
-            // For slash-command messages the args ARE the user's intent — use them as the title source.
-            const argsMatch = /<command-args>([\s\S]*?)<\/command-args>/.exec(t);
-            const argsText = argsMatch ? argsMatch[1]?.trim() : '';
-            if (argsText) {
-              firstUserMsg = argsText;
-            } else if (!isSystemInjection(t)) {
-              firstUserMsg = t;
-            }
-          }
-        }
-        if (summary && firstUserMsg) return { summary, firstUserMsg };
-      }
-      if (bytes < CHUNK) break;
-    }
-    return { summary, firstUserMsg };
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function cleanTitle(raw: string): string {
-  let t = raw.trim().replace(/\s+/g, ' ');
-  // Order matters — longest/most-specific patterns first so partial-strip doesn't leave a stub.
-  const fillers: RegExp[] = [
-    /^(?:hi|hey|hello)[,!.]?\s+(?:there[,!]?\s+)?/i,
-    /^(?:can|could|would)\s+you\s+(?:please\s+)?(?:help\s+(?:me\s+)?(?:to\s+|with\s+)?)?(?:try\s+to\s+|maybe\s+)?/i,
-    /^please\s+(?:can\s+you\s+)?/i,
-    /^let'?s\s+/i,
-    /^i\s+(?:want|need|would\s+like|am\s+trying|'m\s+trying)\s+(?:to|you\s+to)\s+/i,
-    /^i'?d\s+like\s+(?:to|you\s+to)\s+/i,
-    /^help\s+me\s+(?:to\s+|with\s+)?/i,
-    /^help\s+(?:with\s+|me\s+)?/i,
-    /^how\s+do\s+(?:i|we|you)\s+/i,
-    /^tell\s+me\s+(?:about\s+|how\s+|why\s+)?/i,
-    /^what'?s\s+(?:going\s+on|happening|up)\s+(?:with|in|on)\s+/i,
-    /^what\s+is\s+(?:going\s+on\s+(?:with|in|on)\s+)?/i,
-    /^why\s+is\s+/i,
-    /^look\s+(?:in)?to\s+/i,
-    /^check\s+(?:on\s+|out\s+)?/i,
-    /^investigate\s+/i,
-    /^do\s+(?:a\s+|the\s+|you\s+)/i,
-    /^make\s+(?:me\s+|a\s+)?/i,
-  ];
-  // Chain strips; bounded by filler count so a pathological pattern can't loop.
-  for (let pass = 0; pass < fillers.length; pass++) {
-    let changed = false;
-    for (const re of fillers) {
-      const stripped = t.replace(re, '');
-      if (stripped !== t && stripped.length > 0) { t = stripped; changed = true; break; }
-    }
-    if (!changed) break;
-  }
-  if (t && /[a-z]/.test(t.charAt(0))) t = t.charAt(0).toUpperCase() + t.slice(1);
-  if (t.length > 60) {
-    const cut = t.slice(0, 60);
-    const lastSpace = cut.lastIndexOf(' ');
-    t = (lastSpace > 30 ? cut.slice(0, lastSpace) : cut) + '…';
-  }
-  return t || 'Untitled session';
-}
-
-function flattenToolResultContent(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  const out: string[] = [];
-  for (const b of content) {
-    if (b && typeof b === 'object' && (b as RawContentBlock).type === 'text') {
-      const t = (b as RawContentBlock).text;
-      if (typeof t === 'string') out.push(t);
-    }
-  }
-  return out.join('\n');
-}
-
-// Claude Code writes `"toolUseResult": "User rejected tool use"` on the user-side tool_result line
-// that pairs the rejected tool_use. We collect those tool_use_ids so a later back-annotation pass
-// can stamp the matching tool_use entries — otherwise disk reloads wipe the rejection frame the
-// PWA had rendered in-memory. The rejection reason itself isn't in the JSONL, so it's left empty.
-function collectRejectedToolUseIds(obj: unknown, out: Set<string>): void {
-  const o = obj as RawSessionRecord & { toolUseResult?: unknown };
-  if (o.type !== 'user' || o.toolUseResult !== 'User rejected tool use') return;
-  const content = o.message?.content;
-  if (!Array.isArray(content)) return;
-  for (const b of content) {
-    if (b.type === 'tool_result' && typeof b.tool_use_id === 'string') out.add(b.tool_use_id);
-  }
-}
-
-function stampRejections(messages: TranscriptMessage[], rejectedIds: Set<string>): TranscriptMessage[] {
-  if (rejectedIds.size === 0) return messages;
-  return messages.map((m) =>
-    m.role === 'tool_use' && m.toolUseId && rejectedIds.has(m.toolUseId)
-      ? { ...m, decision: 'deny' as const }
-      : m,
-  );
-}
-
-function extractTranscriptMessages(obj: unknown, taskToolUseIds: Set<string>): TranscriptMessage[] {
-  const o = absorbedUserRecord(obj as RawSessionRecord) ?? (obj as RawSessionRecord);
-  if (o.type !== 'user' && o.type !== 'assistant') return [];
-  const content = o.message?.content;
-  const msgId = o.type === 'assistant' ? o.message?.id : undefined;
-
-  if (typeof content === 'string') {
-    if (o.type === 'user') {
-      const shell = extractShellRuns(content, msgId);
-      if (shell !== null) return shell;
-      const rewritten = rewriteSlashCommandInvocation(content);
-      if (rewritten !== null) return [{ role: 'user', text: rewritten, ...(msgId ? { msgId } : {}) }];
-      if (isSystemInjection(content)) return [];
-    }
-    return [{ role: o.type, text: content, ...(msgId ? { msgId } : {}) }];
-  }
-  if (!Array.isArray(content)) return [];
-
-  const parts: TranscriptMessage[] = [];
-  for (const b of content) {
-    if (b.type === 'text' && typeof b.text === 'string') {
-      if (o.type === 'user') {
-        const shell = extractShellRuns(b.text, msgId);
-        if (shell !== null) { parts.push(...shell); continue; }
-        const rewritten = rewriteSlashCommandInvocation(b.text);
-        if (rewritten !== null) {
-          parts.push({ role: 'user', text: rewritten, ...(msgId ? { msgId } : {}) });
-          continue;
-        }
-        if (isSystemInjection(b.text)) continue;
-      }
-      parts.push({ role: o.type, text: b.text, ...(msgId ? { msgId } : {}) });
-    } else if (b.type === 'tool_use' && o.type === 'assistant') {
-      const name = typeof b.name === 'string' ? b.name : 'tool';
-      const input = b.input ?? {};
-      const inputStr = JSON.stringify(input).slice(0, 240);
-      const useId = typeof b.id === 'string' ? b.id : undefined;
-      if (useId && PAIRED_TOOL_NAMES.has(name)) taskToolUseIds.add(useId);
-      parts.push({
-        role: 'tool_use',
-        text: `${name}(${inputStr})`,
-        toolName: name,
-        toolInput: input,
-        ...(useId ? { toolUseId: useId } : {}),
-        ...(msgId ? { msgId } : {}),
-      });
-    } else if (b.type === 'tool_result' && o.type === 'user') {
-      // Skip routine tool_results; only keep ones paired with a Task* tool_use (needed for the assigned task id).
-      const useId = typeof b.tool_use_id === 'string' ? b.tool_use_id : undefined;
-      if (!useId || !taskToolUseIds.has(useId)) continue;
-      const text = flattenToolResultContent(b.content);
-      if (!text) continue;
-      parts.push({ role: 'tool_result', text, toolUseId: useId });
-    }
-  }
-  // A top-level image block in a user record is one the user attached (a Read of an image
-  // nests inside its tool_result instead).
-  const images = o.type === 'user' ? content.filter((b) => b.type === 'image').length : 0;
-  if (images > 0) {
-    const first = parts.find((p) => p.role === 'user');
-    if (first) first.images = images;
-    else parts.unshift({ role: 'user', text: '', images });
-  }
-  return parts;
-}
-
-// Returns agent_id → completion. Handles both async (<task-notification> XML) and sync (toolUseResult sidecar) shapes.
-// Scanned in file order and last-write-wins, so a SendMessage that resumed a finished agent
-// clears its completion — the agent is running again until its next notification lands.
-function readTaskNotifications(parentJsonlPath: string): Map<string, SubagentCompletion> {
-  const completions = new Map<string, SubagentCompletion>();
-  let content: string;
-  try {
-    content = readFileSync(parentJsonlPath, 'utf8');
-  } catch {
-    return completions;
-  }
-  const parser = new LineParser();
-  parser.onLine = (obj) => {
-    const o = obj as RawSessionRecord & {
-      timestamp?: string;
-      toolUseResult?: { status?: string; agentId?: string; resumedAgentId?: string; content?: unknown };
-    };
-
-    // `to` is the raw agent id when the parent wakes a background agent; a teammate
-    // name otherwise, which matches no key and drops out harmlessly.
-    if (o.type === 'assistant') {
-      const blocks = o.message?.content;
-      if (!Array.isArray(blocks)) return;
-      for (const block of blocks) {
-        if (block.type !== 'tool_use' || block.name !== 'SendMessage') continue;
-        const to = (block.input as { to?: unknown } | undefined)?.to;
-        if (typeof to === 'string') completions.delete(to);
-      }
-      return;
-    }
-    if (o.type !== 'user') return;
-
-    // A name-addressed send resolves to an agent id only in the result of the send.
-    if (typeof o.toolUseResult?.resumedAgentId === 'string') {
-      completions.delete(o.toolUseResult.resumedAgentId);
-      return;
-    }
-    const ts = typeof o.timestamp === 'string' ? Date.parse(o.timestamp) : NaN;
-    const completedAt = Number.isNaN(ts) ? Date.now() : ts;
-
-    // Sync shape: only stamp on terminal status; the same record also appears with 'async_launched' at dispatch.
-    const tur = o.toolUseResult;
-    if (tur && typeof tur.agentId === 'string' && tur.status && tur.status !== 'async_launched') {
-      const completion: SubagentCompletion = { status: tur.status, completedAt };
-      const summary = firstTextOfToolResult(o.message?.content);
-      if (summary) completion.summary = summary;
-      completions.set(tur.agentId, completion);
-      return;
-    }
-
-    const c = o.message?.content;
-    if (typeof c !== 'string') return;
-    if (!c.trimStart().startsWith('<task-notification>')) return;
-    const get = (tag: string): string | undefined => {
-      const re = new RegExp(`<${tag}>([\\s\\S]*?)<\\/${tag}>`);
-      const m = re.exec(c);
-      return m ? m[1]!.trim() : undefined;
-    };
-    const taskId = get('task-id');
-    if (!taskId) return;
-    const completion: SubagentCompletion = {
-      status: get('status') ?? 'completed',
-      completedAt,
-    };
-    const summary = get('summary');
-    if (summary) completion.summary = summary;
-    const result = get('result');
-    if (result) completion.result = result;
-    completions.set(taskId, completion);
-  };
-  parser.write(content);
-  return completions;
-}
-
-// Agent replies are two text blocks: [reply, metadata]. Return the first (reply); skip the metadata block.
-function firstTextOfToolResult(content: unknown): string | undefined {
-  if (!Array.isArray(content)) return undefined;
-  for (const block of content) {
-    const b = block as RawContentBlock;
-    if (b.type !== 'tool_result' || !Array.isArray(b.content)) continue;
-    for (const inner of b.content) {
-      const t = inner as RawContentBlock;
-      if (t.type === 'text' && typeof t.text === 'string' && !t.text.startsWith('agentId:')) {
-        return t.text.trim();
-      }
-    }
-  }
-  return undefined;
-}
-
-type TailRecord = { type?: string; timestamp?: string; isMeta?: boolean; message?: { content?: unknown } };
-
-function isTypedPrompt(o: TailRecord): boolean {
-  if (o.type !== 'user' || o.isMeta) return false;
-  const c = o.message?.content;
-  if (typeof c === 'string') return !isSystemInjection(c);
-  if (!Array.isArray(c)) return false;
-  if (c.some((b) => (b as { type?: string })?.type === 'tool_result')) return false;
-  return c.some((b) => {
-    const blk = b as { type?: string; text?: unknown };
-    return blk?.type === 'text' && !isSystemInjection(String(blk.text ?? ''));
-  });
-}
-
-// Tail-scan for the newest user/assistant timestamp and the newest typed prompt; sort keys must be
-// real activity, not mtime — `claude --resume` appends non-content lines that bump mtime.
-function tailTimestamps(path: string, size: number): { last: number | null; prompt: number | null } {
-  const TAIL_BYTES = 64 * 1024;
-  const start = Math.max(0, size - TAIL_BYTES);
-  const len = size - start;
-  if (len <= 0) return { last: null, prompt: null };
-  const fd = openSync(path, 'r');
-  try {
-    const buf = Buffer.alloc(len);
-    readSync(fd, buf, 0, len, start);
-    const text = buf.toString('utf8');
-    // Drop leading partial record if we started mid-line.
-    const firstNl = start === 0 ? -1 : text.indexOf('\n');
-    const lines = (firstNl === -1 ? text : text.slice(firstNl + 1)).split('\n');
-    let last: number | null = null;
-    let prompt: number | null = null;
-    for (let i = lines.length - 1; i >= 0 && (last === null || prompt === null); i--) {
-      const line = lines[i];
-      if (!line) continue;
-      let o: TailRecord;
-      try { o = JSON.parse(line) as TailRecord; } catch { continue; }
-      if ((o.type !== 'user' && o.type !== 'assistant') || typeof o.timestamp !== 'string') continue;
-      const ms = Date.parse(o.timestamp);
-      if (!Number.isFinite(ms)) continue;
-      if (last === null) last = ms;
-      if (prompt === null && isTypedPrompt(o)) prompt = ms;
-    }
-    return { last, prompt };
-  } finally {
-    closeSync(fd);
-  }
-}
-
-function firstCwdInJsonl(path: string): string | null {
-  const fd = openSync(path, 'r');
-  try {
-    const CHUNK = 16 * 1024;
-    const MAX = 256 * 1024;
-    const buf = Buffer.alloc(CHUNK);
-    let leftover = '';
-    let offset = 0;
-
-    while (offset < MAX) {
-      const bytes = readSync(fd, buf, 0, CHUNK, offset);
-      if (bytes === 0) break;
-      offset += bytes;
-      const text = leftover + buf.subarray(0, bytes).toString('utf8');
-      const lastNl = text.lastIndexOf('\n');
-      const consumable = lastNl === -1 ? text : text.slice(0, lastNl);
-      leftover = lastNl === -1 ? text : text.slice(lastNl + 1);
-
-      for (const line of consumable.split('\n')) {
-        if (!line) continue;
-        try {
-          const o = JSON.parse(line) as { cwd?: unknown };
-          if (typeof o.cwd === 'string' && o.cwd.length > 0) return o.cwd;
-        } catch { /* one bad record shouldn't poison the read */ }
-      }
-      if (bytes < CHUNK) break;
-    }
-    return null;
-  } finally {
-    closeSync(fd);
-  }
-}
+import type {
+  CanonicalItem, ProjectInfo, SessionLocation, SubagentInfo, TranscriptReader,
+} from '../runtime/types.js';
 
 // Sessions older than this with no active worktree are stamped archived at read time.
 // Active worktrees are exempt so long-running branches don't vanish at the 7d mark.
@@ -544,31 +25,38 @@ function stampAutoArchived(projects: ProjectInfo[]): void {
   }
 }
 
+// Every session: the runtime's history folded by project and worktree, plus the daemon's own sidecar meta.
 export class SessionStore {
-  private readonly root: string;
+  private readonly transcripts: TranscriptReader;
   private readonly registry: ProjectRegistry | undefined;
   private readonly worktreeManager: WorktreeManager | undefined;
   private readonly sessionMetaDir: string | undefined;
   private readonly runtimeDir: string | undefined;
-  private cwdCache = new Map<string, { cwd: string; mtime: number }>();
-  // JSONL is append-only, so size unchanged ⇒ cached timestamp still valid.
-  private lastMsgTsCache = new Map<string, { size: number; ts: number | null; prompt: number | null }>();
+  private readonly runtimeLogDir: string | undefined;
   // Never invalidated within a daemon lifetime — restart picks up new git inits.
   private gitRepoCache = new Map<string, boolean>();
 
-  constructor(opts: { root: string; registry?: ProjectRegistry; worktreeManager?: WorktreeManager; sessionMetaDir?: string; runtimeDir?: string }) {
-    this.root = opts.root;
+  constructor(opts: {
+    transcripts: TranscriptReader;
+    registry?: ProjectRegistry;
+    worktreeManager?: WorktreeManager;
+    sessionMetaDir?: string;
+    runtimeDir?: string;
+    runtimeLogDir?: string;
+  }) {
+    this.transcripts = opts.transcripts;
     this.registry = opts.registry;
     this.worktreeManager = opts.worktreeManager;
     this.sessionMetaDir = opts.sessionMetaDir;
     this.runtimeDir = opts.runtimeDir;
+    this.runtimeLogDir = opts.runtimeLogDir;
   }
 
   // Durable per-session marker written when Outpost spawns an action session
   // (orchestrator, step, or action/skill edit): the action name + a readable title.
   // Lets the sessions list label + title action sessions without their transcript,
   // and survives daemon restarts (unlike the in-memory action binding). Keyed by
-  // session id, so it's independent of the ~/.claude/projects/* dir encoding.
+  // session id, so it's independent of the runtime's own history layout.
   writeActionMeta(sessionId: string, meta: { action: string; title: string }): void {
     this.mergeSessionMeta(sessionId, meta);
   }
@@ -632,56 +120,37 @@ export class SessionStore {
     try {
       const st = statSync(join(cwd, '.git'));
       result = st.isDirectory() || st.isFile();
-    } catch { /* not a git repo */ }
+    } catch { /* not a repo */ }
     this.gitRepoCache.set(cwd, result);
     return result;
   }
 
-  // One ProjectInfo per physical ~/.claude/projects/* dir — NO cwd collapse. Callers that
-  // resolve a session id back to the dir its JSONL physically lives in (findSession, and thus
-  // readMessages/delete/subagents) rely on entries staying 1:1 with dirs. Collapsing here would
+  // One ProjectInfo per physical history dir — NO cwd collapse. Callers that resolve a
+  // session id back to the dir its transcript physically lives in (findSession, and thus
+  // readItems/delete/subagents) rely on entries staying 1:1 with dirs. Collapsing here would
   // hand back a representative projectDir that's wrong for any session merged in from a sibling dir.
   private scanProjectDirs(): ProjectInfo[] {
-    let dirs: string[];
-    try {
-      dirs = readdirSync(this.root, { withFileTypes: true })
-        .filter((e) => e.isDirectory())
-        .map((e) => join(this.root, e.name));
-    } catch {
-      dirs = [];
-    }
-    // Include tombstoned worktree paths so their JSONLs survive archive/remove (folded under parent later).
+    // Include tombstoned worktree paths so their transcripts survive archive/remove (folded under parent later).
     const knownWorktreePaths = new Set<string>();
-    if (this.worktreeManager) {
-      for (const rec of this.worktreeManager.list()) {
-        if (rec.worktreePath) knownWorktreePaths.add(rec.worktreePath);
-      }
+    for (const rec of this.worktreeManager?.list() ?? []) {
+      if (rec.worktreePath) knownWorktreePaths.add(rec.worktreePath);
     }
-    const out: ProjectInfo[] = [];
-    for (const projectDir of dirs) {
-      const cwd = this.readCwdFromProject(projectDir);
-      if (!cwd) continue;
-      let cwdExists = false;
-      try { cwdExists = statSync(cwd).isDirectory(); } catch { /* nope */ }
-      // Drop dead cwds unless they're a known worktree (live or tombstoned) — those still get merged.
-      if (!cwdExists && !knownWorktreePaths.has(cwd)) continue;
-      const sessions = this.listSessionsInDir(projectDir);
-      const lastModified = sessions.reduce((m, s) => Math.max(m, s.lastModified), 0);
-      out.push({
-        projectDir,
-        cwd,
-        lastModified,
-        sessions,
-        isGitRepo: this.isGitRepo(cwd),
-        source: 'claude',
-      });
-    }
-    return out;
+    return this.transcripts.scanProjectDirs(knownWorktreePaths).map((p) => ({
+      ...p,
+      // An action session's stamped title/label supersedes the transcript-derived one
+      // (whose first turn is a bare `/action <uuid>` slash command → a UUID or "Untitled").
+      sessions: p.sessions.map((s) => {
+        const meta = this.readActionMeta(s.id);
+        return meta ? { ...s, title: meta.title || s.title, sessionClass: 'action' as const, actionLabel: meta.action } : s;
+      }),
+      isGitRepo: this.isGitRepo(p.cwd),
+      source: 'claude' as const,
+    }));
   }
 
   // Physical dirs collapsed to one ProjectInfo per cwd, for the cwd-grouped project list. Two
-  // Claude project dirs can resolve to the same cwd — most often a worktree dir whose session
-  // recorded the PARENT repo's cwd, which defeats readCwdFromProject's basename guard and makes
+  // history dirs can resolve to the same cwd — most often a worktree dir whose session
+  // recorded the PARENT repo's cwd, which defeats the runtime's cwd guard and makes
   // the worktree dir claim the parent's cwd. Union the sessions rather than let the later dir
   // clobber the earlier (that silently drops a whole project), and keep the dir whose basename
   // matches the sanitized cwd as the representative — the canonical home for that cwd.
@@ -693,8 +162,7 @@ export class SessionStore {
         byCwd.set(p.cwd, p);
         continue;
       }
-      const sanitized = p.cwd.replace(/\//g, '-');
-      const incomingIsCanonical = (p.projectDir.split('/').pop() ?? '') === sanitized;
+      const incomingIsCanonical = p.projectDir === this.transcripts.projectDirFor(p.cwd);
       const seen = new Set(existing.sessions.map((s) => s.id));
       const sessions = [...existing.sessions];
       for (const s of p.sessions) if (!seen.has(s.id)) sessions.push(s);
@@ -716,9 +184,8 @@ export class SessionStore {
         if (existing) {
           byCwd.set(reg.cwd, { ...existing, source: 'both' });
         } else {
-          const sanitized = reg.cwd.replace(/\//g, '-');
           byCwd.set(reg.cwd, {
-            projectDir: join(this.root, sanitized),
+            projectDir: this.transcripts.projectDirFor(reg.cwd),
             cwd: reg.cwd,
             lastModified: reg.addedAt,
             sessions: [],
@@ -739,7 +206,7 @@ export class SessionStore {
       return this.stampInternal(raw);
     }
 
-    // Tombstones included so their JSONLs fold under the parent project as archived rows, not orphans.
+    // Tombstones included so their transcripts fold under the parent project as archived rows, not orphans.
     const worktreeByCwd = new Map<string, WorktreeRecord>();
     for (const rec of this.worktreeManager.list()) {
       if (!rec.worktreePath) continue;
@@ -768,9 +235,8 @@ export class SessionStore {
         let cwdExists = false;
         try { cwdExists = statSync(rec.projectCwd).isDirectory(); } catch { /* nope */ }
         if (!cwdExists) continue;  // parent dir gone — drop the orphan rows
-        const sanitized = rec.projectCwd.replace(/\//g, '-');
         parent = {
-          projectDir: join(this.root, sanitized),
+          projectDir: this.transcripts.projectDirFor(rec.projectCwd),
           cwd: rec.projectCwd,
           lastModified: 0,
           sessions: [],
@@ -810,55 +276,10 @@ export class SessionStore {
     return projects;
   }
 
-  private listSessionsInDir(dir: string): SessionInfo[] {
-    let files: string[];
-    try { files = readdirSync(dir); } catch { return []; }
-    return files
-      .filter((f) => f.endsWith('.jsonl'))
-      .map((f) => this.readSessionInfoFromPath(join(dir, f)))
-      .filter((s): s is SessionInfo => s !== null)
-      .sort((a, b) => b.lastModified - a.lastModified);
-  }
-
-  readCwdFromProject(projectDir: string): string | null {
-    let entries: { name: string; mtime: number }[];
-    try {
-      entries = readdirSync(projectDir)
-        .filter((f) => f.endsWith('.jsonl'))
-        .map((f) => {
-          const p = join(projectDir, f);
-          const st = statSync(p);
-          return { name: p, mtime: st.mtimeMs };
-        })
-        .sort((a, b) => b.mtime - a.mtime);
-    } catch {
-      return null;
-    }
-    if (entries.length === 0) return null;
-    const newest = entries[0]!;
-    const cached = this.cwdCache.get(projectDir);
-    if (cached && cached.mtime === newest.mtime) return cached.cwd;
-    // Prefer a cwd whose sanitization matches this dir's basename — without this, a relocated
-    // worktree JSONL (archive() moves it into the parent's dir) would hijack the parent's cwd.
-    const expectedBasename = projectDir.split('/').pop() ?? '';
-    let fallback: string | null = null;
-    for (const e of entries) {
-      const cwd = firstCwdInJsonl(e.name);
-      if (!cwd) continue;
-      if (cwd.replace(/\//g, '-') === expectedBasename) {
-        this.cwdCache.set(projectDir, { cwd, mtime: newest.mtime });
-        return cwd;
-      }
-      if (fallback === null) fallback = cwd;
-    }
-    if (fallback !== null) this.cwdCache.set(projectDir, { cwd: fallback, mtime: newest.mtime });
-    return fallback;
-  }
-
-  findSession(id: string): { projectDir: string; cwd: string; session: SessionInfo } | null {
-    // Use the per-dir scan so a session resolves to the physical dir its JSONL lives in, never a
+  findSession(id: string): SessionLocation | null {
+    // Use the per-dir scan so a session resolves to the physical dir its transcript lives in, never a
     // cwd-collapsed representative — otherwise a session merged in from a sibling dir would resolve
-    // to the wrong projectDir and readMessages/delete would target a file that isn't there.
+    // to the wrong projectDir and readItems/delete would target a file that isn't there.
     for (const p of this.scanProjectDirs()) {
       const match = p.sessions.find((s) => s.id === id);
       if (match) return { projectDir: p.projectDir, cwd: p.cwd, session: match };
@@ -866,154 +287,27 @@ export class SessionStore {
     return null;
   }
 
-  readMessages(id: string): TranscriptMessage[] {
+  readItems(id: string): CanonicalItem[] {
     // Strict id guard prevents path traversal into other directories.
     if (!/^[\w-]+$/.test(id)) return [];
     const found = this.findSession(id);
-    if (!found) return [];
-    const path = join(found.projectDir, `${id}.jsonl`);
-    let content: string;
-    try {
-      content = readFileSync(path, 'utf8');
-    } catch {
-      return [];
-    }
-    const out: TranscriptMessage[] = [];
-    const taskToolUseIds = new Set<string>();
-    const rejectedToolUseIds = new Set<string>();
-    const parser = new LineParser();
-    parser.onLine = (obj) => {
-      collectRejectedToolUseIds(obj, rejectedToolUseIds);
-      for (const m of extractTranscriptMessages(obj, taskToolUseIds)) out.push(m);
-    };
-    parser.write(content);
-    return stampRejections(out, rejectedToolUseIds);
+    return found ? this.transcripts.readItems(found.projectDir, id) : [];
   }
 
-  // Reconstruct each subagent's transcript from <sessionDir>/<sessionId>/subagents/agent-<id>.{jsonl,meta.json},
-  // binding completion data from the parent JSONL's <task-notification> entries by task-id = agent_id.
   readSubagents(id: string): SubagentInfo[] {
-    // Strict id guard prevents path traversal into other directories.
     if (!/^[\w-]+$/.test(id)) return [];
     const found = this.findSession(id);
-    if (!found) return [];
-    const subagentDir = join(found.projectDir, id, 'subagents');
-    let metaFiles: string[];
-    try {
-      metaFiles = readdirSync(subagentDir).filter((f) => f.endsWith('.meta.json'));
-    } catch {
-      return [];
-    }
-    const completions = readTaskNotifications(join(found.projectDir, `${id}.jsonl`));
-    const out: SubagentInfo[] = [];
-    for (const metaFile of metaFiles) {
-      const agentId = metaFile.replace(/^agent-/, '').replace(/\.meta\.json$/, '');
-      const metaPath = join(subagentDir, metaFile);
-      const jsonlPath = join(subagentDir, `agent-${agentId}.jsonl`);
-      let meta: { agentType?: string; description?: string; toolUseId?: string };
-      try {
-        meta = JSON.parse(readFileSync(metaPath, 'utf8'));
-      } catch {
-        continue;
-      }
-      let jsonlContent = '';
-      let firstSeenAt = 0;
-      try {
-        jsonlContent = readFileSync(jsonlPath, 'utf8');
-        firstSeenAt = statSync(jsonlPath).mtimeMs;
-      } catch { /* meta without jsonl — surface with empty feed */ }
-      const entries: TranscriptMessage[] = [];
-      const taskToolUseIds = new Set<string>();
-      const rejectedToolUseIds = new Set<string>();
-      let firstTimestamp: number | null = null;
-      const parser = new LineParser();
-      parser.onLine = (obj) => {
-        const o = obj as RawSessionRecord & { timestamp?: string };
-        if (firstTimestamp === null && typeof o.timestamp === 'string') {
-          const t = Date.parse(o.timestamp);
-          if (!Number.isNaN(t)) firstTimestamp = t;
-        }
-        collectRejectedToolUseIds(obj, rejectedToolUseIds);
-        for (const m of extractTranscriptMessages(obj, taskToolUseIds)) {
-          // Subagent feeds render only tool tiles; the dispatch prompt and free-form replies live elsewhere.
-          if (m.role !== 'tool_use' && m.role !== 'tool_result') continue;
-          entries.push(m);
-        }
-      };
-      parser.write(jsonlContent);
-      out.push({
-        agentId,
-        agentType: meta.agentType ?? 'agent',
-        ...(meta.description ? { description: meta.description } : {}),
-        ...(meta.toolUseId ? { parentToolUseId: meta.toolUseId } : {}),
-        firstSeenAt: firstTimestamp ?? firstSeenAt,
-        entries: stampRejections(entries, rejectedToolUseIds),
-        completion: completions.get(agentId) ?? null,
-      });
-    }
-    out.sort((a, b) => a.firstSeenAt - b.firstSeenAt);
-    return out;
+    return found ? this.transcripts.readSubagents(found.projectDir, id) : [];
   }
 
   // Permanently removes the session — no trash dir, not recoverable.
   delete(id: string): boolean {
-    // Strict id guard prevents path traversal into other directories.
     if (!/^[\w-]+$/.test(id)) return false;
     const found = this.findSession(id);
-    if (!found) return false;
-    const path = join(found.projectDir, `${id}.jsonl`);
-    try {
-      unlinkSync(path);
-      try { unlinkSync(join(found.projectDir, `${id}.title`)); } catch { /* no sidecar */ }
-      if (this.sessionMetaDir) { try { unlinkSync(join(this.sessionMetaDir, `${id}.json`)); } catch { /* no sidecar */ } }
-      if (this.runtimeDir) rmSync(join(uploadsRootFor(this.runtimeDir), id), { recursive: true, force: true });
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  private readSessionInfoFromPath(path: string): SessionInfo | null {
-    try {
-      const stat = statSync(path);
-      const id = path.split('/').pop()!.replace(/\.jsonl$/, '');
-      const act = this.activity(path, stat.size, stat.mtimeMs, stat.birthtimeMs);
-      const meta = this.readActionMeta(id);
-      // Persisted sidecar so titles don't shift as new content streams in; delete to force regeneration.
-      const titlePath = path.replace(/\.jsonl$/, '.title');
-      let cached: string | undefined;
-      try { cached = readFileSync(titlePath, 'utf8').trim(); } catch { /* no sidecar */ }
-      let title: string;
-      if (cached) {
-        title = cached;
-      } else {
-        const { summary, firstUserMsg } = scanTitleSources(path);
-        const rawTitle = summary ?? firstUserMsg;
-        title = rawTitle ? cleanTitle(rawTitle) : 'Untitled session';
-        // Don't cache "Untitled session" for a brand-new session that hasn't been written to disk yet.
-        if (rawTitle) {
-          try { writeFileSync(titlePath, title); } catch { /* best-effort cache */ }
-        }
-      }
-      // An action session's stamped title/label supersedes the transcript-derived one
-      // (whose first turn is a bare `/action <uuid>` slash command → a UUID or "Untitled").
-      if (meta) return { id, title: meta.title || title, ...act, path, sessionClass: 'action', actionLabel: meta.action };
-      return { id, title, ...act, path };
-    } catch {
-      return null;
-    }
-  }
-
-  // Falls back to mtime so a brand-new session with no real turns yet still sorts to the top.
-  // The JSONL is append-only, so a prompt a long agent turn pushed out of the tail is still the
-  // newest one; with none ever seen, creation stands in — never agent activity.
-  private activity(path: string, size: number, mtimeMs: number, birthtimeMs: number): { lastModified: number; lastEngagedAt: number } {
-    let cached = this.lastMsgTsCache.get(path);
-    if (!cached || cached.size !== size) {
-      const { last, prompt } = tailTimestamps(path, size);
-      cached = { size, ts: last, prompt: prompt ?? cached?.prompt ?? null };
-      this.lastMsgTsCache.set(path, cached);
-    }
-    return { lastModified: cached.ts ?? mtimeMs, lastEngagedAt: cached.prompt ?? birthtimeMs };
+    if (!found || !this.transcripts.deleteTranscript(found.projectDir, id)) return false;
+    if (this.sessionMetaDir) rmSync(join(this.sessionMetaDir, `${id}.json`), { force: true });
+    if (this.runtimeDir) rmSync(join(uploadsRootFor(this.runtimeDir), id), { recursive: true, force: true });
+    if (this.runtimeLogDir) removeNdjsonLogs(this.runtimeLogDir, id);
+    return true;
   }
 }

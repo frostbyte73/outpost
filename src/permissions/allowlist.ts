@@ -11,6 +11,7 @@ import { clausesShellSafe, unsafeClauseReason } from './shell-safety.js';
 import { extractFileReferences, isValidTmpFilePath } from './file-flags.js';
 import { refusedWrite } from './dangerous-writes.js';
 import { assertNotWriteShaped } from './write-shape.js';
+import { canonicalToolName, fromRuleSpelling, isMcpTool, legacyMcpSpelling } from '../runtime/tools.js';
 
 export interface AllowlistConfig {
   alwaysAllow: string[];
@@ -33,8 +34,10 @@ interface PathRule {
   pathRegex: RegExp;
 }
 
+// Matching uses canonical tool names; the `*Sources` arrays keep each rule as written, for disk and the UI.
 interface CompiledRules {
   alwaysAllow: Set<string>;
+  alwaysAllowSources: string[];
   bashPatternSources: string[];
   bashPatterns: RegExp[];
   mcpPatternSources: string[];
@@ -45,13 +48,13 @@ interface CompiledRules {
 
 // Tools whose input has a file-path-ish field that path rules apply to.
 export const PATH_INPUT_FIELDS: Record<string, ReadonlyArray<string>> = {
-  Read:         ['file_path'],
-  Write:        ['file_path'],
-  Edit:         ['file_path'],
-  MultiEdit:    ['file_path'],
-  NotebookEdit: ['notebook_path', 'file_path'],
-  Glob:         ['path'],
-  Grep:         ['path'],
+  file_read:       ['file_path'],
+  file_write:      ['file_path'],
+  file_edit:       ['file_path'],
+  file_multi_edit: ['file_path'],
+  notebook_edit:   ['notebook_path', 'file_path'],
+  file_glob:       ['path'],
+  file_grep:       ['path'],
 };
 
 function parsePathRule(value: string): PathRule {
@@ -59,7 +62,7 @@ function parsePathRule(value: string): PathRule {
   if (idx <= 0 || idx === value.length - 1) {
     throw new Error(`path rule must be "<ToolName>:<regex>": ${JSON.stringify(value)}`);
   }
-  const tool = value.slice(0, idx);
+  const tool = fromRuleSpelling(value.slice(0, idx));
   const pathRegex = new RegExp(value.slice(idx + 1));
   return { tool, pathRegex };
 }
@@ -158,6 +161,7 @@ function sanitizeCwd(cwd: string): string {
 function emptyCompiled(): CompiledRules {
   return {
     alwaysAllow: new Set(),
+    alwaysAllowSources: [],
     bashPatternSources: [],
     bashPatterns: [],
     mcpPatternSources: [],
@@ -174,8 +178,10 @@ function compileFromConfig(cfg: AllowlistConfig): CompiledRules {
     try { pathRules.push(parsePathRule(s)); }
     catch (e) { /* invalid persisted rule — ignore silently */ }
   }
+  const toolSources = [...new Set(cfg.alwaysAllow)];
   return {
-    alwaysAllow: new Set(cfg.alwaysAllow),
+    alwaysAllow: new Set(toolSources.map(fromRuleSpelling)),
+    alwaysAllowSources: toolSources,
     bashPatternSources: [...cfg.alwaysAllowBashPatterns],
     bashPatterns: cfg.alwaysAllowBashPatterns.map((s) => new RegExp(s)),
     mcpPatternSources: [...cfg.alwaysAllowMcpPatterns],
@@ -290,27 +296,28 @@ function operandPath(word: string, base?: string): string | null {
   return resolve(base, literal);
 }
 
-function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown): boolean {
-  if (rules.alwaysAllow.has(toolName)) return true;
-  if (toolName === 'Bash') {
+function rulesAllow(rules: CompiledRules, tool: string, toolInput: unknown): boolean {
+  if (rules.alwaysAllow.has(tool)) return true;
+  if (tool === 'shell') {
     const cmd = (toolInput as { command?: string })?.command;
     if (typeof cmd !== 'string') return false;
     const clauses = splitShellClauses(cmd);
     if (clauses === null || clauses.length === 0) return false;
     return clauses.every((c) => bashPatternsMatch(rules, c.matchText));
   }
-  if (toolName.startsWith('mcp__')) {
-    return rules.mcpPatterns.some((p) => p.test(toolName));
+  if (isMcpTool(tool)) {
+    const spelled = legacyMcpSpelling(tool);
+    return rules.mcpPatterns.some((p) => p.test(spelled));
   }
   // Path-scoped rule: tool name must match AND the path-shaped input matches the regex.
-  if (PATH_INPUT_FIELDS[toolName]) {
-    const path = readPathInput(toolName, toolInput);
+  if (PATH_INPUT_FIELDS[tool]) {
+    const path = readPathInput(tool, toolInput);
     // Neither `..` nor a symlink may walk out from under an anchored prefix rule:
     // `Write:^/tmp/` should not admit `/tmp/../etc/crontab`, nor `/tmp/link` when `link`
     // points at /etc/hosts. A relative path is tested as written — the daemon can't know the
     // cwd it resolves against, and every path rule is absolute-anchored, so it denies.
     const probe = path !== undefined && path.startsWith('/') ? canonicalPath(path) : path;
-    if (probe !== undefined && rules.pathPatterns.some((r) => r.tool === toolName && r.pathRegex.test(probe))) {
+    if (probe !== undefined && rules.pathPatterns.some((r) => r.tool === tool && r.pathRegex.test(probe))) {
       return true;
     }
   }
@@ -319,7 +326,7 @@ function rulesAllow(rules: CompiledRules, toolName: string, toolInput: unknown):
 
 function toConfigFromRules(rules: CompiledRules): AllowlistConfig {
   return {
-    alwaysAllow: [...rules.alwaysAllow],
+    alwaysAllow: [...rules.alwaysAllowSources],
     alwaysAllowBashPatterns: [...rules.bashPatternSources],
     alwaysAllowMcpPatterns: [...rules.mcpPatternSources],
     alwaysAllowPathPatterns: [...rules.pathPatternSources],
@@ -371,7 +378,7 @@ export class Allowlist {
   }
 
   ruleCount(): number {
-    return this.global.alwaysAllow.size
+    return this.global.alwaysAllowSources.length
       + this.global.bashPatterns.length
       + this.global.mcpPatterns.length;
   }
@@ -418,7 +425,7 @@ export class Allowlist {
         if (path === null) return false;
         if (isDeviceSink(path)) continue;
         const asWrite = { file_path: path };
-        if (scopes.some((s) => rulesAllow(s, 'Write', asWrite))) continue;
+        if (scopes.some((s) => rulesAllow(s, 'file_write', asWrite))) continue;
         if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) continue;
         return false;
       }
@@ -461,7 +468,7 @@ export class Allowlist {
   // In practice that means this bar applies to precisely the actions that inherit `core` and
   // no read grant — the ones that never declared a wish to read files at all.
   private readArgsAllowed(cmd: string, scopes: CompiledRules[], sessionWorktreePath?: string): boolean {
-    if (scopes.some((s) => s.alwaysAllow.has('Read'))) return true;
+    if (scopes.some((s) => s.alwaysAllow.has('file_read'))) return true;
     const clauses = splitShellClauses(cmd);
     if (clauses === null) return false;
     const base = relativeBase(clauses, sessionWorktreePath);
@@ -481,7 +488,7 @@ export class Allowlist {
 
   // One operand of a read command. `$OUTPOST_ENVELOPE` is the single path an action can name
   // without knowing its value — the daemon exports it into every spawned session
-  // (claude-proc.ts) — and the checker sees command text, never the expansion, so it is
+  // (runtime/claude/proc.ts) — and the checker sees command text, never the expansion, so it is
   // recognised by spelling. That recognition lives HERE, in one place, rather than in every
   // rule that wants to permit reading the envelope.
   private readArgAllowed(
@@ -491,7 +498,7 @@ export class Allowlist {
     const path = operandPath(word, base);
     if (path === null) return false;
     if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) return true;
-    return scopes.some((s) => rulesAllow(s, 'Read', { file_path: path }));
+    return scopes.some((s) => rulesAllow(s, 'file_read', { file_path: path }));
   }
 
   // A second bar a scoped file-op clause has to clear, mirroring redirectsAllowed: `mkdir`,
@@ -595,7 +602,7 @@ export class Allowlist {
     const path = operandPath(word, base);
     if (path === null) return false;
     if (sessionWorktreePath && isPathUnder(path, sessionWorktreePath)) return true;
-    return scopes.some((s) => rulesAllow(s, 'Write', { file_path: path }));
+    return scopes.some((s) => rulesAllow(s, 'file_write', { file_path: path }));
   }
 
   // Why a denied Bash command was denied, in the only terms a one-click grant can answer.
@@ -650,7 +657,7 @@ export class Allowlist {
     if (unmatched) return { kind: 'clause', clause: unmatched.text };
 
     for (const path of targets) {
-      if (scopes.some((s) => rulesAllow(s, 'Write', { file_path: path }))) continue;
+      if (scopes.some((s) => rulesAllow(s, 'file_write', { file_path: path }))) continue;
       if (ctx.sessionWorktreePath && isPathUnder(path, ctx.sessionWorktreePath)) continue;
       return { kind: 'redirect', target: path };
     }
@@ -659,12 +666,13 @@ export class Allowlist {
 
   allows(toolName: string, toolInput: unknown, projectCwd?: string, actionName?: string, sessionWorktreePath?: string, sessionId?: string): boolean {
     const scopes = this.scopesFor(projectCwd, actionName, sessionId);
-    if (toolName === 'Bash') {
+    const tool = canonicalToolName(toolName);
+    if (tool === 'shell') {
       const cmd = (toolInput as { command?: string })?.command;
       // A whole-tool `Bash` grant is an explicit "run anything" — it already implies
       // arbitrary writes via `cp`/`rm`/an interpreter, so gating its redirections would
       // be theatre. The gate exists to stop *pattern*-matched clauses from smuggling one.
-      if (typeof cmd === 'string' && !scopes.some((s) => s.alwaysAllow.has('Bash'))) {
+      if (typeof cmd === 'string' && !scopes.some((s) => s.alwaysAllow.has('shell'))) {
         if (!this.redirectsAllowed(cmd, scopes, sessionWorktreePath)) return false;
         if (!this.fileOpArgsAllowed(cmd, scopes, sessionWorktreePath)) return false;
         if (!this.readArgsAllowed(cmd, scopes, sessionWorktreePath)) return false;
@@ -676,14 +684,14 @@ export class Allowlist {
         if (!clausesShellSafe(cmd)) return false;
       }
     }
-    if (scopes.some((s) => rulesAllow(s, toolName, toolInput))) return true;
+    if (scopes.some((s) => rulesAllow(s, tool, toolInput))) return true;
     // Session scope: path-shaped tool inputs inside the session's own worktree auto-allow.
     // Applies only when the daemon told us the session has a worktree — action-step sessions
     // provisioned by the orchestrator. Interactive PWA sessions don't have a worktree record
     // and fall through to the interactive approval queue. See worktree-manager.ts: primary
     // adoption is refused, so a WorktreeRecord's path only ever points inside outpost's root.
-    if (sessionWorktreePath && PATH_INPUT_FIELDS[toolName]) {
-      const path = readPathInput(toolName, toolInput);
+    if (sessionWorktreePath && PATH_INPUT_FIELDS[tool]) {
+      const path = readPathInput(tool, toolInput);
       if (path && isPathUnder(path, sessionWorktreePath)) return true;
     }
     return false;
@@ -702,8 +710,10 @@ export class Allowlist {
       : 'session' in scope ? this.loadSession(scope.session)
       : this.loadProject(scope.project);
     if (kind === 'tool') {
-      if (target.alwaysAllow.has(value)) return false;
-      target.alwaysAllow.add(value);
+      const tool = fromRuleSpelling(value);
+      if (target.alwaysAllow.has(tool)) return false;
+      target.alwaysAllow.add(tool);
+      target.alwaysAllowSources.push(value);
     } else if (kind === 'bash') {
       if (target.bashPatternSources.includes(value)) return false;
       const compiled = new RegExp(value);
@@ -739,7 +749,13 @@ export class Allowlist {
     if (!target) return false;
     let removed = false;
     if (kind === 'tool') {
-      removed = target.alwaysAllow.delete(value);
+      const i = target.alwaysAllowSources.indexOf(value);
+      if (i >= 0) {
+        target.alwaysAllowSources.splice(i, 1);
+        // Rebuilt rather than deleted: another spelling of the same tool may still be granted.
+        target.alwaysAllow = new Set(target.alwaysAllowSources.map(fromRuleSpelling));
+        removed = true;
+      }
     } else {
       const [sources, compiled]: [string[], unknown[]] =
         kind === 'bash' ? [target.bashPatternSources, target.bashPatterns]
@@ -796,16 +812,17 @@ export class Allowlist {
 // (not every-clause like `allows`): `git status && git push` must gate on the push.
 export function gatedMatch(cfg: ActionAllowlist, toolName: string, toolInput: unknown): boolean {
   const rules = compileFromConfig(cfg);
-  if (toolName === 'Bash') {
+  const tool = canonicalToolName(toolName);
+  if (tool === 'shell') {
     const cmd = (toolInput as { command?: unknown })?.command;
     if (typeof cmd !== 'string') return false;
     // Mirrors rulesAllow's whole-tool shortcut so the two functions can't disagree about
     // the same config: a gated group handing out bare `alwaysAllow: ['Bash']` has granted
     // arbitrary external writes, so every command under it needs a pin, parseable or not.
-    if (rules.alwaysAllow.has('Bash')) return true;
+    if (rules.alwaysAllow.has('shell')) return true;
     const clauses = splitShellClauses(cmd);
     if (clauses === null) return false;
     return clauses.some((c) => rules.bashPatterns.some((p) => p.test(stripLeadingAssignments(c.matchText))));
   }
-  return rulesAllow(rules, toolName, toolInput);
+  return rulesAllow(rules, tool, toolInput);
 }

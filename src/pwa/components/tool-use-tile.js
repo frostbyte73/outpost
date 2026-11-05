@@ -31,14 +31,14 @@ function resolvePathCtx(ctx) {
   return { cwd, worktreePath: null };
 }
 
-// must stay in sync with the matching constant in src/session-store.ts
-export const TASK_TOOL_NAMES = new Set(['TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet']);
+// Canonical tool names (src/runtime/tools.ts); must stay in sync with PAIRED_TOOLS in runtime/claude/transcript-parse.ts
+export const TASK_TOOL_NAMES = new Set(['task_create', 'task_update', 'task_list', 'task_get']);
 
-// Mirrors --permission-mode=acceptEdits; Bash/Read/Grep stay user-approvable.
-export const EDIT_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+// Mirrors the gate's accept-edits set (permissions/gate.ts); shell/read tools stay user-approvable.
+export const EDIT_TOOLS = new Set(['file_edit', 'file_write', 'notebook_edit', 'file_multi_edit']);
 
-export function isHighDetailTool(toolName) {
-  return toolName === 'Bash' || EDIT_TOOLS.has(toolName);
+export function isHighDetailTool(tool) {
+  return tool === 'shell' || EDIT_TOOLS.has(tool);
 }
 
 // claude code re-serializes tool_input with different key order between stream and hook

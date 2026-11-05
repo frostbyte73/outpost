@@ -15,11 +15,11 @@ function makeEngine() {
   const resumed: Array<{ sessionId: string; content: string }> = [];
   const sessionManager = {
     spawnDetached() {},
-    send() {},
+    sendTurn() {},
     isWorking() { return false; },
     interrupt() {},
-    sendOrResume(sessionId: string, _cwd: string, msg: { message: { content: string } }) {
-      resumed.push({ sessionId, content: msg.message.content });
+    sendOrResume(sessionId: string, _cwd: string, turn: { text: string }) {
+      resumed.push({ sessionId, content: turn.text });
     },
   } as never;
   const engine = new WorkEngine({

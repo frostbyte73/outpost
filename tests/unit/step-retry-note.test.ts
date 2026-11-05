@@ -18,8 +18,8 @@ function makeEngine() {
   const sent: Array<{ sessionId: string; content: string }> = [];
   const sessionManager = {
     spawnDetached() { /* no subprocess in the harness */ },
-    send(sessionId: string, msg: { message: { content: string } }) {
-      sent.push({ sessionId, content: msg.message.content });
+    sendTurn(sessionId: string, turn: { text: string }) {
+      sent.push({ sessionId, content: turn.text });
     },
     isWorking() { return false; },
     sendOrResume() { /* not exercised */ },

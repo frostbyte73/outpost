@@ -11,11 +11,7 @@ function managerWithSessions(ids: string[], working: string[] = []): {
   kills: Map<string, ReturnType<typeof vi.fn>>;
 } {
   const manager = new SessionManager({
-    settingsPath: '/tmp/settings.json',
-    mcpConfigPath: '/tmp/mcp.json',
-    daemonAuthSecret: 's',
-    daemonHost: '127.0.0.1',
-    hookPort: 1,
+    runtime: {} as never,
     sessionStore: { findSession: () => undefined } as never,
   });
   const kills = new Map<string, ReturnType<typeof vi.fn>>();
@@ -26,7 +22,7 @@ function managerWithSessions(ids: string[], working: string[] = []): {
   for (const id of ids) {
     const kill = vi.fn(async () => {});
     kills.set(id, kill);
-    internals.active.set(id, { id, proc: { kill }, clients: new Set(), registeredIds: new Set() });
+    internals.active.set(id, { id, session: { kill }, clients: new Set(), registeredIds: new Set() });
   }
   for (const id of working) internals.working.set(id, Date.now());
   return { manager, kills };

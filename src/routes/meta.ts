@@ -8,6 +8,7 @@ import { GATED_GROUPS, groupNamesForAction } from '../actions/registry.js';
 import type { PermissionGroup, PermissionGroupMap } from '../actions/types.js';
 import { Allowlist, type AllowlistConfig, type RuleKind, type RuleScope } from '../permissions/allowlist.js';
 import { lintPermissionRule } from '../permissions/write-shape.js';
+import { canonicalToolName } from '../runtime/tools.js';
 import type { GroupAuthor, PermissionGroupRevisionsStore } from '../storage/permission-group-revisions-store.js';
 import type { ActionsStore } from '../storage/actions-store.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
@@ -646,7 +647,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   // shipping a value (`toolName` alone, or a stray `"undefined"`) indistinguishable from a real
   // single-word command. Truncated so one oversized payload can't blow up this route's response.
   function truncatedDenialCommand(toolName: string, toolInput: unknown): string | null {
-    if (toolName === 'Bash') {
+    if (canonicalToolName(toolName) === 'shell') {
       const cmd = (toolInput as { command?: unknown } | null | undefined)?.command;
       return typeof cmd === 'string' ? cmd.slice(0, 200) : null;
     }

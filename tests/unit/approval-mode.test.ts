@@ -31,10 +31,10 @@ describe('ApprovalModeStore', () => {
 
 describe('plan-mode constants', () => {
   it('PLAN_MODE_ALWAYS contains the documented read-shaped tools', () => {
-    expect(PLAN_MODE_ALWAYS.has('Read')).toBe(true);
-    expect(PLAN_MODE_ALWAYS.has('Grep')).toBe(true);
-    expect(PLAN_MODE_ALWAYS.has('Write')).toBe(false);
-    expect(PLAN_MODE_ALWAYS.has('Bash')).toBe(false);
+    expect(PLAN_MODE_ALWAYS.has('file_read')).toBe(true);
+    expect(PLAN_MODE_ALWAYS.has('file_grep')).toBe(true);
+    expect(PLAN_MODE_ALWAYS.has('file_write')).toBe(false);
+    expect(PLAN_MODE_ALWAYS.has('shell')).toBe(false);
   });
 
   it('PLAN_MODE_MCP_READ_RE matches verb-last read-shaped MCP tool names', () => {

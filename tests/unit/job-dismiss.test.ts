@@ -42,7 +42,7 @@ function harness(state: JobState) {
   const engine = new WorkEngine({
     queue,
     journalStore: { append: () => {}, recent: () => [] } as never,
-    sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
+    sessionManager: { spawnDetached() {}, sendTurn() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
     worktreeManager: { get: () => undefined, provision: async () => ({ path: '/tmp' }) } as never,
     linearWriter: { setState: async () => undefined } as never,
     actionsStore: {} as never,

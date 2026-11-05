@@ -1,7 +1,11 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { SessionManager } from '../../src/session/session-manager.js';
+import { SessionStore } from '../../src/session/session-store.js';
+import { ClaudeTranscripts } from '../../src/runtime/claude/transcripts.js';
+import type { AgentRuntime, StartOpts } from '../../src/runtime/types.js';
 
 // A step session's `$OUTPOST_ENVELOPE` has to survive a respawn through ANY door, because the
 // door the user walks through is the one that drops it: attach() (the PWA opening the session)
@@ -10,21 +14,14 @@ import { join } from 'node:path';
 // gate denial then resumed an already-live env-less proc, and the controller woke blind
 // (`printenv OUTPOST_ENVELOPE` → exit 1) and ended the turn without a move.
 
-const spawned: { sessionId: string; env: Record<string, string>; appendSystemPrompt?: string }[] = [];
+const spawned: StartOpts[] = [];
 
-vi.mock('../../src/session/claude-proc.js', () => ({
-  ClaudeProc: class {
-    constructor(opts: { sessionId: string; env: Record<string, string>; appendSystemPrompt?: string }) {
-      spawned.push({ sessionId: opts.sessionId, env: opts.env, appendSystemPrompt: opts.appendSystemPrompt });
-    }
-    send(): void {}
-    interrupt(): void {}
-    async kill(): Promise<void> {}
+const runtime = {
+  start(opts: StartOpts) {
+    spawned.push(opts);
+    return { sendTurn() {}, interrupt() {}, async kill() {} };
   },
-}));
-
-const { SessionManager } = await import('../../src/session/session-manager.js');
-const { SessionStore } = await import('../../src/session/session-store.js');
+} as unknown as AgentRuntime;
 
 const STEP_ENV = {
   OUTPOST_ENVELOPE: '/Users/testuser/.outpost/jobs/CS-2068/steps/19531999/envelope.json',
@@ -35,15 +32,8 @@ const STEP_ENV = {
 
 function newManager() {
   const dir = mkdtempSync(join(tmpdir(), 'outpost-spawn-env-'));
-  const store = new SessionStore({ root: join(dir, 'projects'), sessionMetaDir: join(dir, 'session-meta') });
-  const manager = new SessionManager({
-    settingsPath: '/tmp/settings.json',
-    mcpConfigPath: '/tmp/mcp.json',
-    daemonAuthSecret: 'secret',
-    daemonHost: '127.0.0.1',
-    hookPort: 1,
-    sessionStore: store,
-  });
+  const store = new SessionStore({ transcripts: new ClaudeTranscripts(join(dir, 'projects')), sessionMetaDir: join(dir, 'session-meta') });
+  const manager = new SessionManager({ runtime, sessionStore: store });
   return { manager, store, cwd: dir };
 }
 
@@ -73,7 +63,7 @@ describe('spawn env stickiness', () => {
     await manager.close('step-1', 'idle');
     manager.attach('step-1', fakeWs(), { cwd });
 
-    manager.sendOrResume('step-1', cwd, { type: 'user' }, STEP_ENV);
+    manager.sendOrResume('step-1', cwd, { text: '' }, STEP_ENV);
 
     expect(spawned).toHaveLength(2);
     expect(spawned.at(-1)!.env).toMatchObject(STEP_ENV);

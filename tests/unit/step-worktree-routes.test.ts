@@ -53,7 +53,7 @@ function jobRoutesHarness(jobState: JobRecord['state'], stepOver: Partial<Orches
   const engine = new WorkEngine({
     queue,
     sessionManager: {
-      spawnDetached() {}, send() {}, isWorking() { return false; },
+      spawnDetached() {}, sendTurn() {}, isWorking() { return false; },
       sendOrResume(sessionId: string) { resumed.push(sessionId); },
       close: async () => {},
     } as never,
@@ -191,7 +191,7 @@ describe('POST /api/work/jobs/:id/steps/:stepId/resolve — orchestrated steps',
     const engine = new WorkEngine({
       queue,
       sessionManager: {
-        spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {},
+        spawnDetached() {}, sendTurn() {}, isWorking() { return false; }, sendOrResume() {},
         close: async () => {},
       } as never,
       worktreeManager: {

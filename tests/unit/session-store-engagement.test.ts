@@ -3,6 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, appendFileSync, statSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../src/session/session-store.js';
+import { ClaudeTranscripts } from '../../src/runtime/claude/transcripts.js';
 
 const iso = (ms: number) => new Date(ms).toISOString();
 const T0 = Date.parse('2026-10-01T10:00:00Z');
@@ -12,7 +13,7 @@ function storeWith(lines: object[]) {
   const proj = join(root, '-p');
   mkdirSync(proj);
   writeFileSync(join(proj, 'sess-1.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
-  return new SessionStore({ root }).listProjects()[0]!.sessions[0]!;
+  return new SessionStore({ transcripts: new ClaudeTranscripts(root) }).listProjects()[0]!.sessions[0]!;
 }
 
 describe('SessionInfo.lastEngagedAt', () => {
@@ -39,7 +40,7 @@ describe('SessionInfo.lastEngagedAt', () => {
     mkdirSync(proj);
     const file = join(proj, 'sess-1.jsonl');
     writeFileSync(file, JSON.stringify({ type: 'user', cwd: tmpdir(), timestamp: iso(T0), message: { content: 'go' } }) + '\n');
-    const store = new SessionStore({ root });
+    const store = new SessionStore({ transcripts: new ClaudeTranscripts(root) });
     expect(store.listProjects()[0]!.sessions[0]!.lastEngagedAt).toBe(T0);
     const filler = 'x'.repeat(2000);
     const lines = Array.from({ length: 60 }, (_, i) =>

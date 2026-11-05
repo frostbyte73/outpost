@@ -21,15 +21,15 @@ const initial = {
 
 const store = createStore(initial);
 
-// Maps a Claude tool name to the verb shown next to the glowy ellipses.
-function verbForTool(toolName) {
-  if (!toolName) return 'thinking';
-  if (toolName === 'Bash') return 'bashing';
-  if (toolName === 'Write') return 'writing';
-  if (toolName === 'Edit' || toolName === 'MultiEdit' || toolName === 'NotebookEdit') return 'editing';
-  if (toolName === 'Read' || toolName === 'Glob' || toolName === 'Grep' || toolName === 'LS' || toolName === 'NotebookRead') return 'reading';
-  if (toolName === 'WebFetch' || toolName === 'WebSearch') return 'searching';
-  if (toolName.startsWith('mcp__')) return 'calling';
+// Maps a canonical tool name (src/runtime/tools.ts) to the verb shown next to the glowy ellipses.
+function verbForTool(tool) {
+  if (!tool) return 'thinking';
+  if (tool === 'shell') return 'bashing';
+  if (tool === 'file_write') return 'writing';
+  if (tool === 'file_edit' || tool === 'file_multi_edit' || tool === 'notebook_edit') return 'editing';
+  if (tool === 'file_read' || tool === 'file_glob' || tool === 'file_grep' || tool === 'file_list' || tool === 'notebook_read') return 'reading';
+  if (tool === 'web_fetch' || tool === 'web_search') return 'searching';
+  if (tool.startsWith('mcp:')) return 'calling';
   return 'thinking';
 }
 
@@ -56,9 +56,9 @@ export const actions = {
       store.set((s) => ({ ...s, loading: false, err: String(e) }));
     }
   },
-  pushActivity(sessionId, toolName, at) {
+  pushActivity(sessionId, tool, at) {
     if (!sessionId) return;
-    const verb = verbForTool(toolName);
+    const verb = verbForTool(tool);
     store.set((s) => {
       const next = new Map(s.activity);
       next.set(sessionId, { verb, at: at ?? Date.now() });

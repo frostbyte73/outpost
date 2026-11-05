@@ -4,6 +4,7 @@
 // reviewable by a human reading this file, not inferred at runtime.
 
 import { splitShellClauses } from './shell-split.js';
+import { canonicalToolName, isMcpTool, legacyMcpSpelling } from '../runtime/tools.js';
 
 export type ToolEffect = 'read' | 'local-write' | 'external-write' | 'interpreter' | 'unknown';
 
@@ -13,11 +14,11 @@ export interface ToolVerdict {
 }
 
 const PLAIN_READ_TOOLS: ReadonlySet<string> = new Set([
-  'Read', 'Glob', 'Grep', 'LS', 'NotebookRead', 'WebFetch', 'WebSearch', 'ToolSearch',
+  'file_read', 'file_glob', 'file_grep', 'file_list', 'notebook_read', 'web_fetch', 'web_search', 'tool_search',
 ]);
 
 const PLAIN_LOCAL_WRITE_TOOLS: ReadonlySet<string> = new Set([
-  'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
+  'file_write', 'file_edit', 'file_multi_edit', 'notebook_edit',
 ]);
 
 // MCP tools known to write to a system outside this machine. Seeded from write-shape.ts's
@@ -201,22 +202,24 @@ const DESCRIBES_WRITE_RE =
   /\b(creates?|updates?|deletes?|removes?|writes?|modifies?|modified|sends?|posts?|publishe[sd]?|merges?|pushe[sd]?|uploads?|destroys?|patche[sd]?|puts?)\b/i;
 
 export function classifyTool(toolName: string, description?: string): ToolVerdict {
-  if (PLAIN_READ_TOOLS.has(toolName)) {
+  const tool = canonicalToolName(toolName);
+  if (PLAIN_READ_TOOLS.has(tool)) {
     return { effect: 'read', reason: `${toolName} is a built-in read-only tool` };
   }
-  if (PLAIN_LOCAL_WRITE_TOOLS.has(toolName)) {
+  if (PLAIN_LOCAL_WRITE_TOOLS.has(tool)) {
     return { effect: 'local-write', reason: `${toolName} is a built-in local-write tool` };
   }
-  if (toolName === 'Bash') {
+  if (tool === 'shell') {
     return { effect: 'interpreter', reason: 'Bash executes an arbitrary shell command' };
   }
 
-  if (MCP_WRITE_TOOL_SET.has(toolName)) {
+  const mcpName = legacyMcpSpelling(tool);
+  if (MCP_WRITE_TOOL_SET.has(mcpName)) {
     return { effect: 'external-write', reason: `${toolName} is a known external-write MCP tool` };
   }
 
-  if (toolName.startsWith('mcp__')) {
-    const { vendor, local } = mcpParts(toolName);
+  if (isMcpTool(tool)) {
+    const { vendor, local } = mcpParts(mcpName);
     const verbPart = stripVendorEcho(vendor, local);
 
     const prefixMatch = matchesReadVerbPrefix(verbPart);

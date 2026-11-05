@@ -1,29 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { join } from 'node:path';
-import { LineParser } from './stream-json.js';
-
-// launchd strips the shell PATH, so a bare `spawn('claude')` can ENOENT even though the
-// binary is installed (e.g. Homebrew's /opt/homebrew/bin). Resolve an absolute path from
-// an explicit override or the usual install locations, re-checked on every spawn so a
-// `claude-code` cask upgrade that relocates the symlink is picked up on the next session.
-export function resolveClaudeBin(): string {
-  const override = process.env.OUTPOST_CLAUDE_BIN;
-  if (override && existsSync(override)) return override;
-  const dirs = [
-    ...(process.env.PATH?.split(':').filter(Boolean) ?? []),
-    '/opt/homebrew/bin',
-    '/usr/local/bin',
-    join(homedir(), '.local/bin'),
-    join(homedir(), '.claude/local'),
-  ];
-  for (const dir of dirs) {
-    const candidate = join(dir, 'claude');
-    if (existsSync(candidate)) return candidate;
-  }
-  return 'claude'; // last resort: let spawn search PATH; a miss surfaces via the 'error' handler
-}
+import { LineParser } from '../../session/stream-json.js';
+import { resolveClaudeBin } from './bin.js';
+import type { PermissionMode, SessionModel } from '../types.js';
 
 export interface ClaudeProcOpts {
   sessionId: string;
@@ -41,10 +19,10 @@ export interface ClaudeProcOpts {
   env: Record<string, string>;
   // Optional `--permission-mode` override. Used to clamp agent sessions to `default`
   // (interactive + hook-driven) regardless of the user's global preference, so the
-  // deny-on-miss path in hook-handler.ts always runs.
-  permissionMode?: 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
+  // deny-on-miss path in permissions/gate.ts always runs.
+  permissionMode?: PermissionMode;
   // Optional `--model` override; absent means claude's configured default.
-  model?: 'sonnet' | 'opus' | 'haiku' | 'fable';
+  model?: SessionModel;
   appendSystemPrompt?: string;
   onMessage: (msg: unknown) => void;
   onError: (msg: string) => void;

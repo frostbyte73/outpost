@@ -38,7 +38,7 @@ async function start() {
   const queue = new JobQueue(dir);
   const engine = new WorkEngine({
     queue,
-    sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
+    sessionManager: { spawnDetached() {}, sendTurn() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
     worktreeManager: { provision: async () => ({ path: dir }), get: () => undefined } as never,
     linearWriter: { setState: async () => undefined } as never,
     actionsStore: {} as never,

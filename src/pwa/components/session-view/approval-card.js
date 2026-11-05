@@ -66,7 +66,7 @@ function toolTileForApproval(a) {
 // `.approval-card[data-enqueued-at]` it finds in the document — no extra
 // wiring needed here beyond emitting the matching markup.
 export function inlineApprovalCardHtml(a, opts = {}) {
-  if (a.toolName === 'AskUserQuestion') return askApprovalCardHtml(a);
+  if (a.tool === 'ask_user') return askApprovalCardHtml(a);
   const agentType = opts.agentType ? escapeHtml(opts.agentType) : null;
   const agentChip = agentType
     ? `<span class="sv-approval-agent-chip">via ${agentType}</span>`

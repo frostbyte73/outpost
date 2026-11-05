@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { canonicalToolName, legacyMcpSpelling } from '../runtime/tools.js';
 
 const APPROVAL_MODES = ['ask', 'accept-edits', 'plan', 'bypass'] as const;
 export type ApprovalMode = (typeof APPROVAL_MODES)[number];
@@ -66,9 +67,9 @@ export class ApprovalModeStore {
 // "read-shaped" intent: anything that can't mutate filesystem or external state.
 // Includes claude agent meta-tools (TaskList/TaskGet/ToolSearch) which are read-only by construction.
 export const PLAN_MODE_ALWAYS: ReadonlySet<string> = new Set([
-  'Read', 'Glob', 'Grep', 'WebFetch', 'WebSearch',
-  'TaskList', 'TaskGet', 'ToolSearch',
-  'ListMcpResourcesTool', 'ReadMcpResourceTool',
+  'file_read', 'file_glob', 'file_grep', 'web_fetch', 'web_search',
+  'task_list', 'task_get', 'tool_search',
+  'native:ListMcpResourcesTool', 'native:ReadMcpResourceTool',
 ]);
 
 // MCP tools whose name contains a read-shaped verb are treated as read-only in plan
@@ -94,7 +95,8 @@ export const PLAN_MODE_MCP_MUTATORS: ReadonlySet<string> = new Set([
 // True if the tool name is safe to auto-allow in plan mode: it must match the
 // read-verb regex AND contain no mutator-verb segments. Both anchors matter —
 // either alone leaves a hole.
-export function isPlanModeReadableMcpTool(toolName: string): boolean {
+export function isPlanModeReadableMcpTool(name: string): boolean {
+  const toolName = legacyMcpSpelling(canonicalToolName(name));
   if (!PLAN_MODE_MCP_READ_RE.test(toolName)) return false;
   // Strip "mcp__<server>__" prefix, then split on either separator.
   const suffix = toolName.replace(/^mcp__[^_]+__/, '');

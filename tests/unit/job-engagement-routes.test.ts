@@ -46,7 +46,7 @@ function harness() {
     queue,
     journalStore: { append: () => {}, recent: () => [] } as never,
     sessionManager: {
-      spawnDetached() {}, send() {}, isWorking() { return false; },
+      spawnDetached() {}, sendTurn() {}, isWorking() { return false; },
       sendOrResume() {}, close: async () => {},
     } as never,
     worktreeManager: { get: () => undefined, provision: async () => ({ path: '/tmp' }) } as never,

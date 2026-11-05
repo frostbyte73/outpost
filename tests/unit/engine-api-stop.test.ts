@@ -15,10 +15,10 @@ function makeEngine(governor?: unknown) {
   const resumed: Array<{ sessionId: string; content: string; env?: Record<string, string> }> = [];
   const sessionManager = {
     spawnDetached() {},
-    send() {},
+    sendTurn() {},
     isWorking() { return false; },
-    sendOrResume(sessionId: string, _cwd: string, msg: { message: { content: string } }, env?: Record<string, string>) {
-      resumed.push({ sessionId, content: msg.message.content, env });
+    sendOrResume(sessionId: string, _cwd: string, turn: { text: string }, env?: Record<string, string>) {
+      resumed.push({ sessionId, content: turn.text, env });
     },
   } as never;
   const engine = new WorkEngine({

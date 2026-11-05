@@ -176,10 +176,7 @@ export function createSpawnDeps(opts: SpawnDepsOpts): SchedulerSpawnDeps {
       // ActionEdit for its proposal to land on) has to exist by then.
       enriched?.onSpawned?.(sessionId);
       const argsSuffix = input.args ? ` ${JSON.stringify(input.args)}` : '';
-      sessionManager.send(sessionId, {
-        type: 'user',
-        message: { role: 'user', content: `/${input.skill}${argsSuffix}` },
-      });
+      sessionManager.sendTurn(sessionId, { text: `/${input.skill}${argsSuffix}` });
       return { sessionId };
     },
   };

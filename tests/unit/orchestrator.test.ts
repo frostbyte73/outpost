@@ -19,9 +19,9 @@ function makeEngine(dir = mkdtempSync(join(tmpdir(), 'orch-'))) {
     spawnDetached(sessionId: string, _cwd: string, env: Record<string, string>) {
       spawned.push({ sessionId, env });
     },
-    send(sessionId: string, msg: { message: { content: string } }) {
+    sendTurn(sessionId: string, turn: { text: string }) {
       const entry = spawned.find((s) => s.sessionId === sessionId);
-      if (entry) entry.kick = msg.message.content;
+      if (entry) entry.kick = turn.text;
     },
     isWorking(sessionId: string) { return working.has(sessionId); },
     sendOrResume(sessionId: string, _cwd: string, _msg: unknown, env: Record<string, string>) {
@@ -751,7 +751,7 @@ describe('WorkEngine — dispatch worktree provisioning', () => {
     const queue = new JobQueue(dir);
     const sessionManager = {
       spawnDetached() { /* no-op */ },
-      send() { /* no-op */ },
+      sendTurn() { /* no-op */ },
       isWorking() { return false; },
       sendOrResume() { /* no-op */ },
     } as never;
@@ -1018,7 +1018,7 @@ function makeGovernedEngine() {
   const resumed: string[] = [];
   const sessionManager = {
     spawnDetached(sessionId: string) { spawned.push(sessionId); },
-    send() { /* no-op */ },
+    sendTurn() { /* no-op */ },
     isWorking() { return false; },
     sendOrResume(sessionId: string) { resumed.push(sessionId); },
     close(sessionId: string) { closed.push(sessionId); },
@@ -1215,7 +1215,7 @@ describe('WorkEngine.resumeControllerRound — settled while provision() was in 
     const engine = new WorkEngine({
       queue,
       sessionManager: {
-        spawnDetached() {}, send() {}, isWorking() { return false; },
+        spawnDetached() {}, sendTurn() {}, isWorking() { return false; },
         sendOrResume(sessionId: string) { resumed.push(sessionId); },
         close: async () => {},
       } as never,
@@ -1276,7 +1276,7 @@ describe('WorkEngine.rehydrateSessionBindings — running dispatches', () => {
     const queue = new JobQueue(dir);
     const engine = new WorkEngine({
       queue,
-      sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
+      sessionManager: { spawnDetached() {}, sendTurn() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
       worktreeManager: { provision: async () => ({ path: null }), get: () => undefined, archive: async () => {} } as never,
       linearWriter: { setState: async () => undefined } as never,
       actionsStore: {} as never,
@@ -1324,7 +1324,7 @@ describe('WorkEngine — a throw outside provision() still settles the round', (
     const queue = new JobQueue(dir);
     const engine = new WorkEngine({
       queue,
-      sessionManager: { spawnDetached() {}, send() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
+      sessionManager: { spawnDetached() {}, sendTurn() {}, isWorking() { return false; }, sendOrResume() {}, close: async () => {} } as never,
       // provision SUCCEEDS — the point is that the failure is somewhere else.
       worktreeManager: { provision: async () => ({ path: dir }), get: () => undefined, archive: async () => {} } as never,
       linearWriter: { setState: async () => undefined } as never,

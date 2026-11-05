@@ -22,6 +22,7 @@ import { suggestRule, type RuleSuggestion } from '../permissions/denial-suggesti
 import { bareBuiltinOf } from '../permissions/tool-classify.js';
 import { splitShellClauses } from '../permissions/shell-split.js';
 import { lintPermissionRule } from '../permissions/write-shape.js';
+import { canonicalToolName } from '../runtime/tools.js';
 import type { GroupApplier } from './meta.js';
 import type { ActionAuthor, ActionRevisionsStore } from '../storage/action-revisions-store.js';
 import { isAutoApplied } from './action-revisions.js';
@@ -37,7 +38,7 @@ import type { WorkEngine } from '../work/engine.js';
 import type { EvalOutcome } from '../eval/eval-verdict.js';
 import type { UserVerdict } from '../eval/eval-store.js';
 import type { DaemonConfig } from '../config.js';
-import { ensureActionsInstalled, bundledRepoDir } from '../setup-actions.js';
+import { ensureActionsInstalled, bundledRepoDir } from '../actions/install.js';
 import { parseJsonObject, parseWindowMs, readJsonBody } from './util.js';
 
 export interface ActionsRoutesDeps {
@@ -60,6 +61,8 @@ export interface ActionsRoutesDeps {
   actionRunLedger: ActionRunLedger;
   actionRevisionsStore: ActionRevisionsStore;
   manager: SessionManager;
+  // Hands the installed actions dir to the session runtime, e.g. as Claude skills.
+  deliverActions: (actionsDir: string) => void;
   engine: WorkEngine;
   notifyAll: (message: unknown) => void;
   // Shadow eval of an improver proposal; `onDone` fires once it has a verdict.
@@ -161,7 +164,7 @@ export type FixStarter = (
 // grant. Only a user-approved group edit can widen anything (see resolveDenialVerdict), so a
 // builder that "fixes" this by asking for permissions produces a proposal nobody can apply.
 export function fixActionFeedback(denial: ActionDenial, reason: string): string {
-  const call = denial.toolName === 'Bash'
+  const call = canonicalToolName(denial.toolName) === 'shell'
     ? (denial.toolInput as { command?: string } | null)?.command ?? '(command not recorded)'
     : `${denial.toolName} ${JSON.stringify(denial.toolInput ?? null)}`;
   const seen = denial.count > 1 ? ` (blocked ${denial.count} times)` : '';
@@ -380,7 +383,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
   const {
     outpostActionsDir, RUNTIME_DIR, SRC_DIR, secret, config,
     actionRegistry, actionsStore, allowlist, actionRunsStore, denialsStore, actionRunLedger,
-    actionRevisionsStore, manager, engine, notifyAll, permissionGroups, applyGroup,
+    actionRevisionsStore, manager, deliverActions, engine, notifyAll, permissionGroups, applyGroup,
     evaluateProposal, noteProposalVerdict, improverAutoApply,
   } = deps;
   const repoActionsDir = join(bundledRepoDir(SRC_DIR), 'actions');
@@ -395,7 +398,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     const sessionId = randomUUID();
     manager.spawnDetached(sessionId, cwd, extraEnv);
     manager.tagKind(sessionId, kind);
-    manager.send(sessionId, { type: 'user', message: { role: 'user', content: initialInput } });
+    manager.sendTurn(sessionId, { text: initialInput });
     return sessionId;
   }
 
@@ -441,7 +444,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
 
   function listExternalSkills() {
     const skillsDir = join(homedir(), '.claude', 'skills');
-    // realpathSync follows the runtime → repo symlink (setup-actions's dev mode),
+    // realpathSync follows the runtime → repo symlink (actions/install.ts's dev mode),
     // so we also exclude the repo's bundled actions dir to keep them out of skills.
     const repoActionsDir = join(SRC_DIR, '..', 'actions');
     let entries: string[] = [];
@@ -681,10 +684,10 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     notifyRevised(name);
     actionRunLedger.closeExternal(edit.sessionId, 'submitted');
     void manager.close(edit.sessionId).catch(() => { /* tolerate */ });
-    // Re-symlink into ~/.claude/skills, then reload the registry so the new action
+    // Re-deliver to the runtime, then reload the registry so the new action
     // reaches the catalog in the same actions_changed broadcast clearEdit fires —
     // otherwise the detail pane, still selected on this name, renders "Skill not found".
-    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR); } catch { /* tolerate */ }
+    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions); } catch { /* tolerate */ }
     try { actionRegistry.load(); } catch (e) { console.warn(`[action-edit] registry reload failed: ${(e as Error).message}`); }
     clearEdit(key);
   }
@@ -889,7 +892,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     engine.bindAction(sessionId, 'meta.build-action');
     actionRunLedger.openExternal({ action: 'meta.build-action', round: 'draft', sessionId });
     engine.stampActionSession(sessionId, 'meta.build-action', proposedName ? `New action: ${proposedName}` : 'New action');
-    manager.send(sessionId, { type: 'user', message: { role: 'user', content: '/meta.build-action' } });
+    manager.sendTurn(sessionId, { text: '/meta.build-action' });
     const edit: ActionEdit = {
       // Pre-populate actionName so the pending-new card shows the user's chosen
       // name immediately instead of "(naming…)". The skill can still override if it
@@ -934,7 +937,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
       const followup = feedback
         ? `Replacement feedback from the user:\n\n${feedback}\n\nRe-read $OUTPOST_ENVELOPE (skill_md_before may be stale if you already applied a draft) and post a new proposal.`
         : 'Replan with no new feedback — refresh the proposal.';
-      manager.sendOrResume(existing.sessionId, dir, { type: 'user', message: { role: 'user', content: followup } }, actionEditEnv(existing.sessionId, join(RUNTIME_DIR, 'action-edits', existing.sessionId, 'envelope.json'), name));
+      manager.sendOrResume(existing.sessionId, dir, { text: followup }, actionEditEnv(existing.sessionId, join(RUNTIME_DIR, 'action-edits', existing.sessionId, 'envelope.json'), name));
       return { ok: true, sessionId: existing.sessionId, reused: true };
     }
 
@@ -956,7 +959,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     engine.bindAction(sessionId, 'meta.build-action');
     actionRunLedger.openExternal({ action: 'meta.build-action', round: 'draft', sessionId });
     engine.stampActionSession(sessionId, 'meta.build-action', `Edit action: ${name}`);
-    manager.send(sessionId, { type: 'user', message: { role: 'user', content: '/meta.build-action' } });
+    manager.sendTurn(sessionId, { text: '/meta.build-action' });
     setEdit(key, {
       actionName: name,
       sessionId,
@@ -1032,7 +1035,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     const followup = `Replacement feedback from the user:\n\n${feedback}\n\nDraft a new proposal that addresses this, then POST it again.`;
     manager.sendOrResume(
       edit.sessionId, cwd,
-      { type: 'user', message: { role: 'user', content: followup } },
+      { text: followup },
       actionEditEnv(edit.sessionId, join(RUNTIME_DIR, 'action-edits', edit.sessionId, 'envelope.json'), edit.actionName),
     );
     res.statusCode = 200; res.setHeader('content-type', 'application/json');

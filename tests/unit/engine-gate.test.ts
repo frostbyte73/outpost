@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { WorkEngine } from '../../src/work/engine.js';
 import { JobQueue } from '../../src/work/work-queue.js';
 import type { ActionStep, JobRecord, OrchestratedStep, Step } from '../../src/work/work-types.js';
-import { handleHook, handlePostToolFailureHook } from '../../src/permissions/hook-handler.js';
+import { handleHook, handlePostToolFailureHook } from '../../src/runtime/claude/hooks.js';
 import { ApprovalModeStore } from '../../src/permissions/approval-mode.js';
 
 // write.* and code.* actions carry a gated allowlist (Task 2); read.investigate doesn't.
@@ -43,7 +43,7 @@ function makeEngine(over: Record<string, unknown> = {}) {
   const clock = { now: 1000 };
   const sessionManager = {
     spawnDetached(sessionId: string) { spawned.push(sessionId); },
-    send() {},
+    sendTurn() {},
     isWorking() { return false; },
     sendOrResume(sessionId: string) { resumed.push(sessionId); },
   } as never;

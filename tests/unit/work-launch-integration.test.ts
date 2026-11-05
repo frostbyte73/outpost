@@ -28,10 +28,10 @@ function makeHarness(opts: { snapshot?: TokenUsageSnapshot; concurrency?: number
   const working = new Set<string>();
   const sessionManager = {
     spawnDetached(sessionId: string) { spawns.push(sessionId); working.add(sessionId); },
-    send() {},
+    sendTurn() {},
     isWorking(id: string) { return working.has(id); },
-    sendOrResume(sessionId: string, _cwd: string, msg: { message: { content: string } }) {
-      resumes.push({ sessionId, content: msg.message.content });
+    sendOrResume(sessionId: string, _cwd: string, turn: { text: string }) {
+      resumes.push({ sessionId, content: turn.text });
       working.add(sessionId);
     },
     close: async () => {},

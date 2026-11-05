@@ -6,7 +6,8 @@
 // safe, and that's easiest to pin down in an isolated, unit-testable function.
 import { parseJsonObject } from '../routes/util.js';
 import type { ApprovalMode } from '../permissions/approval-mode.js';
-import { buildUserContent, makeUploadSaver, parseAttachments, type UserContent } from '../session/attachments.js';
+import { buildTurnInput, makeUploadSaver, parseAttachments } from '../session/attachments.js';
+import type { TurnInput } from '../runtime/types.js';
 
 type RawFrame = Buffer | ArrayBuffer | Buffer[];
 
@@ -55,7 +56,7 @@ export function handleNotificationsMessage(raw: RawFrame, deps: NotificationsMes
 }
 
 interface SessionMessageTarget {
-  send(sessionId: string, message: unknown, onDrop?: (e: Error, reply: (frame: unknown) => void) => void): void;
+  sendTurn(sessionId: string, turn: TurnInput, onDrop?: (e: Error, reply: (frame: unknown) => void) => void): void;
   interrupt(sessionId: string): void;
   broadcast(sessionId: string, message: unknown): void;
 }
@@ -86,11 +87,11 @@ export interface SessionMessageDeps {
 // Everything is parsed before anything is written or sent, so a bad attachment refuses the whole
 // message. Files are written before the send, so a failed send leaves them in the session's uploads
 // dir (and a retry writes them again); SessionStore.delete removes the dir with the session.
-function userContent(msg: Record<string, unknown>, sessionId: string, blocks: string, deps: SessionMessageDeps): UserContent {
+function userTurn(msg: Record<string, unknown>, sessionId: string, blocks: string, deps: SessionMessageDeps): TurnInput {
   const text = blocks + (typeof msg.content === 'string' ? msg.content : '');
   const attachments = parseAttachments(msg.attachments);
   if (attachments.some((a) => a.kind === 'file') && !deps.uploadsRoot) throw new Error('file uploads are not available');
-  return buildUserContent(text, attachments, deps.uploadsRoot ? makeUploadSaver(deps.uploadsRoot, sessionId) : () => '');
+  return buildTurnInput(text, attachments, deps.uploadsRoot ? makeUploadSaver(deps.uploadsRoot, sessionId) : () => '');
 }
 
 export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: SessionMessageDeps): void {
@@ -111,20 +112,20 @@ export function handleSessionMessage(raw: RawFrame, sessionId: string, deps: Ses
       if (reply) reply(frame);
       else deps.manager.broadcast(sessionId, frame);
     };
-    let content: UserContent;
+    let turn: TurnInput;
     try {
-      content = userContent(msg, sessionId, blocks, deps);
+      turn = userTurn(msg, sessionId, blocks, deps);
     } catch (e) {
       refuse(e as Error);
       return;
     }
-    // SessionManager.send throws when the session isn't in `active` — which a client
+    // SessionManager.sendTurn throws when the session isn't in `active` — which a client
     // can trigger any time by typing into a session whose subprocess has since exited
     // (a daemon restart drops every active entry while the PWA keeps showing them).
     // Unguarded, that throw unwinds through ws.on('message') and kills the daemon,
     // which drops every other session too. Report it, don't die.
     try {
-      deps.manager.send(sessionId, { type: 'user', message: { role: 'user', content } }, refuse);
+      deps.manager.sendTurn(sessionId, turn, refuse);
       deps.onUserMessage?.(sessionId);
     } catch (e) {
       refuse(e as Error);

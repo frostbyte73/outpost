@@ -1,5 +1,6 @@
 import type { RuleKind } from './allowlist.js';
 import { MCP_WRITE_TOOLS } from './tool-classify.js';
+import { fromRuleSpelling, isMcpTool, legacyMcpSpelling, ruleSpelling } from '../runtime/tools.js';
 
 // This module is a heuristic net over a sound core (WRITE_PROBES compiled against the
 // candidate pattern), not an adversarial boundary — see the "known gap" tests in
@@ -150,7 +151,7 @@ function escapeRegex(s: string): string {
 // grants no write however broad it is, so confinement is not this lint's business there —
 // refusing those would break `read` without closing anything.
 export const PATH_WRITE_TOOLS: ReadonlySet<string> = new Set([
-  'Write', 'Edit', 'MultiEdit', 'NotebookEdit',
+  'file_write', 'file_edit', 'file_multi_edit', 'notebook_edit',
 ]);
 
 // Every tool the checker will actually path-scope — allowlist.ts's PATH_INPUT_FIELDS keys,
@@ -160,7 +161,7 @@ export const PATH_WRITE_TOOLS: ReadonlySet<string> = new Set([
 // refused rather than accepted: a dead rule that answers 200 is a grant the user believes they
 // made, which on a page built for editing these by hand is worse than an error.
 export const PATH_SCOPED_TOOLS: ReadonlySet<string> = new Set([
-  'Read', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Glob', 'Grep',
+  'file_read', 'file_write', 'file_edit', 'file_multi_edit', 'notebook_edit', 'file_glob', 'file_grep',
 ]);
 
 // A ceiling on how long a path pattern may be. Not a cost bound — regex cost has no relation
@@ -641,9 +642,10 @@ export function classifyPathShape(value: string): ShapeVerdict {
   const pattern = value.slice(idx + 1);
   const structural = (reason: string): ShapeVerdict => ({ writeShaped: true, structural: true, reason });
 
-  if (!PATH_SCOPED_TOOLS.has(tool)) {
+  const canonical = fromRuleSpelling(tool);
+  if (!PATH_SCOPED_TOOLS.has(canonical)) {
     return structural(`\`${tool}\` is not a path-scoped tool, so this rule can never match `
-      + `anything — one of ${[...PATH_SCOPED_TOOLS].join(', ')}, spelled exactly`);
+      + `anything — one of ${[...PATH_SCOPED_TOOLS].map(ruleSpelling).join(', ')}, spelled exactly`);
   }
   if (pattern.length > MAX_PATH_PATTERN_LENGTH) {
     return structural(`pattern is ${pattern.length} characters — a path rule names a directory, `
@@ -655,15 +657,16 @@ export function classifyPathShape(value: string): ShapeVerdict {
   }
   const slow = backtrackingRefusal(pattern);
   if (slow) return slow;
-  if (!PATH_WRITE_TOOLS.has(tool)) return { writeShaped: false, reason: '' };
+  if (!PATH_WRITE_TOOLS.has(canonical)) return { writeShaped: false, reason: '' };
   return pathPrefixConfined(tool, pattern);
 }
 
 export function classifyRuleShape(kind: RuleKind, value: string): ShapeVerdict {
   if (kind === 'tool') {
+    const tool = fromRuleSpelling(value);
     // A whole-tool Bash grant is every external write at once — gatedMatch already treats
-    // it that way (see the alwaysAllow.has('Bash') shortcut in allowlist.ts).
-    if (value === 'Bash') {
+    // it that way (see the alwaysAllow.has('shell') shortcut in allowlist.ts).
+    if (tool === 'shell') {
       return { writeShaped: true, reason: 'a whole-tool `Bash` grant permits every external write' };
     }
     // `alwaysAllow: ['Write']` is `Write:^/` spelled in five characters, and it reaches further
@@ -671,7 +674,7 @@ export function classifyRuleShape(kind: RuleKind, value: string): ShapeVerdict {
     // path, so it also satisfies the redirect and file-op gates that ask "could this caller have
     // written that path with Write?" — `echo x > ~/.zshrc` included. Same list the path lint
     // confines, so neither can be widened without the other.
-    if (PATH_WRITE_TOOLS.has(value)) {
+    if (PATH_WRITE_TOOLS.has(tool)) {
       return {
         writeShaped: true,
         reason: `a whole-tool \`${value}\` grant writes any path on the machine — scope it to a `
@@ -683,12 +686,13 @@ export function classifyRuleShape(kind: RuleKind, value: string): ShapeVerdict {
     // it never met that corpus, because `rulesAllow` answers `alwaysAllow.has(toolName)` before
     // it reaches the `mcp__` branch at all. Re-asked as the anchored rule it stands in for, so
     // a tool added to MCP_WRITE_TOOLS later is covered here the day it lands.
-    if (value.startsWith('mcp__')) {
-      const asRule = classifyRuleShape('mcp', `^${escapeRegex(value)}$`);
+    if (isMcpTool(tool)) {
+      const spelled = legacyMcpSpelling(tool);
+      const asRule = classifyRuleShape('mcp', `^${escapeRegex(spelled)}$`);
       if (asRule.writeShaped) {
         return {
           writeShaped: true,
-          reason: `a whole-tool \`${value}\` grant is the rule \`^${value}$\`, which ${asRule.reason}`,
+          reason: `a whole-tool \`${value}\` grant is the rule \`^${spelled}$\`, which ${asRule.reason}`,
         };
       }
     }

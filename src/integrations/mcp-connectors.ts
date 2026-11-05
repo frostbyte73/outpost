@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
-import { resolveClaudeBin } from '../session/claude-proc.js';
+import { resolveClaudeBin } from '../runtime/claude/bin.js';
 import { stripAnsi } from './cli-login.js';
 
 // claude.ai connectors are account-level: nothing in `mcpServers` names them, so

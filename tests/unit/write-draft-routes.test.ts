@@ -55,7 +55,7 @@ function harness(provision: () => Promise<{ path: string | null }> = async () =>
       recent: () => [],
     } as never,
     sessionManager: {
-      spawnDetached() {}, send() {}, isWorking() { return false; },
+      spawnDetached() {}, sendTurn() {}, isWorking() { return false; },
       sendOrResume(sessionId: string) { resumed.push(sessionId); },
       close: async () => {},
     } as never,

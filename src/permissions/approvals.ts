@@ -2,17 +2,13 @@ import { randomUUID } from 'node:crypto';
 
 export interface ApprovalRequest {
   sessionId: string;
+  // Canonical tool name; the PWA keys behavior on it and shows `toolName`, the runtime's own.
+  tool: string;
   toolName: string;
   toolInput: unknown;
-  // Claude's stream-json id for the tool_use block this approval is gating. Forwarded
-  // to the PWA so an Approve decision can be linked to the subsequent tool_use entry
-  // (e.g. to track which tool calls the user explicitly approved vs auto-allowed).
+  // Lets an Approve decision be linked to the tool_call item it gated
   toolUseId?: string;
-  // Claude Code's PreToolUse hook sets agent_id + agent_type when the tool call comes
-  // from a subagent (Agent-tool invocations like Explore / general-purpose / etc.). The
-  // parent session's own tool calls don't carry these. Plumbing them through here lets
-  // the PWA route subagent approvals into a separate UI bucket instead of dumping them
-  // into the parent's feed.
+  // Set for a subagent's call; routes the approval into the agents feed
   agentId?: string;
   agentType?: string;
 }

@@ -17,7 +17,7 @@ describe('WorkEngine — fresh step spawn', () => {
       spawnDetached(sessionId: string) {
         atSpawn.push({ worktree: engine.worktreePathForSession(sessionId), action: engine.actionForSession(sessionId) });
       },
-      send() {}, isWorking() { return false; }, sendOrResume() {},
+      sendTurn() {}, isWorking() { return false; }, sendOrResume() {},
     } as never;
     engine = new WorkEngine({
       queue, sessionManager,
