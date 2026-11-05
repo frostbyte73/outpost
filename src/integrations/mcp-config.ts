@@ -22,13 +22,13 @@ export function readMcpServersFile(path: string): Record<string, McpServerConfig
 }
 
 // Discovers configured MCP servers the same way for every route that needs them: the daemon's
-// own mcp-config.json first, then `~/.claude.json`'s "mcpServers" filling in anything not
-// already named — claude merges the two for every spawned session (no --strict-mcp-config
-// flag), first occurrence wins on a name collision, so reads have to agree with that or a
-// route would propose/probe a server the daemon doesn't actually pass through to sessions.
-export function mergeMcpServers(mcpConfigPath: string): Map<string, McpServerConfig> {
+// own servers first, then `~/.claude.json`'s "mcpServers" filling in anything not already
+// named — claude merges the two for every spawned session (no strictMcpConfig), first
+// occurrence wins on a name collision, so reads have to agree with that or a route would
+// propose/probe a server the daemon doesn't actually pass through to sessions.
+export function mergeMcpServers(daemonMcpServers: Record<string, McpServerConfig>): Map<string, McpServerConfig> {
   const merged = new Map<string, McpServerConfig>();
-  for (const [name, cfg] of Object.entries(readMcpServersFile(mcpConfigPath))) merged.set(name, cfg);
+  for (const [name, cfg] of Object.entries(daemonMcpServers)) merged.set(name, cfg);
   for (const [name, cfg] of Object.entries(readMcpServersFile(join(homedir(), '.claude.json')))) {
     if (!merged.has(name)) merged.set(name, cfg);
   }

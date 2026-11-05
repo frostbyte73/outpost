@@ -35,7 +35,7 @@ export interface ReplayHookDeps {
   blob: (ref: string) => string | undefined;
 }
 
-function allow(updatedInput?: unknown): HookResponse {
+function allow(updatedInput?: Record<string, unknown>): HookResponse {
   return {
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
@@ -91,7 +91,7 @@ export function replayPreTool(input: HookInput, s: EvalSession, deps: ReplayHook
       mkdirSync(dir, { recursive: true });
       const file = join(dir, `${createHash('sha256').update(readInputKey(tool, toolInput)).digest('hex').slice(0, 16)}.txt`);
       writeFileSync(file, text);
-      return allow({ ...(toolInput as object), command: `cat '${file}'` });
+      return allow({ ...(toolInput as Record<string, unknown>), command: `cat '${file}'` });
     }
     const text = webText(resp);
     if (text === undefined) return miss(s);

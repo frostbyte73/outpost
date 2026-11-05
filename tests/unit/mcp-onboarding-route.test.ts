@@ -74,7 +74,7 @@ let root: string;
 let homeDir: string;
 let originalHome: string | undefined;
 let actionsDir: string;
-let mcpConfigPath: string;
+const daemonMcpServers: Record<string, { url: string }> = {};
 let groupsPath: string;
 let permissionGroups: PermissionGroupMap;
 let registry: ActionRegistry;
@@ -83,8 +83,9 @@ let getCatalog: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 let applyCatalog: (req: IncomingMessage, res: ServerResponse) => Promise<void>;
 let mcpServer: HttpServer | undefined;
 
-function writeMcpConfig(servers: Record<string, { url: string }>): void {
-  writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: servers }));
+function setDaemonMcpServers(servers: Record<string, { url: string }>): void {
+  for (const k of Object.keys(daemonMcpServers)) delete daemonMcpServers[k];
+  Object.assign(daemonMcpServers, servers);
 }
 
 function mountRoutes(): void {
@@ -96,7 +97,7 @@ function mountRoutes(): void {
   } as unknown as Server;
   registerMetaRoutes(server, {
     actionRegistry: registry, permissionGroups, permissionGroupsPath: groupsPath,
-    groupRevisions: revisions, mcpConfigPath,
+    groupRevisions: revisions, daemonMcpServers,
   } as MetaRoutesDeps);
   getCatalog = routes.get('GET /api/mcp/catalog')! as (req: IncomingMessage, res: ServerResponse) => Promise<void>;
   applyCatalog = routes.get('POST /api/mcp/catalog/apply')! as (req: IncomingMessage, res: ServerResponse) => Promise<void>;
@@ -106,9 +107,8 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'outpost-mcp-onboarding-'));
   actionsDir = join(root, 'actions');
   mkdirSync(actionsDir, { recursive: true });
-  mcpConfigPath = join(root, 'daemon-mcp.json');
   groupsPath = join(root, 'permission-groups.json');
-  writeMcpConfig({});
+  setDaemonMcpServers({});
 
   // The route merges in `~/.claude.json`'s mcpServers too — sandbox os.homedir() so these
   // tests don't pick up whatever real servers happen to be configured on the machine running
@@ -139,7 +139,7 @@ describe('GET /api/mcp/catalog', () => {
   it('proposes placements for every configured server, including a failed one with its status', async () => {
     const listening = await listenMcp(ACME_TOOLS);
     mcpServer = listening.server;
-    writeMcpConfig({ acme: { url: listening.url }, ghost: { url: 'http://127.0.0.1:1/mcp' } });
+    setDaemonMcpServers({ acme: { url: listening.url }, ghost: { url: 'http://127.0.0.1:1/mcp' } });
     mountRoutes();
 
     const { res, out } = fakeRes();
@@ -168,7 +168,7 @@ describe('GET /api/mcp/catalog', () => {
     const hungPort = await freePort();
     await new Promise<void>((resolve) => hung.listen(hungPort, '127.0.0.1', resolve));
 
-    writeMcpConfig({ acme: { url: listening.url }, hung: { url: `http://127.0.0.1:${hungPort}/mcp` } });
+    setDaemonMcpServers({ acme: { url: listening.url }, hung: { url: `http://127.0.0.1:${hungPort}/mcp` } });
     mountRoutes();
 
     const started = Date.now();
@@ -192,7 +192,7 @@ describe('POST /api/mcp/catalog/apply', () => {
   it('applies a rule the proposal generated, lands it in the group, and records one revision', async () => {
     const listening = await listenMcp(ACME_TOOLS);
     mcpServer = listening.server;
-    writeMcpConfig({ acme: { url: listening.url } });
+    setDaemonMcpServers({ acme: { url: listening.url } });
     mountRoutes();
 
     const { res, out } = fakeRes();
@@ -208,7 +208,7 @@ describe('POST /api/mcp/catalog/apply', () => {
   it('refuses a rule bound for a different group than the recomputed proposal placed it in', async () => {
     const listening = await listenMcp(ACME_TOOLS);
     mcpServer = listening.server;
-    writeMcpConfig({ acme: { url: listening.url } });
+    setDaemonMcpServers({ acme: { url: listening.url } });
     mountRoutes();
 
     const { res, out } = fakeRes();
@@ -225,7 +225,7 @@ describe('POST /api/mcp/catalog/apply', () => {
   it('refuses a rule whose value subtly differs from what the proposal generated', async () => {
     const listening = await listenMcp(ACME_TOOLS);
     mcpServer = listening.server;
-    writeMcpConfig({ acme: { url: listening.url } });
+    setDaemonMcpServers({ acme: { url: listening.url } });
     mountRoutes();
 
     const { res, out } = fakeRes();
@@ -243,7 +243,7 @@ describe('POST /api/mcp/catalog/apply', () => {
   it('refuses when the destination group already carries an entry the lint rejects', async () => {
     const listening = await listenMcp(ACME_TOOLS);
     mcpServer = listening.server;
-    writeMcpConfig({ acme: { url: listening.url } });
+    setDaemonMcpServers({ acme: { url: listening.url } });
     // Pre-existing corruption in `pull` — applyGroup's validateGroupUpdate lints the WHOLE
     // resulting group, not just the new rule, so this must block the apply even though the
     // submitted rule itself is exactly what the recomputed proposal generated.
@@ -260,7 +260,7 @@ describe('POST /api/mcp/catalog/apply', () => {
   it('a batch spanning both groups is all-or-nothing: a corrupt push blocks pull too, leaving it untouched on disk with no revision', async () => {
     const listening = await listenMcp(ACME_TOOLS);
     mcpServer = listening.server;
-    writeMcpConfig({ acme: { url: listening.url } });
+    setDaemonMcpServers({ acme: { url: listening.url } });
     // Pre-existing corruption in `push` only — `pull` starts clean.
     permissionGroups.push!.alwaysAllowMcpPatterns.push('^mcp__broken__(unterminated');
     mountRoutes();
@@ -284,7 +284,7 @@ describe('POST /api/mcp/catalog/apply', () => {
   it('a valid batch spanning both groups applies both and records a revision for each', async () => {
     const listening = await listenMcp(ACME_TOOLS);
     mcpServer = listening.server;
-    writeMcpConfig({ acme: { url: listening.url } });
+    setDaemonMcpServers({ acme: { url: listening.url } });
     mountRoutes();
 
     const { res, out } = fakeRes();

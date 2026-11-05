@@ -1,21 +1,13 @@
-// Loopback-only HTTP listener for the PreToolUse + Stop hook callbacks from `claude`,
-// plus the orchestrator's per-session work hooks (plan-ready, step-resolved,
-// step-failed). Every endpoint requires the per-launch secret in
+// Loopback-only HTTP listener for the outpost MCP server, the orchestrator's `/work/*`
+// callbacks and the eval MCP routes. Every endpoint requires the per-launch secret in
 // `x-daemon-auth`; the PWA-facing surface is in `src/server.ts`.
 
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { parseJsonObject } from '../routes/util.js';
-import { denyResp } from '../runtime/claude/hooks.js';
 
 export interface HookServerOpts {
   port: number;
   daemonAuthSecret: string;
-  onPreToolHook: (body: string) => Promise<string>;
-  onPostToolFailureHook: (body: string) => Promise<string>;
-  onPostToolHook: (body: string) => Promise<void>;
-  onStopHook: (body: string) => Promise<void>;
-  onStopFailureHook: (body: string) => Promise<void>;
-  onStatusLineHook: (body: string) => Promise<void>;
   onWorkPlanReady: (body: string) => Promise<void>;
   onWorkStepResolved: (body: string) => Promise<void>;
   onWorkStepFailed: (body: string) => Promise<void>;
@@ -24,7 +16,7 @@ export interface HookServerOpts {
   onMcp: (body: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
   // An eval replay's own MCP surfaces: `/mcp/eval/<sid>` stands in for outpost, `/mcp/replay/<sid>/<server>` for the rest.
   onEvalMcp?: (path: string, body: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
-  // Held by eval replays: opens the gate and their own MCP routes, nothing that changes daemon state.
+  // Held by eval replays: opens their own MCP routes, nothing that changes daemon state.
   evalSecret?: string;
   onCreateJob?: (payload: {
     source: string;
@@ -54,12 +46,6 @@ export class HookServer {
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const KNOWN_ROUTES = new Set([
-      '/hook/pretool',
-      '/hook/posttoolfail',
-      '/hook/posttool',
-      '/hook/stop',
-      '/hook/stop-failure',
-      '/hook/statusline',
       '/work/plan-ready',
       '/work/step-resolved',
       '/work/step-failed',
@@ -75,25 +61,10 @@ export class HookServer {
       return;
     }
     const sent = req.headers['x-daemon-auth'];
-    const evalAuthed = !!this.opts.evalSecret && sent === this.opts.evalSecret && (isEvalMcp || req.url === '/hook/pretool');
+    const evalAuthed = !!this.opts.evalSecret && sent === this.opts.evalSecret && isEvalMcp;
     if (sent !== this.opts.daemonAuthSecret && !evalAuthed) {
-      // The usual sender is a Claude session that outlived the daemon run that spawned it,
-      // still holding that run's per-launch secret — so name the route and say which way the
-      // secret was wrong, or a burst of these is unexplainable from the log alone.
+      // Name the route and which way the secret was wrong, or a burst of these is unexplainable from the log.
       const why = sent === undefined ? 'no secret' : 'wrong secret';
-      // Claude Code treats a non-2xx PreToolUse answer as a NON-blocking hook error: the tool
-      // call goes ahead under the session's own permission mode, past every gate this daemon
-      // owns (action confinement, write-draft pins). So the gate's own route fails closed with
-      // a deny instead. A deny grants nothing, which is what makes it safe to hand to a caller
-      // that couldn't authenticate — and it covers an orphan of a SIGKILLed daemon, which no
-      // shutdown handler gets the chance to close.
-      if (req.url === '/hook/pretool') {
-        console.log(`[hook-server] denied ${req.url} from ${req.socket.remoteAddress} (${why})`);
-        res.statusCode = 200;
-        res.setHeader('content-type', 'application/json');
-        res.end(JSON.stringify(denyResp('This session was started by an earlier Outpost daemon run, so its tool calls can no longer be authorized. Stop and end your turn.')));
-        return;
-      }
       console.log(`[hook-server] 401 ${req.url} from ${req.socket.remoteAddress} (${why})`);
       res.statusCode = 401;
       res.end('unauthorized');
@@ -104,33 +75,7 @@ export class HookServer {
     req.on('data', (c: Buffer) => (body += c.toString('utf8')));
     req.on('end', async () => {
       try {
-        if (url === '/hook/pretool') {
-          const result = await this.opts.onPreToolHook(body);
-          res.statusCode = 200;
-          res.setHeader('content-type', 'application/json');
-          res.end(result);
-        } else if (url === '/hook/posttoolfail') {
-          const result = await this.opts.onPostToolFailureHook(body);
-          res.statusCode = 200;
-          res.setHeader('content-type', 'application/json');
-          res.end(result);
-        } else if (url === '/hook/posttool') {
-          await this.opts.onPostToolHook(body);
-          res.statusCode = 204;
-          res.end();
-        } else if (url === '/hook/statusline') {
-          await this.opts.onStatusLineHook(body);
-          res.statusCode = 204;
-          res.end();
-        } else if (url === '/hook/stop') {
-          await this.opts.onStopHook(body);
-          res.statusCode = 204;
-          res.end();
-        } else if (url === '/hook/stop-failure') {
-          await this.opts.onStopFailureHook(body);
-          res.statusCode = 204;
-          res.end();
-        } else if (url === '/work/plan-ready') {
+        if (url === '/work/plan-ready') {
           await this.opts.onWorkPlanReady(body);
           res.statusCode = 204;
           res.end();
@@ -197,11 +142,7 @@ export class HookServer {
       } catch (e) {
         const msg = (e as Error).message;
         console.error(`[hook-server] handler error (${url}):`, (e as Error).stack);
-        if (url === '/hook/pretool') {
-          // A PreToolUse hook that errors must not read as "allowed".
-          res.statusCode = 500;
-          res.end('error');
-        } else if (url?.startsWith('/work/')) {
+        if (url?.startsWith('/work/')) {
           // A submitting session must learn its submit failed, not read a 204 as success.
           res.statusCode = 400;
           res.setHeader('content-type', 'application/json');

@@ -17,7 +17,7 @@ import { toUserFrame } from '../../src/runtime/claude/runtime.js';
 import type { TurnInput } from '../../src/runtime/types.js';
 
 // What Claude receives for a turn: the content blocks of its stream-json user message.
-const claudeContent = (turn: TurnInput) => (toUserFrame(turn) as { message: { content: unknown } }).message.content;
+const claudeContent = (turn: TurnInput) => (toUserFrame(turn, 's1') as { message: { content: unknown } }).message.content;
 const buildUserContent = (...args: Parameters<typeof buildTurnInput>) => claudeContent(buildTurnInput(...args));
 
 const b64 = (s: string) => Buffer.from(s).toString('base64');

@@ -33,7 +33,7 @@ function fakeRes(): { res: ServerResponse; out: Captured } {
 let root: string;
 let homeDir: string;
 let originalHome: string | undefined;
-let mcpConfigPath: string;
+const daemonMcpServers: Record<string, { url: string }> = {};
 let groupsPath: string;
 let permissionGroups: PermissionGroupMap;
 let registry: ActionRegistry;
@@ -41,8 +41,9 @@ let revisions: PermissionGroupRevisionsStore;
 let denialsStore: DenialsStore;
 let getPending: (req: IncomingMessage, res: ServerResponse) => Promise<void> | void;
 
-function writeMcpConfig(servers: Record<string, { url: string }>): void {
-  writeFileSync(mcpConfigPath, JSON.stringify({ mcpServers: servers }));
+function setDaemonMcpServers(servers: Record<string, { url: string }>): void {
+  for (const k of Object.keys(daemonMcpServers)) delete daemonMcpServers[k];
+  Object.assign(daemonMcpServers, servers);
 }
 
 function writeAction(actionsDir: string, name: string, permissions: string[]): void {
@@ -67,7 +68,7 @@ function mountRoutes(): void {
   } as unknown as Server;
   registerMetaRoutes(server, {
     actionRegistry: registry, permissionGroups, permissionGroupsPath: groupsPath,
-    groupRevisions: revisions, mcpConfigPath, denialsStore,
+    groupRevisions: revisions, daemonMcpServers, denialsStore,
   } as MetaRoutesDeps);
   getPending = routes.get('GET /api/permissions/pending')!;
 }
@@ -87,11 +88,10 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'outpost-permissions-pending-'));
   const actionsDir = join(root, 'actions');
   mkdirSync(actionsDir, { recursive: true });
-  mcpConfigPath = join(root, 'daemon-mcp.json');
   groupsPath = join(root, 'permission-groups.json');
   // A server that accepts the connection and never replies — MCP_PROBE_TIMEOUT_MS (2.5s) if
   // this route ever touches it. Present in every test to prove the route ignores it outright.
-  writeMcpConfig({ hung: { url: 'http://127.0.0.1:1/mcp' } });
+  setDaemonMcpServers({ hung: { url: 'http://127.0.0.1:1/mcp' } });
 
   homeDir = mkdtempSync(join(tmpdir(), 'outpost-permissions-pending-home-'));
   originalHome = process.env.HOME;

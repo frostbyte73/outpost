@@ -2,10 +2,12 @@ import { describe, it, expect, vi } from 'vitest';
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { SDKResultMessage } from '@anthropic-ai/claude-agent-sdk';
 import { EvalSessions } from '../../src/eval/eval-sessions.js';
-import { replayPreTool } from '../../src/eval/replay-hook.js';
 import { handleEvalMcp } from '../../src/eval/eval-mcp.js';
-import { replayRun, type SpawnClaude } from '../../src/eval/replay-runner.js';
+import { replayRun } from '../../src/eval/replay-runner.js';
+import type { HookResponse } from '../../src/runtime/claude/hooks.js';
+import type { RunClaudeOnce } from '../../src/runtime/claude/once.js';
 import { newEvalRecord, runEval } from '../../src/eval/run-eval.js';
 import { EvalStore } from '../../src/eval/eval-store.js';
 import { BlobStore } from '../../src/storage/blob-store.js';
@@ -43,21 +45,25 @@ describe('an eval end to end with a stub claude', () => {
       blob: (ref: string) => blobs.get(ref),
     };
     const decisions: string[] = [];
-    const stubClaude: SpawnClaude = async (args) => {
-      const sid = args[args.indexOf('--session-id') + 1]!;
-      const s = sessions.get(sid)!;
-      const body = readFileSync(join(args[args.indexOf('--plugin-dir') + 1]!, 'skills', 'code.reply-pr-comments', 'SKILL.md'), 'utf8');
+    const stubClaude: RunClaudeOnce = async (_prompt, options) => {
+      const sid = options.sessionId!;
+      const body = readFileSync(join(options.plugins![0]!.path, 'skills', 'code.reply-pr-comments', 'SKILL.md'), 'utf8');
       const tag = body.length === 90 ? 'NEW' : 'OLD';
-      const read = replayPreTool({ tool_name: 'Bash', tool_input: view, session_id: sid }, s, hookDeps);
+      const preTool = options.hooks!.PreToolUse![0]!.hooks[0]!;
+      const gate = async (toolInput: unknown) => (await preTool(
+        { hook_event_name: 'PreToolUse', session_id: sid, tool_name: 'Bash', tool_input: toolInput } as never,
+        undefined, { signal: new AbortController().signal },
+      )) as HookResponse;
+      const read = await gate(view);
       const cat = (read.hookSpecificOutput.updatedInput as { command: string }).command;
       decisions.push(`read:${read.hookSpecificOutput.permissionDecision}:${readFileSync(cat.match(/'(.+)'/)![1]!, 'utf8')}`);
-      const write = replayPreTool({ tool_name: 'Bash', tool_input: { command: `gh pr comment 7 --body ${tag}` }, session_id: sid }, s, hookDeps);
+      const write = await gate({ command: `gh pr comment 7 --body ${tag}` });
       decisions.push(`write:${write.hookSpecificOutput.permissionDecision}`);
       await handleEvalMcp(`/mcp/eval/${sid}`, JSON.stringify({
         jsonrpc: '2.0', id: 1, method: 'tools/call',
         params: { name: 'submit_write_draft', arguments: { jobId: 'j', stepId: 's', summary: tag, calls: [{ bash: `gh pr comment 7 --body ${tag}` }] } },
       }), { sessions, blob: (ref) => blobs.get(ref) });
-      return { stdout: JSON.stringify({ type: 'result', total_cost_usd: 0.2 }), code: 0 };
+      return { type: 'result', subtype: 'success', is_error: false, total_cost_usd: 0.2 } as unknown as SDKResultMessage;
     };
     const judge: JudgeOnce = async ({ answerKey, a, b }) => {
       const newSlot = a.includes('NEW') ? 'A' : 'B';
@@ -77,7 +83,7 @@ describe('an eval end to end with a stub claude', () => {
       blob: (ref) => blobs.get(ref),
       replay: (run, candidate, evalId, budget) => replayRun(run, candidate, evalId, budget, {
         sessions, blob: (ref) => blobs.get(ref), actionDir: () => actionDir, hookPort: 1, secret: 's',
-        scratchRoot: join(root, 'scratch'), spawnClaude: stubClaude,
+        scratchRoot: join(root, 'scratch'), preTool: hookDeps, runClaude: stubClaude,
       }),
       judge,
       store,

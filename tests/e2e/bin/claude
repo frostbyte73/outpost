@@ -2,56 +2,24 @@
 // Drop-in replacement for `claude` during e2e tests. Reads OUTPOST_TEST_FIXTURE (a JSONL
 // file path), emits each line to stdout in stream-json shape, optionally pacing.
 //
-// Mirrors real claude's PreToolUse hook flow: when about to emit an assistant message
-// containing a tool_use block, this binary first POSTs the hook payload to the URL
-// configured in the --settings <path> JSON (under hooks.PreToolUse[0].hooks[0].url).
-// If the hook returns permissionDecision: deny, the assistant message is suppressed
-// and a synthetic user message with a deny tool_result is emitted in its place.
+// Speaks the Agent SDK's stdio control protocol: it answers the SDK's `initialize`, and before
+// emitting an assistant message with a tool_use it asks the SDK's PreToolUse hook callback over
+// a `hook_callback` control request. A deny suppresses the call with a deny tool_result.
 //
 // Special marker lines (not emitted, control-only):
-//   {"_marker":"wait-for-input"} — pause until the next newline-terminated chunk arrives on stdin
+//   {"_marker":"wait-for-input"} — pause until the next user message arrives on stdin
+//   {"_marker":"stop-hook"}      — fire the SDK's Stop hook callback
 //   {"_marker":"exit"}            — exit immediately (skip any remaining fixture lines)
 
-import { appendFileSync, readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 const argv = process.argv.slice(2);
+// The SDK passes `--flag=value`.
 function flagValue(name) {
-  const i = argv.indexOf(name);
-  return i >= 0 ? argv[i + 1] : undefined;
+  return argv.find((a) => a.startsWith(`${name}=`))?.slice(name.length + 1);
 }
 const sessionId = flagValue('--session-id') ?? flagValue('--resume') ?? 'unknown';
-const settingsPath = flagValue('--settings');
-
-let hookUrl = null;
-let stopHookUrl = null;
-let hookAuthHeader = null;
-let hookAuthValue = null;
-if (settingsPath) {
-  try {
-    const settings = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    const preEntry = settings?.hooks?.PreToolUse?.[0]?.hooks?.[0];
-    if (preEntry?.type === 'http' && typeof preEntry.url === 'string') {
-      hookUrl = preEntry.url;
-      // Headers can contain $VAR placeholders for env vars listed under allowedEnvVars.
-      const headers = preEntry.headers ?? {};
-      const headerName = Object.keys(headers)[0];
-      if (headerName) {
-        hookAuthHeader = headerName;
-        const raw = headers[headerName];
-        hookAuthValue = typeof raw === 'string' && raw.startsWith('$')
-          ? process.env[raw.slice(1)] ?? ''
-          : raw;
-      }
-    }
-    const stopEntry = settings?.hooks?.Stop?.[0]?.hooks?.[0];
-    if (stopEntry?.type === 'http' && typeof stopEntry.url === 'string') {
-      stopHookUrl = stopEntry.url;
-    }
-  } catch {
-    // settings missing or malformed — proceed without hook firing
-  }
-}
 
 const fixturePath = process.env.OUTPOST_TEST_FIXTURE;
 if (!fixturePath) {
@@ -62,9 +30,40 @@ if (!fixturePath) {
 const lines = readFileSync(fixturePath, 'utf8').split('\n').filter(Boolean);
 const delayMs = Number(process.env.OUTPOST_TEST_DELAY_MS ?? 5);
 
-// OUTPOST_TEST_STDIN_LOG: append every line received on stdin, so a test can assert on
-// exactly what the daemon wrote to claude.
+// OUTPOST_TEST_STDIN_LOG: append every user message received on stdin, so a test can assert on
+// exactly what the daemon sent claude. Control traffic is not logged.
 const stdinLog = process.env.OUTPOST_TEST_STDIN_LOG;
+
+// OUTPOST_TEST_HOOK_ACCESS_FILE: write the hook server's port and secret, which only a spawned session is handed.
+if (process.env.OUTPOST_TEST_HOOK_ACCESS_FILE) {
+  writeFileSync(process.env.OUTPOST_TEST_HOOK_ACCESS_FILE, JSON.stringify({
+    port: process.env.OUTPOST_HOOK_PORT, secret: process.env.DAEMON_AUTH,
+  }));
+}
+
+const hookIds = {};
+let markInitialized;
+const initialized = new Promise((resolve) => { markInitialized = resolve; });
+const pending = new Map();
+let nextRequest = 0;
+
+function write(obj) {
+  process.stdout.write(JSON.stringify(obj) + '\n');
+}
+
+function onControlRequest(msg) {
+  const req = msg.request ?? {};
+  let response = {};
+  if (req.subtype === 'initialize') {
+    for (const [event, matchers] of Object.entries(req.hooks ?? {})) {
+      hookIds[event] = matchers.flatMap((m) => m.hookCallbackIds ?? []);
+    }
+    // The SDK refuses to start a session with onFailure:'block' hooks unless the CLI says it honors them.
+    response = { hook_on_failure_supported: true };
+    markInitialized();
+  }
+  write({ type: 'control_response', response: { subtype: 'success', request_id: msg.request_id, response } });
+}
 
 process.stdin.setEncoding('utf8');
 const stdinQueue = [];
@@ -77,6 +76,16 @@ process.stdin.on('data', (chunk) => {
   partial = parts.pop();
   for (const line of parts) {
     if (!line) continue;
+    let msg;
+    try { msg = JSON.parse(line); } catch { msg = null; }
+    if (msg?.type === 'control_request') { onControlRequest(msg); continue; }
+    if (msg?.type === 'control_response') {
+      const resolve = pending.get(msg.response?.request_id);
+      pending.delete(msg.response?.request_id);
+      resolve?.(msg.response);
+      continue;
+    }
+    if (msg?.type === 'control_cancel_request') continue;
     stdinQueue.push(line);
     if (stdinLog) appendFileSync(stdinLog, line + '\n');
   }
@@ -90,39 +99,26 @@ async function readStdinLine() {
   return stdinQueue.shift();
 }
 
-// Fire the PreToolUse hook for a single tool_use block. Returns the parsed
-// permissionDecision response, or { permissionDecision: 'allow' } if no hook is configured
-// (so tests that don't care about approvals still work).
-async function firePreToolUseHook(toolUse) {
-  if (!hookUrl) return { permissionDecision: 'allow' };
-  const headers = { 'content-type': 'application/json' };
-  if (hookAuthHeader && hookAuthValue) headers[hookAuthHeader] = hookAuthValue;
-  const body = JSON.stringify({
-    tool_name: toolUse.name,
-    tool_input: toolUse.input,
-    session_id: sessionId,
-    tool_use_id: toolUse.id,
+async function callHook(event, input, toolUseId) {
+  await initialized;
+  const callbackId = hookIds[event]?.[0];
+  if (!callbackId) return undefined;
+  const requestId = `mock_${nextRequest++}`;
+  const answered = new Promise((resolve) => pending.set(requestId, resolve));
+  write({
+    type: 'control_request',
+    request_id: requestId,
+    request: { subtype: 'hook_callback', callback_id: callbackId, input: { hook_event_name: event, session_id: sessionId, ...input }, tool_use_id: toolUseId },
   });
-  try {
-    const res = await fetch(hookUrl, { method: 'POST', headers, body });
-    const json = await res.json();
-    return json?.hookSpecificOutput ?? { permissionDecision: 'allow' };
-  } catch (e) {
-    process.stderr.write(`[mock claude] hook fetch failed: ${e?.message ?? e}\n`);
-    return { permissionDecision: 'allow' };
-  }
+  const res = await answered;
+  return res?.subtype === 'success' ? res.response : undefined;
 }
 
-async function fireStopHook() {
-  if (!stopHookUrl) return;
-  const headers = { 'content-type': 'application/json' };
-  if (hookAuthHeader && hookAuthValue) headers[hookAuthHeader] = hookAuthValue;
-  const body = JSON.stringify({ session_id: sessionId });
-  try {
-    await fetch(stopHookUrl, { method: 'POST', headers, body });
-  } catch (e) {
-    process.stderr.write(`[mock claude] stop hook fetch failed: ${e?.message ?? e}\n`);
-  }
+// The PreToolUse decision for one tool_use block; no registered hook means allow, so tests that
+// don't care about approvals still work.
+async function firePreToolUseHook(toolUse) {
+  const out = await callHook('PreToolUse', { tool_name: toolUse.name, tool_input: toolUse.input, tool_use_id: toolUse.id }, toolUse.id);
+  return out?.hookSpecificOutput ?? { permissionDecision: 'allow' };
 }
 
 // Synthesize a user-role message containing a deny tool_result. Mirrors what real claude
@@ -148,7 +144,7 @@ async function main() {
     let parsed;
     try { parsed = JSON.parse(raw); } catch { continue; }
     if (parsed._marker === 'wait-for-input') { await readStdinLine(); continue; }
-    if (parsed._marker === 'stop-hook') { await fireStopHook(); continue; }
+    if (parsed._marker === 'stop-hook') { await callHook('Stop', { stop_hook_active: false }); continue; }
     if (parsed._marker === 'exit') { process.exit(0); }
     if (parsed.session_id === undefined && (parsed.type === 'system' || parsed.type === 'assistant' || parsed.type === 'user')) {
       parsed.session_id = sessionId;
@@ -175,17 +171,20 @@ async function main() {
       if (denied) {
         // Real claude would still emit the assistant tool_use line (so the transcript
         // shows what was attempted) and then a deny tool_result. Match that shape.
-        process.stdout.write(JSON.stringify(parsed) + '\n');
+        write(parsed);
         await sleep(delayMs);
-        process.stdout.write(JSON.stringify(denyToolResult(denied.toolUse, denied.reason)) + '\n');
+        write(denyToolResult(denied.toolUse, denied.reason));
         await sleep(delayMs);
         continue;
       }
     }
 
-    process.stdout.write(JSON.stringify(parsed) + '\n');
+    write(parsed);
     await sleep(delayMs);
   }
 }
 
-main().catch((e) => { process.stderr.write(String(e?.stack ?? e) + '\n'); process.exit(1); });
+main().catch((e) => {
+  process.stderr.write(`[mock claude] ${e?.stack ?? e}\n`);
+  process.exit(1);
+});

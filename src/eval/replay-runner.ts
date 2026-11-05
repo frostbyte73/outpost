@@ -1,25 +1,22 @@
-import { execFile, spawn, type ChildProcess } from 'node:child_process';
+import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { cpSync, mkdirSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
+import type { McpServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { rekeyRead } from '../permissions/read-recording.js';
-import { resolveClaudeBin } from '../runtime/claude/bin.js';
-import { writeEvalMcpConfig, writeEvalSettings } from '../runtime/claude/settings.js';
+import { gateMatcher } from '../runtime/claude/hooks.js';
+import { runClaudeOnce, type RunClaudeOnce } from '../runtime/claude/once.js';
 import type { ActionRunRecord } from '../storage/action-runs-store.js';
 import { CODE_ROUND_ACTIONS } from '../work/action-run-links.js';
 import { replayServerNames } from './eval-mcp.js';
 import type { EvalSessions } from './eval-sessions.js';
+import { replayPreTool, type ReplayHookDeps } from './replay-hook.js';
 import { diffSince, type RunOutput } from './run-output.js';
 
 export const EVAL_PLUGIN = 'outpost-eval';
 const MAX_MISSES = 2;
 const DEFAULT_TIMEOUT_MS = 20 * 60 * 1000;
-
-export type SpawnClaude = (
-  args: string[],
-  opts: { cwd: string; env: Record<string, string>; stdin: string; timeoutMs: number; signal?: AbortSignal },
-) => Promise<{ stdout: string; code: number | null }>;
 
 export type GitRunner = (args: string[]) => Promise<void>;
 
@@ -28,10 +25,11 @@ export interface ReplayDeps {
   blob: (ref: string) => string | undefined;
   actionDir: (action: string) => string;
   hookPort: number;
-  // Accepted only by the PreToolUse gate and the eval MCP routes — never the daemon's real secret.
+  // Accepted only by the eval MCP routes — never the daemon's real secret.
   secret: string;
   scratchRoot: string;
-  spawnClaude?: SpawnClaude;
+  preTool: ReplayHookDeps;
+  runClaude?: RunClaudeOnce;
   git?: GitRunner;
   diff?: (dir: string, base: string) => Promise<string>;
   timeoutMs?: number;
@@ -56,49 +54,22 @@ export function evalChildEnv(base: NodeJS.ProcessEnv, extra: Record<string, stri
   return { ...env, ...extra };
 }
 
-// Eval and judge children aren't SessionManager sessions, so the daemon's shutdown kills them through this.
-const liveChildren = new Set<ChildProcess>();
-
-export function killEvalChildren(): number {
-  const n = liveChildren.size;
-  for (const c of liveChildren) c.kill('SIGKILL');
-  liveChildren.clear();
-  return n;
-}
-
-export const spawnClaudeOnce: SpawnClaude = (args, opts) => new Promise((resolve, reject) => {
-  const child = spawn(resolveClaudeBin(), args, { cwd: opts.cwd, env: evalChildEnv(process.env, opts.env), stdio: ['pipe', 'pipe', 'pipe'] });
-  liveChildren.add(child);
-  let stdout = '';
-  const kill = () => child.kill('SIGKILL');
-  const timer = setTimeout(kill, opts.timeoutMs);
-  opts.signal?.addEventListener('abort', kill, { once: true });
-  const done = () => { clearTimeout(timer); liveChildren.delete(child); opts.signal?.removeEventListener('abort', kill); };
-  child.stdout.on('data', (c: Buffer) => { stdout += c.toString('utf8'); });
-  child.stderr.on('data', () => { /* drained so a chatty child can't block on a full pipe */ });
-  child.stdin.on('error', () => { /* a child that died first; 'close' reports it */ });
-  child.on('error', (e) => { done(); reject(e); });
-  child.on('close', (code) => { done(); resolve({ stdout, code }); });
-  if (opts.signal?.aborted) kill();
-  child.stdin.end(opts.stdin);
-});
-
 const runGit: GitRunner = async (args) => { await promisify(execFile)('git', args); };
 
 // Limits the replay itself imposed: under an equal budget for both sides, running into one is a result.
 const LIMIT_STOPS = new Set(['error_max_budget_usd', 'error_max_turns']);
 
-// A result line means the session ran; without one it never did, or was killed.
-function resultOf(stdout: string): { costUsd: number; subtype?: string; isError: boolean } | undefined {
-  let parsed: { type?: unknown; subtype?: unknown; is_error?: unknown; total_cost_usd?: unknown };
-  try { parsed = JSON.parse(stdout) as typeof parsed; } catch { return undefined; }
-  if (parsed?.type !== 'result') return undefined;
-  const c = parsed.total_cost_usd;
-  return {
-    costUsd: typeof c === 'number' && Number.isFinite(c) ? c : 0,
-    ...(typeof parsed.subtype === 'string' ? { subtype: parsed.subtype } : {}),
-    isError: parsed.is_error === true,
-  };
+// `outpost` stands in for the real outpost server; each recorded server is served from its recording.
+function evalMcpServers(hookPort: number, secret: string, sessionId: string, replayServers: string[]): Record<string, McpServerConfig> {
+  const server = (route: string): McpServerConfig => ({
+    type: 'http',
+    url: `http://127.0.0.1:${hookPort}${route}`,
+    headers: { 'X-Daemon-Auth': secret },
+  });
+  const sid = encodeURIComponent(sessionId);
+  const servers: Record<string, McpServerConfig> = { outpost: server(`/mcp/eval/${sid}`) };
+  for (const name of replayServers) servers[name] = server(`/mcp/replay/${sid}/${encodeURIComponent(name)}`);
+  return servers;
 }
 
 // Re-runs one recorded round under the given SKILL.md. Never touches the live skill, worktree or job.
@@ -141,47 +112,43 @@ export async function replayRun(
       reads: new Map((run.reads ?? []).map(rekeyRead).map((r) => [r.inputKey, r])),
       ...(wt ? { worktree: wt } : {}),
     };
-    const settingsPath = join(scratch, 'settings.json');
-    const mcpPath = join(scratch, 'mcp.json');
-    writeEvalSettings(settingsPath, deps.hookPort);
-    writeEvalMcpConfig({ outPath: mcpPath, hookPort: deps.hookPort, daemonAuthSecret: deps.secret, sessionId, replayServers: replayServerNames(session) });
     deps.sessions.register(session);
 
-    const { stdout, code } = await (deps.spawnClaude ?? spawnClaudeOnce)([
-      '--print', '--output-format', 'json',
-      '--session-id', sessionId, '--no-session-persistence',
-      '--permission-mode', 'default',
-      '--settings', settingsPath,
-      '--strict-mcp-config', '--mcp-config', mcpPath,
-      '--plugin-dir', join(scratch, 'plugin'),
-      '--max-budget-usd', budgetUsd.toFixed(2),
-      ...(run.model ? ['--model', run.model] : []),
-    ], {
+    const result = await (deps.runClaude ?? runClaudeOnce)(`/${EVAL_PLUGIN}:${run.action}`, {
       cwd,
-      env: {
+      env: evalChildEnv(process.env, {
         OUTPOST_ENVELOPE: envelopePath,
         JOB_ID: run.jobId,
         ...(run.stepId ? { STEP_ID: run.stepId } : {}),
         DAEMON_AUTH: deps.secret,
         OUTPOST_EVAL_ID: evalId,
         ENABLE_CLAUDEAI_MCP_SERVERS: 'false',
-      },
-      stdin: `/${EVAL_PLUGIN}:${run.action}`,
-      timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      ...(signal ? { signal } : {}),
-    });
-    const result = resultOf(stdout);
+      }),
+      sessionId,
+      persistSession: false,
+      permissionMode: 'default',
+      systemPrompt: { type: 'preset', preset: 'claude_code' },
+      settingSources: ['user', 'project', 'local'],
+      mcpServers: evalMcpServers(deps.hookPort, deps.secret, sessionId, replayServerNames(session)),
+      strictMcpConfig: true,
+      plugins: [{ type: 'local', path: join(scratch, 'plugin') }],
+      maxBudgetUsd: budgetUsd,
+      ...(run.model ? { model: run.model } : {}),
+      hooks: { PreToolUse: [gateMatcher(0, (h) => replayPreTool(h, session, deps.preTool))] },
+      permissionPrompts: 'none',
+    }, { timeoutMs: deps.timeoutMs ?? DEFAULT_TIMEOUT_MS, ...(signal ? { signal } : {}) });
     // Charged in full: a killed session's spend is unknown, and undercounting it would let the next replay overspend.
-    if (!result) return { valid: false, misses: session.misses, output: [], costUsd: budgetUsd, error: `claude produced no result (exit ${code})` };
-    const stopped = result.subtype && LIMIT_STOPS.has(result.subtype) ? result.subtype : undefined;
-    if (!stopped && (result.isError || (result.subtype && result.subtype !== 'success'))) {
-      return { valid: false, misses: session.misses, output: [], costUsd: result.costUsd, error: `replay ended in ${result.subtype ?? 'an error'}` };
+    if (!result) return { valid: false, misses: session.misses, output: [], costUsd: budgetUsd, error: 'claude produced no result' };
+    const costUsd = Number.isFinite(result.total_cost_usd) ? result.total_cost_usd : 0;
+    const stopped = LIMIT_STOPS.has(result.subtype) ? result.subtype : undefined;
+    if (!stopped && (result.is_error || result.subtype !== 'success')) {
+      return { valid: false, misses: session.misses, output: [], costUsd, error: `replay ended in ${result.subtype}` };
     }
     const output = [...session.captured];
     if (wt && CODE_ROUND_ACTIONS.has(run.action)) {
       output.push({ tool: 'worktree-diff', args: { diff: await (deps.diff ?? diffSince)(wt, run.baseSha!) } });
     }
-    return { valid: session.misses <= MAX_MISSES, misses: session.misses, output, costUsd: result.costUsd, ...(stopped ? { stopped } : {}) };
+    return { valid: session.misses <= MAX_MISSES, misses: session.misses, output, costUsd, ...(stopped ? { stopped } : {}) };
   } catch (e) {
     const s = deps.sessions.get(sessionId);
     return { valid: false, misses: s?.misses ?? 0, output: [], costUsd: 0, error: (e as Error).message };

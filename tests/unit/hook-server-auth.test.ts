@@ -34,51 +34,35 @@ afterEach(async () => { await server?.close(); server = undefined; handled = [];
 async function start(): Promise<number> {
   const port = await freePort();
   const record = (route: string) => async () => { handled.push(route); };
-  // `as`, not an annotation: onStopFailureHook only exists once the API-error stall handling lands.
-  const opts = {
+  const opts: HookServerOpts = {
     port, daemonAuthSecret: SECRET,
-    onPreToolHook: async () => { handled.push('pretool'); return '{}'; },
-    onPostToolFailureHook: async () => '{}',
-    onPostToolHook: async () => {},
-    onStopHook: record('stop'), onStopFailureHook: record('stop-failure'), onStatusLineHook: record('statusline'),
     onWorkPlanReady: record('plan'), onWorkStepResolved: record('resolved'), onWorkStepFailed: record('failed'),
     onActionProposal: record('proposal'), onWorkJournal: record('journal'),
-    onMcp: async () => ({ status: 200, headers: {}, body: '{}' }),
+    onMcp: async () => { handled.push('mcp'); return { status: 200, headers: {}, body: '{}' }; },
     onEvalMcp: async (path: string) => { handled.push(path); return { status: 200, headers: {}, body: '{}' }; },
     evalSecret: EVAL_SECRET,
-  } as HookServerOpts;
+  };
   server = new HookServer(opts);
   await server.listen();
   return port;
 }
 
-// A session orphaned by a daemon restart keeps the previous run's secret. Claude Code reads a
-// non-2xx PreToolUse answer as a non-blocking error and runs the tool anyway, so that route must
-// answer with a deny, not a 401.
 describe('HookServer — callers without the current secret', () => {
   it.each([['a stale secret', 'previous-run-secret'], ['no secret', undefined]])(
-    'denies the PreToolUse gate for %s, with a 200 Claude Code acts on',
+    'answers every route 401 for %s, without running its handler',
     async (_label, secret) => {
       const port = await start();
-      const res = await post(port, '/hook/pretool', secret);
-      expect(res.status).toBe(200);
-      expect(JSON.parse(res.body).hookSpecificOutput).toMatchObject({ hookEventName: 'PreToolUse', permissionDecision: 'deny' });
+      for (const route of ['/mcp', '/work/step-resolved', '/work/journal']) {
+        expect((await post(port, route, secret)).status).toBe(401);
+      }
       expect(handled).toEqual([]);
     },
   );
 
-  it('still answers every other route 401, without running its handler', async () => {
+  it('runs the handler for the current secret', async () => {
     const port = await start();
-    for (const route of ['/hook/stop', '/hook/statusline', '/work/step-resolved']) {
-      expect((await post(port, route, 'previous-run-secret')).status).toBe(401);
-    }
-    expect(handled).toEqual([]);
-  });
-
-  it('runs the gate as usual for the current secret', async () => {
-    const port = await start();
-    expect((await post(port, '/hook/pretool', SECRET)).status).toBe(200);
-    expect(handled).toEqual(['pretool']);
+    expect((await post(port, '/mcp', SECRET)).status).toBe(200);
+    expect(handled).toEqual(['mcp']);
   });
 });
 
@@ -102,15 +86,13 @@ describe('HookServer — eval replay MCP routes', () => {
     expect(handled).toEqual(['/mcp/eval/sid', '/mcp/replay/sid/linear']);
   });
 
-  it('accepts the eval secret on the gate and the eval MCP routes only', async () => {
+  it('accepts the eval secret on the eval MCP routes only', async () => {
     const port = await start();
     expect((await post(port, '/mcp/eval/sid', EVAL_SECRET)).status).toBe(200);
-    expect((await post(port, '/hook/pretool', EVAL_SECRET)).status).toBe(200);
-    expect(handled).toEqual(['/mcp/eval/sid', 'pretool']);
-    for (const route of ['/mcp', '/work/plan-ready', '/work/create-job', '/work/action-proposal', '/hook/stop']) {
+    for (const route of ['/mcp', '/work/plan-ready', '/work/create-job', '/work/action-proposal']) {
       expect((await post(port, route, EVAL_SECRET)).status).toBe(401);
     }
-    expect(handled).toEqual(['/mcp/eval/sid', 'pretool']);
+    expect(handled).toEqual(['/mcp/eval/sid']);
   });
 
   it('refuses them without the secret', async () => {

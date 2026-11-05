@@ -14,7 +14,6 @@ import { Server } from './server.js';
 import { HookServer } from './permissions/hook-server.js';
 import { handleMcpRequest, OUTPOST_MCP_TOOLS } from './mcp-server.js';
 import { discoverTailscaleEnv } from './tailscale.js';
-import { writeDaemonSettings, writeMcpConfig } from './runtime/claude/settings.js';
 import { JobQueue } from './work/work-queue.js';
 import { serializeJob } from './work/job-liveness.js';
 import { JournalStore } from './storage/journal-store.js';
@@ -37,9 +36,8 @@ import { InteractiveStore } from './session/interactive-store.js';
 import { ActionRegistry } from './actions/index.js';
 import { actionDirFor } from './actions/registry.js';
 import type { PermissionGroupMap } from './actions/types.js';
-import { claudeHookHandlers } from './runtime/claude/hooks.js';
 import { createRuntimeHost, summarizeToolInput } from './runtime/daemon-host.js';
-import type { StatuslineUsage } from './runtime/types.js';
+import type { RuntimeHost, StatuslineUsage } from './runtime/types.js';
 import { type ApprovalMode, ApprovalModeStore } from './permissions/approval-mode.js';
 import { RecurrenceTracker } from './storage/recurrence-tracker.js';
 import { WorktreeManager } from './git/worktree-manager.js';
@@ -86,13 +84,13 @@ import { BlobStore } from './storage/blob-store.js';
 import { CODE_ROUND_ACTIONS } from './work/action-run-links.js';
 import { diffSince, reconcileSnapshotRefs, snapshotWorktree } from './eval/run-output.js';
 import { EvalSessions } from './eval/eval-sessions.js';
-import { replayPreTool } from './eval/replay-hook.js';
 import { handleEvalMcp } from './eval/eval-mcp.js';
 import { BaselineCache, EvalStore, type EvalRecord } from './eval/eval-store.js';
 import type { EvalOutcome } from './eval/eval-verdict.js';
 import { EvalQueue, newEvalRecord, runEval } from './eval/run-eval.js';
 import { claudeJudge } from './eval/judge.js';
-import { killEvalChildren, replayRun, sweepEvalScratch } from './eval/replay-runner.js';
+import { replayRun, sweepEvalScratch } from './eval/replay-runner.js';
+import { killOneShots } from './runtime/claude/once.js';
 import { spentRunIds } from './actions/revision-stats.js';
 import { execFile } from 'node:child_process';
 import { UsageLedger } from './integrations/usage-ledger.js';
@@ -223,7 +221,7 @@ async function main() {
     process.exit(1);
   }
 
-  // Every spawned session inherits process.env (runtime/claude/proc.ts merges it under its own
+  // Every spawned session inherits process.env (runtime/claude/runtime.ts merges it under its own
   // per-session vars), so exporting the loopback base URL here is what makes
   // $OUTPOST_API_URL resolvable inside action steps — they POST back to the daemon
   // (e.g. write.add-project registering a fresh clone) and have no other way to
@@ -235,17 +233,15 @@ async function main() {
   const secret = randomBytes(32).toString('hex');
   const evalSecret = randomBytes(32).toString('hex');
   const HOOK_PORT = config.hookPort;
-  const settingsPath = join(RUNTIME_DIR, 'daemon-settings.json');
-  const mcpConfigPath = join(RUNTIME_DIR, 'daemon-mcp.json');
-  writeDaemonSettings({ outPath: settingsPath, hookPort: HOOK_PORT });
-  const actionSettingsPath = join(RUNTIME_DIR, 'daemon-action-settings.json');
-  writeDaemonSettings({ outPath: actionSettingsPath, hookPort: HOOK_PORT, recordReads: true });
-  writeMcpConfig({ outPath: mcpConfigPath, hookPort: HOOK_PORT, daemonAuthSecret: secret });
   const projectsRoot = config.projectsRoot;
+  const daemonMcpServers = {
+    outpost: { type: 'http' as const, url: `http://127.0.0.1:${HOOK_PORT}/mcp`, headers: { 'X-Daemon-Auth': secret } },
+  };
+  let runtimeHost: RuntimeHost | undefined;
   const runtime = new ClaudeRuntime({
-    settingsPath,
-    actionSettingsPath,
-    mcpConfigPath,
+    host: () => runtimeHost!,
+    mcpServers: daemonMcpServers,
+    approvalTimeoutMs: APPROVAL_TIMEOUT_MS,
     daemonAuthSecret: secret,
     daemonHost: config.host ?? tsEnv?.hostname ?? '127.0.0.1',
     hookPort: config.hookPort,
@@ -671,7 +667,7 @@ async function main() {
   });
 
   nativeHandlers.register('mcp-expiry', () => new McpExpiryWatcher({
-    mcpConfigPath,
+    daemonMcpServers,
     notify: (payload) => { void pushSender.send(payload); },
   }).runOnce());
   nativeHandlers.register('pr-watcher', async () => {
@@ -748,9 +744,7 @@ async function main() {
   }) => void = () => { /* wired later */ };
   let onScheduleProposal: (p: { sessionId: string; name: string; summary: string; trigger: Trigger; what: What }) => void = () => { /* wired later */ };
 
-  // Hook endpoints are loopback-only and authenticated by a per-launch secret —
-  // see hook-server.ts. Any new endpoint added there must validate the secret header.
-  const runtimeHost = createRuntimeHost({
+  runtimeHost = createRuntimeHost({
     engine, manager, allowlist, queue, modes, actionRegistry, worktreeManager, interactive,
     recurrence, stopTracker, pushSender, runBlobs, actionRunLedger, runsCapture,
     latestStatuslineBySession,
@@ -759,19 +753,12 @@ async function main() {
     // Reassigned once the action-edit handlers exist further down main().
     recordActionDenial: (denial) => recordActionDenial(denial),
   });
+  // Loopback-only and authenticated by a per-launch secret — see hook-server.ts. Any new
+  // endpoint added there must validate the secret header.
   const hookServer = new HookServer({
     port: HOOK_PORT,
     daemonAuthSecret: secret,
     evalSecret,
-    ...claudeHookHandlers(runtimeHost, (h) => {
-      const evalSession = evalSessions.get(h.session_id);
-      return evalSession ? replayPreTool(h, evalSession, {
-        allows: (tool, input, action, worktree, sid) => allowlist.allows(tool, input, undefined, action, worktree, sid),
-        gated: (name) => actionRegistry.gatedFor(name),
-        pullPatterns: permissionGroups.pull?.alwaysAllowBashPatterns ?? [],
-        blob: (ref) => runBlobs.get(ref),
-      }) : undefined;
-    }),
     onWorkPlanReady: async (body) => {
       const payload = parseJsonObject(body) as { jobId: string; mode?: 'initial' | 'replan'; steps: unknown[]; drops?: string[]; feedback?: string; findings?: unknown } | null;
       if (!payload) throw new Error('invalid json body');
@@ -979,7 +966,7 @@ async function main() {
   registerMetaRoutes(server, {
     actionRegistry, permissionGroups, allowlist, allowlistPath: ALLOWLIST_PATH, projectAllowlistDir,
     actionsStore, actionsStorePath: join(RUNTIME_DIR, 'actions.json'), projectRegistry, worktreeManager,
-    journalStore, denialsStore, mcpConfigPath,
+    journalStore, denialsStore, daemonMcpServers,
     permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
   });
   registerAuthRoutes(server, { loginFlows, claudeLogin, connectors: new McpConnectorList(join(RUNTIME_DIR, 'mcp-connectors.json')) });
@@ -1015,6 +1002,12 @@ async function main() {
     hookPort: HOOK_PORT,
     secret: evalSecret,
     scratchRoot: EVAL_SCRATCH_DIR,
+    preTool: {
+      allows: (tool: string, input: unknown, action: string, worktree: string | undefined, sid: string) => allowlist.allows(tool, input, undefined, action, worktree, sid),
+      gated: (name: string) => actionRegistry.gatedFor(name),
+      pullPatterns: permissionGroups.pull?.alwaysAllowBashPatterns ?? [],
+      blob: (ref: string) => runBlobs.get(ref),
+    },
   };
   const evalDeps = {
     runs: (a: string) => actionRunsStore.listByAction(a),
@@ -1364,7 +1357,7 @@ async function main() {
     setTimeout(() => process.exit(0), 8000).unref();
     updater.stop();
     evalHalt.abort();
-    killEvalChildren();
+    killOneShots();
     void manager.closeAll('shutdown').then((n) => {
       console.log(`[daemon] ${signal} — closed ${n} session(s), exiting`);
       process.exit(0);

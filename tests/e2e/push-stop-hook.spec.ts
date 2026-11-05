@@ -88,7 +88,7 @@ test.describe('Stop hook does NOT fire push when turn < threshold', () => {
       await outpostPage.keyboard.type('short');
       await outpostPage.keyboard.press('Enter');
       await expect(outpostPage.getByText(/^done\.$/).first()).toBeVisible({ timeout: 10_000 });
-      // Give the Stop hook a chance to fire (mock claude POSTs to /hook/stop after the
+      // Give the Stop hook a chance to fire (mock claude calls the SDK's Stop callback after the
       // marker — the daemon then evaluates threshold). 500ms is plenty.
       await new Promise((r) => setTimeout(r, 500));
       expect(fake.arrivals).toHaveLength(0);

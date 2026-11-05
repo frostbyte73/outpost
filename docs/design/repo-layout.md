@@ -15,12 +15,14 @@ src/
     tools.ts               # canonical tool names; Claude spellings are permanent aliases
     event-ndjson.ts        # per-session native + canonical event logs (runtime-logs/, 14-day retention)
     daemon-host.ts         # RuntimeHost: the daemon's answers to gating, turn ends, usage
-    claude/                # the Claude Code CLI runtime — the only implementation
-      runtime.ts, proc.ts, bin.ts   # ClaudeRuntime, the stream-json subprocess, launchd-safe binary lookup
-      events.ts              # stream-json → canonical events
-      hooks.ts               # loopback hook payloads → RuntimeHost calls
+    claude/                # Claude Code on the Agent SDK — the only implementation
+      runtime.ts, sdk-session.ts, bin.ts   # ClaudeRuntime, one streaming-input query() per session, binary lookup
+      events.ts              # SDK messages → canonical events
+      hooks.ts               # in-process SDK hooks → RuntimeHost calls (the PreToolUse gate)
+      usage.ts               # the statusLine payload, rebuilt from SDK frames
+      once.ts                # one-shot runs: PR draft, eval judge, eval replay
       transcripts.ts, transcript-{parse,scan}.ts  # ~/.claude/projects JSONL → canonical items
-      settings.ts, skills.ts, config.ts            # --settings/--mcp-config files, action delivery as skills, ~/.claude.json
+      skills.ts, config.ts   # action delivery as skills, ~/.claude.json
 
   routes/                # HTTP route factories: registerXRoutes(server, deps)
     {git,jobs,sessions,projects,push,runs,schedules,meta,util,actions,preferences,update}.ts

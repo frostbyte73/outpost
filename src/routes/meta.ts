@@ -17,7 +17,7 @@ import { isKnownCwd } from '../git/known-cwd.js';
 import type { JournalStore } from '../storage/journal-store.js';
 import type { DenialsStore } from '../storage/denials-store.js';
 import { readJsonObject } from './util.js';
-import { authKindOf, mergeMcpServers, transportOf } from '../integrations/mcp-config.js';
+import { authKindOf, mergeMcpServers, transportOf, type McpServerConfig } from '../integrations/mcp-config.js';
 import { credentialsByServer } from '../integrations/mcp-credentials.js';
 import { listTools } from '../integrations/mcp-catalog.js';
 import { proposeForServer, type ServerProposal } from '../permissions/mcp-proposal.js';
@@ -34,7 +34,7 @@ export interface MetaRoutesDeps {
   worktreeManager: WorktreeManager;
   journalStore: JournalStore;
   denialsStore: DenialsStore;
-  mcpConfigPath: string;
+  daemonMcpServers: Record<string, McpServerConfig>;
   permissionGroupsPath: string;
   groupRevisions: PermissionGroupRevisionsStore;
 }
@@ -197,7 +197,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   const {
     actionRegistry, permissionGroups, allowlist, allowlistPath, projectAllowlistDir,
     actionsStore, actionsStorePath, projectRegistry, worktreeManager, journalStore, denialsStore,
-    mcpConfigPath, permissionGroupsPath, groupRevisions,
+    daemonMcpServers, permissionGroupsPath, groupRevisions,
   } = deps;
 
   const applyGroup = createGroupApplier({ actionRegistry, permissionGroups, permissionGroupsPath, groupRevisions });
@@ -497,7 +497,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   });
 
   server.route('GET', '/api/mcp/status', async (_req, res) => {
-    const merged = mergeMcpServers(mcpConfigPath);
+    const merged = mergeMcpServers(daemonMcpServers);
     const creds = await credentialsByServer();
 
     const servers = await Promise.all([...merged.entries()].map(async ([name, cfg]) => {
@@ -528,7 +528,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
   // own timeout, so awaiting them in a loop would let N hung servers cost N timeouts in a row
   // where Promise.all costs exactly one.
   async function handleGetMcpCatalog(_req: IncomingMessage, res: ServerResponse): Promise<void> {
-    const merged = mergeMcpServers(mcpConfigPath);
+    const merged = mergeMcpServers(daemonMcpServers);
     const proposals = await Promise.all([...merged.entries()].map(async ([name, cfg]) => {
       const result = await listTools(name, cfg);
       return proposeForServer(result, permissionGroups);
@@ -577,7 +577,7 @@ export function registerMetaRoutes(server: Server, deps: MetaRoutesDeps): void {
     }
     const server = payload.server as string;
 
-    const merged = mergeMcpServers(mcpConfigPath);
+    const merged = mergeMcpServers(daemonMcpServers);
     const cfg = merged.get(server);
     if (!cfg) { res.statusCode = 404; res.end(`unknown mcp server: ${server}`); return; }
 

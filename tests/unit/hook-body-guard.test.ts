@@ -1,11 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { request as httpRequest } from 'node:http';
-import { mkdtempSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { HookServer, type HookServerOpts } from '../../src/permissions/hook-server.js';
-import { writeDaemonSettings } from '../../src/runtime/claude/settings.js';
 import { parseJsonObject } from '../../src/routes/util.js';
 import { handleMcpRequest } from '../../src/mcp-server.js';
 import { freePort } from '../e2e/harness/port.js';
@@ -45,12 +42,6 @@ function makeOpts(): HookServerOpts {
   return {
     port: 0,
     daemonAuthSecret: SECRET,
-    onPreToolHook: async (body) => { guarded(body); return '{}'; },
-    onPostToolFailureHook: async (body) => { guarded(body); return '{}'; },
-    onPostToolHook: async (body) => { guarded(body); },
-    onStopHook: async (body) => { guarded(body); },
-    onStopFailureHook: async (body) => { guarded(body); },
-    onStatusLineHook: async (body) => { guarded(body); },
     onWorkPlanReady: async (body) => { guarded(body); },
     onWorkStepResolved: async (body) => { guarded(body); },
     onWorkStepFailed: async (body) => { guarded(body); },
@@ -80,44 +71,6 @@ describe('HookServer — status mapping when a handler throws on a bad body', ()
 
     const res = await post(port, '/work/journal', '{');
     expect(res.status).toBe(400);
-  });
-
-  it('still answers 204 for a fire-and-forget /hook/stop body', async () => {
-    const port = await freePort();
-    server = new HookServer({ ...makeOpts(), port });
-    await server.listen();
-
-    const res = await post(port, '/hook/stop', 'null');
-    expect(res.status).toBe(204);
-  });
-
-  it('keeps /hook/pretool at 500 rather than downgrading to 400', async () => {
-    const port = await freePort();
-    server = new HookServer({ ...makeOpts(), port });
-    await server.listen();
-
-    const res = await post(port, '/hook/pretool', 'null');
-    expect(res.status).toBe(500);
-  });
-
-  // Round 0 shipped the wrong event name (`PostToolUse` instead of `PostToolUseFailure`)
-  // and every test still passed, because all of them called handlePostToolFailureHook
-  // directly — nothing traversed the settings file's event key/URL through to a live
-  // HookServer route. This does: derive the path writeDaemonSettings actually writes, and prove
-  // it resolves to something other than a 404 on the real route table.
-  it('the URL writeDaemonSettings writes for PostToolUseFailure resolves to a live HookServer route', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'set-'));
-    const settingsPath = join(dir, 'daemon-settings.json');
-    const port = await freePort();
-    writeDaemonSettings({ outPath: settingsPath, hookPort: port });
-    const j = JSON.parse(readFileSync(settingsPath, 'utf8'));
-    const url = new URL(j.hooks.PostToolUseFailure[0].hooks[0].url);
-
-    server = new HookServer({ ...makeOpts(), port });
-    await server.listen();
-
-    const res = await post(port, url.pathname, JSON.stringify({ session_id: 's', tool_name: 'Bash' }));
-    expect(res.status).not.toBe(404);
   });
 
   // /work/create-job parses its own body inside HookServer rather than in a daemon callback,
@@ -161,10 +114,6 @@ describe('the real hook callbacks guard their bodies', () => {
   const daemon = readFileSync(`${srcDir}daemon.ts`, 'utf8');
 
   const BODY_CALLBACKS = ['onWorkPlanReady', 'onWorkStepResolved', 'onWorkStepFailed', 'onWorkJournal'];
-  const CLAUDE_HOOK_CALLBACKS = [
-    'onStatusLineHook', 'onStopHook', 'onStopFailureHook', 'onPreToolHook', 'onPostToolFailureHook', 'onPostToolHook',
-  ];
-  const claudeHooks = readFileSync(`${srcDir}runtime/claude/hooks.ts`, 'utf8');
 
   // From the callback's key to the next sibling key at the same indent — its whole body.
   function callbackBody(src: string, name: string, signature: string, indent: string): string {
@@ -181,21 +130,6 @@ describe('the real hook callbacks guard their bodies', () => {
     expect(guard, `${name} accepts a body that is not a plain object`).toBeGreaterThan(-1);
     // …and before anything reads a field off it.
     expect(body.slice(0, guard)).not.toMatch(/payload\.|hookInput\./);
-  });
-
-  it('parseBody refuses a body that is not a plain object', () => {
-    const at = claudeHooks.indexOf('function parseBody');
-    expect(at).toBeGreaterThan(-1);
-    const head = claudeHooks.slice(at, at + 250);
-    expect(head).toContain('parseJsonObject(body)');
-    expect(head).toContain("throw new Error('invalid json body')");
-  });
-
-  it.each(CLAUDE_HOOK_CALLBACKS)('%s parses its body through parseBody before reading it', (name) => {
-    const body = callbackBody(claudeHooks, name, 'async (body: string)', '    ');
-    const guard = body.indexOf('parseBody<');
-    expect(guard, `${name} reads its body without the parseBody guard`).toBeGreaterThan(-1);
-    expect(body.slice(0, guard)).not.toMatch(/JSON\.parse|body\./);
   });
 
   it('onActionProposal delegates to a handler that carries the same guard', () => {

@@ -22,3 +22,9 @@ export function resolveClaudeBin(): string {
   }
   return 'claude'; // last resort: let spawn search PATH; a miss surfaces via the 'error' handler
 }
+
+// Sessions run the SDK's bundled binary, which speaks its exact control protocol, unless overridden
+export function sdkExecutable(): { pathToClaudeCodeExecutable?: string } {
+  const override = process.env.OUTPOST_CLAUDE_BIN;
+  return override && existsSync(override) ? { pathToClaudeCodeExecutable: override } : {};
+}

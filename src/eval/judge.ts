@@ -2,7 +2,8 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Comparison } from './eval-verdict.js';
-import { spawnClaudeOnce, type SpawnClaude } from './replay-runner.js';
+import { runClaudeOnce, type RunClaudeOnce } from '../runtime/claude/once.js';
+import { evalChildEnv } from './replay-runner.js';
 
 const CONTEXT_CAP = 8000;
 const OUTPUT_CAP = 30_000;
@@ -19,37 +20,42 @@ const SYSTEM_PROMPT = [
   'Answer "tie" when neither is clearly closer to what the user wanted.',
 ].join('\n');
 
-const SCHEMA = JSON.stringify({
+const SCHEMA = {
   type: 'object',
   required: ['winner', 'reason'],
   additionalProperties: false,
   properties: { winner: { enum: ['A', 'B', 'tie'] }, reason: { type: 'string' } },
-});
+};
 
 let emptyCwd: string | undefined;
 
-export function claudeJudge(spawn: SpawnClaude = spawnClaudeOnce): JudgeOnce {
+export function claudeJudge(run: RunClaudeOnce = runClaudeOnce): JudgeOnce {
   return async ({ context, answerKey, a, b }) => {
     emptyCwd ??= mkdtempSync(join(tmpdir(), 'outpost-judge-'));
-    const stdin = [
+    const prompt = [
       `# Task context (truncated)\n${context.slice(0, CONTEXT_CAP)}`,
       `# Answer key\n${answerKey}`,
       `# Output A\n${a.slice(0, OUTPUT_CAP)}`,
       `# Output B\n${b.slice(0, OUTPUT_CAP)}`,
     ].join('\n\n');
-    const { stdout } = await spawn([
-      '--print', '--output-format', 'json', '--model', 'opus',
-      '--tools', '', '--setting-sources', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-      '--no-session-persistence', '--disable-slash-commands',
-      '--system-prompt', SYSTEM_PROMPT, '--json-schema', SCHEMA,
-    ], { cwd: emptyCwd, env: {}, stdin, timeoutMs: TIMEOUT_MS });
-    let res: { structured_output?: { winner?: unknown; reason?: unknown }; total_cost_usd?: unknown } = {};
-    try { res = JSON.parse(stdout) as typeof res; } catch { /* unusable — thrown below */ }
-    const w = res.structured_output?.winner;
+    const res = await run(prompt, {
+      cwd: emptyCwd,
+      env: evalChildEnv(process.env, {}),
+      model: 'opus',
+      tools: [],
+      settingSources: [],
+      mcpServers: {},
+      strictMcpConfig: true,
+      persistSession: false,
+      extraArgs: { 'disable-slash-commands': null },
+      systemPrompt: SYSTEM_PROMPT,
+      outputFormat: { type: 'json_schema', schema: SCHEMA },
+    }, { timeoutMs: TIMEOUT_MS });
+    const out = (res?.subtype === 'success' ? res.structured_output : undefined) as { winner?: unknown; reason?: unknown } | undefined;
+    const w = out?.winner;
     // Thrown, not tied: an outage read as a tie would fail the proposal it was meant to grade.
-    if (w !== 'A' && w !== 'B' && w !== 'tie') throw new Error(`judge gave no usable verdict: ${stdout.slice(0, 200)}`);
-    const costUsd = typeof res.total_cost_usd === 'number' ? res.total_cost_usd : 0;
-    return { winner: w, reason: String(res.structured_output?.reason ?? ''), costUsd };
+    if (w !== 'A' && w !== 'B' && w !== 'tie') throw new Error(`judge gave no usable verdict: ${JSON.stringify(res ?? null).slice(0, 200)}`);
+    return { winner: w, reason: String(out?.reason ?? ''), costUsd: res?.total_cost_usd ?? 0 };
   };
 }
 

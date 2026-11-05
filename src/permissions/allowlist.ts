@@ -488,7 +488,7 @@ export class Allowlist {
 
   // One operand of a read command. `$OUTPOST_ENVELOPE` is the single path an action can name
   // without knowing its value — the daemon exports it into every spawned session
-  // (runtime/claude/proc.ts) — and the checker sees command text, never the expansion, so it is
+  // (runtime/claude/runtime.ts) — and the checker sees command text, never the expansion, so it is
   // recognised by spelling. That recognition lives HERE, in one place, rather than in every
   // rule that wants to permit reading the envelope.
   private readArgAllowed(

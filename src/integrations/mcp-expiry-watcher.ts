@@ -1,4 +1,4 @@
-import { authKindOf, mergeMcpServers } from './mcp-config.js';
+import { authKindOf, mergeMcpServers, type McpServerConfig } from './mcp-config.js';
 import { credentialsByServer, type McpCredential } from './mcp-credentials.js';
 
 // Notifies when an MCP OAuth credential needs a human. Timing is the whole point: a token that
@@ -55,7 +55,7 @@ export function notificationFor(due: ReauthDue[]): { title: string; body: string
 }
 
 export interface McpExpiryWatcherOpts {
-  mcpConfigPath: string;
+  daemonMcpServers: Record<string, McpServerConfig>;
   notify: (payload: { title: string; body: string; tag: string; data: Record<string, unknown> }) => void;
   now?: () => number;
 }
@@ -68,7 +68,7 @@ export class McpExpiryWatcher {
   }
 
   async runOnce(): Promise<{ outcome: 'ok' | 'error' }> {
-    const servers = mergeMcpServers(this.opts.mcpConfigPath);
+    const servers = mergeMcpServers(this.opts.daemonMcpServers);
     const oauth = [...servers.entries()].filter(([, cfg]) => authKindOf(cfg) === 'oauth').map(([name]) => name);
     const due = dueForReauth(oauth, await credentialsByServer(), this.now());
     const payload = notificationFor(due);

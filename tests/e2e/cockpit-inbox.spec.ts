@@ -1,16 +1,21 @@
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join, resolve as resolvePath, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { test, expect } from './harness/browser.js';
 
-// The proposal route lives on the hook server (loopback + per-launch secret), whose
-// port and secret the daemon writes to daemon-mcp.json for spawned sessions to read.
-function hookAccess(runtimeDir: string): { baseUrl: string; secret: string } {
-  const cfg = JSON.parse(readFileSync(join(runtimeDir, 'daemon-mcp.json'), 'utf8'));
-  const server = cfg.mcpServers.outpost;
-  return {
-    baseUrl: String(server.url).replace(/\/mcp$/, ''),
-    secret: server.headers['X-Daemon-Auth'],
-  };
+const HOOK_ACCESS = join(mkdtempSync(join(tmpdir(), 'outpost-e2e-hook-')), 'hook-access.json');
+const FIXTURE = resolvePath(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'simple-text-response.jsonl');
+
+test.use({ daemonOpts: { fixturePath: FIXTURE, extraEnv: { OUTPOST_TEST_HOOK_ACCESS_FILE: HOOK_ACCESS } } });
+test.beforeEach(() => rmSync(HOOK_ACCESS, { force: true }));
+
+// The proposal route lives on the hook server (loopback + per-launch secret), which only the
+// spawned edit session knows how to reach — the mock claude writes that out for the test.
+async function hookAccess(): Promise<{ baseUrl: string; secret: string }> {
+  await expect.poll(() => existsSync(HOOK_ACCESS)).toBe(true);
+  const { port, secret } = JSON.parse(readFileSync(HOOK_ACCESS, 'utf8'));
+  return { baseUrl: `http://127.0.0.1:${port}`, secret };
 }
 
 test('an action proposal appears under Other without a reload', async ({ daemon, outpostPage }) => {
@@ -24,7 +29,7 @@ test('an action proposal appears under Other without a reload', async ({ daemon,
   expect(start.ok()).toBe(true);
   const { sessionId } = await start.json();
 
-  const hook = hookAccess(daemon.runtimeDir);
+  const hook = await hookAccess();
   const posted = await outpostPage.request.post(`${hook.baseUrl}/work/action-proposal`, {
     headers: { 'x-daemon-auth': hook.secret, 'content-type': 'application/json' },
     data: {
@@ -61,7 +66,7 @@ test('a new action proposal renders the file, not an all-plus diff', async ({ da
   expect(start.ok()).toBe(true);
   const { sessionId } = await start.json();
 
-  const hook = hookAccess(daemon.runtimeDir);
+  const hook = await hookAccess();
   const posted = await outpostPage.request.post(`${hook.baseUrl}/work/action-proposal`, {
     headers: { 'x-daemon-auth': hook.secret, 'content-type': 'application/json' },
     data: {

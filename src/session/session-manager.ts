@@ -27,7 +27,7 @@ interface ActiveSession {
   clients: Set<WebSocket>;
   eventLog: EventLog;
   idleTimer?: NodeJS.Timeout;
-  // Set by close() right before the SIGTERM so onExit can flag the exit as
+  // Set by close() right before it ends the session so onExit can flag the exit as
   // daemon-initiated (vs a crash). Cleared implicitly — a fresh spawn makes a new session.
   closeReason?: SessionCloseReason;
   exited: Promise<void>;
@@ -363,8 +363,8 @@ export class SessionManager {
     return s.clients.size > 0 ? 'foreground' : 'background';
   }
 
-  // Every live session, at once — the daemon's shutdown. Each close escalates SIGTERM → SIGKILL
-  // after 5s, so this settles within that whatever the sessions are doing.
+  // Every live session, at once — the daemon's shutdown. The SDK force-kills each process a
+  // couple of seconds after its input closes, so this settles quickly whatever the sessions are doing.
   async closeAll(reason: SessionCloseReason): Promise<number> {
     const ids = [...this.active.keys()];
     await Promise.all(ids.map((id) => this.close(id, reason)));

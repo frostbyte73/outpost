@@ -81,6 +81,7 @@ One line each; the full reasoning is in [`docs/design/gotchas.md`](docs/design/g
 
 - Don't loosen the sessionId/branch regexes in `src/git/worktree-manager.ts` — they stop path traversal and git argv-flag smuggling.
 - Every new endpoint in `src/permissions/hook-server.ts` must validate the secret header; only `server.ts` is exposed on the tailnet.
+- The SDK PreToolUse gate fails closed: keep `gateMatcher`'s `onFailure: 'block'`, its timeout past the approval timeout, and `gatedPreToolUse`'s throw/deadline→deny.
 - Persisted stores in `~/.outpost/` (override: `OUTPOST_RUNTIME_DIR`) write via atomic rename; keep that pattern in new ones.
 - launchd strips the shell env, so secrets reach subprocesses through `~/.outpost/.env` (`env-file.ts`), where an `op://` value is resolved through 1Password. Precedence: plist > .env > defaults.
 - The daemon's GitHub calls all go through `runGh` (`gh-cli.ts`), answered from the API when `gh` isn't installed and `GITHUB_TOKEN` is set; never spawn `gh` directly, and a new argv shape needs a shim case and a test.
