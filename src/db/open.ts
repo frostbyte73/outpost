@@ -1,7 +1,6 @@
 import { isAbsolute, join } from 'node:path';
 import type { Backend } from './backend.js';
 import { createMemoryStore, openMemory } from './adapters/memory.js';
-import { openPg, openPglite } from './adapters/pg.js';
 import { openSqlite } from './adapters/sqlite.js';
 
 export type StoreUrl =
@@ -44,8 +43,8 @@ export async function openStore(url: StoreUrl, opts: { allowTestOnly: boolean })
     case 'sqlite': return openSqlite(url.path);
     case 'postgres':
       if (url.isPooler) console.warn('[store] OUTPOST_STORE points at a -pooler host; use Neon\'s direct endpoint, the pooler breaks multi-statement transactions');
-      return openPg(url.url);
+      return (await import('./adapters/pg.js')).openPg(url.url);
     case 'memory': return openMemory(createMemoryStore());
-    case 'pglite': return openPglite(url.dataDir);
+    case 'pglite': return (await import('./adapters/pg.js')).openPglite(url.dataDir);
   }
 }
