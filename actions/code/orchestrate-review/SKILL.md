@@ -335,7 +335,8 @@ self-round to go think.
   comment, phrased once, at the severity the stronger reading justifies.
 - **Drop the low-value nits.** You are spending someone else's attention. A comment that would
   not change the code if the author agreed with it should not be posted. House-style opinions
-  the repo's own CLAUDE.md/AGENTS.md doesn't hold go too.
+  the repo's own CLAUDE.md/AGENTS.md doesn't hold go too, and so does any "add a test" for
+  basic logic — ask for a test only where the Tests bar in `SHARED-style.md` is met.
 - **Rank by severity**, and say which are blocking. The verdict later is mechanical from
   `resolutions`, but the author needs to know now which comments are the ones that matter.
 - **Anchor each to a file and a line that are in the diff.** A comment on a line the PR did

@@ -160,7 +160,7 @@ Translate the ticket's *symptom* into a *set of repos*:
 - Ticket names a shared schema/proto → the repo that defines it plus every consumer that depends on it.
 - Ticket names a UI surface → the repo (or sub-app) that renders it.
 
-**Always read the candidate repo's own `CLAUDE.md` / `AGENTS.md`** before deciding it needs work — that's where each repo documents its build targets, dependency wiring, and test prerequisites. Nested/subdir guidance overrides the repo root. Pull the relevant conventions into your `approach` so the implementer doesn't have to rediscover them.
+**Always read the candidate repo's own `CLAUDE.md` / `AGENTS.md`** before deciding it needs work — that's where each repo documents its build targets, dependency wiring, and test prerequisites. Nested/subdir guidance overrides the repo root. Pull the relevant conventions into your `approach` so the implementer doesn't have to rediscover them. Never put "add tests" in an `approach` — tests for basic logic are banned, and the spec round decides whether anything meets the Tests bar in `SHARED-style.md`.
 
 Use the absolute paths from the registered-projects list. If a repo is on disk but not registered, use that path anyway — the user can register before approving. If it's not on disk, don't emit a step for it; mention it in your final stdout message.
 

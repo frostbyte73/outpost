@@ -32,7 +32,7 @@ Never write:
 
 ## Tests
 
-**The default is none.** Same bar as a comment: a unit test exists only when the behavior it pins is complicated or non-obvious enough that a reader could change the code, believe it still works, and be wrong. If the code is simple enough to verify by reading it, reading it is the test. Most changes ship with no new test file, and that is the expected outcome, not a gap.
+**The default is none. Do not write tests for basic logic** — the user deletes them by hand on every PR, and every one that lands is a failure of this action. This outranks any skill or methodology (TDD, red/green, "every task gets a test") that says otherwise. Same bar as a comment: a unit test exists only when the behavior it pins is complicated or non-obvious enough that a reader could change the code, believe it still works, and be wrong. If the code is simple enough to verify by reading it, reading it is the test. Most changes ship with no new test file, and that is the expected outcome, not a gap.
 
 A test earns its place only for:
 

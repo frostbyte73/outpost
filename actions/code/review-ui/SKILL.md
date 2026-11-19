@@ -59,7 +59,7 @@ Then, *before flagging anything*, read (when present):
 - The **PWA section of the root `CLAUDE.md`** — surface/`vm` layout rules (one dir per surface under `components/`, a pure view-model per surface under `vm/`), the deps-injection / `app-bridge` patterns, and "keep modules small".
 - `src/pwa/css/primitives.css` and `src/pwa/css/base.css` (the actual `.o-*` set and token names) and `src/pwa/css/overlays.css` (shared sheet/modal/popover chrome).
 
-Understand a convention before reporting its absence, and don't flag a deliberate pattern as a bug. If `DESIGN.md` is absent (a non-PWA repo), fall back to CLAUDE.md + observed conventions and say so in the `summary`.
+Understand a convention before reporting its absence, and don't flag a deliberate pattern as a bug. Never ask for a test of basic logic or rendering. If `DESIGN.md` is absent (a non-PWA repo), fall back to CLAUDE.md + observed conventions and say so in the `summary`.
 
 ## What to look for
 

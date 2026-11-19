@@ -61,7 +61,7 @@ git merge origin/main   # replace `origin/main` here with the literal ref, if bo
 - **Merge succeeds cleanly:** go to Step 3.
 - **Merge reports conflicts:** resolve each conflicted file. You know why the PR's side
   looks the way it does — reconcile it with main's changes rather than blindly taking one
-  side. After editing, `git add` the resolved files. If the resolution is non-trivial, run
+  side. Add no tests. After editing, `git add` the resolved files. If the resolution is non-trivial, run
   the project's tests before continuing. Any code you write rather than pick from a side
   holds to `cat ~/.outpost/actions/SHARED-style.md` — no comment explaining the merge.
 - **Conflict is on a submodule gitlink** (`git status` shows the path as "both modified" and

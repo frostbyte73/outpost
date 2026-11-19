@@ -75,7 +75,7 @@ If `$WORK_APPROACH` references specific files, `Read` them now. If anything in t
 
 ## Step 2 — Implement
 
-Apply `$WORK_APPROACH`. Most changes need no new test — verify by running the existing suite and exercising the code path. Write a test only for behavior that is complicated or non-obvious, or a side effect that could break silently (the Tests section of `SHARED-style.md`); helper functions and basic logic get none.
+Apply `$WORK_APPROACH`. **Do not write tests for basic logic.** The user deletes them by hand on every PR. Most changes need no new test — verify by running the existing suite and exercising the code path. Write a test only for behavior that is complicated or non-obvious, or a side effect that could break silently (the Tests section of `SHARED-style.md`); helper functions and basic logic get none. Write only the tests the plan's test intent names; if it names none, write none.
 
 When the approach is ambiguous, exercise judgment — you're the implementer, and the human reviews the diff before it merges. If you discover the approach is wrong (the file doesn't look how the investigator described, an API has changed, a dependency is missing), do the thing that solves the goal and note the deviation in your final summary. Don't paper over it.
 

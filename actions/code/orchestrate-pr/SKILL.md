@@ -340,7 +340,9 @@ pass 2 — blocking (1 blocking, 3 advisory)
 
 `blocking` is `severity: "error"` — something that would actively break. `warn`/`info` are
 advisory: fix them on the same round if they're cheap, otherwise list them under Declined with
-a reason. Write `clean` in place of `blocking` when nothing blocking is left.
+a reason. Write `clean` in place of `blocking` when nothing blocking is left. A finding that a
+test should be deleted is always blocking, whatever severity it came with, and is never Declined —
+the PR does not open with a test the review said to cut.
 
 **Row 7 — the fix round.** `self-round` as `code.implement` with the blocking findings verbatim
 in `note`, each with its file, line and what needs to change. That round edits the worktree and

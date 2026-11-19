@@ -73,9 +73,9 @@ Then scan the diff for:
 - Files touched off-target (auto-format sweeps, accidental dependency bumps).
 - Bugs (off-by-one, missed null cases, race conditions, resource leaks) — these get `severity: "error"`.
 - Error paths: failures swallowed, errors wrapped without context the caller lacks, a `panic`/`throw` where the case is recoverable.
-- Tests that fail `SHARED-style.md`'s Tests bar: tests of simple helpers or basic logic, tests that assert on mocks, pin a library, or restate the implementation's own shape. Flag each for deletion — a missing test is a finding only when the change adds non-obvious behavior or a side effect that could break silently.
+- Tests that fail `SHARED-style.md`'s Tests bar: tests of simple helpers or basic logic, tests that assert on mocks, pin a library, or restate the implementation's own shape. **Each one is `severity: "error"`** — the user otherwise deletes them by hand on every PR, so an unwarranted test blocks the PR exactly like a bug. Name the test and say "delete"; if every test in a new file fails the bar, say "delete the file". A missing test is a finding only when the change adds non-obvious behavior or a side effect that could break silently.
 
-Be sparing with `severity: "error"` — reserve it for things that would actively break. Most lint-style findings are `info` or `warn`.
+Be sparing with `severity: "error"` — reserve it for things that would actively break, plus unwarranted tests (above). Most lint-style findings are `info` or `warn`.
 
 ## Output
 

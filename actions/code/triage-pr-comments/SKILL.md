@@ -53,7 +53,7 @@ PENDING=$(jq -c '[.pr.comments[]? | select(.respondedAt | not)]' "$OUTPOST_ENVEL
 
 For each comment in `pendingComments`:
 
-**Pick `edit` when** the reviewer's concern is best resolved by changing code. "Good catch, this is broken — fix it" is `edit`, not `reply` + paragraph explaining the fix. The user can still override into Reply if they disagree, but your recommendation should match what serves the PR best.
+**Pick `edit` when** the reviewer's concern is best resolved by changing code. "Good catch, this is broken — fix it" is `edit`, not `reply` + paragraph explaining the fix. The user can still override into Reply if they disagree, but your recommendation should match what serves the PR best. A request to add a test for basic logic is never `edit` — recommend `reply` scoping it out, unless the test would meet the Tests bar in `SHARED-style.md`.
 
 **Pick `reply` when** you are disputing the comment — the reviewer is wrong, or the trade-off they are questioning was deliberate — or when you are declaring it out of scope for this PR. Answering a direct question counts as a reply only when the answer is one of those two: it tells the reviewer something the pushed diff cannot.
 
