@@ -88,6 +88,7 @@ class AcpSession implements RuntimeSession {
   private readonly queued: TurnInput[] = [];
   private readonly calls = new Map<string, AcpToolCall>();
   private readonly gated = new Map<string, GateCall[]>();
+  private readonly asked = new Set<string>();
   private readonly settled = new Set<string>();
 
   constructor(private readonly o: AcpRuntimeOpts, private readonly s: StartOpts, private readonly cb: StartCallbacks) {}
@@ -104,12 +105,21 @@ class AcpSession implements RuntimeSession {
         onStderr: (d) => this.cb.onError(d),
         onExit: (code) => this.onAgentExit(code),
       });
-      const init = await this.conn.request<{ agentCapabilities?: AgentCapabilities }>('initialize', {
+      const init = await this.conn.request<{ agentCapabilities?: AgentCapabilities; authMethods?: { id: string }[] }>('initialize', {
         protocolVersion: 1,
         clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false },
         clientInfo: { name: 'outpost', version: '0.1.0' },
       });
       this.caps = init.agentCapabilities ?? {};
+      const method = this.o.agent.authMethodId;
+      if (method) {
+        if (!init.authMethods?.some((m) => m.id === method)) throw new Error(`the agent doesn't offer the ${method} sign-in method`);
+        try {
+          await this.conn.request('authenticate', { methodId: method });
+        } catch (e) {
+          throw new Error(`couldn't sign in to ${this.o.agent.id}: ${(e as Error).message}`);
+        }
+      }
       if (!this.caps.mcpCapabilities?.http) throw new Error("the agent can't reach Outpost's MCP server over HTTP");
       const mcpServers = this.mcpServers();
       const stored = this.s.mode === 'resume' ? this.o.nativeIds.read(this.s.sessionId) : null;
@@ -251,16 +261,18 @@ class AcpSession implements RuntimeSession {
     for (const e of events) this.cb.onEvent(e);
   }
 
-  // The tripwire fires only after the call has run; it stops the session, it can't undo the call.
+  // Waits past in_progress: Cursor reports it before asking
   private ranUngated(call: AcpToolCall): boolean {
     if (call.kind && UNGATED_KINDS.has(call.kind)) return false;
-    if (call.status !== 'in_progress' && call.status !== 'completed') return false;
-    return !this.gated.has(call.toolCallId);
+    if (call.status === 'completed') return !this.gated.has(call.toolCallId);
+    if (call.status !== 'failed') return false;
+    return !this.asked.has(call.toolCallId);
   }
 
   private settle(call: AcpToolCall): void {
     this.settled.add(call.toolCallId);
     this.calls.delete(call.toolCallId);
+    this.asked.delete(call.toolCallId);
     this.record(toolItem(call, this.o.agent));
     const seen = this.gated.get(call.toolCallId);
     if (!seen) return;
@@ -278,9 +290,10 @@ class AcpSession implements RuntimeSession {
   }
 
   private async onRequest(method: string, params: unknown): Promise<PermissionReply> {
-    if (method !== 'session/request_permission') throw new Error(`Outpost does not answer ${method}`);
+    if (method !== 'session/request_permission') throw new Error(`Outpost can't answer ${method}; continue without it.`);
     const p = params as { sessionId?: string; toolCall?: AcpToolCall; options?: AcpPermissionOption[] };
     const options = p.options ?? [];
+    if (p.sessionId === this.nativeId && p.toolCall?.toolCallId) this.asked.add(p.toolCall.toolCallId);
     if (this.dead || this.interrupting) return CANCELLED;
     if (p.sessionId !== this.nativeId || !p.toolCall?.toolCallId) return permissionReply(options, false);
     if (!options.some((o) => o.kind === 'allow_once')) return this.deny(options, 'The agent offered no one-time approval, so Outpost refused the call.');

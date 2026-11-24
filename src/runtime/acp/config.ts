@@ -10,9 +10,10 @@ export interface AcpAgentConfig {
   // Regex with named groups `server` and `tool`, tested against a tool call's title to name an MCP call.
   mcpTitlePattern?: string;
   shellCommandField: string;
+  authMethodId?: string;
 }
 
-// Seeded once; the launch flags and MCP title shapes are best guesses until checked against the real agent.
+// Seeded once; Gemini's and OpenCode's launch flags and MCP title shapes are best guesses until checked against the real agent.
 const SEEDED: AcpAgentConfig[] = [
   {
     id: 'gemini',
@@ -29,6 +30,15 @@ const SEEDED: AcpAgentConfig[] = [
     env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { edit: 'ask', bash: 'ask', webfetch: 'ask' } }) },
     mcpTitlePattern: '^(?<server>[a-zA-Z0-9-]+)_(?<tool>.+)$',
     shellCommandField: 'command',
+  },
+  {
+    id: 'cursor',
+    command: 'agent',
+    args: ['acp'],
+    env: {},
+    mcpTitlePattern: '^(?<server>[\\w-]+)-(?<tool>[\\w-]+): \\k<tool>$',
+    shellCommandField: 'command',
+    authMethodId: 'cursor_login',
   },
 ];
 
@@ -80,6 +90,9 @@ function parseAgent(e: unknown, seen: AcpAgentConfig[]): AcpAgentConfig | string
   }
   const shell = o.shellCommandField ?? 'command';
   if (typeof shell !== 'string' || !shell) return 'shellCommandField must be a non-empty string';
+  if (o.authMethodId !== undefined && (typeof o.authMethodId !== 'string' || !o.authMethodId)) {
+    return 'authMethodId must be a non-empty string';
+  }
   return {
     id: o.id,
     command: o.command,
@@ -87,5 +100,6 @@ function parseAgent(e: unknown, seen: AcpAgentConfig[]): AcpAgentConfig | string
     env: env as Record<string, string>,
     ...(o.mcpTitlePattern !== undefined ? { mcpTitlePattern: o.mcpTitlePattern } : {}),
     shellCommandField: shell,
+    ...(o.authMethodId !== undefined ? { authMethodId: o.authMethodId } : {}),
   };
 }
