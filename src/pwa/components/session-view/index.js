@@ -50,7 +50,8 @@ import { engagement } from '../../state/engagement.js';
 import { hasReadyAttachments, rememberSent, wireAttachments } from './attachments.js';
 import { wireAttachment } from '../../utils/attachments.js';
 
-const APPROVAL_MODES = ['ask', 'plan', 'accept-edits', 'bypass'];
+const MAXIMIZE_ICON = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.5 2.5h4v4M13.5 2.5 9 7M6.5 13.5h-4v-4M2.5 13.5 7 9"/></svg>';
+const APPROVAL_MODES =['ask', 'plan', 'accept-edits', 'bypass'];
 const APPROVAL_MODE_LABEL = { 'ask': 'Ask', 'plan': 'Plan', 'accept-edits': 'Accept edits', 'bypass': 'Bypass' };
 
 // Build the mount's DOM skeleton. All selectors are class-based so multiple
@@ -292,6 +293,7 @@ function renderHeader(dom, slice, sessionId, meta) {
   if (dom.headerArchive) dom.headerArchive.hidden = computeGitInfo(sessionId).archived;
   if (dom.headerPromoteKbd) dom.headerPromoteKbd.textContent = formatCombo(keymap.bindingFor('session.promoteToJob'));
   if (dom.headerArchiveKbd) dom.headerArchiveKbd.textContent = formatCombo(keymap.bindingFor('session.archive'));
+  if (meta.onMaximize) return;
   const collapsed = !!nav.get().contextCollapsed;
   dom.headerRailToggle.textContent = collapsed ? '«' : '»';
   dom.headerRailToggle.setAttribute('aria-label', collapsed ? 'Show right rail' : 'Hide right rail');
@@ -305,13 +307,20 @@ function closeHeaderMenu(dom) {
 // Returns an unwire function — the document-level outside-click listener must
 // be torn down on unmount, or every session-view mount/unmount cycle (tab
 // switches) leaks one more of these onto the document.
-function wireHeader(dom, sessionId) {
+function wireHeader(dom, sessionId, meta) {
   dom.headerPromote?.addEventListener('click', () => promoteSessionToJob(sessionId));
   // Archive stays on the (now-archived) session view — the button hides itself
   // on the next renderHeader once computeGitInfo reports archived. No nav here;
   // mobile's menu-archive is the one that returns to the list.
   dom.headerArchive?.addEventListener('click', () => archiveSession(sessionId));
-  dom.headerRailToggle?.addEventListener('click', () => nav.toggleContextCollapsed());
+  if (meta.onMaximize) {
+    dom.headerRailToggle.innerHTML = MAXIMIZE_ICON;
+    dom.headerRailToggle.title = 'Open full view';
+    dom.headerRailToggle.setAttribute('aria-label', 'Open full view');
+    dom.headerRailToggle.addEventListener('click', (e) => { e.stopPropagation(); meta.onMaximize(); });
+  } else {
+    dom.headerRailToggle.addEventListener('click', () => nav.toggleContextCollapsed());
+  }
   dom.headerMenuBtn?.addEventListener('click', (e) => {
     e.stopPropagation();
     const open = dom.headerMenu.hidden;
@@ -733,7 +742,7 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   const paletteState = { open: false, filter: '', highlight: 0 };
   const unwireComposer = wireComposer(dom, sessionId, paletteState);
   bindTranscriptHandlers(dom, sessionId);
-  const unwireHeader = wireHeader(dom, sessionId);
+  const unwireHeader = wireHeader(dom, sessionId, meta);
   dom.modeSelect?.addEventListener('change', () => {
     const mode = dom.modeSelect.value;
     if (!APPROVAL_MODES.includes(mode)) return;

@@ -96,7 +96,7 @@ html[data-layout="mobile"] .sv-header { display: none; }
 .sv-header-archive[hidden] { display: none; }
 .sv-header-promote .o-kbd,
 .sv-header-archive .o-kbd { margin-left: 6px; }
-.sv-header-rail-toggle { padding: 5px 8px; }
+.sv-header-rail-toggle { padding: 5px 8px; display: inline-flex; align-items: center; align-self: stretch; }
 .sv-header-menu-wrap { position: relative; }
 .sv-header-menu {
   position: absolute;

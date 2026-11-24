@@ -22,6 +22,7 @@ import { openAddStepDialog } from '../work/add-step-dialog.js';
 import { waitSessionLabel, openWaitStepSession, isSessionStep } from '../work/wait-session.js';
 import { mountSessionView } from '../session-view/index.js';
 import { sessionsApi } from '../../net/sessions.js';
+import { openSession } from '../../app-bridge.js';
 import { wireAutogrow } from '../../utils/autogrow.js';
 import { relPast } from '../../utils/formatting.js';
 import { escapeHtml } from '../../util.js';
@@ -185,7 +186,9 @@ function wireActionBody(el, job, model, sessionMounts) {
   el.querySelectorAll('[data-ckb-session]').forEach((m) => {
     const id = m.getAttribute('data-ckb-session');
     const cwd = m.getAttribute('data-ckb-session-cwd') ?? undefined;
-    sessionMounts.set(id, mountSessionView(m, id, { jobId: job.id, cwd, scopedHotkeys: true }));
+    sessionMounts.set(id, mountSessionView(m, id, {
+      jobId: job.id, cwd, scopedHotkeys: true, onMaximize: () => openSession({ id, cwd, fromTicketId: job.id }),
+    }));
   });
   wireBodyButtons(el, job);
   wireAutogrow(el);
@@ -280,13 +283,10 @@ function mountCaretBody(el, model) {
 }
 
 function mountSessionBody(el, model) {
-  el.innerHTML = `<div class="ckb-session"></div>
-    <div class="ckb-body-actions"><button type="button" class="o-btn o-btn--ghost sm" data-ckb-body="open-full">Open full ↗</button></div>`;
+  el.innerHTML = '<div class="ckb-session"></div>';
   const ctx = peekSessionHint(model.id) ?? { cwd: model.cwd };
-  const view = mountSessionView(el.querySelector('.ckb-session'), model.id, { ...ctx, scopedHotkeys: true });
-  el.querySelector('[data-ckb-body="open-full"]').addEventListener('click', (e) => {
-    e.stopPropagation();
-    nav.select('sessions', model.id);
+  const view = mountSessionView(el.querySelector('.ckb-session'), model.id, {
+    ...ctx, scopedHotkeys: true, onMaximize: () => nav.select('sessions', model.id),
   });
   return { update() {}, unmount() { view.unmount(); el.textContent = ''; } };
 }

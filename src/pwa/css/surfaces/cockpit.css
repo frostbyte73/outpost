@@ -234,6 +234,9 @@ html[data-layout="mobile"] .cockpit-group:first-child { margin-top: 0; }
 .ckb-body .plan-heading-label, .ckb-body .plan-heading-count { display: none; }
 .ckb-body .plan-card { margin-top: 0; }
 .ckb-body .ckb-session { height: 40vh; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-container); overflow: hidden; }
+/* A session row's body is the session itself; the frame only separates one from a job's controls. */
+.ckb-body:has(> .ckb-session:only-child) { padding: 0; }
+.ckb-body > .ckb-session:only-child { height: 50vh; border: 0; border-radius: 0; }
 .ckb-failure { border-left: 3px solid var(--danger); background: var(--danger-soft); color: var(--text); padding: var(--gap-2) var(--gap-3); border-radius: 0 var(--r-control) var(--r-control) 0; font-size: 13px; line-height: 1.5; }
 .ckb-tl { display: grid; grid-template-columns: 8px minmax(0, 1fr) auto auto; gap: var(--gap-2) var(--gap-3); align-items: center; font-size: 13px; }
 /* Tracked's step card, shifted so its 20px dot centres on the one-line rows' 8px dots. */
