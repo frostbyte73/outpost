@@ -92,7 +92,6 @@ export function renderDetail(mount) {
   const columnEls = [];
   const order = new Map();
   const hovered = new Set();
-  let backlogOpen = false;
   let selectedKey = null;
   let scheduled = false;
   let disposed = false;
@@ -185,8 +184,6 @@ export function renderDetail(mount) {
     onRemove(pinId) { applyLayout((l) => dropEmptyColumns(removePin(l, pinId))); },
     onNew() { openPalette(); },
     onChip(key) { const c = chipFor(key); if (c) { selectedKey = key; openFull(c.model); } },
-    onToggleBacklog() { backlogOpen = !backlogOpen; schedule(); },
-    backlogOpen: () => backlogOpen,
     onGripKey: nudgeSection,
   };
 
@@ -261,7 +258,7 @@ export function renderDetail(mount) {
     const resolved = resolveBoard(board, layout);
     lastResolved = resolved;
 
-    const all = [...board.started, ...board.notStarted, ...board.backlog, ...board.sessions];
+    const all = [...board.started, ...board.notStarted, ...board.sessions];
     for (const [key, mode] of expansion.get()) {
       const m = all.find((r) => r.key === key);
       if (!m || (mode === 'action' && !hasOpenableAction(m))) expansion.close(key);
@@ -352,7 +349,6 @@ export function renderDetail(mount) {
         if (!s) continue;
         if (r.kind === 'other') { keys.push(...s.chips().map((x) => x.key)); continue; }
         for (const g of s.rowGroups()) {
-          if (g.id === 'jobs:backlog' && !backlogOpen) continue;
           keys.push(...(order.get(g.id) ?? []));
         }
       }

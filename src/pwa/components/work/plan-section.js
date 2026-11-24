@@ -231,9 +231,6 @@ export function renderPlanSection(j, { timelineHtml = '', editing = false } = {}
       ${j.state === 'executing'
         ? `<button class="o-btn ${editing ? 'o-btn--primary' : 'o-btn--default'}" type="button" data-job-action="toggle-edit-plan" aria-pressed="${editing}">${editing ? 'Done editing' : 'Edit plan'}</button>`
         : ''}
-      ${awaitingLaunch
-        ? `<button class="o-btn o-btn--primary plan-heading-launch" type="button" data-job-action="launch-orchestrator">Launch orchestrator</button>`
-        : ''}
     </div>
   `;
 
@@ -252,7 +249,10 @@ export function renderPlanSection(j, { timelineHtml = '', editing = false } = {}
   const replanMount = orchestratorLive && steps.length > 0 && orchestratorStepShim(j) === null
     ? `${reviewNote}<div class="orchestrator-inline-session-mount orchestrator-inline-session-mount--replan" data-session-id="${escapeHtml(j.orchestratorSessionId)}" data-job-id="${escapeHtml(j.id)}"></div>`
     : '';
-  const foot = (awaitingLaunch || noPlanYet) ? '' : `
+  const foot = awaitingLaunch ? `
+    <div class="plan-card-foot">
+      <button class="o-btn o-btn--primary" type="button" data-job-action="launch-orchestrator">Launch orchestrator</button>
+    </div>` : noPlanYet ? '' : `
     <div class="plan-card-foot">
       <button class="o-btn o-btn--default" type="button" data-job-action="add-step-end">+ Add step</button>
       <button class="o-btn o-btn--default" type="button" data-job-action="reopen-orchestrator" aria-expanded="false">Reopen orchestrator</button>
@@ -294,7 +294,6 @@ export function renderPlanSection(j, { timelineHtml = '', editing = false } = {}
                 : `<div class="launch-context">
                      <label class="field-label" for="launch-context-input">Anything the planner should know? (optional)</label>
                      <textarea id="launch-context-input" class="field-textarea launch-context-textarea" placeholder="Priorities, constraints, where to look — passed to the planner when you launch."></textarea>
-                     <div class="work-empty">No plan yet. Click "Launch orchestrator" to start.</div>
                    </div>`)
             : steps.map((s, i) => planIndexRow(j, s, i)).join('')}
         </div>

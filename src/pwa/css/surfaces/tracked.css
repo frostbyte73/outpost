@@ -1963,6 +1963,8 @@ a.thread-loc:hover { text-decoration: underline; }
 }
 .replan-composer-actions .o-btn { flex: 1; justify-content: center; }
 
+.launch-context { display: flex; flex-direction: column; gap: 10px; padding: 14px 16px; }
+
 /* One "Plan" section — no longer a whole-section collapse (that moved down to
    each step's findings; see .tl-findings). The header is always visible; the
    body is either the review card (.plan-section--review, boxed compact index)

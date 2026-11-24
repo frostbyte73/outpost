@@ -21,7 +21,7 @@ describe('sections', () => {
       job({ id: 'done', state: 'done' }), job({ id: 'failed', state: 'failed' }),
       job({ id: 'gone', state: 'done', dismissedAt: NOW }), job({ id: 'ab', state: 'abandoned' }),
     ] });
-    const ids = [...b.started, ...b.notStarted, ...b.backlog].map((r: any) => r.id).sort();
+    const ids = [...b.started, ...b.notStarted].map((r: any) => r.id).sort();
     expect(ids).toEqual(['done', 'failed']);
   });
 
@@ -48,15 +48,14 @@ describe('sections', () => {
     expect(b.started[0].dismissable).toBe(false);
   });
 
-  it('splits started, not started and backlog', () => {
+  it('splits started and not started', () => {
     const b = board({ jobs: [
       job({ id: 'run', state: 'executing' }),
       job({ id: 'review', state: 'plan_pending_review', steps: [orc({ sessionId: undefined })] }),
       job({ id: 'todo', state: 'planning' }),
     ] });
     expect(b.started.map((r: any) => r.id)).toEqual(['run']);
-    expect(b.notStarted.map((r: any) => r.id)).toEqual(['review']);
-    expect(b.backlog.map((r: any) => r.id)).toEqual(['todo']);
+    expect(b.notStarted.map((r: any) => r.id).sort()).toEqual(['review', 'todo']);
   });
 
   it('lists only un-archived manual sessions', () => {

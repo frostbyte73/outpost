@@ -2,7 +2,7 @@ import { PIN_TITLE_MAX } from '../../vm/cockpit-layout.js';
 
 const GRIP = '<svg viewBox="0 0 10 16" width="8" height="14" aria-hidden="true"><g fill="currentColor"><circle cx="2.5" cy="3" r="1.3"/><circle cx="7.5" cy="3" r="1.3"/><circle cx="2.5" cy="8" r="1.3"/><circle cx="7.5" cy="8" r="1.3"/><circle cx="2.5" cy="13" r="1.3"/><circle cx="7.5" cy="13" r="1.3"/></g></svg>';
 const NEW_LABEL = { jobs: '+ New job', sessions: '+ New session' };
-const JOB_GROUPS = ['started', 'notStarted', 'backlog'];
+const JOB_GROUPS = ['started', 'notStarted'];
 const ARROWS = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']);
 
 function setText(el, text) {
@@ -47,7 +47,6 @@ export function createSection(initial, ctx) {
     ctx.onGripKey(current.id, e.key);
   });
   el.querySelector('[data-ckb-new]')?.addEventListener('click', () => ctx.onNew(current.kind));
-  el.querySelector('[data-fold="backlog"]')?.addEventListener('click', () => ctx.onToggleBacklog());
 
   function startRename() {
     if (renaming) return;
@@ -97,12 +96,7 @@ export function createSection(initial, ctx) {
   }
 
   function updateJobs(r) {
-    const open = ctx.backlogOpen();
-    el.querySelector('[data-divider="notStarted"]').hidden = !r.groups.notStarted.length && !r.groups.backlog.length;
-    const fold = el.querySelector('[data-fold="backlog"]');
-    fold.hidden = !r.groups.backlog.length;
-    setText(fold, `${open ? '▾' : '▸'} Backlog (${r.groups.backlog.length})`);
-    el.querySelector('[data-group="backlog"]').hidden = !open;
+    el.querySelector('[data-divider="notStarted"]').hidden = !r.groups.notStarted.length;
   }
 
   function updateChips(rows) {
@@ -156,9 +150,7 @@ function bodySkeleton(kind, id) {
     return `
       <div class="o-row-group" data-group="started"></div>
       <div class="ckb-divider o-microhead" data-divider="notStarted" hidden>Not started</div>
-      <div class="o-row-group" data-group="notStarted"></div>
-      <button type="button" class="ckb-fold" data-fold="backlog" hidden></button>
-      <div class="o-row-group" data-group="backlog" hidden></div>`;
+      <div class="o-row-group" data-group="notStarted"></div>`;
   }
   if (kind === 'other') return '<div class="ckb-chips"></div><div class="ckb-none" hidden>Nothing waiting</div>';
   return `<div class="o-row-group" data-group="${id}"></div>`;

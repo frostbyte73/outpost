@@ -16,10 +16,6 @@ const AUTH_STOP_ERRORS = new Set(['authentication_failed', 'oauth_org_not_allowe
 const STOP_LABEL = { rate_limit: 'rate limit', overloaded: 'API overloaded', billing_error: 'billing error' };
 const NO_LIVE = { orchestrator: false, stepIds: [], sessionIds: [], interactiveSessionIds: [] };
 
-function isBacklog(j) {
-  return j.state === 'planning' && !j.orchestratorSessionId && (j.steps ?? []).length === 0;
-}
-
 function stepAction(s) {
   return s.type === 'action' ? s.action : (s.boundAction ?? s.controller);
 }
@@ -215,7 +211,6 @@ function otherRow(item) {
 }
 
 const byEngaged = (a, b) => b.engagedAt - a.engagedAt;
-const byCreated = (a, b) => b.createdAt - a.createdAt;
 const byTime = (a, b) => b.time - a.time;
 
 export function cockpitBoard({
@@ -223,12 +218,11 @@ export function cockpitBoard({
   actionEdits = [], scheduleDrafts = new Map(), runs = [], autoApplied = [], openingWaits = new Set(),
   launched = new Set(), now = Date.now(),
 } = {}) {
-  const started = [], notStarted = [], backlog = [];
+  const started = [], notStarted = [];
   for (const j of jobs) {
     if (j.state === 'abandoned' || j.dismissedAt != null) continue;
     const row = jobRow(j, pendingApprovals, openingWaits);
     if (planIsLive(j)) started.push(row);
-    else if (isBacklog(j)) backlog.push(row);
     else notStarted.push(row);
   }
   const sessions = [];
@@ -248,11 +242,10 @@ export function cockpitBoard({
 
   started.sort(byEngaged);
   notStarted.sort(byEngaged);
-  backlog.sort(byCreated);
   sessions.sort(byEngaged);
   other.sort(byTime);
 
-  const all = [...started, ...notStarted, ...backlog, ...sessions, ...other];
+  const all = [...started, ...notStarted, ...sessions, ...other];
   return {
     tally: {
       working: all.filter((r) => r.tone === 'live').length,
@@ -260,7 +253,7 @@ export function cockpitBoard({
       parked: all.filter((r) => r.tone === 'parked').length,
       failed: all.filter((r) => r.tone === 'failed').length,
     },
-    started, notStarted, backlog, sessions, other,
+    started, notStarted, sessions, other,
     empty: all.length === 0,
   };
 }

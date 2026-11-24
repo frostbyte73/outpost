@@ -13,7 +13,6 @@ const row = (key: string, over: Record<string, unknown> = {}) => ({
 const board = (over: Record<string, unknown> = {}) => ({
   started: [row('job:a'), row('job:b', { actions: [{ kind: 'gate' }] })],
   notStarted: [row('job:c')],
-  backlog: [row('job:d')],
   sessions: [row('session:s1'), row('session:s2', { actions: [{ kind: 'approval' }] })],
   other: [row('other:o1', { tone: 'you' }), row('other:o2', { tone: 'failed' })],
   ...over,
@@ -131,12 +130,12 @@ describe('resolveBoard', () => {
     expect(JSON.stringify(l)).toBe(before);
   });
   it('omits a Pinned section whose rows are all dead', () => {
-    const r = L.resolveBoard(board({ started: [], notStarted: [], backlog: [], sessions: [] }), withPin(['job:a']));
+    const r = L.resolveBoard(board({ started: [], notStarted: [], sessions: [] }), withPin(['job:a']));
     expect(sec(r, 'pin:p1')).toBeUndefined();
     expect(sec(r, 'sessions').rows).toEqual([]);
   });
   it('keeps a renamed Pinned section whose rows are all dead, empty', () => {
-    const r = L.resolveBoard(board({ started: [], notStarted: [], backlog: [], sessions: [] }), withPin(['job:a'], 1, 'Replay'));
+    const r = L.resolveBoard(board({ started: [], notStarted: [], sessions: [] }), withPin(['job:a'], 1, 'Replay'));
     expect(sec(r, 'pin:p1').rows).toEqual([]);
   });
   it('needYou counts rows with actions, and you-toned chips', () => {
@@ -147,7 +146,7 @@ describe('resolveBoard', () => {
     expect(sec(r, 'other').needYou).toBe(1);
   });
   it('liveKeys covers jobs and sessions only', () => {
-    expect([...L.liveKeys(board())].sort()).toEqual(['job:a', 'job:b', 'job:c', 'job:d', 'session:s1', 'session:s2']);
+    expect([...L.liveKeys(board())].sort()).toEqual(['job:a', 'job:b', 'job:c', 'session:s1', 'session:s2']);
   });
 });
 

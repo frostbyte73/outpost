@@ -94,13 +94,13 @@ function needYouOf(rows, kind) {
 
 // Turns the board VM into columns → sections → rows; dead pin keys are skipped, never pruned here.
 export function resolveBoard(board, layout) {
-  const byKey = new Map([...board.started, ...board.notStarted, ...board.backlog, ...board.sessions].map((r) => [r.key, r]));
+  const byKey = new Map([...board.started, ...board.notStarted, ...board.sessions].map((r) => [r.key, r]));
   const pinnedKeys = new Set(Object.values(layout.pinned).flatMap((p) => p.rows));
   const free = (rows) => rows.filter((r) => !pinnedKeys.has(r.key));
   const resolveSection = (id) => {
     if (id === 'jobs') {
-      const groups = { started: free(board.started), notStarted: free(board.notStarted), backlog: free(board.backlog) };
-      const needYou = needYouOf([...groups.started, ...groups.notStarted, ...groups.backlog], 'jobs');
+      const groups = { started: free(board.started), notStarted: free(board.notStarted) };
+      const needYou = needYouOf([...groups.started, ...groups.notStarted], 'jobs');
       return { id, kind: 'jobs', title: BUILTIN_TITLE.jobs, needYou, groups };
     }
     if (id === 'sessions' || id === 'other') {
@@ -118,7 +118,7 @@ export function resolveBoard(board, layout) {
 }
 
 export function liveKeys(board) {
-  return new Set([...board.started, ...board.notStarted, ...board.backlog, ...board.sessions].map((r) => r.key));
+  return new Set([...board.started, ...board.notStarted, ...board.sessions].map((r) => r.key));
 }
 
 function clone(layout) {

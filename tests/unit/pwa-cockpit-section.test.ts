@@ -7,7 +7,7 @@ const row = (key: string, over: Record<string, unknown> = {}) => ({ key, kind: k
 const pinned = (over: Record<string, unknown> = {}) => ({
   id: 'pin:p1', kind: 'pinned', pinId: 'p1', title: 'Pinned', needYou: 0, rows: [row('job:a')], ...over,
 });
-const ctx = () => ({ onRename: vi.fn(), onRemove: vi.fn(), onNew: vi.fn(), onChip: vi.fn(), onToggleBacklog: vi.fn(), backlogOpen: () => false });
+const ctx = () => ({ onRename: vi.fn(), onRemove: vi.fn(), onNew: vi.fn(), onChip: vi.fn() });
 
 function mount(resolved: any, c = ctx()) {
   const s = createSection(resolved, c);
@@ -114,9 +114,9 @@ describe('cockpit section', () => {
     expect(chip.title).toBe('code.implement — Proposal ready for review');
   });
 
-  it('Jobs exposes its three row groups, Pinned exposes one', () => {
-    const jobs = { id: 'jobs', kind: 'jobs', title: 'Jobs', needYou: 0, groups: { started: [row('job:a')], notStarted: [], backlog: [row('job:z')] } };
-    expect(mount(jobs).s.rowGroups().map((g: any) => g.id)).toEqual(['jobs:started', 'jobs:notStarted', 'jobs:backlog']);
+  it('Jobs exposes its two row groups, Pinned exposes one', () => {
+    const jobs = { id: 'jobs', kind: 'jobs', title: 'Jobs', needYou: 0, groups: { started: [row('job:a')], notStarted: [row('job:z')] } };
+    expect(mount(jobs).s.rowGroups().map((g: any) => g.id)).toEqual(['jobs:started', 'jobs:notStarted']);
     expect(mount(pinned()).s.rowGroups().map((g: any) => [g.id, g.rows.length])).toEqual([['pin:p1', 1]]);
   });
 });
