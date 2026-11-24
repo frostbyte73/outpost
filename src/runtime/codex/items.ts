@@ -1,12 +1,15 @@
 import { codexCanonicalTool } from './tools.js';
-import type { CanonicalItem, ItemStatus, ToolKind } from '../types.js';
+import type { CanonicalItem, CommandAction, ItemStatus, ToolCallItem, ToolKind } from '../types.js';
 
 // The slice of Codex's v2 ThreadItem union Outpost reads; the payload is flat, tagged by `type`.
 export type CodexItem =
   | { type: 'userMessage'; id: string; content: { type: string; text?: string }[] }
   | { type: 'agentMessage'; id: string; text: string }
-  | { type: 'commandExecution'; id: string; command: string; status: CodexStatus; source?: string; aggregatedOutput?: string | null; exitCode?: number | null }
-  | { type: 'fileChange'; id: string; changes: { path: string; kind: unknown; diff: string }[]; status: CodexStatus }
+  | {
+    type: 'commandExecution'; id: string; command: string; status: CodexStatus; source?: string;
+    aggregatedOutput?: string | null; exitCode?: number | null; commandActions?: CommandAction[];
+  }
+  | { type: 'fileChange'; id: string; changes: { path: string; kind: { type?: string }; diff: string }[]; status: CodexStatus }
   | { type: 'mcpToolCall'; id: string; server: string; tool: string; arguments: unknown; status: CodexStatus; result?: unknown; error?: { message?: string } | null }
   | { type: 'webSearch'; id: string; query?: string }
   | { type: string; id: string };
@@ -70,11 +73,14 @@ export function toCanonicalItem(item: CodexItem): CanonicalItem | undefined {
       return { type: 'assistant_message', id: item.id, text: (item as Extract<CodexItem, { type: 'agentMessage' }>).text };
     case 'commandExecution': {
       const c = item as Extract<CodexItem, { type: 'commandExecution' }>;
-      return tool(c.id, 'command_execution', 'Bash', { command: unwrappedCommand(c.command) }, c.status, c.aggregatedOutput ?? undefined);
+      const actions = c.commandActions?.some((a) => a.type !== 'unknown') ? { commandActions: c.commandActions } : {};
+      return tool(c.id, 'command_execution', 'Bash', { command: unwrappedCommand(c.command) }, c.status, c.aggregatedOutput ?? undefined, actions);
     }
     case 'fileChange': {
       const f = item as Extract<CodexItem, { type: 'fileChange' }>;
-      return tool(f.id, 'file_change', 'apply_patch', { changes: f.changes }, f.status, f.changes.map((c) => c.diff).join('\n'));
+      // The diffs are the input; repeating them as the result would show every patch twice.
+      const allAdds = f.changes.length > 0 && f.changes.every((c) => c.kind?.type === 'add');
+      return tool(f.id, 'file_change', 'apply_patch', { changes: f.changes }, f.status, undefined, { tool: allAdds ? 'file_write' : 'file_edit' });
     }
     case 'mcpToolCall': {
       const m = item as Extract<CodexItem, { type: 'mcpToolCall' }>;
@@ -88,9 +94,12 @@ export function toCanonicalItem(item: CodexItem): CanonicalItem | undefined {
   }
 }
 
-function tool(id: string, kind: ToolKind, rawName: string, input: unknown, status: ItemStatus, resultText?: string): CanonicalItem {
+function tool(
+  id: string, kind: ToolKind, rawName: string, input: unknown, status: ItemStatus, resultText?: string, extra?: Partial<ToolCallItem>,
+): CanonicalItem {
   return {
     type: 'tool_call', id, kind, tool: codexCanonicalTool(rawName), rawName, input, status,
     ...(resultText !== undefined ? { resultText } : {}),
+    ...extra,
   };
 }

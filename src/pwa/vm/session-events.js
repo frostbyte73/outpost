@@ -8,6 +8,7 @@ export function toolUseEntry(item) {
     toolName: item.rawName,
     toolInput: item.input,
     toolUseId: item.id,
+    ...(item.commandActions ? { commandActions: item.commandActions } : {}),
     ...(item.messageId ? { msgId: item.messageId } : {}),
     ...(item.status === 'declined' ? { decision: 'deny', ...(item.declineReason ? { rejectReason: item.declineReason } : {}) } : {}),
   };
@@ -24,7 +25,8 @@ export function itemToEntries(item) {
     case 'tool_call':
       return [
         toolUseEntry(item),
-        ...(item.resultText ? [{ role: 'tool_result', text: item.resultText, toolUseId: item.id }] : []),
+        // Older Codex transcripts repeat apply_patch's diff as its result.
+        ...(item.resultText && item.rawName !== 'apply_patch' ? [{ role: 'tool_result', text: item.resultText, toolUseId: item.id }] : []),
       ];
     default:
       return [];

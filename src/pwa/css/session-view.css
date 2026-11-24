@@ -1728,6 +1728,10 @@ html[data-layout="mobile"] #header .mh-menu-item-danger { color: var(--danger); 
       color: var(--text);
     }
     .diff-line.diff-del .diff-mark { color: var(--danger); }
+    .diff-line.diff-hunk {
+      color: var(--text-dim);
+      background: var(--bg-elev);
+    }
 
 
     /* ───── Write: file content preview ─────────────────────────────

@@ -23,6 +23,14 @@ export type ToolKind =
 
 export type ItemStatus = 'inProgress' | 'completed' | 'failed' | 'declined';
 
+// The runtime's own reading of what a shell command does; display only, never consulted by the gate.
+export interface CommandAction {
+  type: 'read' | 'search' | 'listFiles' | 'unknown';
+  command: string;
+  path?: string | null;
+  query?: string | null;
+}
+
 export interface ToolCallItem {
   type: 'tool_call';
   id: string;
@@ -33,6 +41,7 @@ export interface ToolCallItem {
   rawName: string;
   input: unknown;
   status: ItemStatus;
+  commandActions?: CommandAction[];
   resultText?: string;
   declineReason?: string;
 }

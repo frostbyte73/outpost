@@ -208,7 +208,7 @@ export function formatBashCommandText(cmd) {
 // Description (Claude's natural-language summary) rides above as a `# comment` row when
 // present. Background + timeout become small uppercase chips below — same pattern as the
 // old expanded view, just inline.
-export function bashShellHtml(input, ctx) {
+export function bashShellHtml(input, ctx, highlight) {
   const cmd = String(input?.command ?? '');
   const desc = String(input?.description ?? '');
   const formatted = projectifyText(formatBashCommandText(cmd), ctx);
@@ -217,7 +217,7 @@ export function bashShellHtml(input, ctx) {
     ? `<div class="shell-line shell-line-comment"><span class="shell-prompt">#</span><span class="shell-cmd">${escapeHtml(projectifyText(desc, ctx))}</span></div>`
     : '';
   const cmdLine = cmd
-    ? `<div class="shell-line"><span class="shell-prompt">$</span><span class="shell-cmd">${escapeHtml(formatted)}</span></div>`
+    ? `<div class="shell-line"><span class="shell-prompt">$</span><span class="shell-cmd">${highlightPatternHtml(formatted, highlight)}</span></div>`
     : '';
 
   const flags = [];
@@ -232,6 +232,36 @@ export function bashShellHtml(input, ctx) {
       `<div class="shell-body">${descLine}${cmdLine}${flagsHtml}</div>` +
     `</div>`
   );
+}
+
+// The pattern is matched quoted first so a short query doesn't land on a flag like `-n`.
+function highlightPatternHtml(text, pattern) {
+  if (!pattern) return escapeHtml(text);
+  for (const needle of [`'${pattern}'`, `"${pattern}"`, pattern]) {
+    const at = text.indexOf(needle);
+    if (at < 0) continue;
+    return escapeHtml(text.slice(0, at))
+      + `<span class="shell-grep-pattern">${escapeHtml(needle)}</span>`
+      + escapeHtml(text.slice(at + needle.length));
+  }
+  return escapeHtml(text);
+}
+
+// A Codex shell call shaped by its commandActions: pure reads become Read lines, a lone search highlights its query.
+export function codexShellHtml(input, actions, ctx) {
+  if (actions.every((a) => a.type === 'read' && a.path)) {
+    return actions.map((a) => readLineHtml({ file_path: a.path, ...shellReadRange(a.command) }, ctx)).join('');
+  }
+  const search = actions.length === 1 && actions[0].type === 'search' ? actions[0].query : null;
+  return bashShellHtml(input, ctx, search);
+}
+
+function shellReadRange(command) {
+  const sed = /\bsed -n ['"]?(\d+),(\d+)p/.exec(command);
+  if (sed) return { offset: Number(sed[1]), limit: Number(sed[2]) - Number(sed[1]) + 1 };
+  const head = /\bhead -(?:n ?)?(\d+)/.exec(command);
+  if (head) return { offset: 1, limit: Number(head[1]) };
+  return {};
 }
 
 // Grep inline tile — renders as the `rg` command-line equivalent (same construction as
@@ -456,18 +486,75 @@ export function editWriteTileHtml(m, opts = {}) {
   // expandable at all (no tool_use_id) can never reveal it, so it stays out too.
   let body = '';
   if (expanded) {
-    if (isWrite) {
-      if (isMarkdownPath(input.file_path) && writeLineCount(input) <= MD_RENDER_MAX_LINES) {
-        body = writeMarkdownBodyHtml(input);
-      } else {
-        const { rows, overflowRow } = writeContentRowsHtml(input);
-        body = `<div class="tool-write"><div class="write-body">${rows}${overflowRow}</div></div>`;
-      }
-    } else {
-      body = `<div class="tool-diff"><div class="diff-body">${editDiffRowsHtml(input)}</div></div>`;
-    }
+    body = isWrite
+      ? writeBodyHtml(input)
+      : `<div class="tool-diff"><div class="diff-body">${editDiffRowsHtml(input)}</div></div>`;
   }
   return `<div class="${cls}"${idAttr}>${head}${body}</div>`;
+}
+
+function writeBodyHtml(input) {
+  if (isMarkdownPath(input.file_path) && writeLineCount(input) <= MD_RENDER_MAX_LINES) return writeMarkdownBodyHtml(input);
+  const { rows, overflowRow } = writeContentRowsHtml(input);
+  return `<div class="tool-write"><div class="write-body">${rows}${overflowRow}</div></div>`;
+}
+
+const PATCH_MARKERS = { add: '+', delete: '-', update: '~' };
+
+// Codex's apply_patch in the Edit/Write tile; a multi-file patch heads with the file names, then a header and body per file.
+export function patchTileHtml(m, opts = {}) {
+  const ctx = opts.ctx;
+  const changes = Array.isArray(m.toolInput?.changes) ? m.toolInput.changes : [];
+  const id = typeof m.toolUseId === 'string' ? m.toolUseId : '';
+  const expandedTools = opts.expandedTools ?? sessions.currentSlice().expandedTools;
+  const expanded = !!id && expandedTools.has(id);
+  const cls = `msg msg-editwrite${id ? ' tool_use-expandable' : ''}${expanded ? ' tool_use-expanded' : ''}`;
+  const idAttr = id ? ` data-tool-id="${escapeHtml(id)}"` : '';
+  const chev = id ? `<span class="tool-chev" aria-hidden="true"></span>` : '';
+  const multi = changes.length > 1;
+  const head = multi
+    ? diffHeadHtml('~', changes.map((c) => String(c.path ?? '').split('/').pop()).join(', '),
+      `<span class="diff-head-flag">${changes.length} files</span>${chev}`)
+    : changes[0] ? patchHeadHtml(changes[0], ctx, chev) : '';
+  if (!expanded) return `<div class="${cls}"${idAttr}>${head}</div>`;
+  const body = changes.map((c) => (multi ? patchHeadHtml(c, ctx, '') : '') + patchBodyHtml(c)).join('');
+  return `<div class="${cls}"${idAttr}>${head}${body}</div>`;
+}
+
+function patchHeadHtml(change, ctx, trailing) {
+  const path = projectRelativePath(String(change.path ?? ''), ctx);
+  const moved = change.kind?.move_path ? ` → ${projectRelativePath(String(change.kind.move_path), ctx)}` : '';
+  return diffHeadHtml(PATCH_MARKERS[change.kind?.type] ?? '~', path + moved, trailing);
+}
+
+function diffHeadHtml(marker, text, trailing) {
+  return (
+    `<div class="diff-head">` +
+      `<span class="diff-head-marker">${marker}</span>` +
+      `<span class="editwrite-path">${escapeHtml(text)}</span>` +
+      trailing +
+    `</div>`
+  );
+}
+
+// An added file's diff is its whole content; a deleted file has nothing worth showing.
+function patchBodyHtml(change) {
+  const kind = change.kind?.type;
+  if (kind === 'delete') return '';
+  if (kind === 'add') return writeBodyHtml({ file_path: change.path, content: String(change.diff ?? '').replace(/\n$/, '') });
+  return `<div class="tool-diff"><div class="diff-body">${unifiedDiffRowsHtml(change.diff)}</div></div>`;
+}
+
+function unifiedDiffRowsHtml(diff) {
+  return String(diff ?? '').replace(/\n$/, '').split('\n').map((line) => {
+    if (line.startsWith('@@')) {
+      return `<div class="diff-line diff-hunk"><span class="diff-mark"></span><span class="diff-text">${escapeHtml(line)}</span></div>`;
+    }
+    const op = line[0] === '+' || line[0] === '-' ? line[0] : ' ';
+    const text = op !== ' ' || line[0] === ' ' ? line.slice(1) : line;
+    const cls = op === '+' ? 'diff-add' : op === '-' ? 'diff-del' : 'diff-eq';
+    return `<div class="diff-line ${cls}"><span class="diff-mark">${op}</span><span class="diff-text">${escapeHtml(text || ' ')}</span></div>`;
+  }).join('');
 }
 
 // Grep's input is structured (pattern, path, glob, type, flags, output_mode, context)

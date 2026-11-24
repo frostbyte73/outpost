@@ -10,7 +10,9 @@ import {
   toolUseHtml,
   shellLineHtml,
   readLineHtml,
+  codexShellHtml,
   editWriteTileHtml,
+  patchTileHtml,
   formatBashCommandText,
   projectifyText,
 } from '../tool-use-tile.js';
@@ -39,16 +41,23 @@ function stripCommandScaffolding(text) {
 // its normal tile inside a rejection frame with the user's note. expandedTools
 // is the per-session Set so multi-live views don't share expansion state.
 function toolTileHtml(m, expandedTools, ctx) {
-  let tile;
-  if (m.toolName === 'Read') tile = readLineHtml(m.toolInput, ctx);
-  else if (SHELL_TOOLS.has(m.toolName)) tile = shellLineHtml(m.toolName, m.toolInput, ctx);
-  else if (m.toolName === 'Edit' || m.toolName === 'Write') tile = editWriteTileHtml(m, { expandedTools, ctx });
-  else tile = toolUseHtml(m, { expandedTools, ctx });
+  const opts = { expandedTools, ctx };
+  const tile = slimToolHtml(m, ctx)
+    || (m.toolName === 'Edit' || m.toolName === 'Write' ? editWriteTileHtml(m, opts)
+      : m.toolName === 'apply_patch' ? patchTileHtml(m, opts)
+        : toolUseHtml(m, opts));
   if (m.decision !== 'deny') return tile;
   const reasonHtml = m.rejectReason
     ? `<div class="tool-reject-reason">${escapeHtml(m.rejectReason)}</div>`
     : '';
   return `<div class="tool-rejected"><span class="tool-reject-tag">Rejected</span>${tile}${reasonHtml}</div>`;
+}
+
+function slimToolHtml(m, ctx) {
+  if (m.toolName === 'Read') return readLineHtml(m.toolInput, ctx);
+  if (m.toolName === 'Bash' && m.commandActions) return codexShellHtml(m.toolInput, m.commandActions, ctx);
+  if (SHELL_TOOLS.has(m.toolName)) return shellLineHtml(m.toolName, m.toolInput, ctx);
+  return '';
 }
 
 // A `!` command the user ran themselves — the Bash tile's $-prompt frame with a `!` marker
@@ -121,6 +130,9 @@ function toolArgSummary(toolName, input) {
   if (toolName === 'Edit' || toolName === 'Write' || toolName === 'MultiEdit') {
     return truncate(input.file_path || input.path || '', 100);
   }
+  if (toolName === 'apply_patch' && Array.isArray(input.changes)) {
+    return truncate(input.changes.map((c) => c.path).join(', '), 100);
+  }
   return truncate(JSON.stringify(input), 100);
 }
 
@@ -139,8 +151,8 @@ export function oneLineMsgHtml(m, ctx) {
   if (!m || !m.role) return '';
   if (m.role === 'tool_result') return '';
   if (m.role === 'tool_use') {
-    if (m.toolName === 'Read') return readLineHtml(m.toolInput, ctx);
-    if (SHELL_TOOLS.has(m.toolName)) return shellLineHtml(m.toolName, m.toolInput, ctx);
+    const slim = slimToolHtml(m, ctx);
+    if (slim) return slim;
     const summary = toolArgSummary(m.toolName, m.toolInput);
     return wrapOneLine('tool_use', escapeHtml(`→ ${m.toolName ?? 'tool'}${summary ? ' ' + summary : ''}`));
   }
