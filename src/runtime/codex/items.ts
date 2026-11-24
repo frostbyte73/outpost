@@ -23,6 +23,42 @@ export function mcpRawName(item: { server: string; tool: string }): string {
   return `mcp__${item.server}__${item.tool}`;
 }
 
+const SHELL_WRAPPER = /^(?:\/\S*\/)?(?:ba|z)?sh -l?c (.+)$/s;
+
+// The command the model wrote; Codex reports it wrapped in the login shell (`/bin/zsh -lc '…'`).
+export function unwrappedCommand(command: string): string {
+  const arg = SHELL_WRAPPER.exec(command)?.[1];
+  return (arg && singleShellWord(arg)) ?? command;
+}
+
+// `s` unquoted as exactly one POSIX shell word, or undefined when it's anything else.
+function singleShellWord(s: string): string | undefined {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i]!;
+    if (ch === "'") {
+      const end = s.indexOf("'", i + 1);
+      if (end < 0) return undefined;
+      out += s.slice(i + 1, end);
+      i = end;
+    } else if (ch === '"') {
+      for (i++; i < s.length && s[i] !== '"'; i++) {
+        if (s[i] === '\\' && i + 1 < s.length && '$`"\\\n'.includes(s[i + 1]!)) i++;
+        out += s[i];
+      }
+      if (i >= s.length) return undefined;
+    } else if (ch === '\\') {
+      if (++i >= s.length) return undefined;
+      out += s[i];
+    } else if (/\s/.test(ch)) {
+      return undefined;
+    } else {
+      out += ch;
+    }
+  }
+  return out;
+}
+
 // A Codex item in Outpost's canonical shape; undefined for kinds the transcript doesn't show.
 export function toCanonicalItem(item: CodexItem): CanonicalItem | undefined {
   switch (item.type) {
@@ -34,7 +70,7 @@ export function toCanonicalItem(item: CodexItem): CanonicalItem | undefined {
       return { type: 'assistant_message', id: item.id, text: (item as Extract<CodexItem, { type: 'agentMessage' }>).text };
     case 'commandExecution': {
       const c = item as Extract<CodexItem, { type: 'commandExecution' }>;
-      return tool(c.id, 'command_execution', 'Bash', { command: c.command }, c.status, c.aggregatedOutput ?? undefined);
+      return tool(c.id, 'command_execution', 'Bash', { command: unwrappedCommand(c.command) }, c.status, c.aggregatedOutput ?? undefined);
     }
     case 'fileChange': {
       const f = item as Extract<CodexItem, { type: 'fileChange' }>;

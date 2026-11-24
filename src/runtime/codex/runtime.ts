@@ -8,7 +8,7 @@ import {
   featuresStillOn, findOutpostHook, trustVerdict,
   type ExperimentalFeatureListResponse, type HookTrust, type HooksListResponse, type TrustVerdict,
 } from './hook-trust.js';
-import { isToolItem, mcpRawName, toCanonicalItem, type CodexItem } from './items.js';
+import { isToolItem, mcpRawName, toCanonicalItem, unwrappedCommand, type CodexItem } from './items.js';
 import { decideCodexPreTool, type CodexPreToolPayload } from './pretool.js';
 import { PRETOOL_HOOK_COMMAND } from './pretool-hook.js';
 import { codexConfigArgs, REQUIRED_OFF_FEATURES } from './thread-config.js';
@@ -274,7 +274,7 @@ class CodexSession implements RuntimeSession {
         sessionId: this.s.sessionId,
         tool: codexCanonicalTool(rawName),
         rawName,
-        input: item.type === 'commandExecution' ? { command: item.command } : item.arguments,
+        input: item.type === 'commandExecution' ? { command: unwrappedCommand(item.command) } : item.arguments,
         response: item.type === 'commandExecution' ? { stdout: item.aggregatedOutput ?? '' } : item.result,
       });
     }
