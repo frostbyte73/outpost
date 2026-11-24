@@ -34,6 +34,7 @@ async function prompt(id) {
     update({ sessionUpdate: 'tool_call_update', toolCallId: 'edit-2', status: 'failed' });
   } else {
     update({ sessionUpdate: 'tool_call', toolCallId: 'sh-1', title: 'ls', kind: 'execute', status: 'in_progress', rawInput: { command: 'ls' } });
+    update({ sessionUpdate: 'tool_call_update', toolCallId: 'sh-1', status: 'completed' });
   }
   update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'done' } });
   send({ id, result: { stopReason: 'end_turn' } });
