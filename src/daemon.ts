@@ -32,6 +32,8 @@ import { ClaudeRuntime } from './runtime/claude/runtime.js';
 import { ClaudeTranscripts } from './runtime/claude/transcripts.js';
 import { codexVersion, resolveCodexBin } from './runtime/codex/bin.js';
 import { CodexRuntime } from './runtime/codex/runtime.js';
+import { cursorVersion, resolveCursorBin } from './runtime/cursor/bin.js';
+import { CursorRuntime } from './runtime/cursor/runtime.js';
 import { loadAcpAgents } from './runtime/acp/config.js';
 import { AcpRuntime } from './runtime/acp/runtime.js';
 import { findOnPath } from './runtime/bin.js';
@@ -285,6 +287,22 @@ async function main() {
     nativeIds,
     actionBody: (name) => actionRegistry.getAction(name)?.body,
   });
+  const cursorBin = resolveCursorBin();
+  const cursorVer = cursorBin ? cursorVersion(cursorBin) : null;
+  console.log(cursorVer ? `[daemon] cursor ${cursorVer} at ${cursorBin}` : '[daemon] cursor not installed; actions set to run on it are refused');
+  const cursorTranscripts = new JsonlTranscripts(join(RUNTIME_DIR, 'transcripts', 'cursor'));
+  const cursor = new CursorRuntime({
+    bin: cursorVer ? cursorBin : null,
+    host: () => runtimeHost!,
+    mcpServers: () => mergeMcpServers(daemonMcpServers),
+    approvalTimeoutMs: APPROVAL_TIMEOUT_MS,
+    daemonAuthSecret: secret,
+    hookPort: HOOK_PORT,
+    runtimeDir: RUNTIME_DIR,
+    transcripts: cursorTranscripts,
+    nativeIds,
+    actionBody: (name) => actionRegistry.getAction(name)?.body,
+  });
   const acpRuntimes = loadAcpAgents(join(RUNTIME_DIR, 'acp-agents.json')).map((agent) => {
     const bin = findOnPath(agent.command);
     console.log(bin ? `[daemon] acp:${agent.id} at ${bin}` : `[daemon] acp:${agent.id} not installed; actions set to run on it are refused`);
@@ -298,7 +316,7 @@ async function main() {
       actionBody: (name) => actionRegistry.getAction(name)?.body,
     });
   });
-  const runtimes = new RuntimeRegistry(runtime, [codex, ...acpRuntimes]);
+  const runtimes = new RuntimeRegistry(runtime, [codex, cursor, ...acpRuntimes]);
   const deliverActions = (actionsDir: string) => runtime.deliverActions(actionsDir);
   const runtimeLogDir = join(RUNTIME_DIR, 'runtime-logs');
   pruneNdjsonLogs(runtimeLogDir, RUNTIME_LOG_MAX_AGE_MS);
@@ -372,7 +390,7 @@ async function main() {
   const projectRegistry = new ProjectRegistry(join(RUNTIME_DIR, 'projects.json'));
   const worktreeManager = new WorktreeManager({ root: join(RUNTIME_DIR, 'worktrees'), projectsRoot });
   const sessionStore = new SessionStore({
-    transcripts: new CompositeTranscripts(runtime.transcripts, [codexTranscripts, ...acpRuntimes.map((r) => r.transcripts)]
+    transcripts: new CompositeTranscripts(runtime.transcripts, [codexTranscripts, cursorTranscripts, ...acpRuntimes.map((r) => r.transcripts)]
       .map((t) => ({ root: t.root, reader: t }))),
     registry: projectRegistry,
     worktreeManager,
@@ -851,6 +869,7 @@ async function main() {
     },
     onEvalMcp: (path, body) => handleEvalMcp(path, body, { sessions: evalSessions, blob: (ref) => runBlobs.get(ref) }),
     ...(codex.available ? { onCodexPreTool: (body: string) => codex.handlePreToolUse(body) } : {}),
+    ...(cursor.available ? { onCursorHook: (body: string, session: string | undefined) => cursor.handleHook(body, session) } : {}),
     onMcp: (body) => handleMcpRequest(body, OUTPOST_MCP_TOOLS, {
       submit_plan: async (a) => {
         // No stepId: an orchestrator's plan is refused against the JOB's orchestrator session.

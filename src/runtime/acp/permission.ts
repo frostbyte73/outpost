@@ -22,11 +22,13 @@ export interface GateCall {
   tool: string;
   rawName: string;
   input: unknown;
+  // The id the gate saw, when it isn't the ACP toolCallId; a pin is released under the id it was consumed under.
+  gateId?: string;
 }
 
 export type PermissionReply = { outcome: { outcome: 'selected'; optionId: string } | { outcome: 'cancelled' } };
 
-const FOREIGN_WORKDIR = 'Outpost gates shell commands against the session directory only. Run this without a different '
+export const FOREIGN_WORKDIR = 'Outpost gates shell commands against the session directory only. Run this without a different '
   + 'working directory, using paths relative to the session directory or absolute paths.';
 const DIR_KEY = /cwd|dir/i;
 const NO_PATHS ='Outpost could not read which files this edit touches, so it was not applied.';
@@ -88,7 +90,7 @@ export function permissionReply(options: AcpPermissionOption[], allow: boolean):
   return chosen ? { outcome: { outcome: 'selected', optionId: chosen } } : { outcome: { outcome: 'cancelled' } };
 }
 
-function sameDir(a: string, b: string): boolean {
+export function sameDir(a: string, b: string): boolean {
   const real = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
   return real(a) === real(b);
 }

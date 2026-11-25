@@ -31,15 +31,6 @@ const SEEDED: AcpAgentConfig[] = [
     mcpTitlePattern: '^(?<server>[a-zA-Z0-9-]+)_(?<tool>.+)$',
     shellCommandField: 'command',
   },
-  {
-    id: 'cursor',
-    command: 'agent',
-    args: ['acp'],
-    env: {},
-    mcpTitlePattern: '^(?<server>[\\w-]+)-(?<tool>[\\w-]+): \\k<tool>$',
-    shellCommandField: 'command',
-    authMethodId: 'cursor_login',
-  },
 ];
 
 // The configured ACP agents, seeding the file with known agents the first time; a bad entry is skipped, never fatal.
