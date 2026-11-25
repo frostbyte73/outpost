@@ -127,7 +127,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   const engagedRoute = (method: string, path: string, h: RouteHandler): void => {
     server.route(method, path, async (req, res) => {
       await h(req, res);
-      const id = /^\/api\/work\/jobs\/([\w-]+)\//.exec(req.url ?? '')?.[1];
+      const id = /^\/api\/work\/jobs\/([\w-][\w.-]*)\//.exec(req.url ?? '')?.[1];
       if (id && res.statusCode < 400) engine.markEngaged(id);
     });
   };
@@ -176,7 +176,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('GET', '/api/work/jobs/:id', (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const j = jobQueue.get(m[1]!);
     if (!j) { res.statusCode = 404; res.end('not found'); return; }
@@ -188,7 +188,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   // Whole timeline from the spill log — the JobRecord itself only keeps the last 50.
   server.route('GET', '/api/work/jobs/:id/events', (req, res) => {
     const path = (req.url ?? '').split('?')[0]!;
-    const m = path.match(/^\/api\/work\/jobs\/([\w-]+)\/events$/);
+    const m = path.match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/events$/);
     if (!m || !jobQueue.get(m[1]!)) { res.statusCode = 404; res.end('not found'); return; }
     const url = new URL(req.url ?? '', 'http://internal');
     const raw = Number(url.searchParams.get('limit') ?? DEFAULT_EVENT_LIMIT);
@@ -202,7 +202,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   // directly: as an <img> an SVG runs nothing, as a document it would run in the PWA's origin.
   server.route('GET', '/api/work/jobs/:id/diagram.svg', async (req, res) => {
     const url = new URL(req.url ?? '', 'http://internal');
-    const m = url.pathname.match(/^\/api\/work\/jobs\/([\w-]+)\/diagram\.svg$/);
+    const m = url.pathname.match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/diagram\.svg$/);
     const src = m ? jobQueue.get(m[1]!)?.plan?.findings?.diagram : undefined;
     if (!src) { res.statusCode = 404; res.end('not found'); return; }
     try {
@@ -224,7 +224,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   // mutation routes are — reading the comment trail of a merged or abandoned job is still useful.
   server.route('GET', '/api/work/jobs/:id/steps/:stepId/pr-patches', async (req, res) => {
     const path = (req.url ?? '').split('?')[0]!;
-    const m = path.match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/pr-patches$/);
+    const m = path.match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/pr-patches$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const step = jobQueue.get(m[1]!)?.steps.find((s) => s.id === m[2]!);
     if (step?.type !== 'orchestrated') { res.statusCode = 404; res.end('not found'); return; }
@@ -270,7 +270,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('PUT', '/api/work/jobs/:id/runtime', async (req, res) => {
-    const id = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/runtime$/)?.[1];
+    const id = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/runtime$/)?.[1];
     if (!id) { res.statusCode = 404; res.end('job not found'); return; }
     const payload = await readJsonObject<{ runtime?: unknown }>(req, res);
     if (!payload) return;
@@ -309,7 +309,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/approve', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/approve$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/approve$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const id = m[1]!;
     const payload = await readJsonObject<{ gate?: string; stepId?: string; note?: string; stepPreapprovals?: unknown }>(req, res);
@@ -337,7 +337,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/reject', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/reject$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/reject$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const id = m[1]!;
     const payload = await readJsonObject<{ gate?: string; stepId?: string; feedback?: string }>(req, res);
@@ -355,7 +355,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs/:id/abandon', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/abandon$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/abandon$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     try { await engine.abandonJob(m[1]!); }
     catch (e) { res.statusCode = 500; res.end(`abandon error: ${(e as Error).message}`); return; }
@@ -365,7 +365,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs/:id/mark-done', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/mark-done$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/mark-done$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     try { await engine.markJobDone(m[1]!); }
     catch (e) { res.statusCode = 500; res.end(`mark-done error: ${(e as Error).message}`); return; }
@@ -375,7 +375,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs/:id/dismiss', (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/dismiss$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/dismiss$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const result = engine.dismissJob(m[1]!);
     if (result === 'not-found') { res.statusCode = 404; res.end('not found'); return; }
@@ -386,7 +386,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('DELETE', '/api/work/jobs/:id', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const j = jobQueue.get(m[1]!);
     if (!j) { res.statusCode = 404; res.end('not found'); return; }
@@ -401,7 +401,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   // token-launch queue, bypassing both the headroom and slot gates. (The orchestrator
   // has no equivalent here — its "Launch orchestrator" button force-launches directly.)
   engagedRoute('POST', '/api/work/jobs/:id/steps/:stepId/launch', (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/launch$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/launch$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const [, id, stepId] = m;
     const job = jobQueue.get(id!);
@@ -413,7 +413,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs/:id/priority', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/priority$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/priority$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const id = m[1]!;
     if (!jobQueue.get(id)) { res.statusCode = 404; res.end('not found'); return; }
@@ -426,7 +426,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/launch-orchestrator', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/launch-orchestrator$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/launch-orchestrator$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonBody<{ context?: string }>(req);
     try { await engine.launchOrchestrator(m[1]!, payload?.context); }
@@ -437,7 +437,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/replan', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/replan$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/replan$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonObject<{ feedback?: string }>(req, res);
     if (!payload) return;
@@ -448,7 +448,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/reconciliation/apply', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/reconciliation\/apply$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/reconciliation\/apply$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonObject<{ stepPreapprovals?: unknown }>(req, res);
     if (!payload) return;
@@ -463,7 +463,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   // `feedback` is optional: with it, the discarded amendment goes back to the orchestrator as a
   // rejected iteration; without it, the amendment is simply dropped.
   engagedRoute('POST', '/api/work/jobs/:id/reconciliation/discard', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/reconciliation\/discard$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/reconciliation\/discard$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonBody<{ feedback?: unknown }>(req);
     const feedback = typeof payload?.feedback === 'string' ? payload.feedback : undefined;
@@ -474,7 +474,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/steps', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonObject<Record<string, unknown>>(req, res);
     if (!payload) return;
@@ -497,7 +497,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('PATCH', '/api/work/jobs/:id/steps/:stepId', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonObject<Record<string, unknown>>(req, res);
     if (!payload) return;
@@ -518,7 +518,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/steps/:stepId/wait-session', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/wait-session$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/wait-session$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonObject<{ cwd?: unknown }>(req, res);
     if (!payload) return;
@@ -541,7 +541,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('PUT', '/api/work/jobs/:id/steps/:stepId/preapprovals', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/preapprovals$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/preapprovals$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonObject<{ preapprovals?: unknown }>(req, res);
     if (!payload) return;
@@ -556,7 +556,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/steps/:stepId/cancel', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/cancel$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/cancel$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const ok = engine.cancelStepManually(m[1]!, m[2]!);
     if (!ok) {
@@ -570,7 +570,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/steps/reorder', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/reorder$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/reorder$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonObject<{ ids?: unknown }>(req, res, { allowEmpty: true });
     if (!payload) return;
@@ -589,7 +589,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs/:id/steps/:stepId/resolve', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/resolve$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/resolve$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonObject<{ output?: string }>(req, res, { allowEmpty: true });
     if (!payload) return;
@@ -614,7 +614,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   // respawned session (which is a cold spawn and knows nothing else about the attempt it
   // replaces). A bare `{}` is still a plain retry.
   engagedRoute('POST', '/api/work/jobs/:id/steps/:stepId/retry', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/retry$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/retry$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const payload = await readJsonObject<{ note?: unknown }>(req, res, { allowEmpty: true });
     if (!payload) return;
@@ -627,7 +627,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/steps/:stepId/message', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/message$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/message$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const [, jobId, stepId] = m;
     if (!orchestratedStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
@@ -639,7 +639,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/steps/:stepId/gate', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/gate$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/gate$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const [, jobId, stepId] = m;
     if (!orchestratedStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
@@ -652,7 +652,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs/:id/steps/:stepId/mark-resolved', (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/mark-resolved$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/mark-resolved$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const [, jobId, stepId] = m;
     if (!orchestratedStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
@@ -665,7 +665,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   // pending draft on the step.
   engagedRoute('POST', '/api/work/jobs/:id/steps/:stepId/drafts/:draftId/:verb', async (req, res) => {
     const m = (req.url ?? '').match(
-      /^\/api\/work\/jobs\/([\w-]+)\/steps\/([\w-]+)\/drafts\/([\w-]+)\/(accept|revise|deny)$/);
+      /^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/drafts\/([\w-]+)\/(accept|revise|deny)$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const [, jobId, stepId, draftId, verb] = m;
     if (!liveStep(jobQueue, jobId!, stepId!)) { res.statusCode = 404; res.end('not found'); return; }
@@ -673,14 +673,14 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs/:id/tick', (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/tick$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/tick$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     void engine.tick(m[1]!);
     res.statusCode = 202; res.end();
   });
 
   engagedRoute('POST', '/api/work/jobs/:id/rerun-latest', (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/rerun-latest$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/rerun-latest$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     let stepId: string | undefined;
     try { stepId = engine.rerunLatest(m[1]!); }
@@ -694,7 +694,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   // 409 when there was nothing stalled to resume — a double-tap, or a stall a sign-in already
   // resumed on its own.
   engagedRoute('POST', '/api/work/jobs/:id/resume-stalled', (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/resume-stalled$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/resume-stalled$/);
     if (!m || !jobQueue.get(m[1]!)) { res.statusCode = 404; res.end('not found'); return; }
     const resumed = engine.resumeStalls(m[1]!);
     res.statusCode = resumed ? 200 : 409;
@@ -703,7 +703,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs/:id/reset', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/reset$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/reset$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const ok = await engine.resetJob(m[1]!);
     res.statusCode = ok ? 200 : 404;
@@ -724,7 +724,7 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
   });
 
   server.route('POST', '/api/work/jobs/:id/sync', async (req, res) => {
-    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/sync$/);
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/sync$/);
     if (!m) { res.statusCode = 404; res.end('not found'); return; }
     const id = m[1]!;
     if (!jobQueue.get(id)) { res.statusCode = 404; res.end('job not found'); return; }

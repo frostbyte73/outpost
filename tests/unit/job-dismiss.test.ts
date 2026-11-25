@@ -96,6 +96,19 @@ describe('job dismissal', () => {
     expect(h.queue.get('job-1')!.dismissedAt).toBeUndefined();
   });
 
+  it('reaches a job whose id contains a dot, as create_job allows', async () => {
+    const h = harness('done');
+    h.queue.upsert({ ...h.queue.get('job-1')!, id: 'roadmap-1.3-terms' });
+    const port = await startServer(h);
+    expect((await post(port, '/api/work/jobs/roadmap-1.3-terms/dismiss')).status).toBe(200);
+  });
+
+  it('never matches a dot-leading id', async () => {
+    const h = harness('done');
+    const port = await startServer(h);
+    expect((await post(port, '/api/work/jobs/.job-1/dismiss')).status).toBe(404);
+  });
+
   it('dismiss 404s an unknown job', async () => {
     const h = harness('done');
     const port = await startServer(h);
