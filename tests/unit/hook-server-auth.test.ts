@@ -52,7 +52,7 @@ describe('HookServer — callers without the current secret', () => {
     'answers every route 401 for %s, without running its handler',
     async (_label, secret) => {
       const port = await start();
-      for (const route of ['/mcp', '/work/step-resolved', '/work/journal']) {
+      for (const route of ['/mcp', '/work/step-resolved', '/work/journal', '/hook/cursor']) {
         expect((await post(port, route, secret)).status).toBe(401);
       }
       expect(handled).toEqual([]);
