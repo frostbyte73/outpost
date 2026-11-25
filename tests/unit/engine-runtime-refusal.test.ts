@@ -67,4 +67,11 @@ describe('WorkEngine runtime refusal for controller moves', () => {
     engine.onStepProgress('job-1', 'step-1', { next: { kind: 'dispatch', dispatches: [{ action: 'code.merge-pr', brief: 'b' }] } });
     expect(struck()).toBe(false);
   });
+
+  it('refuses switching the controller session to a runtime that cannot enforce its push group', () => {
+    const { engine } = setup();
+    engine.rehydrateSessionBindings();
+    expect(engine.sessionSwitchRefusal('ctrl-sess', 'codex')).toMatch(/push|enforce/i);
+    expect(engine.sessionSwitchRefusal('ctrl-sess', 'claude')).toBeUndefined();
+  });
 });

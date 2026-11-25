@@ -14,6 +14,12 @@ async function request(path, init = {}) {
 }
 
 export const sessionsApi = {
+  listRuntimes() { return request('/runtimes'); },
+  switchRuntime(id, runtime, expectedVersion) {
+    return request(`/${encodeURIComponent(id)}/runtime`, {
+      method: 'PUT', body: JSON.stringify({ runtime, expectedVersion }),
+    });
+  },
   setInteractive(sessionId, on) {
     return request(`/${encodeURIComponent(sessionId)}/interactive`, {
       method: 'POST',
@@ -21,3 +27,15 @@ export const sessionsApi = {
     });
   },
 };
+
+export async function loadRuntimeOptions(select, selected) {
+  const { runtimes } = await sessionsApi.listRuntimes();
+  select.replaceChildren(...runtimes.map(({ id, label }) => new Option(label, id)));
+  if (!runtimes.some(({ id }) => id === selected)) {
+    const current = new Option(`${selected} (unavailable)`, selected);
+    current.disabled = true;
+    select.prepend(current);
+  }
+  select.value = selected;
+  select.disabled = runtimes.length === 0;
+}

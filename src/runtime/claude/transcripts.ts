@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { LineParser } from '../../session/stream-json.js';
 import { TranscriptItemParser, readTaskNotifications, type RawSessionRecord } from './transcript-parse.js';
@@ -17,6 +17,12 @@ export class ClaudeTranscripts implements TranscriptReader {
 
   projectDirFor(cwd: string): string {
     return join(this.root, cwd.replace(/\//g, '-'));
+  }
+
+  locateTranscript(id: string): string | undefined {
+    let dirs: string[];
+    try { dirs = readdirSync(this.root); } catch { return undefined; }
+    return dirs.map((name) => join(this.root, name)).find((dir) => existsSync(join(dir, `${id}.jsonl`)));
   }
 
   // One entry per physical ~/.claude/projects/* dir — NO cwd collapse. Callers that
@@ -81,14 +87,14 @@ export class ClaudeTranscripts implements TranscriptReader {
     return fallback;
   }
 
-  readItems(projectDir: string, id: string): CanonicalItem[] {
+  readItems(projectDir: string, id: string, seedTokens?: readonly string[], forHandoff?: boolean): CanonicalItem[] {
     let content: string;
     try {
       content = readFileSync(join(projectDir, `${id}.jsonl`), 'utf8');
     } catch {
       return [];
     }
-    const items = new TranscriptItemParser();
+    const items = new TranscriptItemParser(seedTokens, forHandoff);
     const parser = new LineParser();
     parser.onLine = (obj) => items.push(obj);
     parser.write(content);

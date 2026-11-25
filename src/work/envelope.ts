@@ -69,6 +69,11 @@ export function augmentEnvelopeWithLessons(path: string, lessons: JournalEntry[]
   atomicWrite(path, JSON.stringify(parsed, null, 2));
 }
 
+export function updateEnvelopeCatalog(path: string, actionCatalog: ActionCatalogEntry[]): void {
+  const envelope = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+  atomicWrite(path, JSON.stringify({ ...envelope, actionCatalog }, null, 2));
+}
+
 // Each action's signature as the orchestrator sees it (name + I/O schemas).
 export interface ActionCatalogEntry {
   name: string;

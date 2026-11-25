@@ -15,6 +15,9 @@ export class CallTracker {
   private readonly gated = new Map<string, { tool: string; input: unknown }>();
   private readonly denied = new Set<string>();
   private readonly interruptedTurns = new Set<string>();
+  pendingDecisions = 0;
+
+  get hasPendingCalls(): boolean { return this.pendingDecisions > 0 || this.gated.size > 0; }
 
   noteGated(callId: string, tool: string, input: unknown): void {
     this.gated.set(callId, { tool, input });

@@ -17,11 +17,11 @@ export function toolUseEntry(item) {
 export function itemToEntries(item) {
   switch (item?.type) {
     case 'user_message':
-      return [{ role: 'user', text: item.text, ...(item.images ? { images: item.images } : {}) }];
+      return [{ role: 'user', itemId: item.id, text: item.text, ...(item.images ? { images: item.images } : {}) }];
     case 'assistant_message':
-      return [{ role: 'assistant', text: item.text, ...(item.messageId ? { msgId: item.messageId } : {}) }];
+      return [{ role: 'assistant', itemId: item.id, text: item.text, ...(item.messageId ? { msgId: item.messageId } : {}) }];
     case 'user_shell':
-      return [{ role: 'shell', text: item.command, stdout: item.stdout, stderr: item.stderr }];
+      return [{ role: 'shell', itemId: item.id, text: item.command, stdout: item.stdout, stderr: item.stderr }];
     case 'tool_call':
       return [
         toolUseEntry(item),

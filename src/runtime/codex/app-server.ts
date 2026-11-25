@@ -115,7 +115,7 @@ export class CodexAppServer {
     if (!p) return;
     this.pending.delete(msg.id);
     clearTimeout(p.timer);
-    if (msg.error) p.reject(new Error(`codex: ${msg.error.message}`));
+    if (msg.error) p.reject(Object.assign(new Error(`codex: ${msg.error.message}`), { rpcCode: msg.error.code }));
     else p.resolve(msg.result);
   }
 

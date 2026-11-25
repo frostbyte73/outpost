@@ -46,8 +46,8 @@ export function installAppBridge(deps) {
   bridge = { ...bridge, ...deps };
 }
 
-export function catchUpFromDisk(sessionId) {
-  return bridge.catchUpFromDisk?.(sessionId);
+export function catchUpFromDisk(sessionId, shouldApply, epoch) {
+  return bridge.catchUpFromDisk?.(sessionId, shouldApply, epoch);
 }
 export function decideApproval(approvalId, decision, reason) {
   const a = approvals.get().pending.find((p) => p.approvalId === approvalId);

@@ -1,6 +1,13 @@
 import { GATED_GROUPS } from '../actions/registry.js';
 import type { ActionDef } from '../actions/types.js';
-import type { AgentRuntime, RuntimeId } from './types.js';
+import { isRuntimeId, type AgentRuntime, type RuntimeId } from './types.js';
+
+export function runtimeLabel(id: RuntimeId): string {
+  if (id === 'claude') return 'Claude';
+  if (id === 'codex') return 'Codex';
+  if (id === 'cursor') return 'Cursor';
+  return id.startsWith('acp:') ? id.slice('acp:'.length) : id;
+}
 
 // The harnesses this daemon can run sessions on; Claude is always present.
 export class RuntimeRegistry {
@@ -12,6 +19,12 @@ export class RuntimeRegistry {
 
   get(id: string): AgentRuntime | undefined {
     return this.byId.get(id);
+  }
+
+  listAvailable(): { id: RuntimeId; label: string }[] {
+    return [...this.byId.values()].flatMap((r) => r.available && isRuntimeId(r.id)
+      ? [{ id: r.id, label: r.label ?? runtimeLabel(r.id) }]
+      : []);
   }
 
   // The refusal for running `action` (whose resolved groups are `groups`) on `rtId`, if it can't be enforced there.

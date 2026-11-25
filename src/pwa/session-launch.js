@@ -27,6 +27,7 @@ export function startSession(opts = {}) {
     spawnMode: opts.spawnMode,
     baseBranch: opts.baseBranch,
     model: opts.model,
+    runtime: opts.runtime,
     approvalMode: opts.approvalMode,
     title: opts.title,
     worktreePath: opts.worktreePath,

@@ -1,7 +1,8 @@
-import { readFileSync, statSync, writeFileSync, mkdirSync, renameSync, rmSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync, writeFileSync, mkdirSync, renameSync, rmSync, existsSync } from 'node:fs';
 import { uploadsRootFor } from './attachments.js';
 import { join } from 'node:path';
 import { removeNdjsonLogs } from '../runtime/event-ndjson.js';
+import { hasClaudeUserRecord } from '../runtime/claude/transcript-parse.js';
 import type { ProjectRegistry } from '../storage/project-registry.js';
 import type { WorktreeManager, WorktreeRecord } from '../git/worktree-manager.js';
 import {
@@ -12,6 +13,30 @@ import {
 // Sessions older than this with no active worktree are stamped archived at read time.
 // Active worktrees are exempt so long-running branches don't vanish at the 7d mark.
 const AUTO_ARCHIVE_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface TranscriptSegment {
+  id: string;
+  runtime: RuntimeId;
+  projectDir: string;
+  nativeId?: string;
+  seedPending?: boolean;
+  seedToken?: string;
+  seedAttempt?: 'admitted' | 'accepted' | 'rejected';
+  retiredSeedTokens?: string[];
+}
+
+interface SegmentedHistory {
+  cwd: string;
+  title: string;
+  switchedAt: number;
+  segments: TranscriptSegment[];
+}
+
+export function segmentItem(item: CanonicalItem, logicalId: string, segmentId: string): CanonicalItem {
+  if (segmentId === logicalId) return item;
+  const id = `${segmentId}:${item.id}`;
+  return { ...item, id, ...('messageId' in item && item.messageId ? { messageId: `${segmentId}:${item.messageId}` } : {}) };
+}
 
 function stampAutoArchived(projects: ProjectInfo[]): void {
   const ageCutoff = Date.now() - AUTO_ARCHIVE_WINDOW_MS;
@@ -89,11 +114,12 @@ export class SessionStore {
 
   // The harness a session runs on, fixed at first spawn so a respawn never switches it.
   writeRuntime(sessionId: string, runtime: RuntimeId): void {
-    this.mergeSessionMeta(sessionId, { runtime });
+    this.mergeSessionMeta(sessionId, { runtime }, runtime !== 'claude');
   }
 
   readRuntime(id: string): RuntimeId | null {
-    const runtime = this.readSessionMeta(id)?.runtime;
+    const meta = this.readSessionMeta(id);
+    const runtime = (meta?.history as SegmentedHistory | undefined)?.segments.at(-1)?.runtime ?? meta?.runtime;
     return isRuntimeId(runtime) ? runtime : null;
   }
 
@@ -107,17 +133,60 @@ export class SessionStore {
     return typeof native === 'string' ? native : null;
   }
 
+  currentSegment(id: string): TranscriptSegment | undefined {
+    return this.readHistory(id)?.segments.at(-1);
+  }
+
+  hasSegmentTranscript(segment: TranscriptSegment): boolean {
+    return existsSync(join(this.segmentProjectDir(segment), `${segment.id}.jsonl`));
+  }
+
+  appendSegment(id: string, segment: TranscriptSegment, cwd: string): void {
+    const existing = this.readHistory(id);
+    const legacy = existing ? undefined : this.findSession(id);
+    const originalRuntime = this.readRuntime(id) ?? 'claude';
+    const nativeId = originalRuntime === 'claude' ? id : this.readNativeSessionId(id) ?? undefined;
+    const original: TranscriptSegment | undefined = legacy
+      ? { id, runtime: originalRuntime, projectDir: legacy.projectDir, nativeId }
+      : undefined;
+    this.mergeSessionMeta(id, {
+      history: {
+        cwd, title: existing?.title ?? legacy?.session.title ?? 'Untitled session',
+        switchedAt: Date.now(),
+        segments: [...(existing?.segments ?? (original ? [original] : [])), segment],
+      } satisfies SegmentedHistory,
+    }, true);
+  }
+
+  updateSegment(id: string, segmentId: string, patch: Partial<TranscriptSegment>): void {
+    const history = this.readHistory(id);
+    const segment = history?.segments.at(-1);
+    if (!history || segment?.id !== segmentId) return;
+    this.mergeSessionMeta(id, {
+      history: { ...history, segments: [...history.segments.slice(0, -1), { ...segment, ...patch }] },
+    }, true);
+  }
+
+  private readHistory(id: string): SegmentedHistory | undefined {
+    return this.readSessionMeta(id)?.history as SegmentedHistory | undefined;
+  }
+
   // Both writers own their own keys of one shared sidecar, and the action stamp lands right
   // after the spawn — a whole-file write from either would drop the other's.
-  private mergeSessionMeta(sessionId: string, fields: Record<string, unknown>): void {
-    if (!this.sessionMetaDir || !/^[\w-]+$/.test(sessionId)) return;
+  private mergeSessionMeta(sessionId: string, fields: Record<string, unknown>, required = false): void {
+    if (!this.sessionMetaDir || !/^[\w-]+$/.test(sessionId)) {
+      if (required) throw new Error('Session history metadata is unavailable');
+      return;
+    }
     try {
       mkdirSync(this.sessionMetaDir, { recursive: true, mode: 0o700 });
       const path = join(this.sessionMetaDir, `${sessionId}.json`);
       const tmp = `${path}.tmp.${process.pid}.${Date.now()}`;
       writeFileSync(tmp, JSON.stringify({ ...this.readSessionMeta(sessionId), ...fields }), { mode: 0o600 });
       renameSync(tmp, path);
-    } catch { /* best-effort — the session just renders as a plain interactive one */ }
+    } catch (error) {
+      if (required) throw new Error(`Writing session metadata for ${sessionId}: ${(error as Error).message}`, { cause: error });
+    }
   }
 
   private readSessionMeta(id: string): Record<string, unknown> | null {
@@ -156,7 +225,18 @@ export class SessionStore {
     for (const rec of this.worktreeManager?.list() ?? []) {
       if (rec.worktreePath) knownWorktreePaths.add(rec.worktreePath);
     }
-    return this.transcripts.scanProjectDirs(knownWorktreePaths).map((p) => ({
+    const projects = this.transcripts.scanProjectDirs(knownWorktreePaths);
+    for (const [id, history] of this.segmentedHistories()) {
+      const physicalIds = new Set(history.segments.map((segment) => segment.id));
+      for (const project of projects) {
+        project.sessions = project.sessions.filter((session) => !physicalIds.has(session.id));
+      }
+      const current = history.segments.at(-1)!;
+      const session = this.segmentedLocation(id, history);
+      projects.push({ projectDir: current.projectDir, cwd: history.cwd,
+        lastModified: session.session.lastModified, sessions: [session.session] });
+    }
+    return projects.map((p) => ({
       ...p,
       // An action session's stamped title/label supersedes the transcript-derived one
       // (whose first turn is a bare `/action <uuid>` slash command → a UUID or "Untitled").
@@ -298,6 +378,8 @@ export class SessionStore {
   }
 
   findSession(id: string): SessionLocation | null {
+    const history = this.readHistory(id);
+    if (history) return this.segmentedLocation(id, history);
     // Use the per-dir scan so a session resolves to the physical dir its transcript lives in, never a
     // cwd-collapsed representative — otherwise a session merged in from a sibling dir would resolve
     // to the wrong projectDir and readItems/delete would target a file that isn't there.
@@ -308,15 +390,31 @@ export class SessionStore {
     return null;
   }
 
-  readItems(id: string): CanonicalItem[] {
+  readItems(id: string, beforeSegmentId?: string, forHandoff?: boolean): CanonicalItem[] {
     // Strict id guard prevents path traversal into other directories.
     if (!/^[\w-]+$/.test(id)) return [];
+    const history = this.readHistory(id);
+    if (history) return history.segments.slice(0, beforeSegmentId ? history.segments.findIndex((s) => s.id === beforeSegmentId) : undefined).flatMap((segment) =>
+      this.transcripts.readItems(this.segmentProjectDir(segment), segment.id,
+        [...(segment.retiredSeedTokens ?? []), ...(segment.seedToken ? [segment.seedToken] : [])], forHandoff)
+        .map((item) => segmentItem(item, id, segment.id)));
     const found = this.findSession(id);
-    return found ? this.transcripts.readItems(found.projectDir, id) : [];
+    return found ? this.transcripts.readItems(found.projectDir, id, undefined, forHandoff) : [];
+  }
+
+  hasClaudeSeedRecord(segment: TranscriptSegment): boolean {
+    if (segment.runtime !== 'claude' || !segment.seedToken) return false;
+    return hasClaudeUserRecord(join(this.segmentProjectDir(segment), `${segment.id}.jsonl`), { seed: segment.seedToken });
   }
 
   readSubagents(id: string): SubagentInfo[] {
     if (!/^[\w-]+$/.test(id)) return [];
+    const history = this.readHistory(id);
+    if (history) return history.segments.flatMap((segment) =>
+      this.transcripts.readSubagents(this.segmentProjectDir(segment), segment.id).map((agent) => ({
+        ...agent, entries: agent.entries.map((item) => segmentItem(item, id, segment.id)),
+        ...(agent.parentToolUseId && segment.id !== id ? { parentToolUseId: `${segment.id}:${agent.parentToolUseId}` } : {}),
+      })));
     const found = this.findSession(id);
     return found ? this.transcripts.readSubagents(found.projectDir, id) : [];
   }
@@ -325,10 +423,49 @@ export class SessionStore {
   delete(id: string): boolean {
     if (!/^[\w-]+$/.test(id)) return false;
     const found = this.findSession(id);
-    if (!found || !this.transcripts.deleteTranscript(found.projectDir, id)) return false;
+    if (!found) return false;
+    const history = this.readHistory(id);
+    if (history) {
+      for (const segment of history.segments) {
+        const dir = this.segmentProjectDir(segment);
+        if (existsSync(join(dir, `${segment.id}.jsonl`)) && !this.transcripts.deleteTranscript(dir, segment.id)) return false;
+      }
+    } else if (!this.transcripts.deleteTranscript(found.projectDir, id)) return false;
     if (this.sessionMetaDir) rmSync(join(this.sessionMetaDir, `${id}.json`), { force: true });
     if (this.runtimeDir) rmSync(join(uploadsRootFor(this.runtimeDir), id), { recursive: true, force: true });
     if (this.runtimeLogDir) removeNdjsonLogs(this.runtimeLogDir, id);
     return true;
+  }
+
+  private segmentedHistories(): [string, SegmentedHistory][] {
+    if (!this.sessionMetaDir) return [];
+    let files: string[];
+    try { files = readdirSync(this.sessionMetaDir); } catch { return []; }
+    return files.flatMap((file) => {
+      const id = /^([\w-]+)\.json$/.exec(file)?.[1];
+      const history = id && this.readHistory(id);
+      return id && history ? [[id, history]] : [];
+    });
+  }
+
+  private segmentedLocation(id: string, history: SegmentedHistory): SessionLocation {
+    const segment = history.segments.at(-1)!;
+    let lastModified = history.switchedAt;
+    for (const part of history.segments) {
+      const stat = statSync(join(this.segmentProjectDir(part), `${part.id}.jsonl`), { throwIfNoEntry: false });
+      if (stat) lastModified = Math.max(lastModified, stat.mtimeMs);
+    }
+    const projectDir = this.segmentProjectDir(segment);
+    const original = history.segments[0]!;
+    const path = join(this.segmentProjectDir(original), `${id}.jsonl`);
+    return { cwd: history.cwd, projectDir,
+      session: { id, title: this.readActionMeta(id)?.title || history.title, lastModified, path } };
+  }
+
+  private segmentProjectDir(segment: TranscriptSegment): string {
+    if (segment.runtime === 'claude' && !existsSync(join(segment.projectDir, `${segment.id}.jsonl`))) {
+      return this.transcripts.locateTranscript?.(segment.id) ?? segment.projectDir;
+    }
+    return segment.projectDir;
   }
 }

@@ -6,7 +6,8 @@ import type { ApprovalQueue } from '../permissions/approvals.js';
 import type { Allowlist } from '../permissions/allowlist.js';
 import type { RecurrenceTracker } from '../storage/recurrence-tracker.js';
 import type { InteractiveStore } from '../session/interactive-store.js';
-import type { AgentRuntime } from '../runtime/types.js';
+import { isRuntimeId, type AgentRuntime, type RuntimeId } from '../runtime/types.js';
+import type { RuntimeRegistry } from '../runtime/registry.js';
 import type { SessionSeenStore } from '../storage/session-seen-store.js';
 import { readJsonObject } from './util.js';
 
@@ -25,6 +26,10 @@ export interface SessionsRoutesDeps {
   sessionStore: SessionStore;
   manager: SessionManager;
   runtime: AgentRuntime;
+  runtimes?: RuntimeRegistry;
+  switchRefusal?: (id: string, runtime: RuntimeId) => string | undefined;
+  resumeRefusal?: (id: string, runtime: RuntimeId) => string | undefined;
+  onRuntimeSwitched?: (id: string, interrupted: boolean) => void;
   worktreeManager: WorktreeManager;
   queue: ApprovalQueue;
   recurrence: RecurrenceTracker;
@@ -77,6 +82,49 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
   } = deps;
   registerSessionSeenRoute(server, deps);
 
+  server.route('GET', '/api/sessions/runtimes', (_req, res) => {
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ runtimes: deps.runtimes?.listAvailable() ?? [{ id: 'claude', label: 'Claude' }] }));
+  });
+
+  server.route('PUT', '/api/sessions/:id/runtime', async (req, res) => {
+    const id = /^\/api\/sessions\/([\w-]+)\/runtime$/.exec(req.url ?? '')?.[1];
+    if (!id || (!sessionStore.findSession(id) && !manager.isActive(id))) {
+      res.statusCode = 404; res.end('Session not found'); return;
+    }
+    const body = await readJsonObject<{ runtime?: unknown; expectedVersion?: unknown }>(req, res);
+    if (!body) return;
+    const { runtime: target, expectedVersion } = body;
+    if (!isRuntimeId(target) || typeof expectedVersion !== 'string') {
+      res.statusCode = 400; res.end('A valid runtime and expectedVersion are required'); return;
+    }
+    const interrupted = manager.isWorking(id);
+    const previous = manager.runtimeOf(id);
+    let switched: Promise<void> | undefined;
+    try {
+      switched = manager.switchRuntime(id, target, expectedVersion, () => {
+        if (sessionStore.readSpawnEnv(id)?.OUTPOST_ENVELOPE && !jobIdForSession(id)) {
+          throw new Error('This action session cannot switch runtimes');
+        }
+        const refusal = deps.switchRefusal?.(id, target);
+        if (refusal) throw new Error(refusal);
+      });
+      if (previous !== target) {
+        for (const approval of queue.listPending()) {
+          if (approval.sessionId === id) queue.decide(approval.id, { allow: false, reason: 'Runtime switched' });
+        }
+      }
+      await switched;
+      if (previous !== target) deps.onRuntimeSwitched?.(id, interrupted);
+    } catch (error) {
+      // The source may already be stopped, so its step needs a resumable stall rather than a silent hang.
+      if (switched && previous !== target) deps.onRuntimeSwitched?.(id, interrupted);
+      res.statusCode = 409; res.end((error as Error).message); return;
+    }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ runtime: manager.runtimeOf(id), version: manager.runtimeVersion(id) }));
+  });
+
   function sendHandover(sessionId: string, tookWheel: boolean): void {
     // Fire-and-forget: SessionManager.send throws for a session whose subprocess has been
     // reaped, and a reaped session picks the flag up from its envelope on the next resume.
@@ -103,6 +151,13 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
       res.statusCode = known ? 409 : 404;
       res.end(known ? 'step has already settled' : 'not a session the daemon drives');
       return;
+    }
+    if (manager.runtimeSwitchPending?.(sessionId)) {
+      res.statusCode = 409; res.end('Runtime switch in progress'); return;
+    }
+    if (!payload.on && deps.resumeRefusal) {
+      const refusal = deps.resumeRefusal(sessionId, manager.runtimeOf(sessionId));
+      if (refusal) { res.statusCode = 409; res.end(refusal); return; }
     }
     if (payload.on) {
       // Set before the interrupt: the Stop this provokes must already see the flag, or the
@@ -151,6 +206,14 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
         const k = manager.getKind(id);
         p.sessions[i] = {
           ...p.sessions[i]!, ...(k ? { kind: k } : {}),
+          ...(deps.runtimes ? {
+            runtime: manager.runtimeOf(id),
+            runtimeAvailable: deps.runtimes.get(manager.runtimeOf(id))?.available === true,
+            runtimeVersion: manager.runtimeVersion(id),
+            canSwitchRuntime: deps.runtimes.listAvailable().some(({ id: target }) =>
+              target !== manager.runtimeOf(id) && !deps.switchRefusal?.(id, target)
+              && (!sessionStore.readSpawnEnv(id)?.OUTPOST_ENVELOPE || !!jobIdForSession(id))),
+          } : {}),
           runState: manager.runState(id), working: manager.isWorking(id), seenAt: seenStore.seenAt(id),
         };
       }
@@ -186,7 +249,7 @@ export function registerSessionsRoutes(server: Server, deps: SessionsRoutesDeps)
     const items = sessionStore.readItems(m[1]!);
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
-    res.end(JSON.stringify({ items }));
+    res.end(JSON.stringify({ items, ...manager.replayPosition(m[1]!) }));
   });
 
   server.route('GET', '/api/sessions/:id/subagents', (req, res) => {

@@ -20,7 +20,7 @@ import { d2ThemeFor, renderDiagram, themeOverrides } from '../work/plan-diagram.
 import type { DraftDecisionResult } from '../work/write-draft-runner.js';
 import { parsePlanReview, parsePreapprovals } from '../work/preapprovals.js';
 import type { Preapprovals } from '../work/work-types.js';
-import { isRuntimeId, RUNTIME_ID_HINT } from '../runtime/types.js';
+import { isRuntimeId, RUNTIME_ID_HINT, type RuntimeId } from '../runtime/types.js';
 import type { RuntimeRegistry } from '../runtime/registry.js';
 
 export interface JobsRoutesDeps {
@@ -249,16 +249,8 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     }>(req, res);
     if (!payload) return;
     if (typeof payload.title !== 'string' || !payload.title.trim()) { res.statusCode = 400; res.end('title required'); return; }
-    if (payload.runtime !== undefined && !isRuntimeId(payload.runtime)) {
-      res.statusCode = 400;
-      res.end(`runtime must be one of ${RUNTIME_ID_HINT}`);
-      return;
-    }
-    if (isRuntimeId(payload.runtime) && !runtimes?.get(payload.runtime)?.available) {
-      res.statusCode = 400;
-      res.end(`runtime ${payload.runtime} isn't installed on this machine`);
-      return;
-    }
+    const invalidRuntime = payload.runtime === undefined ? undefined : runtimeError(payload.runtime, runtimes);
+    if (invalidRuntime) { res.statusCode = 400; res.end(invalidRuntime); return; }
     const pre = parsePreapprovals(payload.preapprovals);
     if (!pre.ok) { res.statusCode = 400; res.end(pre.error); return; }
     const review = parsePlanReview(payload.planReview);
@@ -275,6 +267,19 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ job: j }));
+  });
+
+  server.route('PUT', '/api/work/jobs/:id/runtime', async (req, res) => {
+    const id = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-]+)\/runtime$/)?.[1];
+    if (!id) { res.statusCode = 404; res.end('job not found'); return; }
+    const payload = await readJsonObject<{ runtime?: unknown }>(req, res);
+    if (!payload) return;
+    const invalidRuntime = runtimeError(payload.runtime, runtimes);
+    if (invalidRuntime) { res.statusCode = 400; res.end(invalidRuntime); return; }
+    const job = engine.setJobRuntime(id, payload.runtime as RuntimeId);
+    if (!job) { res.statusCode = 404; res.end('job not found'); return; }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ job }));
   });
 
   // "Promote to tracked": spin a manual job out of an interactive session, pre-filled
@@ -732,6 +737,11 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
       res.statusCode = 502; res.end(`sync error: ${(e as Error).message}`);
     }
   });
+}
+
+function runtimeError(runtime: unknown, runtimes: RuntimeRegistry | undefined): string | undefined {
+  if (!isRuntimeId(runtime)) return `runtime must be one of ${RUNTIME_ID_HINT}`;
+  if (!runtimes?.get(runtime)?.available) return `runtime ${runtime} isn't installed on this machine`;
 }
 
 // Keyed by step id, or `#<index>` for a step an amendment adds. An error string on any bad entry.

@@ -62,9 +62,10 @@ function republishConn() {
   conn.setSession(worst);
 }
 
-function wsUrl(id, sinceSeq, spawn) {
+function wsUrl(id, sinceSeq, spawn, epoch) {
   const params = new URLSearchParams();
   params.set('since', String(sinceSeq | 0));
+  if (epoch) params.set('epoch', epoch);
   // Spawn hints are only meaningful on the FIRST attach — the daemon ignores
   // them if the session already exists. We include them on every connect so
   // that a reconnect racing with a fresh spawn still lands correctly.
@@ -72,6 +73,7 @@ function wsUrl(id, sinceSeq, spawn) {
   if (spawn?.spawnMode)   params.set('spawn', spawn.spawnMode);
   if (spawn?.baseBranch)  params.set('base', spawn.baseBranch);
   if (spawn?.model)       params.set('model', spawn.model);
+  if (spawn?.runtime)     params.set('runtime', spawn.runtime);
   if (spawn?.approvalMode) params.set('mode', spawn.approvalMode);
   const q = params.toString();
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -92,11 +94,53 @@ function connect(id) {
   if (info.ws) abandon(info.ws);
   const slice = sessions.getSlice(id);
   const since = slice?.lastSeenSeq ?? 0;
-  const ws = new WebSocket(wsUrl(id, since, info.spawn));
+  const ws = new WebSocket(wsUrl(id, since, info.spawn, info.epoch));
   info.ws = ws;
-  ws.onmessage = (e) => {
+  let replayBuffer;
+  let refreshingEpoch;
+  const refreshHistory = (epoch) => {
+    if (epoch === info.epoch || epoch === refreshingEpoch) return;
+    refreshingEpoch = epoch;
+    sessions.for(id).setLastSeenSeq(0);
+    const pending = [];
+    replayBuffer = pending;
+    const current = () => info.ws === ws && replayBuffer === pending;
+    const refresh = async () => {
+      const snapshot = await catchUpFromDisk(id, current, epoch);
+      if (!current()) return;
+      if (!snapshot) {
+        setTimeout(() => { if (current()) void refresh(); }, BACKOFF_MS);
+        return;
+      }
+      info.epoch = epoch;
+      refreshingEpoch = undefined;
+      replayBuffer = undefined;
+      const itemKey = (item) => item?.type === 'assistant_message' && item.messageId
+        ? `${item.type}:${item.messageId}|${item.text}` : `${item?.type}:${item?.id}`;
+      const items = new Set(snapshot.items.map(itemKey));
+      for (const message of pending) {
+        const msg = JSON.parse(message.data);
+        if (msg._seq <= snapshot.cursor && (msg.type === 'item.completed' || msg.type === 'item.started')
+          && items.has(itemKey(msg.item)) && msg.item?.type !== 'tool_call') continue;
+        receive(message);
+      }
+      sessions.for(id).setLastSeenSeq(Math.max(sessions.getSlice(id)?.lastSeenSeq ?? 0, snapshot.cursor));
+    };
+    void refresh();
+  };
+  function receive(e) {
     let msg;
     try { msg = JSON.parse(e.data); } catch { return; }
+    if (msg.type === 'session_runtime_changed') {
+      refreshHistory(msg.version);
+      refreshSessions();
+      return;
+    }
+    if (msg.type === 'session_state' && msg.epoch) refreshHistory(msg.epoch);
+    if (replayBuffer && typeof msg._seq === 'number') {
+      replayBuffer.push(e);
+      return;
+    }
     // Track per-slice lastSeenSeq so a reconnect asks for `since` correctly.
     // handleWsMessage does the actual per-slice mutation on non-protocol frames.
     if (typeof msg._seq === 'number') {
@@ -147,7 +191,8 @@ function connect(id) {
       return;
     }
     _handleWsMessage?.(msg, id);
-  };
+  }
+  ws.onmessage = receive;
   ws.onopen = () => {
     info.retries = 0;
     republishConn();
@@ -172,7 +217,7 @@ function connect(id) {
       }
     }
     // Re-run disk catch-up on every open so gaps from suspend/reconnect fill in.
-    catchUpFromDisk(id);
+    catchUpFromDisk(id, () => info.ws === ws && !replayBuffer);
   };
   ws.onclose = () => {
     if (conns.get(id) !== info) return;

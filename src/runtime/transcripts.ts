@@ -1,10 +1,12 @@
 import type { CanonicalItem, SubagentInfo, TranscriptProject, TranscriptReader } from './types.js';
+import type { JsonlTranscripts } from './jsonl-transcripts.js';
 
 // Every runtime's history behind one reader; a new cwd's history dir is the primary runtime's.
 export class CompositeTranscripts implements TranscriptReader {
   constructor(
     private readonly primary: TranscriptReader,
     private readonly others: { root: string; reader: TranscriptReader }[],
+    private readonly jsonl?: JsonlTranscripts,
   ) {}
 
   scanProjectDirs(knownWorktreePaths: ReadonlySet<string>): TranscriptProject[] {
@@ -15,8 +17,12 @@ export class CompositeTranscripts implements TranscriptReader {
     return this.primary.projectDirFor(cwd);
   }
 
-  readItems(projectDir: string, id: string): CanonicalItem[] {
-    return this.readerFor(projectDir).readItems(projectDir, id);
+  locateTranscript(id: string): string | undefined {
+    return this.primary.locateTranscript?.(id);
+  }
+
+  readItems(projectDir: string, id: string, seedTokens?: readonly string[], forHandoff?: boolean): CanonicalItem[] {
+    return this.readerFor(projectDir).readItems(projectDir, id, seedTokens, forHandoff);
   }
 
   readSubagents(projectDir: string, id: string): SubagentInfo[] {
@@ -28,6 +34,7 @@ export class CompositeTranscripts implements TranscriptReader {
   }
 
   private readerFor(projectDir: string): TranscriptReader {
-    return this.others.find((o) => projectDir.startsWith(`${o.root}/`))?.reader ?? this.primary;
+    return this.others.find((o) => projectDir.startsWith(`${o.root}/`))?.reader
+      ?? (this.jsonl && projectDir.startsWith(`${this.jsonl.root}/`) ? this.jsonl : this.primary);
   }
 }

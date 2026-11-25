@@ -391,7 +391,7 @@ async function main() {
   const worktreeManager = new WorktreeManager({ root: join(RUNTIME_DIR, 'worktrees'), projectsRoot });
   const sessionStore = new SessionStore({
     transcripts: new CompositeTranscripts(runtime.transcripts, [codexTranscripts, cursorTranscripts, ...acpRuntimes.map((r) => r.transcripts)]
-      .map((t) => ({ root: t.root, reader: t }))),
+      .map((t) => ({ root: t.root, reader: t })), new JsonlTranscripts(join(RUNTIME_DIR, 'transcripts'))),
     registry: projectRegistry,
     worktreeManager,
     sessionMetaDir: join(RUNTIME_DIR, 'session-meta'),
@@ -468,8 +468,9 @@ async function main() {
   const loginFlows = new McpLoginFlows(onReauthorized);
   const claudeLogin = new ClaudeLoginFlows(onReauthorized);
 
-  const manager = new SessionManager({
+  const manager: SessionManager = new SessionManager({
     runtimes,
+    runtimeRefusal: (id, runtimeId) => engine.sessionRuntimeRefusal(id, runtimeId),
     runtimeLogDir,
     sessionStore,
     eventLogMaxEvents,
@@ -508,7 +509,12 @@ async function main() {
       // A crash / idle-reap fires no Stop hook, so the Stop-handler slot release never runs —
       // free any governor slot this session held here too (idempotent; a plain active.delete).
       engine.releaseLaunchSlot(sessionId);
-      engine.onSessionExit(sessionId, code, exit);
+      if (!exit.expected && manager.runtimeVersion(sessionId) !== sessionId) {
+        engine.onRuntimeSwitched(sessionId, true);
+      } else {
+        engine.onSessionExit(sessionId, code, exit);
+      }
+      if (exit.expected === 'runtime-switch') return;
       // Scheduler has no visibility into session completion on its own; a schedule-spawned
       // skill session (see createSpawnDeps.spawnSkillSession) finishing is exactly this event.
       // No-op (via findRunByRef) for any session the scheduler didn't spawn.
@@ -833,25 +839,43 @@ async function main() {
     // Reassigned once the action-edit handlers exist further down main().
     recordActionDenial: (denial) => recordActionDenial(denial),
   });
+  function checkWorkLaunch(credential: string | undefined, jobId: string, stepId?: string, dispatchId?: string): string {
+    const job = jobQueue.get(jobId);
+    const step = stepId ? job?.steps.find((s) => s.id === stepId) : undefined;
+    const child = dispatchId && step?.type === 'orchestrated' ? step.dispatches.find((d) => d.id === dispatchId) : undefined;
+    const sessionId = dispatchId
+      ? child?.sessionId
+      : stepId
+        ? step?.sessionId ?? job?.steps.flatMap((s) => s.type === 'orchestrated' ? s.dispatches : []).find((d) => d.id === stepId)?.sessionId
+        : job?.orchestratorSessionId;
+    if (!sessionId || !manager.acceptsWorkSubmission(sessionId, credential)) {
+      throw new Error('This runtime launch no longer owns the work session');
+    }
+    return sessionId;
+  }
+
   // Loopback-only and authenticated by a per-launch secret — see hook-server.ts. Any new
   // endpoint added there must validate the secret header.
   const hookServer = new HookServer({
     port: HOOK_PORT,
     daemonAuthSecret: secret,
     evalSecret,
-    onWorkPlanReady: async (body) => {
+    onWorkPlanReady: async (body, credential) => {
       const payload = parseJsonObject(body) as { jobId: string; mode?: 'initial' | 'replan'; steps: unknown[]; drops?: string[]; feedback?: string; findings?: unknown } | null;
       if (!payload) throw new Error('invalid json body');
+      checkWorkLaunch(credential, payload.jobId);
       engine.onPlanReady(payload.jobId, payload.mode ?? 'initial', payload.steps as never, payload.drops, payload.feedback, payload.findings as never);
     },
-    onWorkStepResolved: async (body) => {
+    onWorkStepResolved: async (body, credential) => {
       const payload = parseJsonObject(body) as { jobId: string; stepId: string; output?: string } | null;
       if (!payload) throw new Error('invalid json body');
+      checkWorkLaunch(credential, payload.jobId, payload.stepId);
       engine.onStepResolved(payload.jobId, payload.stepId, { output: payload.output });
     },
-    onWorkStepFailed: async (body) => {
+    onWorkStepFailed: async (body, credential) => {
       const payload = parseJsonObject(body) as { jobId: string; stepId: string; reason: string } | null;
       if (!payload) throw new Error('invalid json body');
+      checkWorkLaunch(credential, payload.jobId, payload.stepId);
       engine.onStepFailed(payload.jobId, payload.stepId, payload.reason);
     },
     onActionProposal: (body) => onActionProposalHandler(body),
@@ -870,12 +894,14 @@ async function main() {
     onEvalMcp: (path, body) => handleEvalMcp(path, body, { sessions: evalSessions, blob: (ref) => runBlobs.get(ref) }),
     ...(codex.available ? { onCodexPreTool: (body: string) => codex.handlePreToolUse(body) } : {}),
     ...(cursor.available ? { onCursorHook: (body: string, session: string | undefined) => cursor.handleHook(body, session) } : {}),
-    onMcp: (body) => handleMcpRequest(body, OUTPOST_MCP_TOOLS, {
+    onMcp: (body, credential) => handleMcpRequest(body, OUTPOST_MCP_TOOLS, {
       submit_plan: async (a) => {
+        checkWorkLaunch(credential, a.jobId as string);
         // No stepId: an orchestrator's plan is refused against the JOB's orchestrator session.
         const refusal = engine.interactiveRefusal(a.jobId as string);
         if (refusal) throw new Error(refusal);
         await checkPlanDiagram(a.findings as { diagram?: unknown } | undefined);
+        checkWorkLaunch(credential, a.jobId as string);
         noteRoundOutput('submit_plan', a);
         engine.onPlanReady(
           a.jobId as string,
@@ -898,6 +924,7 @@ async function main() {
         return { ok: true };
       },
       submit_step_output: async (a) => {
+        checkWorkLaunch(credential, a.jobId as string, a.stepId as string);
         const refusal = engine.interactiveRefusal(a.jobId as string, a.stepId as string);
         if (refusal) throw new Error(refusal);
         noteRoundOutput('submit_step_output', a);
@@ -905,16 +932,19 @@ async function main() {
         return { ok: true };
       },
       submit_continue: async (a) => {
+        checkWorkLaunch(credential, a.jobId as string);
         noteRoundOutput('submit_continue', a);
         engine.onOrchestratorContinue(a.jobId as string, a.reason as string | undefined);
         return { ok: true };
       },
       submit_step_failed: async (a) => {
+        checkWorkLaunch(credential, a.jobId as string, a.stepId as string);
         noteRoundOutput('submit_step_failed', a);
         engine.onStepFailed(a.jobId as string, a.stepId as string, a.reason as string);
         return { ok: true };
       },
       submit_step_progress: async (a) => {
+        checkWorkLaunch(credential, a.jobId as string, a.stepId as string);
         const refusal = engine.interactiveRefusal(a.jobId as string, a.stepId as string);
         if (refusal) throw new Error(refusal);
         noteRoundOutput('submit_step_progress', a);
@@ -930,6 +960,7 @@ async function main() {
         const jobId = a.jobId as string;
         const stepId = a.stepId as string;
         const dispatchId = a.dispatchId as string | undefined;
+        const sessionId = checkWorkLaunch(credential, jobId, stepId, dispatchId);
         if (typeof a.summary !== 'string' || !a.summary.trim()) {
           throw new Error('submit_write_draft refused: summary must be a non-empty string');
         }
@@ -946,15 +977,16 @@ async function main() {
         // actionForStep(jobId, stepId) alone would resolve `stepId` (the PARENT orchestrated
         // step) to `s.controller`, mislabeling every dispatched-child draft.
         const action = engine.actionForStep(jobId, stepId, dispatchId) ?? 'unknown';
-        const result = await engine.onWriteDraftReady(jobId, stepId, {
+        const submit = () => engine.onWriteDraftReady(jobId, stepId, {
           action,
           raisedBy: dispatchId
             ? { kind: 'dispatch', dispatchId }
             : { kind: 'step' },
-          summary: a.summary,
-          ...(a.evidence ? { evidence: a.evidence } : {}),
+          summary: a.summary as string,
+          ...(a.evidence ? { evidence: a.evidence as string } : {}),
           calls,
         });
+        const result = await manager.submitWork(sessionId, submit);
         // Fail the tool call, not just log it — the MCP protocol's own error channel (see
         // handleOne's catch in mcp-server.ts) is how the calling session learns its draft was
         // refused instead of hanging or writing blind on a phantom "ok".
@@ -1022,7 +1054,10 @@ async function main() {
   const seenStore = new SessionSeenStore(join(RUNTIME_DIR, 'session-seen.json'));
   seenStore.retain(new Set(sessionStore.listProjects().flatMap((p) => p.sessions.map((s) => s.id))));
   registerSessionsRoutes(server, {
-    sessionStore, manager, runtime, worktreeManager, queue, recurrence, allowlist,
+    sessionStore, manager, runtime, runtimes, worktreeManager, queue, recurrence, allowlist,
+    switchRefusal: (id, target) => engine.sessionSwitchRefusal(id, target),
+    resumeRefusal: (id, target) => engine.sessionRuntimeRefusal(id, target),
+    onRuntimeSwitched: (id, interrupted) => engine.onRuntimeSwitched(id, interrupted),
     latestStatuslineBySession, cwdForSession, summarizeToolInput, captureSessionEnd,
     interactive,
     seenStore,
@@ -1364,6 +1399,8 @@ async function main() {
     // so it takes effect server-side at spawn, rather than the PWA healing it
     // after the first broadcast (which the ⌘K spawn path never armed).
     let spawnApprovalMode: string | undefined;
+    let runtimeHint: string | undefined;
+    let epoch: string | undefined;
     const queryIdx = url.indexOf('?');
     if (queryIdx >= 0) {
       const params = new URLSearchParams(url.slice(queryIdx + 1));
@@ -1376,6 +1413,8 @@ async function main() {
       const rawModel = params.get('model');
       if (rawModel === 'sonnet' || rawModel === 'opus' || rawModel === 'haiku' || rawModel === 'fable') model = rawModel;
       const rawMode = params.get('mode');
+      runtimeHint = params.get('runtime') ?? undefined;
+      epoch = params.get('epoch') ?? undefined;
       if (rawMode) spawnApprovalMode = rawMode;
       const rawSince = params.get('since');
       if (rawSince !== null) {
@@ -1384,7 +1423,7 @@ async function main() {
         if (Number.isFinite(n) && n >= 0) since = Math.floor(n);
       }
     }
-    manager.attach(sessionId, ws, { cwd, spawnMode, baseBranch, since, model });
+    manager.attach(sessionId, ws, { cwd, spawnMode, baseBranch, since, epoch, model, runtime: runtimeHint });
     // Seed the spawn default only when this session has never had a mode set —
     // a reconnect (or a session whose mode the user already changed) keeps its
     // stored choice. modes.set() validates and ignores anything unrecognized.

@@ -26,6 +26,7 @@ export const workApi = {
   // its hunk instead of at the end of one. Fetched on demand; the daemon does not persist these.
   getPrPatches(id, stepId)         { return request(`${stepPath(id, stepId)}/pr-patches`); },
   createJob(body)                  { return request('/jobs', { method: 'POST', body: JSON.stringify(body) }); },
+  setJobRuntime(id, runtime)       { return request(`${jobPath(id)}/runtime`, { method: 'PUT', body: JSON.stringify({ runtime }) }); },
   promoteFromSession(sessionId)    { return request(`/jobs/from-session/${encodeURIComponent(sessionId)}`, { method: 'POST', body: '{}' }); },
   approve(id, body)                { return request(`${jobPath(id)}/approve`, { method: 'POST', body: JSON.stringify(body) }); },
   reject(id, body)                 { return request(`${jobPath(id)}/reject`, { method: 'POST', body: JSON.stringify(body) }); },

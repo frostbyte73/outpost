@@ -38,6 +38,8 @@ function newManager(opts: { known?: boolean; hasPendingApproval?: (id: string) =
       writeSpawnEnv: () => {},
       readSystemPrompt: () => undefined,
       readRuntime: () => null,
+      writeRuntime: () => {},
+      currentSegment: () => undefined,
     } as never,
     hasPendingApproval: opts.hasPendingApproval,
     onWorkingChange,

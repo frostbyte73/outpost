@@ -1,12 +1,16 @@
 import { statSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { buildHandoffSeed } from './handoff-seed.js';
+import { segmentItem, type TranscriptSegment } from './session-store.js';
 import { isAuthFailure } from '../integrations/claude-login.js';
 import { EventLog } from './event-log.js';
 import { openNdjsonLog, type NdjsonLog } from '../runtime/event-ndjson.js';
 import type { WebSocket } from 'ws';
 import type { WorktreeManager } from '../git/worktree-manager.js';
 import type { RuntimeRegistry } from '../runtime/registry.js';
+import { isRuntimeId } from '../runtime/types.js';
 import type {
-  CanonicalEvent, PermissionMode, RuntimeId, RuntimeSession, SessionKind, SessionModel, TurnInput,
+  CanonicalEvent, FirstTurnSeed, PermissionMode, RuntimeId, RuntimeSession, SessionKind, SessionModel, TurnInput,
 } from '../runtime/types.js';
 
 // Why the daemon itself is tearing a session down, threaded into daemon_proc_exit
@@ -15,7 +19,7 @@ import type {
 // 'reauth' = recycled to pick up a credential that was just re-authorized;
 // 'shutdown' = the daemon itself is exiting (resumable once it is back).
 // Absent on the exit event means the subprocess died on its own → a real crash.
-export type SessionCloseReason = 'idle' | 'archived' | 'reauth' | 'shutdown';
+export type SessionCloseReason = 'idle' | 'archived' | 'reauth' | 'shutdown' | 'runtime-switch';
 
 const IDLE_TIMEOUT_MS = 15 * 60 * 1000;
 // Replay window sized to survive iOS backgrounding the PWA.
@@ -38,6 +42,10 @@ interface ActiveSession {
   // Ids we've already fired onSessionRegistered for (guards against re-firing every init message).
   registeredIds: Set<string>;
   stderrTail: string;
+  seedInFlight?: string;
+  replayEpoch?: string;
+  launchCredential: string;
+  finish?: (code: number | null) => void;
 }
 
 const STDERR_TAIL_CHARS = 2000;
@@ -51,6 +59,7 @@ export interface SessionManagerOpts {
   runtimes: RuntimeRegistry;
   sessionStore: import('./session-store.js').SessionStore;
   worktreeManager?: WorktreeManager;
+  runtimeRefusal?: (sessionId: string, runtime: RuntimeId) => string | undefined;
   // Where each session's native + canonical event streams are appended; absent, nothing is logged.
   runtimeLogDir?: string;
   // Tests shrink these to force replay_gap fallback paths without producing 5000 fixtures.
@@ -82,8 +91,10 @@ export class SessionManager {
   // Sockets viewing a session that has no process; promoted to clients when it wakes.
   private watchers = new Map<string, Set<WebSocket>>();
   // A brand-new session's attach hints, held until its first wake.
-  private spawnHints = new Map<string, { cwd: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string }>();
+  private spawnHints = new Map<string, { cwd: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string; runtime: RuntimeId }>();
   private waking = new Map<string, Promise<void>>();
+  private readonly switching = new Map<string, Promise<void>>();
+  private readonly workSubmissions = new Map<string, number>();
   // The id each socket attached under, so a /clear rekey doesn't move it to a session it never opened.
   private socketIds = new Map<WebSocket, string>();
   // Persists across the session's lifetime so getCwd() works after the process exits (hook may fire mid-session).
@@ -112,34 +123,47 @@ export class SessionManager {
   }
 
   // Never spawns: with no live process the socket watches until wake(); a new session's hints are checked now and held.
-  attach(sessionId: string, ws: WebSocket, opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string; since?: number; model?: SessionModel } = {}): void {
+  attach(sessionId: string, ws: WebSocket, opts: { cwd?: string; spawnMode?: 'shared' | 'worktree'; baseBranch?: string; since?: number; epoch?: string; model?: SessionModel; runtime?: string } = {}): void {
     // Sticky per-session: applied on this spawn and any later idle-reap respawn.
     if (opts.model) this.sessionModels.set(sessionId, opts.model);
     const s = this.active.get(sessionId);
     if (s) {
       this.trackSocket(sessionId, ws);
-      this.attachClient(s, ws, opts.since ?? 0);
+      this.attachClient(s, ws, opts.since ?? 0, opts.epoch);
       return;
     }
     let spawnCwd = this.resumeCwd(sessionId);
     if (!spawnCwd) {
-      const refusal = this.validateHints(sessionId, opts);
-      if (refusal) {
-        this.rejectAttach(ws, refusal);
-        return;
+      const existing = this.spawnHints.get(sessionId);
+      if (existing) {
+        spawnCwd = existing.cwd;
+      } else {
+        const refusal = this.validateHints(sessionId, opts);
+        if (refusal) {
+          this.rejectAttach(ws, refusal);
+          return;
+        }
+        const runtime = this.opts.sessionStore.readRuntime(sessionId) ?? opts.runtime ?? 'claude';
+        if (!isRuntimeId(runtime) || (runtime !== 'claude' && !this.opts.runtimes.get(runtime)?.available)) {
+          this.rejectAttach(ws, `Runtime ${runtime} is unavailable`);
+          return;
+        }
+        spawnCwd = opts.cwd!;
+        this.spawnHints.set(sessionId, { cwd: spawnCwd, spawnMode: opts.spawnMode, baseBranch: opts.baseBranch, runtime });
       }
-      spawnCwd = opts.cwd!;
-      this.spawnHints.set(sessionId, { cwd: spawnCwd, spawnMode: opts.spawnMode, baseBranch: opts.baseBranch });
     }
     this.trackSocket(sessionId, ws);
     this.addWatcher(sessionId, ws);
     ws.send(JSON.stringify({
       type: 'session_state', latestSeq: 0, earliestSeq: 0, spawnCwd, working: false, workingSince: null, live: false,
+      epoch: this.opts.sessionStore.currentSegment(sessionId) ? this.runtimeVersion(sessionId) : undefined,
     }));
   }
 
   // Start the session's process if it has none and hand it every watching socket.
   wake(sessionId: string): Promise<void> {
+    const switching = this.switching.get(sessionId);
+    if (switching) return switching.then(() => this.wake(sessionId));
     const s = this.active.get(sessionId);
     if (s && !s.closeReason) {
       s.lastActivity = Date.now();
@@ -156,9 +180,9 @@ export class SessionManager {
   }
 
   private async spawnForWake(sessionId: string): Promise<void> {
+    const hints = this.spawnHints.get(sessionId);
     let cwd = this.resumeCwd(sessionId);
     if (!cwd) {
-      const hints = this.spawnHints.get(sessionId);
       if (!hints) throw new Error(`session ${sessionId.slice(0, 8)} has no live process and no transcript to resume`);
       cwd = hints.cwd;
       if (hints.spawnMode === 'worktree') {
@@ -171,6 +195,10 @@ export class SessionManager {
       }
     }
     if (this.active.has(sessionId)) return;
+    const switching = this.switching.get(sessionId);
+    if (switching) await switching;
+    if (this.active.has(sessionId)) return;
+    if (hints) this.bindRuntime(sessionId, hints.runtime);
     this.spawnHints.delete(sessionId);
     this.spawn(sessionId, cwd);
   }
@@ -228,7 +256,7 @@ export class SessionManager {
   }
 
   // Replays missed events from `since`; if `since` predates earliestSeq, emits replay_gap so the client falls back to the HTTP transcript endpoint.
-  private attachClient(s: ActiveSession, ws: WebSocket, since: number): void {
+  private attachClient(s: ActiveSession, ws: WebSocket, since: number, epoch?: string): void {
     s.clients.add(ws);
 
     // Protocol frame, no _seq. `working`/`workingSince` are the authoritative turn state:
@@ -244,8 +272,10 @@ export class SessionManager {
       working: this.isWorking(s.id),
       workingSince: this.workingSince(s.id),
       live: true,
+      epoch: s.replayEpoch,
     }));
 
+    if (s.replayEpoch && epoch !== s.replayEpoch) since = 0;
     if (since > 0 && since < s.eventLog.earliestSeq() - 1) {
       ws.send(JSON.stringify({
         type: 'replay_gap',
@@ -260,14 +290,38 @@ export class SessionManager {
   }
 
   sendTurn(sessionId: string, turn: TurnInput): void {
+    if (this.switching.has(sessionId)) throw new Error('Runtime switch in progress');
     const s = this.active.get(sessionId);
     if (!s) throw new Error(`session ${sessionId} not active`);
+    const refusal = this.opts.runtimeRefusal?.(sessionId, this.runtimeOf(sessionId));
+    if (refusal) throw new Error(refusal);
+    const segment = this.opts.sessionStore.currentSegment(sessionId);
+    let seed: FirstTurnSeed | undefined;
+    if (segment?.seedPending && this.opts.sessionStore.hasClaudeSeedRecord(segment)) {
+      this.opts.sessionStore.updateSegment(sessionId, segment.id, { seedPending: false, seedAttempt: 'accepted' });
+      s.seedInFlight = undefined;
+    } else if (segment?.seedPending) {
+      if (s.seedInFlight) throw new Error('Waiting for the runtime to accept its first turn');
+      if (segment.seedToken && segment.seedAttempt !== 'rejected' && turn.retryDelivery === false) {
+        throw new Error('First turn acceptance is unknown. Resume explicitly to continue.');
+      }
+      seed = this.prepareSeed(s, segment);
+    }
     s.lastActivity = Date.now();
     // Don't restamp a turn already in flight — a queued follow-up message would
     // otherwise reset the strip's elapsed clock mid-turn.
     this.startWorking(sessionId);
     this.opts.onTurnStart?.(sessionId);
-    s.session.sendTurn(turn);
+    s.session.sendTurn(turn, seed);
+  }
+
+  private prepareSeed(s: ActiveSession, segment: TranscriptSegment): FirstTurnSeed {
+    const token = randomUUID();
+    const block = buildHandoffSeed(this.opts.sessionStore.readItems(s.id, segment.id, true), token);
+    const retiredSeedTokens = segment.seedToken ? [...(segment.retiredSeedTokens ?? []), segment.seedToken] : segment.retiredSeedTokens;
+    this.opts.sessionStore.updateSegment(s.id, segment.id, { seedToken: token, seedAttempt: 'admitted', retiredSeedTokens });
+    s.seedInFlight = token;
+    return { token, block };
   }
 
   // Routed through eventLog so reconnects replay daemon-originated messages (e.g. approval_mode changes) like any other event.
@@ -373,11 +427,17 @@ export class SessionManager {
   }
 
   async close(sessionId: string, reason: SessionCloseReason = 'archived'): Promise<void> {
+    const switching = this.switching.get(sessionId);
+    if (switching && reason !== 'runtime-switch') await switching;
     const s = this.active.get(sessionId);
     if (!s) return;
     s.closeReason = reason;
     if (s.idleTimer) clearTimeout(s.idleTimer);
     await s.session.kill();
+    if (reason === 'runtime-switch') {
+      s.finish?.(null);
+      return;
+    }
     this.demoteClients(s);
     if (this.active.get(sessionId) !== s) return;
     this.active.delete(sessionId);
@@ -408,6 +468,72 @@ export class SessionManager {
 
   runtimeOf(sessionId: string): RuntimeId {
     return this.opts.sessionStore.readRuntime(sessionId) ?? 'claude';
+  }
+
+  runtimeVersion(sessionId: string): string {
+    const segment = this.opts.sessionStore.currentSegment(sessionId);
+    return segment ? createHash('sha256').update(segment.id).digest('hex') : sessionId;
+  }
+
+  replayPosition(sessionId: string): { epoch?: string; cursor: number } {
+    const active = this.active.get(sessionId);
+    const epoch = active ? active.replayEpoch
+      : this.opts.sessionStore.currentSegment(sessionId) ? this.runtimeVersion(sessionId) : undefined;
+    return { epoch, cursor: active?.eventLog.latestSeq() ?? 0 };
+  }
+
+  runtimeSwitchPending(sessionId: string): Promise<void> | undefined {
+    return this.switching.get(sessionId);
+  }
+
+  acceptsWorkSubmission(sessionId: string, credential: string | undefined): boolean {
+    if (this.switching.has(sessionId)) return false;
+    return credential !== undefined && this.active.get(sessionId)?.launchCredential === credential;
+  }
+
+  async submitWork<T>(sessionId: string, submit: () => Promise<T>): Promise<T> {
+    this.workSubmissions.set(sessionId, (this.workSubmissions.get(sessionId) ?? 0) + 1);
+    try { return await submit(); }
+    finally {
+      const count = this.workSubmissions.get(sessionId)! - 1;
+      if (count) this.workSubmissions.set(sessionId, count);
+      else this.workSubmissions.delete(sessionId);
+    }
+  }
+
+  switchRuntime(sessionId: string, target: RuntimeId, version: string, validate: () => void): Promise<void> {
+    if (this.switching.has(sessionId)) throw new Error('Runtime switch in progress');
+    if (this.workSubmissions.has(sessionId)) throw new Error('Wait for the active work submission to finish');
+    const runtime = this.opts.runtimes.get(target);
+    if (!runtime?.available) throw new Error(`Runtime ${target} is unavailable`);
+    if (this.runtimeOf(sessionId) === target) return Promise.resolve();
+    if (this.runtimeVersion(sessionId) !== version) throw new Error('The selected runtime has changed');
+    if (this.active.get(sessionId)?.session.hasPendingTools?.()) throw new Error('Wait for admitted tools to finish before switching runtimes');
+    validate();
+    const cwd = this.resumeCwd(sessionId);
+    if (!cwd) throw new Error('Session has no workspace');
+    const pending = Promise.resolve().then(async () => {
+      const source = this.active.get(sessionId);
+      if (source && this.isWorking(sessionId)) source.session.interrupt();
+      const closed = this.close(sessionId, 'runtime-switch');
+      let timeout: NodeJS.Timeout | undefined;
+      try {
+        await Promise.race([closed, new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error('Could not confirm the source runtime stopped')), 15_000);
+          timeout.unref();
+        })]);
+      } finally {
+        if (timeout) clearTimeout(timeout);
+      }
+      validate();
+      this.opts.sessionStore.appendSegment(sessionId, {
+        id: randomUUID(), runtime: target, projectDir: runtime.transcripts.projectDirFor(cwd), seedPending: true,
+      }, cwd);
+      this.broadcast(sessionId, { type: 'session_runtime_changed', runtime: target, version: this.runtimeVersion(sessionId) });
+      this.opts.onSessionRegistered?.(sessionId);
+    }).finally(() => { this.switching.delete(sessionId); });
+    this.switching.set(sessionId, pending);
+    return pending;
   }
 
   private bindRuntime(sessionId: string, runtime: RuntimeId): void {
@@ -447,17 +573,58 @@ export class SessionManager {
       spawnCwd: cwd,
       registeredIds: new Set(),
       stderrTail: '',
+      launchCredential: randomUUID(),
     };
     let markExited!: () => void;
     s.exited = new Promise((resolve) => { markExited = resolve; });
-    const mode = this.opts.sessionStore.findSession(sessionId) ? 'resume' : 'new';
+    let segment = this.opts.sessionStore.currentSegment(sessionId);
+    if (segment?.runtime === 'claude' && segment.seedPending === false && !this.opts.sessionStore.hasSegmentTranscript(segment)) {
+      segment = { id: randomUUID(), runtime: segment.runtime, projectDir: segment.projectDir, seedPending: true };
+      this.opts.sessionStore.appendSegment(sessionId, segment, cwd);
+    }
+    const mode = segment
+      ? (segment.nativeId || this.opts.sessionStore.hasSegmentTranscript(segment) ? 'resume' : 'new')
+      : (this.opts.sessionStore.findSession(sessionId) ? 'resume' : 'new');
     const permissionMode = this.permissionModes.get(sessionId);
-    const model = this.sessionModels.get(sessionId);
+    const runtimeId = this.runtimeOf(sessionId);
+    const refusal = this.opts.runtimeRefusal?.(sessionId, runtimeId);
+    if (refusal) throw new Error(refusal);
+    const model = runtimeId === 'claude' ? this.sessionModels.get(sessionId) : undefined;
     const systemPrompt = this.opts.sessionStore.readSystemPrompt(sessionId);
     const log: NdjsonLog | undefined = this.opts.runtimeLogDir ? openNdjsonLog(this.opts.runtimeLogDir, sessionId) : undefined;
-    const runtime = this.opts.runtimes.get(this.runtimeOf(sessionId)) ?? this.opts.runtimes.claude;
+    const runtime = runtimeId === 'claude' ? this.opts.runtimes.claude : this.opts.runtimes.get(runtimeId);
+    if (!runtime || runtime.available === false) {
+      log?.close();
+      throw new Error(`Runtime ${runtimeId} is unavailable`);
+    }
+    const current = () => this.active.get(s.id) === s;
+    if (segment) s.replayEpoch = randomUUID();
     s.session = runtime.start({
       sessionId,
+      ...(segment ? {
+        transcriptId: segment.id, nativeId: segment.nativeId,
+        redactSeeds: [...(segment.retiredSeedTokens ?? []), ...(segment.seedToken ? [segment.seedToken] : [])],
+      } : {}),
+      saveNativeId: (nativeId: string) => {
+        if (!current()) return;
+        if (segment) this.opts.sessionStore.updateSegment(sessionId, segment.id, { nativeId });
+        else this.opts.sessionStore.writeNativeSessionId(sessionId, nativeId);
+      },
+      ...(runtimeId !== 'claude' ? { newTranscriptSegment: () => {
+        if (!current()) throw new Error('The runtime launch was retired');
+        const id = randomUUID();
+        const replacement = { id, runtime: runtimeId, projectDir: runtime.transcripts.projectDirFor(cwd), seedPending: true };
+        this.opts.sessionStore.appendSegment(sessionId, replacement, cwd);
+        segment = replacement;
+        s.seedInFlight = undefined;
+        s.replayEpoch = randomUUID();
+        this.broadcast(sessionId, { type: 'session_runtime_changed', runtime: runtimeId, version: s.replayEpoch });
+        return { id, prepareSeed: (queuedSeed?: FirstTurnSeed) => queuedSeed && queuedSeed.token === s.seedInFlight
+          ? queuedSeed : this.prepareSeed(s, replacement) };
+      } } : {}),
+      acceptsCallbacks: current,
+      canStartTool: () => current() && s.closeReason !== 'runtime-switch' && !this.switching.has(s.id),
+      launchCredential: s.launchCredential,
       mode,
       cwd,
       env,
@@ -467,7 +634,24 @@ export class SessionManager {
       ...(systemPrompt ? { appendSystemPrompt: systemPrompt } : {}),
       ...(log ? { log } : {}),
     }, {
+      onSeedAccepted: (token) => {
+        if (!current() || !segment || token !== s.seedInFlight) return;
+        s.seedInFlight = undefined;
+        this.opts.sessionStore.updateSegment(sessionId, segment.id, { seedPending: false, seedAttempt: 'accepted' });
+      },
+      onSeedRejected: (token) => {
+        if (!current() || !segment || token !== s.seedInFlight) return;
+        s.seedInFlight = undefined;
+        this.opts.sessionStore.updateSegment(sessionId, segment.id, { seedAttempt: 'rejected' });
+      },
+      onSeedUncertain: (token) => {
+        if (current() && token === s.seedInFlight) s.seedInFlight = undefined;
+      },
       onEvent: (e) => {
+        if (!current()) return;
+        if (segment && (e.type === 'item.started' || e.type === 'item.completed')) {
+          e = { ...e, item: segmentItem(e.item, sessionId, segment.id) };
+        }
         s.lastActivity = Date.now();
         // Deltas are already in the native log, and they are most of a turn's frames
         if (e.type !== 'content.delta') log?.canonical(e);
@@ -485,6 +669,7 @@ export class SessionManager {
         }
       },
       onError: (errMsg) => {
+        if (!current()) return;
         // A detached session has no client to show this to, so it would otherwise vanish
         console.warn(`[session ${s.id.slice(0, 8)}] ${errMsg.trimEnd()}`);
         s.stderrTail = (s.stderrTail + errMsg).slice(-STDERR_TAIL_CHARS);
@@ -493,23 +678,25 @@ export class SessionManager {
           ws.send(JSON.stringify({ type: 'daemon_error', message: errMsg }));
         }
       },
-      onExit: (code) => {
-        log?.close();
-        const expected = s.closeReason;
-        for (const ws of s.clients) {
-          ws.send(JSON.stringify(expected
-            ? { type: 'daemon_proc_exit', code, expected: true, reason: expected }
-            : { type: 'daemon_proc_exit', code }));
-        }
-        this.demoteClients(s);
-        if (s.idleTimer) clearTimeout(s.idleTimer);
-        this.active.delete(s.id);
-        this.stopWorking(s.id);
-        this.reloadWhenIdle.delete(s.id);
-        this.opts.onSessionExit?.(s.id, code, { expected, stderrTail: s.stderrTail });
-        markExited();
-      },
+      onExit: (code) => s.finish?.(code),
     });
+    s.finish = (code) => {
+      if (!current()) return;
+      log?.close();
+      const expected = s.closeReason;
+      for (const ws of s.clients) {
+        ws.send(JSON.stringify(expected
+          ? { type: 'daemon_proc_exit', code, expected: true, reason: expected }
+          : { type: 'daemon_proc_exit', code }));
+      }
+      this.demoteClients(s);
+      if (s.idleTimer) clearTimeout(s.idleTimer);
+      this.active.delete(s.id);
+      this.stopWorking(s.id);
+      this.reloadWhenIdle.delete(s.id);
+      markExited();
+      this.opts.onSessionExit?.(s.id, code, { expected, stderrTail: s.stderrTail });
+    };
     this.active.set(sessionId, s);
     this.startIdleTimer(s);
     const watching = this.watchers.get(sessionId);

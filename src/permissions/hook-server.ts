@@ -8,12 +8,12 @@ import { parseJsonObject } from '../routes/util.js';
 export interface HookServerOpts {
   port: number;
   daemonAuthSecret: string;
-  onWorkPlanReady: (body: string) => Promise<void>;
-  onWorkStepResolved: (body: string) => Promise<void>;
-  onWorkStepFailed: (body: string) => Promise<void>;
+  onWorkPlanReady: (body: string, credential?: string) => Promise<void>;
+  onWorkStepResolved: (body: string, credential?: string) => Promise<void>;
+  onWorkStepFailed: (body: string, credential?: string) => Promise<void>;
   onActionProposal: (body: string) => Promise<void>;
   onWorkJournal: (body: string) => Promise<void>;
-  onMcp: (body: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
+  onMcp: (body: string, credential?: string) => Promise<{ status: number; headers: Record<string, string>; body: string }>;
   // Codex's PreToolUse hook command; the returned body is the exact text PRETOOL_HOOK_SCRIPT matches on.
   onCodexPreTool?: (body: string) => Promise<string>;
   // Cursor's hook command; the second argument is the x-outpost-session header naming the Outpost session.
@@ -81,16 +81,18 @@ export class HookServer {
     req.on('data', (c: Buffer) => (body += c.toString('utf8')));
     req.on('end', async () => {
       try {
+        const header = req.headers['x-outpost-launch'];
+        const credential = typeof header === 'string' ? header : undefined;
         if (url === '/work/plan-ready') {
-          await this.opts.onWorkPlanReady(body);
+          await this.opts.onWorkPlanReady(body, credential);
           res.statusCode = 204;
           res.end();
         } else if (url === '/work/step-resolved') {
-          await this.opts.onWorkStepResolved(body);
+          await this.opts.onWorkStepResolved(body, credential);
           res.statusCode = 204;
           res.end();
         } else if (url === '/work/step-failed') {
-          await this.opts.onWorkStepFailed(body);
+          await this.opts.onWorkStepFailed(body, credential);
           res.statusCode = 204;
           res.end();
         } else if (url === '/work/action-proposal') {
@@ -157,7 +159,7 @@ export class HookServer {
           for (const [k, v] of Object.entries(reply.headers)) res.setHeader(k, v);
           res.end(reply.body);
         } else if (url === '/mcp') {
-          const reply = await this.opts.onMcp(body);
+          const reply = await this.opts.onMcp(body, credential);
           res.statusCode = reply.status;
           for (const [k, v] of Object.entries(reply.headers)) res.setHeader(k, v);
           res.end(reply.body);

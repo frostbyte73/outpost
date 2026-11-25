@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { isHandoffSeed } from '../../session/handoff-seed.js';
 import { LineParser } from '../../session/stream-json.js';
 import { splitBashBlocks } from '../../session/shell-exec.js';
 import { canonicalToolName, toolKind } from '../tools.js';
@@ -30,6 +31,7 @@ function rewriteSlashCommandInvocation(text: string): string | null {
 }
 
 interface RawContentBlock {
+  is_error?: boolean;
   type?: string;
   text?: string;
   name?: string;
@@ -40,6 +42,7 @@ interface RawContentBlock {
 }
 
 export interface RawSessionRecord {
+  uuid?: string;
   type?: string;
   toolUseResult?: unknown;
   message?: {
@@ -48,6 +51,23 @@ export interface RawSessionRecord {
     content?: string | RawContentBlock[];
   };
   attachment?: { type?: string; prompt?: unknown; commandMode?: string };
+}
+
+export function hasClaudeUserRecord(path: string, match: { uuid?: string; seed?: string }): boolean {
+  let content: string;
+  try { content = readFileSync(path, 'utf8'); }
+  catch { return false; }
+  let found = false;
+  const parser = new LineParser();
+  parser.onLine = (value) => {
+    const record = value as RawSessionRecord;
+    if (found || record.type !== 'user' || record.message?.role !== 'user') return;
+    const blocks = record.message.content;
+    found = match.uuid !== undefined && record.uuid === match.uuid
+      || !!match.seed && Array.isArray(blocks) && blocks.some((b) => b.type === 'text' && isHandoffSeed(b.text, match.seed));
+  };
+  parser.write(content);
+  return found;
 }
 
 // A message sent mid-turn is stored as a `queued_command` attachment, never as a `user` record
@@ -60,6 +80,7 @@ function absorbedUserRecord(o: RawSessionRecord): RawSessionRecord | null {
 
 // Turns one session JSONL into canonical items, completing each tool call from its tool_result line.
 export class TranscriptItemParser {
+  constructor(private readonly seedTokens: readonly string[] = [], private readonly forHandoff = false) {}
   readonly items: CanonicalItem[] = [];
   private readonly calls = new Map<string, ToolCallItem>();
   private seq = 0;
@@ -92,6 +113,7 @@ export class TranscriptItemParser {
   }
 
   private text(role: 'user' | 'assistant', text: string, msgId?: string): void {
+    if (role === 'user' && this.seedTokens.some((token) => isHandoffSeed(text, token))) return;
     if (role === 'assistant') {
       this.items.push({ type: 'assistant_message', id: this.nextId('a'), ...(msgId ? { messageId: msgId } : {}), text });
       return;
@@ -126,7 +148,7 @@ export class TranscriptItemParser {
       tool,
       rawName,
       input: b.input ?? {},
-      status: 'completed',
+      status: this.forHandoff ? 'inProgress' : 'completed',
     };
     if (typeof b.id === 'string') this.calls.set(b.id, item);
     this.items.push(item);
@@ -137,9 +159,10 @@ export class TranscriptItemParser {
     const call = typeof b.tool_use_id === 'string' ? this.calls.get(b.tool_use_id) : undefined;
     if (!call) return;
     if (toolUseResult === 'User rejected tool use') call.status = 'declined';
-    if (!PAIRED_TOOLS.has(call.tool)) return;
+    else if (this.forHandoff) call.status = b.is_error ? 'failed' : 'completed';
+    if (!this.forHandoff && !PAIRED_TOOLS.has(call.tool)) return;
     const text = toolResultText(b.content);
-    if (text) call.resultText = text;
+    if (text !== undefined && (this.forHandoff || text)) call.resultText = text;
   }
 
   private nextId(prefix: string): string {

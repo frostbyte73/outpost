@@ -1,12 +1,14 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionManager } from '../../src/session/session-manager.js';
 import { SessionStore } from '../../src/session/session-store.js';
 import { ClaudeTranscripts } from '../../src/runtime/claude/transcripts.js';
 import { RuntimeRegistry } from '../../src/runtime/registry.js';
-import type { AgentRuntime, StartOpts } from '../../src/runtime/types.js';
+import { CompositeTranscripts } from '../../src/runtime/transcripts.js';
+import { JsonlTranscripts } from '../../src/runtime/jsonl-transcripts.js';
+import type { AgentRuntime, StartCallbacks, StartOpts } from '../../src/runtime/types.js';
 
 // A step session's `$OUTPOST_ENVELOPE` has to survive a respawn through ANY door, because the
 // door the user walks through is the one that drops it: wake() (the PWA resuming the session)
@@ -130,4 +132,75 @@ describe('system prompt stickiness', () => {
     await manager.wake('chat-1');
     expect(spawned[0]!.appendSystemPrompt).toBeUndefined();
   });
+});
+
+it('continues one transcript across a cold runtime switch and a return to Claude', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'outpost-handoff-'));
+  const claude = new ClaudeTranscripts(join(cwd, 'claude'));
+  const codex = new JsonlTranscripts(join(cwd, 'codex'));
+  const launches: { opts: StartOpts; callbacks: StartCallbacks }[] = [];
+  const sent: { token: string; block: string }[] = [];
+  const adapter = (id: string, transcripts: AgentRuntime['transcripts']) => ({
+    id, available: true, transcripts,
+    start(opts, callbacks) {
+      launches.push({ opts, callbacks });
+      return {
+        sendTurn(turn, seed) {
+          if (seed) sent.push(seed);
+          const transcriptId = opts.transcriptId ?? opts.sessionId;
+          if (id === 'claude') {
+            const dir = claude.projectDirFor(cwd);
+            mkdirSync(dir, { recursive: true });
+            appendFileSync(join(dir, `${transcriptId}.jsonl`), JSON.stringify({
+              cwd, type: 'user', message: { role: 'user', content: [
+                { type: 'text', text: turn.text },
+                ...(seed ? [{ type: 'text', text: seed.block }] : []),
+              ] },
+            }) + '\n');
+          } else {
+            codex.append(transcriptId, cwd, { id: 'u1', type: 'user_message', text: turn.text });
+          }
+          if (seed) callbacks.onSeedAccepted?.(seed.token);
+        },
+        interrupt() {},
+        async kill() {},
+      };
+    },
+  } satisfies Pick<AgentRuntime, 'id' | 'available' | 'transcripts' | 'start'>) as AgentRuntime;
+  const registry = new RuntimeRegistry(adapter('claude', claude), [adapter('codex', codex)]);
+  const reopen = () => {
+    const store = new SessionStore({
+      transcripts: new CompositeTranscripts(claude, [{ root: codex.root, reader: codex }]),
+      sessionMetaDir: join(cwd, 'meta'),
+    });
+    return { store, manager: new SessionManager({ runtimes: registry, sessionStore: store }) };
+  };
+  const first = reopen();
+  first.manager.sendOrResume('chat-1', cwd, { text: 'First prompt' });
+  await first.manager.switchRuntime('chat-1', 'codex', 'chat-1', () => {});
+  expect(first.manager.acceptsWorkSubmission('chat-1', launches[0]!.opts.launchCredential)).toBe(false);
+
+  const resumed = reopen();
+  resumed.manager.attach('chat-1', fakeWs(), { runtime: 'claude' });
+  await resumed.manager.wake('chat-1');
+  expect(launches[1]!.opts).toMatchObject({ mode: 'new', sessionId: 'chat-1' });
+  expect(resumed.store.currentSegment('chat-1')?.seedPending).toBe(true);
+  resumed.manager.sendTurn('chat-1', { text: 'Second prompt' });
+  expect(sent[0]?.block).toContain('First prompt');
+  expect(resumed.store.currentSegment('chat-1')?.seedPending).toBe(false);
+  await resumed.manager.switchRuntime('chat-1', 'claude', resumed.manager.runtimeVersion('chat-1'), () => {});
+  launches[1]!.opts.saveNativeId?.('retired-native-id');
+  launches[1]!.callbacks.onSeedAccepted?.(sent[0]!.token);
+  expect(resumed.store.currentSegment('chat-1')).toMatchObject({ runtime: 'claude', seedPending: true });
+  expect(resumed.store.currentSegment('chat-1')?.nativeId).toBeUndefined();
+  resumed.manager.sendOrResume('chat-1', cwd, { text: 'Third prompt' });
+  launches[1]!.callbacks.onExit(1);
+  expect(launches[1]!.opts.canStartTool?.()).toBe(false);
+  expect(resumed.manager.isWorking('chat-1')).toBe(true);
+  expect(resumed.manager.acceptsWorkSubmission('chat-1', launches[2]!.opts.launchCredential)).toBe(true);
+  expect(launches[2]!.opts.transcriptId).not.toBe('chat-1');
+  expect(sent[1]?.block).toContain('Second prompt');
+  expect(resumed.store.readItems('chat-1').map((item) => 'text' in item && item.text))
+    .toEqual(['First prompt', 'Second prompt', 'Third prompt']);
+  await resumed.manager.close('chat-1');
 });

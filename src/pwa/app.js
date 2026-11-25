@@ -282,6 +282,7 @@ async function mountMobileSessionView() {
     spawnMode: hint?.spawnMode ?? null,
     baseBranch: hint?.baseBranch ?? null,
     model: hint?.model ?? null,
+    runtime: hint?.runtime ?? null,
     fromTicketId: s.currentSessionFromTicketId ?? null,
     approvalMode: hint?.approvalMode ?? s.approvalMode,
   });
@@ -470,12 +471,14 @@ async function openSession(id, opts) {
 // Runs for both foreground and background sessions — the WS is opened
 // explicitly for `id` upstream, so the catch-up target is `id`, not
 // currentSessionId.
-async function catchUpFromDisk(id) {
+async function catchUpFromDisk(id, shouldApply = () => true, epoch) {
   try {
     const r = await fetch(`/api/sessions/${encodeURIComponent(id)}/messages`);
     if (!r.ok || !sessions.getSlice(id)) return;
-    const messages = (await r.json()).items.flatMap(itemToEntries);
-    if (!sessions.getSlice(id)) return;
+    const snapshot = await r.json();
+    if (epoch && snapshot.epoch !== epoch) return;
+    const messages = snapshot.items.flatMap(itemToEntries);
+    if (!shouldApply() || !sessions.getSlice(id)) return;
     const isCurrent = id === sessions.get().currentSessionId;
     const S = sessions.for(id);
 
@@ -484,39 +487,40 @@ async function catchUpFromDisk(id) {
     const diskAssistantCount = messages.filter((m) => m.role === 'assistant').length;
     const slice = sessions.getSlice(id);
     const memAssistantCount = slice.transcript.filter((m) => m.role === 'assistant').length;
-    if (diskAssistantCount > memAssistantCount + 1) {
+    if (epoch || diskAssistantCount > memAssistantCount + 1) {
       rebuildTranscriptFromDisk(messages, id);
       try {
         const r2 = await fetch(`/api/sessions/${encodeURIComponent(id)}/subagents`);
-        if (r2.ok && sessions.getSlice(id)) {
+        if (r2.ok && shouldApply() && sessions.getSlice(id)) {
           const body = await r2.json();
-          applyDiskSubagents(body.subagents || [], id);
+          if (shouldApply()) applyDiskSubagents(body.subagents || [], id);
         }
       } catch { /* ignore */ }
       if (isCurrent && sessions.get().view === 'session') renderSession();
-      return;
+      return snapshot;
     }
 
-    // user messages have no msgId, so block dedup can't catch them; skip by count instead.
-    // `!` shell tiles have the same problem — disk only learns of them once they ride into
-    // the next user message, and by then the live tile is already in the transcript.
-    let userMsgsToSkip = slice.transcript.filter((m) => m.role === 'user').length;
-    let shellMsgsToSkip = slice.transcript.filter((m) => m.role === 'shell').length;
+    const seenItems = new Set(slice.transcript.map((m) => m.itemId).filter(Boolean));
+    const localEntries = slice.transcript.filter((m) => !m.itemId && (m.role === 'user' || m.role === 'shell'));
     let added = false;
     for (const m of messages) {
       if (m.role === 'tool_use' && m.toolUseId) {
         if (subagents.hasBlockSig(m.toolUseId)) continue;
         subagents.markBlockSigSeen(m.toolUseId);
-      } else if (m.role === 'assistant' && m.msgId) {
-        const sig = `${m.msgId}|${m.text}`;
+      } else if (m.role === 'assistant' && (m.msgId || m.itemId)) {
+        const sig = m.msgId ? `${m.msgId}|${m.text}` : `${id}|${m.itemId}`;
         if (subagents.hasBlockSig(sig)) continue;
         subagents.markBlockSigSeen(sig);
       } else if (m.role === 'tool_result' && m.toolUseId && approvals.get().consumedTaskResults.has(m.toolUseId)) {
         continue;
-      } else if (m.role === 'user') {
-        if (userMsgsToSkip > 0) { userMsgsToSkip--; continue; }
-      } else if (m.role === 'shell') {
-        if (shellMsgsToSkip > 0) { shellMsgsToSkip--; continue; }
+      } else if (m.itemId) {
+        if (seenItems.has(m.itemId)) continue;
+        const local = localEntries.findIndex((x) => x.role === m.role && x.text === m.text);
+        if (local >= 0) {
+          const [matched] = localEntries.splice(local, 1);
+          S.setTranscript(sessions.getSlice(id).transcript.map((x) => x === matched ? { ...x, itemId: m.itemId } : x));
+          continue;
+        }
       }
       if (applyTaskTranscriptMessage(m, id)) { added = true; continue; }
       if (applyAskTranscriptMessage(m, sessions.getSlice(id)?.transcript ?? [], id)) { added = true; continue; }
@@ -539,6 +543,7 @@ async function catchUpFromDisk(id) {
       }
     } catch { /* ignore */ }
     if (added && isCurrent && sessions.get().view === 'session') renderSession();
+    return snapshot;
   } catch (e) {
     console.warn('failed to catch up from disk:', e);
   }
@@ -550,18 +555,13 @@ function rebuildTranscriptFromDisk(messages, sessionId) {
   if (!sid) return;
   const S = sessions.for(sid);
   const slice = sessions.getSlice(sid);
-  const diskUserTexts = new Set(
-    messages.filter((m) => m.role === 'user' && typeof m.text === 'string').map((m) => m.text),
-  );
-  const pendingLocalUsers = (slice?.transcript ?? []).filter(
-    (m) => m.role === 'user' && !m.msgId && !diskUserTexts.has(m.text),
-  );
-  // Same reasoning for `!` runs: one reaches disk only when the next user message carries
-  // it, so a rebuild before that would drop tiles whose output is still queued.
-  const diskShellCommands = new Set(messages.filter((m) => m.role === 'shell').map((m) => m.text));
-  const pendingLocalShell = (slice?.transcript ?? []).filter(
-    (m) => m.role === 'shell' && !diskShellCommands.has(m.text),
-  );
+  const knownIds = new Set(slice?.transcript.map((m) => m.itemId));
+  const pending = (slice?.transcript ?? []).filter((m) => !m.itemId && (m.role === 'user' || m.role === 'shell'));
+  for (const m of messages) {
+    if (!m.itemId || knownIds.has(m.itemId)) continue;
+    const local = pending.findIndex((p) => p.role === m.role && p.text === m.text);
+    if (local >= 0) pending.splice(local, 1);
+  }
 
   // Only reset per-session state — the global dedup sets (seenBlockSigs,
   // consumedTaskResults, taskToolUseIds, pendingCreates) are shared with
@@ -571,7 +571,9 @@ function rebuildTranscriptFromDisk(messages, sessionId) {
   const filtered = [];
   for (const m of messages) {
     if (m.toolUseId) subagents.markBlockSigSeen(m.toolUseId);
-    if (m.role === 'assistant' && m.msgId) subagents.markBlockSigSeen(`${m.msgId}|${m.text}`);
+    if (m.role === 'assistant' && (m.msgId || m.itemId)) {
+      subagents.markBlockSigSeen(m.msgId ? `${m.msgId}|${m.text}` : `${sid}|${m.itemId}`);
+    }
     if (applyTaskTranscriptMessage(m, sid)) continue;
     if (applyAskTranscriptMessage(m, filtered, sid)) continue;
     if (m.role === 'tool_use' && m.tool === 'subagent' && m.toolInput && typeof m.toolInput === 'object') {
@@ -583,7 +585,7 @@ function rebuildTranscriptFromDisk(messages, sessionId) {
     }
     filtered.push(m);
   }
-  S.setTranscript([...filtered, ...pendingLocalShell, ...pendingLocalUsers]);
+  S.setTranscript([...filtered, ...pending]);
 }
 
 function leaveSession() {

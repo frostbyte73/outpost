@@ -4,6 +4,7 @@ import { ACP_AGENT_ID } from '../types.js';
 
 export interface AcpAgentConfig {
   id: string;
+  label?: string;
   command: string;
   args: string[];
   env: Record<string, string>;
@@ -17,6 +18,7 @@ export interface AcpAgentConfig {
 const SEEDED: AcpAgentConfig[] = [
   {
     id: 'gemini',
+    label: 'Gemini CLI',
     command: 'gemini',
     args: ['--experimental-acp'],
     env: {},
@@ -25,6 +27,7 @@ const SEEDED: AcpAgentConfig[] = [
   },
   {
     id: 'opencode',
+    label: 'OpenCode',
     command: 'opencode',
     args: ['acp'],
     env: { OPENCODE_CONFIG_CONTENT: JSON.stringify({ permission: { edit: 'ask', bash: 'ask', webfetch: 'ask' } }) },
@@ -86,6 +89,7 @@ function parseAgent(e: unknown, seen: AcpAgentConfig[]): AcpAgentConfig | string
   }
   return {
     id: o.id,
+    ...(typeof o.label === 'string' && o.label.trim() ? { label: o.label } : {}),
     command: o.command,
     args: args as string[],
     env: env as Record<string, string>,
