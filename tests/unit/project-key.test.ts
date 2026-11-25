@@ -10,7 +10,7 @@ describe('projectKeyFromRemote', () => {
     ['https://user@gitlab.com/group/sub/repo.git\n', 'gitlab.com/group/sub/repo'],
     ['not a url', undefined],
     ['https://github.com/', undefined],
-    ['file:///Users/dc/repo', undefined],
+    ['file:///Users/testuser/repo', undefined],
   ])('%s → %s', (url, key) => {
     expect(projectKeyFromRemote(url)).toBe(key);
   });
