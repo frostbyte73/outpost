@@ -88,6 +88,10 @@ function currentStepIds(steps) {
     .map((s) => s.id));
 }
 
+function childJobOf(s) {
+  return s.type === 'action' && s.action === 'meta.job' && s.childJobId ? work.get().byId.get(s.childJobId) ?? null : null;
+}
+
 function timelineHtml(job, now) {
   const steps = (job.steps ?? []).filter((s) => !s.cancelled);
   if (!steps.length) return '';
@@ -95,7 +99,9 @@ function timelineHtml(job, now) {
   const positions = computeGroupPositions(steps);
   const rows = steps.map((s, i) => {
     if (current.has(s.id)) {
-      return `<div class="ckb-tl-current">${renderTimelineStep(job, s, i, positions[i])}</div>`;
+      const child = childJobOf(s);
+      const nested = child ? `<div class="ckb-tl-child">${timelineHtml(child, now)}</div>` : '';
+      return `<div class="ckb-tl-current">${renderTimelineStep(job, s, i, positions[i])}${nested}</div>`;
     }
     const action = s.type === 'action' ? s.action : s.controller;
     return `
@@ -104,7 +110,17 @@ function timelineHtml(job, now) {
       <span class="type-mono" data-cat="${escapeHtml(actionCategory(action))}">${escapeHtml(actionDisplayName(action))}</span>
       <span class="ckb-tl-age">${escapeHtml(relPast(s.updatedAt ?? job.updatedAt, now) ?? '')}</span>`;
   }).join('');
-  return `<div class="ckb-tl">${rows}</div>`;
+  return `<div class="ckb-tl" data-tl-job="${escapeHtml(job.id)}">${rows}</div>`;
+}
+
+// The job and every child job its meta.job steps reach, at any depth.
+function jobTree(job) {
+  const out = [job];
+  for (const s of job.steps ?? []) {
+    const child = childJobOf(s);
+    if (child) out.push(...jobTree(child));
+  }
+  return out;
 }
 
 function fieldKey(f, i) {
@@ -223,8 +239,28 @@ function isPlanView(job) {
 // Repaints only when something the step card reads has moved, so live feeds keep their mounts
 // and typing survives everything else.
 function stepsPaintKey(job) {
-  return [job.id, job.updatedAt, JSON.stringify(job.live ?? null), prPatches.get().version,
-    worktreeChanges.get().version, [...work.get().openingWaits].join(',')].join(':');
+  const tree = jobTree(job).map((j) => `${j.id}@${j.updatedAt}${JSON.stringify(j.live ?? null)}`).join('|');
+  return [tree, prPatches.get().version, worktreeChanges.get().version, [...work.get().openingWaits].join(',')].join(':');
+}
+
+// One reconciler per job in the tree, so a child's sessions are matched against the child's steps.
+function syncTreeMounts(root, mounts) {
+  const seen = new Set();
+  root.querySelectorAll('[data-tl-job]').forEach((el) => {
+    const job = work.get().byId.get(el.getAttribute('data-tl-job'));
+    if (!job) return;
+    seen.add(job.id);
+    if (!mounts.has(job.id)) mounts.set(job.id, createInlineMounts());
+    mounts.get(job.id).sync(el, job);
+  });
+  for (const [id, m] of mounts) {
+    if (!seen.has(id)) { m.teardown(); mounts.delete(id); }
+  }
+}
+
+function teardownTreeMounts(mounts) {
+  for (const m of mounts.values()) m.teardown();
+  mounts.clear();
 }
 
 function mountCaretBody(el, model) {
@@ -232,11 +268,11 @@ function mountCaretBody(el, model) {
   let paintKey = null;
   let regions = null;
   let current = model;
-  const mounts = createInlineMounts();
+  const mounts = new Map();
 
   const build = (job) => {
     layout = isPlanView(job) ? 'plan' : 'tl';
-    mounts.teardown();
+    teardownTreeMounts(mounts);
     el.innerHTML = `<div data-ckb-region="${layout}"></div>${openFullHtml()}`;
     regions = { plan: el.querySelector('[data-ckb-region="plan"]'), tl: el.querySelector('[data-ckb-region="tl"]') };
     paintKey = null;
@@ -249,10 +285,11 @@ function mountCaretBody(el, model) {
     paintKey = key;
     const snap = regions.tl.firstChild ? snapshotUi(regions.tl) : null;
     regions.tl.innerHTML = timelineHtml(job, Date.now());
-    mounts.sync(regions.tl, job);
+    syncTreeMounts(regions.tl, mounts);
     regions.tl.querySelectorAll('.tl-step').forEach((stepEl) => {
-      const step = stepOf(job, stepEl.getAttribute('data-step-id'));
-      if (step) wireTimelineStep(stepEl, job, step);
+      const owner = work.get().byId.get(stepEl.closest('[data-tl-job]')?.getAttribute('data-tl-job'));
+      const step = stepOf(owner, stepEl.getAttribute('data-step-id'));
+      if (step) wireTimelineStep(stepEl, owner, step);
     });
     wireAutogrow(regions.tl);
     if (snap) restoreUi(regions.tl, snap);
@@ -278,7 +315,7 @@ function mountCaretBody(el, model) {
   const unsubs = [prPatches, worktreeChanges].map((store) => store.subscribe(() => paint(current)));
   return {
     update: paint,
-    unmount() { for (const u of unsubs) u(); mounts.teardown(); el.textContent = ''; },
+    unmount() { for (const u of unsubs) u(); teardownTreeMounts(mounts); el.textContent = ''; },
   };
 }
 

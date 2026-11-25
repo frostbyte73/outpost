@@ -120,9 +120,11 @@ export function createInlineMounts() {
         if (wait) waitCwds.set(wait.id, wait.cwd);
       }
 
+      const scope = root.closest('[data-tl-job]');
       root.querySelectorAll('[data-session-id]').forEach((el) => {
         const sessionId = el.getAttribute('data-session-id');
-        if (!sessionId) return;
+        // A nested child job's sessions belong to that job's own reconciler.
+        if (!sessionId || el.closest('[data-tl-job]') !== scope) return;
         seen.add(sessionId);
         const step = stepForSession(job, sessionId);
         const live = isLive(sessionId);

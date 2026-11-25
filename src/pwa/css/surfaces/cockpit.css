@@ -280,6 +280,7 @@ html[data-layout="mobile"] .cockpit-group:first-child { margin-top: 0; }
 .ckb-tl-current { grid-column: 1 / -1; margin: var(--gap-2) 0; }
 .ckb-tl-current .tl-step { margin-left: 3px; padding-bottom: 0; border-left-color: transparent; }
 .ckb-tl-current .tl-content { padding-left: 11px; }
+.ckb-tl-child { margin: var(--gap-2) 0 0 3px; padding-left: var(--gap-3); border-left: 1px solid var(--line); }
 .ckb-tl-sub { grid-column: 2 / -1; margin-top: calc(-1 * var(--gap-1)); font-size: 12px; color: var(--text-mute); }
 .ckb-tl-age { font-size: 12px; color: var(--text-mute); font-variant-numeric: tabular-nums; text-align: right; }
 .ckb-body-actions { display: flex; gap: var(--gap-2); flex-wrap: wrap; align-items: center; }
