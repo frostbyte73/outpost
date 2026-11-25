@@ -33,6 +33,9 @@ export const actionHandler: StepHandler<ActionStep> = {
     // (`resumeAt`) elapses; meta.session parks it behind a session the user drives.
     const runner = ctx.actionRegistry?.getAction(s.action)?.frontmatter.outpost.runner;
     if (runner === 'builtin') {
+      if (s.action === 'meta.job') {
+        return s.state === 'running' && !s.childJobId ? { kind: 'start-child-job', jobId: job.id, stepId: s.id } : null;
+      }
       if (s.action === 'meta.session') {
         return s.state === 'running' ? { kind: 'start-session', jobId: job.id, stepId: s.id } : null;
       }

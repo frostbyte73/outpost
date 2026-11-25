@@ -47,7 +47,7 @@ export function jobStatus(j) {
 export function trackedGroups(jobs = []) {
   const g = { running: [], needsYou: [], waiting: [], backlog: [], done: [] };
   const bucket = { done: 'done', failed: 'needsYou', backlog: 'backlog', running: 'running', 'needs-you': 'needsYou', queued: 'waiting', waiting: 'waiting' };
-  for (const j of jobs) g[bucket[jobStatus(j)]].push(j);
+  for (const j of jobs) if (!j.parentRef) g[bucket[jobStatus(j)]].push(j);
   return g;
 }
 
@@ -60,6 +60,7 @@ export function trackedGroups(jobs = []) {
 export function trackedRows(jobs = []) {
   const active = [], done = [];
   for (const j of jobs) {
+    if (j.parentRef) continue;
     if (j.state === 'done' || j.state === 'abandoned') done.push(j);
     else active.push(j);
   }

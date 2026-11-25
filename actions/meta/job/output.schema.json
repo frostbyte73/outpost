@@ -1,0 +1,13 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.job output",
+  "type": "object",
+  "required": ["child_job_id", "state"],
+  "properties": {
+    "child_job_id": { "type": "string" },
+    "state": { "type": "string", "description": "The child job's final state." },
+    "prs": { "type": "array", "items": { "type": "string" }, "description": "PRs the child's steps opened." },
+    "last_output": { "type": "string", "description": "Output of the child's last resolved action step." }
+  },
+  "additionalProperties": false
+}

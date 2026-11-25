@@ -175,6 +175,8 @@ export interface ActionStep extends StepBase {
   // action's own session. The cwd is kept because a session with no turn yet has no transcript
   // for a later attach to find it by.
   manualSession?: { id: string; cwd: string };
+  // A meta.job step's child job, once created or linked.
+  childJobId?: string;
 }
 
 export interface Dispatch {
@@ -450,6 +452,8 @@ export interface JobRecord {
   // Set on jobs created via "promote to tracked" (POST /api/work/jobs/from-session/:id) —
   // links the manual job back to the interactive session it was spun out of.
   originSessionId?: string;
+  // Set on a job that runs as a meta.job step of another job.
+  parentRef?: { jobId: string; stepId: string };
   // Bypasses the token-launch queue: a high-priority job's launches fire immediately,
   // regardless of token headroom or the concurrency slot budget. Absent = normal.
   highPriority?: boolean;

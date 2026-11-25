@@ -147,6 +147,8 @@ export function renderDetail(mount) {
     const push = m.actions.find((a) => a.kind === 'push');
     if (push && m.actions.length === 1) { openDiffForStep({ jobId: m.id, stepId: push.stepId, sessionId: push.sessionId }); return; }
     if (m.kind === 'session') { expansion.open(m.key, 'caret'); return; }
+    const child = m.actions.find((a) => a.kind === 'child');
+    if (child && !hasOpenableAction(m)) { nav.select('tracked', child.jobId); return; }
     if (hasOpenableAction(m)) { expansion.open(m.key, 'action'); return; }
     rows.get(m.key)?.el.querySelector('.ckb-feeds .inline-approval, .ckb-feeds .ask-card')?.scrollIntoView({ block: 'nearest' });
   }

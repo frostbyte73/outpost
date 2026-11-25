@@ -11,6 +11,8 @@ export type Action =
   | { kind: 'resolve-wait'; jobId: string; stepId: string; by: 'timer' }
   // meta.session (builtin runner): park the step and start the user's session on it.
   | { kind: 'start-session'; jobId: string; stepId: string }
+  // meta.job (builtin runner): create or link the step's child job.
+  | { kind: 'start-child-job'; jobId: string; stepId: string }
   | { kind: 'deliver-inbox'; jobId: string; stepId: string }
   | { kind: 'write-linear-in-progress'; linearUuid: string; jobId: string }
   | { kind: 'write-linear-in-review';   linearUuid: string; jobId: string }

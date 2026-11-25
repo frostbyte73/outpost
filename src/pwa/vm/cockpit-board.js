@@ -98,6 +98,7 @@ const ACTION_TEXT = {
   push: () => 'Review diff & push',
   approval: (a) => `Approve ${a.toolName}`,
   driven: () => 'You have the wheel',
+  child: (a) => `${a.title}: ${a.text}`,
 };
 
 function actionsText(actions, j) {
@@ -120,6 +121,7 @@ function idleText(j, feeds) {
   const step = (j.steps ?? []).find((s) => !s.cancelled && !isTerminalStep(s));
   if (!step) return 'Waiting';
   if (step.type !== 'orchestrated') {
+    if (step.action === 'meta.job' && step.childJobId) return step.title;
     if (step.state !== 'waiting') return 'Queued';
     return step.action === 'meta.session' ? 'Your session' : 'Soaking';
   }
@@ -128,14 +130,32 @@ function idleText(j, feeds) {
   return pr ? `PR #${pr} · ${line}` : line;
 }
 
-function jobRow(j, pendingApprovals, openingWaits) {
-  const actions = jobActions(j, pendingApprovals, openingWaits);
+// A child job (a meta.job step) has no row of its own, so whatever it needs, at any depth, shows on its root's.
+function childActions(children, childrenOf, pendingApprovals, openingWaits) {
+  const out = [];
+  for (const c of children) {
+    if (c.state === 'done' || c.state === 'abandoned') continue;
+    const own = jobActions(c, pendingApprovals, openingWaits);
+    if (own.length) out.push({ kind: 'child', jobId: c.id, title: c.title ?? '(untitled job)', text: actionsText(own, c) });
+    out.push(...childActions(childrenOf.get(c.id) ?? [], childrenOf, pendingApprovals, openingWaits));
+  }
+  return out;
+}
+
+function anyLive(children, childrenOf) {
+  return children.some((c) => jobFeeds(c).length > 0 || anyLive(childrenOf.get(c.id) ?? [], childrenOf));
+}
+
+function jobRow(j, pendingApprovals, openingWaits, childrenOf = new Map()) {
+  const children = childrenOf.get(j.id) ?? [];
+  const actions = [...jobActions(j, pendingApprovals, openingWaits), ...childActions(children, childrenOf, pendingApprovals, openingWaits)];
   const feeds = jobFeeds(j);
+  const childLive = anyLive(children, childrenOf);
   const onlyFailed = actions.length > 0 && actions.every((a) => a.kind === 'failed');
   const finished = j.state === 'done' || j.state === 'failed';
   let tone;
   if (j.state === 'failed') tone = 'failed';
-  else if (feeds.length) tone = 'live';
+  else if (feeds.length || childLive) tone = 'live';
   else if (onlyFailed) tone = 'failed';
   else if (actions.length) tone = 'you';
   else tone = planIsLive(j) ? 'parked' : 'idle';
@@ -143,7 +163,7 @@ function jobRow(j, pendingApprovals, openingWaits) {
   let status;
   if (j.state === 'done') status = { text: 'Done', tone: 'mute' };
   else if (actions.length) status = { text: actionsText(actions, j), tone: onlyFailed ? 'failed' : 'you' };
-  else status = { text: idleText(j, feeds), tone: feeds.length ? 'live' : 'mute' };
+  else status = { text: idleText(j, feeds), tone: feeds.length || childLive ? 'live' : 'mute' };
   return {
     key: `job:${j.id}`, kind: 'job', id: j.id,
     ref: j.externalRef?.issueIdentifier ?? null, refMono: true, kindLabel: null,
@@ -202,9 +222,15 @@ export function cockpitBoard({
   launched = new Set(), now = Date.now(),
 } = {}) {
   const started = [], notStarted = [];
+  const childrenOf = new Map();
   for (const j of jobs) {
-    if (j.state === 'abandoned' || j.dismissedAt != null) continue;
-    const row = jobRow(j, pendingApprovals, openingWaits);
+    if (!j.parentRef) continue;
+    if (!childrenOf.has(j.parentRef.jobId)) childrenOf.set(j.parentRef.jobId, []);
+    childrenOf.get(j.parentRef.jobId).push(j);
+  }
+  for (const j of jobs) {
+    if (j.parentRef || j.state === 'abandoned' || j.dismissedAt != null) continue;
+    const row = jobRow(j, pendingApprovals, openingWaits, childrenOf);
     if (planIsLive(j)) started.push(row);
     else notStarted.push(row);
   }

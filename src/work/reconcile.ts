@@ -61,6 +61,9 @@ export function validateDispositions(current: Step[], proposed: ProposedStep[], 
     }
     keepIds.add(p.keepId);
     const cur = byId.get(p.keepId)!;
+    if (cur.type === 'action' && cur.action === 'meta.job' && cur.childJobId && !(p.type === 'action' && p.action === 'meta.job')) {
+      return { ok: false, error: `step "${p.keepId}" ("${cur.title}") already started job ${cur.childJobId} and must stay a meta.job step — drop it instead` };
+    }
     if (isCompleted(cur)) {
       const changed = Object.keys(buildPatch(cur, p));
       if (changed.length > 0) {

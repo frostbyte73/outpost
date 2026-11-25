@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "meta.job input",
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["title", "brief"],
+      "properties": {
+        "title": { "type": "string", "minLength": 1, "description": "The child job's title." },
+        "brief": { "type": "string", "minLength": 1, "description": "The child job's description: a self-contained brief its planner works from." }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": ["job_id"],
+      "properties": {
+        "job_id": { "type": "string", "minLength": 1, "description": "Id of an existing job to run as this step." }
+      },
+      "additionalProperties": false
+    }
+  ]
+}

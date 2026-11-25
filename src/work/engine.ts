@@ -238,6 +238,7 @@ type SessionRole =
 export class WorkEngine {
   private readonly ctx: HandlerCtx;
   private readonly roleBySession = new Map<string, SessionRole>();
+  private readonly parentTicks = new Set<string>();
   private readonly actionBySession = new Map<string, string>();
   // Per (long-lived, cross-round) step session: count of Stop hooks owed by turns that
   // were already superseded by a queued resume. When a round is dispatched onto a session
@@ -621,6 +622,10 @@ export class WorkEngine {
       preapprovalDefaults: opts.preapprovalDefaults,
       prReviewers: opts.prReviewers,
     };
+    // A child job's every change may settle its parent's meta.job step.
+    opts.queue.subscribe((ev) => {
+      if (ev.kind === 'upsert' && ev.job.parentRef) this.tickParentSoon(ev.job.parentRef.jobId);
+    });
   }
 
   async tick(jobId?: string): Promise<void> {
@@ -789,8 +794,9 @@ export class WorkEngine {
   }
 
   private async tickOne(jobId: string): Promise<void> {
-    let j = this.opts.queue.get(jobId);
-    if (!j) return;
+    if (!this.opts.queue.get(jobId)) return;
+    this.syncChildSteps(jobId);
+    let j = this.opts.queue.get(jobId)!;
 
     // A `failed` job is a halt, not a grave. `failed` is set the moment any step
     // carries a failure (decideJobTransitions), so once every failure has cleared —
@@ -866,6 +872,9 @@ export class WorkEngine {
       case 'start-session':
         await this.startSessionStep(a.jobId, a.stepId);
         break;
+      case 'start-child-job':
+        this.startChildJob(a.jobId, a.stepId);
+        break;
       case 'deliver-inbox':
         deliverInbox(this.orchestratedHost(), a.jobId, a.stepId);
         this.syncOrchestratedWake(a.jobId, a.stepId);
@@ -895,6 +904,7 @@ export class WorkEngine {
     preapprovals?: Preapprovals;
     planReview?: 'gate' | 'auto';
     runtime?: RuntimeId;
+    parentRef?: JobRecord['parentRef'];
   }): JobRecord {
     const id = input.id ?? this.ctx.newId();
     const now = this.ctx.now();
@@ -909,6 +919,7 @@ export class WorkEngine {
       ...(input.preapprovals ? { preapprovals: input.preapprovals } : {}),
       ...(input.planReview ? { planReview: input.planReview } : {}),
       ...(input.runtime ? { runtime: input.runtime } : {}),
+      ...(input.parentRef ? { parentRef: input.parentRef } : {}),
       specGateMigrated: true,
       dismissMigrated: true,
       state: 'planning',
@@ -1154,6 +1165,7 @@ export class WorkEngine {
     if (!j) return;
     await this.terminateJobResources(j);
     this.mutate(jobId, (jj) => this.appendEvent({ ...jj, state: 'abandoned' }, { kind: 'abandoned', who: 'user' }));
+    await this.releaseChildren(j);
   }
 
   // Settle a job as done by hand — the work finished outside Outpost (CI fixed manually,
@@ -1178,6 +1190,7 @@ export class WorkEngine {
         ? s
         : ({ ...s, cancelled: true, updatedAt: now } as Step))),
     }, { kind: 'state_changed', ...by }));
+    await this.releaseChildren(j);
     void this.tickOne(jobId);
   }
 
@@ -1185,8 +1198,10 @@ export class WorkEngine {
     const j = this.opts.queue.get(jobId);
     if (!j) return;
     if (j.source !== 'manual') throw new Error('only manual jobs can be deleted');
+    await this.releaseChildren(j);
     await this.terminateJobResources(j);
     this.opts.queue.delete(jobId);
+    if (j.parentRef) this.tickParentSoon(j.parentRef.jobId);
   }
 
   // Close any live sessions bound to this job and archive every worktree it owns.
@@ -1459,6 +1474,7 @@ export class WorkEngine {
       pendingReconciliation: undefined,
       state: 'executing',
     }, { kind: 'plan_reconciled', who: opts.auto ? 'system' : 'user' }));
+    this.detachCancelledChildren(jobId);
     void this.tickOne(jobId);
   }
 
@@ -1566,6 +1582,123 @@ export class WorkEngine {
       }));
     }
     void this.tickOne(jobId);
+  }
+
+  // ─────────────────────────────────────────────────────────
+  // meta.job — a step whose work is another job, created or linked when the step comes up.
+  // ─────────────────────────────────────────────────────────
+
+  private startChildJob(jobId: string, stepId: string): void {
+    const parent = this.opts.queue.get(jobId);
+    const s = parent?.steps.find((x) => x.id === stepId);
+    if (!parent || !s || s.type !== 'action' || s.childJobId || s.cancelled || s.failure) return;
+    const inputs = s.inputs ?? {};
+    let childId: string;
+    if (typeof inputs.job_id === 'string') {
+      childId = inputs.job_id;
+      const refusal = this.childLinkRefusal(parent, childId);
+      if (refusal) { this.onStepFailed(jobId, stepId, refusal, { journal: false }); return; }
+      this.mutate(childId, (c) => ({ ...c, parentRef: { jobId, stepId } }));
+    } else if (typeof inputs.title === 'string' && typeof inputs.brief === 'string') {
+      // A retry after an abandoned or deleted child gets a fresh id; the old one stays taken.
+      childId = `${jobId}-${stepId}`;
+      for (let n = 2; this.opts.queue.get(childId); n++) childId = `${jobId}-${stepId}-${n}`;
+      this.createJob({
+        source: 'job-step', id: childId, dedupeKey: childId,
+        title: inputs.title, description: inputs.brief, autoPlan: true,
+        parentRef: { jobId, stepId },
+        ...(parent.runtime ? { runtime: parent.runtime } : {}),
+        ...(parent.planReview ? { planReview: parent.planReview } : {}),
+        ...(parent.highPriority ? { highPriority: true } : {}),
+      });
+    } else {
+      this.onStepFailed(jobId, stepId, 'meta.job needs either title and brief, or job_id', { journal: false });
+      return;
+    }
+    this.mutateStep(jobId, stepId, (x) => ({ ...x, childJobId: childId, updatedAt: this.ctx.now() }) as Step);
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'orchestrator', stepId,
+      body: `${this.stepLabel(jobId, stepId)} — started job ${childId}`,
+    }));
+    void this.tickOne(jobId);
+  }
+
+  // State-based rather than event-based, so a parent ticked after a restart settles like a live one.
+  private syncChildSteps(jobId: string): void {
+    const j = this.opts.queue.get(jobId)!;
+    if (j.state === 'done' || j.state === 'abandoned') return;
+    for (const s of j.steps) {
+      if (s.type !== 'action' || s.action !== 'meta.job' || !s.childJobId || s.cancelled || s.state === 'resolved') continue;
+      const child = this.opts.queue.get(s.childJobId);
+      const broken = !child ? 'child job deleted'
+        : child.state === 'failed' || child.state === 'abandoned' ? `child job ${child.id} ${child.state}`
+        : undefined;
+      if (broken) {
+        if (s.failure?.reason !== broken) this.onStepFailed(jobId, s.id, broken, { journal: false });
+      } else if (child!.state === 'done') {
+        this.resolveChildStep(jobId, s.id, child!);
+      } else if (s.failure) {
+        this.mutateStep(jobId, s.id, (x) => ({ ...x, failure: undefined, updatedAt: this.ctx.now() }) as Step);
+      }
+    }
+  }
+
+  private resolveChildStep(jobId: string, stepId: string, child: JobRecord): void {
+    const output = JSON.stringify(this.childSummary(child));
+    this.mutateStep(jobId, stepId, (x) => this.appendStepEvent(
+      { ...x, state: 'resolved', output, failure: undefined, updatedAt: this.ctx.now() } as Step, 'resolved', 'orchestrator',
+    ));
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'step_resolved', who: 'orchestrator', stepId,
+      body: `${this.stepLabel(jobId, stepId)} — job ${child.id} done`,
+    }));
+  }
+
+  private childSummary(child: JobRecord): { child_job_id: string; state: string; prs?: string[]; last_output?: string } {
+    const prs = child.steps.flatMap((st) => (st.type === 'orchestrated' && st.pr?.prUrl ? [st.pr.prUrl] : []));
+    const last = [...child.steps].reverse().find((st): st is ActionStep => st.type === 'action' && st.state === 'resolved' && !!st.output);
+    return {
+      child_job_id: child.id, state: child.state,
+      ...(prs.length ? { prs } : {}),
+      ...(last ? { last_output: last.output } : {}),
+    };
+  }
+
+  // A parent that ends abandons the unfinished children it created and frees the ones it linked.
+  private async releaseChildren(j: JobRecord): Promise<void> {
+    for (const s of j.steps) {
+      if (s.type !== 'action' || s.action !== 'meta.job' || !s.childJobId) continue;
+      const child = this.opts.queue.get(s.childJobId);
+      if (child?.parentRef?.jobId !== j.id) continue;
+      if (child.source !== 'job-step') this.mutate(child.id, (c) => ({ ...c, parentRef: undefined }));
+      else if (child.state !== 'done' && child.state !== 'abandoned') await this.abandonJob(child.id);
+    }
+  }
+
+  private tickParentSoon(parentId: string): void {
+    if (this.parentTicks.has(parentId)) return;
+    this.parentTicks.add(parentId);
+    queueMicrotask(() => { this.parentTicks.delete(parentId); void this.tick(parentId); });
+  }
+
+  // A dropped meta.job step frees its child to carry on as a standalone job.
+  private detachCancelledChildren(jobId: string): void {
+    for (const s of this.opts.queue.get(jobId)?.steps ?? []) {
+      if (!s.cancelled || s.type !== 'action' || s.action !== 'meta.job' || !s.childJobId) continue;
+      const child = this.opts.queue.get(s.childJobId);
+      if (child?.parentRef?.jobId !== jobId || child.parentRef.stepId !== s.id) continue;
+      this.mutate(child.id, (c) => ({ ...c, parentRef: undefined }));
+    }
+  }
+
+  private childLinkRefusal(parent: JobRecord, childId: string): string | undefined {
+    const child = this.opts.queue.get(childId);
+    if (!child) return `job ${childId} not found`;
+    if (child.parentRef) return `job ${childId} already belongs to job ${child.parentRef.jobId}`;
+    for (let j: JobRecord | undefined = parent; j; j = j.parentRef ? this.opts.queue.get(j.parentRef.jobId) : undefined) {
+      if (j.id === childId) return `job ${childId} is this job or one of its ancestors`;
+    }
+    return undefined;
   }
 
   // ─────────────────────────────────────────────────────────
@@ -2727,6 +2860,11 @@ export class WorkEngine {
     const cur = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     const wsErr = cur ? workspaceError(cur.workspace) : null;
     if (wsErr) throw new Error(`${wsErr}. Edit the step's workspace to repair it — that re-runs it.`);
+    if (cur?.type === 'action' && cur.action === 'meta.job' && cur.childJobId) {
+      const child = this.opts.queue.get(cur.childJobId);
+      if (child?.state === 'failed') { this.rerunLatest(child.id); return; }
+      if (child?.parentRef?.jobId === jobId) this.mutate(child.id, (c) => ({ ...c, parentRef: undefined }));
+    }
     const runtimeVersion = cur?.sessionId ? this.opts.sessionManager.runtimeVersion?.(cur.sessionId) : undefined;
     if (cur?.sessionId && !isTerminalStep(cur)
       && ((cur.type === 'orchestrated' && cur.pendingRound) || (runtimeVersion && runtimeVersion !== cur.sessionId))) {
@@ -2767,6 +2905,7 @@ export class WorkEngine {
         ...(s.type === 'orchestrated'
           ? { boundAction: undefined, roundsSpent: 0, consecutiveSelfRounds: 0 }
           : {}),
+        ...(s.type === 'action' && s.action === 'meta.job' ? { childJobId: undefined } : {}),
       } as Step;
     });
     // If the job settled to a terminal state (done/failed) before the retry, restore
@@ -2807,6 +2946,7 @@ export class WorkEngine {
   async resetJob(jobId: string): Promise<boolean> {
     const j = this.opts.queue.get(jobId);
     if (!j) return false;
+    await this.releaseChildren(j);
     await this.terminateJobResources(j);
     this.mutate(jobId, (jj) => this.appendEvent({
       ...jj,
@@ -2858,6 +2998,7 @@ export class WorkEngine {
       { ...jj, steps: jj.steps.map((s) => s.id === stepId ? { ...s, cancelled: true } : s) },
       { kind: 'plan_reconciled', who: 'user', body: 'step cancelled manually', stepId },
     ));
+    this.detachCancelledChildren(jobId);
     void this.tickOne(jobId);
     return true;
   }
@@ -2939,6 +3080,9 @@ export class WorkEngine {
     const nextAction = step.type === 'action' ? patch.action ?? step.action : undefined;
     const waitErr = waitWorkspaceError(nextAction, patch.workspace ?? step.workspace);
     if (waitErr) throw new Error(waitErr);
+    if (step.type === 'action' && step.action === 'meta.job' && step.childJobId && nextAction !== 'meta.job') {
+      throw new Error(`this step already started job ${step.childJobId} — cancel it instead of changing its action`);
+    }
     if (patch.workspace !== undefined) {
       const err = workspaceError(patch.workspace);
       if (err) throw new Error(err);

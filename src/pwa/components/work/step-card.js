@@ -11,6 +11,7 @@ import { shortName } from '../../utils/formatting.js';
 import { stepFeedHtml } from './wheel-toggle.js';
 import { sessionsApi } from '../../net/sessions.js';
 import { waitSessionLabel, openWaitStepSession, isSessionStep } from './wait-session.js';
+import { nav } from '../../state/nav.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 
@@ -19,7 +20,7 @@ function stateLabel(s) {
   if (s.cancelled) return 'cancelled';
   // A step in its initial state with no session attached hasn't been started yet —
   // it's queued behind earlier steps. Label as "todo" to match the job-level vocabulary.
-  if (!s.sessionId && s.state === 'running') return 'todo';
+  if (!s.sessionId && !s.childJobId && s.state === 'running') return 'todo';
   if (s.state === 'gate_pending_approval') return 'needs approval';
   return s.state;
 }
@@ -27,7 +28,7 @@ function stateTone(s) {
   if (s.failure) return 'danger';
   if (s.cancelled) return 'mute';
   // todo: queued, no session yet.
-  if (!s.sessionId && s.state === 'running') return 'mute';
+  if (!s.sessionId && !s.childJobId && s.state === 'running') return 'mute';
   // done.
   if (s.state === 'resolved') return 'ok';
   // Terminal but not a failure: the user vetoed this step's write draft. Neutral, same
@@ -74,6 +75,23 @@ function identRowHtml(s, { folded = false, launch = '' } = {}) {
   if (launch) bits.push(launch);
   if (!bits.length) return '';
   return `<div class="tl-ident${folded ? ' tl-ident--folded' : ''}">${bits.join('')}</div>`;
+}
+
+// A meta.job step: the brief (or the linked id) until the child exists, then the child itself.
+function childJobHtml(s) {
+  if (s.type !== 'action' || s.action !== 'meta.job') return '';
+  const inputs = s.inputs ?? {};
+  if (!s.childJobId) {
+    if (inputs.job_id) return `<div class="tl-summary">Links job <code>${escapeHtml(inputs.job_id)}</code> when it starts</div>`;
+    if (!inputs.brief) return '';
+    return `<details class="plan-findings tl-findings"><summary class="tl-findings-sum"><span class="plan-findings-label o-microhead">Brief</span><span class="tl-findings-caret" aria-hidden="true">▾</span></summary><div class="step-findings md-body">${renderMarkdown(String(inputs.brief))}</div></details>`;
+  }
+  const child = work.get().byId.get(s.childJobId);
+  const current = child?.steps?.find((x) => !x.cancelled && !isTerminalStep(x));
+  return `
+    <div class="tl-summary"><span class="o-microhead">Job</span> ${escapeHtml(child?.title ?? s.childJobId)}</div>
+    <div class="tl-summary">${escapeHtml(child?.state ?? 'loading')}${current ? ` · ${escapeHtml(current.title)}` : ''}</div>
+    <div class="step-actions"><button class="o-btn o-btn--ghost sm" data-step-action="open-child" data-child-id="${escapeHtml(s.childJobId)}">Open job</button></div>`;
 }
 
 function descriptionFor(s) {
@@ -161,7 +179,7 @@ function dotTone(s) {
   // ring below instead of the hot "your move" fill, on DESIGN's own "most refined thing we
   // build" (§7.7).
   if (stateTone(s) === 'gate' || hasUnapprovedDraft(s)) return 'hot';
-  if (!s.sessionId && s.state === 'running') return 'pending';
+  if (!s.sessionId && !s.childJobId && s.state === 'running') return 'pending';
   // An orchestrated step parked on CI or a dispatch can sit for hours; the busy dot
   // pulses, and DESIGN §10 says don't pulse anything that isn't live.
   if (s.type === 'orchestrated' && s.state === 'waiting') return 'pending';
@@ -330,6 +348,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
           ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
           ${attemptsHtml(s)}
           ${waitBlockHtml(s)}
+          ${childJobHtml(s)}
           ${draftsHtml(s)}
           ${orchestrated ? '' : stepFeedHtml(job, s)}
           ${orchestrated ? renderOrchestratedCard(s, { job, launch }) : ''}
@@ -352,6 +371,7 @@ export function wireTimelineStep(el, job, s) {
       else if (kind === 'launch-now') void work.launchStep(job.id, s.id).catch((err) => alert(`Launch failed: ${err?.message ?? err}`));
       else if (kind === 'resume') void work.approve(job.id, { gate: 'wait', stepId: s.id });
       else if (kind === 'wait-session') openWaitStepSession(job, s);
+      else if (kind === 'open-child') nav.select('tracked', btn.getAttribute('data-child-id'));
       else if (kind === 'retry') {
         const ta = el.querySelector('[data-composer="step-retry"] textarea');
         void work.retryStep(job.id, s.id, (ta?.value ?? '').trim() || undefined)
