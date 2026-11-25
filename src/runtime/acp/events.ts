@@ -69,12 +69,27 @@ function displayCall(call: AcpToolCall, cfg: AcpAgentConfig): { rawName: string;
   }
 }
 
+// Cursor prints this when its own shell allowlist is empty. Outpost clears that list so the hook
+// gates every command; the command still runs, and this notice is not its output.
+const SHELL_ALLOWLIST_NOTE = 'Shell allowlist is empty';
+
+function contentText(call: AcpToolCall): string {
+  return (call.content ?? [])
+    .map((c) => c.content?.type === 'text' ? c.content.text : undefined)
+    .filter((t): t is string => !!t)
+    .join('\n')
+    .split('\n')
+    .filter((line) => line.trim() !== SHELL_ALLOWLIST_NOTE)
+    .join('\n')
+    .trim();
+}
+
 // The canonical item for a call as it stands now.
 export function toolItem(call: AcpToolCall, cfg: AcpAgentConfig): ToolCallItem {
   const mcp = call.kind === 'other' ? mcpToolName(call.title, cfg) : undefined;
   const shown = mcp ? undefined : displayCall(call, cfg);
   const status: ItemStatus = call.status === 'completed' ? 'completed' : call.status === 'failed' ? 'failed' : 'inProgress';
-  const text = (call.content ?? []).map((c) => c.content?.type === 'text' ? c.content.text : undefined).filter(Boolean).join('\n');
+  const text = contentText(call);
   return {
     type: 'tool_call',
     id: call.toolCallId,

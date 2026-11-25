@@ -22,15 +22,26 @@ export function itemToEntries(item) {
       return [{ role: 'assistant', itemId: item.id, text: item.text, ...(item.messageId ? { msgId: item.messageId } : {}) }];
     case 'user_shell':
       return [{ role: 'shell', itemId: item.id, text: item.command, stdout: item.stdout, stderr: item.stderr }];
-    case 'tool_call':
+    case 'tool_call': {
+      const result = shownResult(item.resultText);
       return [
         toolUseEntry(item),
         // Older Codex transcripts repeat apply_patch's diff as its result.
-        ...(item.resultText && item.rawName !== 'apply_patch' ? [{ role: 'tool_result', text: item.resultText, toolUseId: item.id }] : []),
+        ...(result && item.rawName !== 'apply_patch' ? [{ role: 'tool_result', text: result, toolUseId: item.id }] : []),
       ];
+    }
     default:
       return [];
   }
+}
+
+// Cursor's shell tool reports this when its allowlist is empty. Outpost clears that list, so the
+// notice is already on disk for older calls and is not the command's output.
+const SHELL_ALLOWLIST_NOTE = 'Shell allowlist is empty';
+
+function shownResult(text) {
+  if (typeof text !== 'string') return '';
+  return text.split('\n').filter((line) => line.trim() !== SHELL_ALLOWLIST_NOTE).join('\n').trim();
 }
 
 // An agent's reply leads its result text; the `agentId: …` metadata block follows it.

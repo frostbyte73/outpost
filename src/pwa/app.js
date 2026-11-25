@@ -511,7 +511,11 @@ async function catchUpFromDisk(id, shouldApply = () => true, epoch) {
         const sig = m.msgId ? `${m.msgId}|${m.text}` : `${id}|${m.itemId}`;
         if (subagents.hasBlockSig(sig)) continue;
         subagents.markBlockSigSeen(sig);
-      } else if (m.role === 'tool_result' && m.toolUseId && approvals.get().consumedTaskResults.has(m.toolUseId)) {
+      } else if (m.role === 'tool_result' && m.toolUseId) {
+        if (approvals.get().consumedTaskResults.has(m.toolUseId)) continue;
+        // A live call never grew a result row, so a reconnect would otherwise append every
+        // historical result at the bottom of the transcript.
+        if (placeToolResult(id, m)) added = true;
         continue;
       } else if (m.itemId) {
         if (seenItems.has(m.itemId)) continue;
@@ -547,6 +551,22 @@ async function catchUpFromDisk(id, shouldApply = () => true, epoch) {
   } catch (e) {
     console.warn('failed to catch up from disk:', e);
   }
+}
+
+// Puts a disk result next to its call. Returns true when the transcript changed.
+function placeToolResult(id, m) {
+  const transcript = sessions.getSlice(id)?.transcript ?? [];
+  if (transcript.some((x) => x.role === 'tool_result' && x.toolUseId === m.toolUseId)) return false;
+  const at = transcript.findIndex((x) => x.role === 'tool_use' && x.toolUseId === m.toolUseId);
+  const S = sessions.for(id);
+  if (at < 0) {
+    S.appendTranscript(m);
+    return true;
+  }
+  const next = transcript.slice();
+  next.splice(at + 1, 0, m);
+  S.setTranscript(next);
+  return true;
 }
 
 // preserves locally-pushed user messages not yet written to disk (sendMessage→flush race)

@@ -49,6 +49,15 @@ describe('toolItem display names', () => {
     expect(toolItem(call({ title: 'grep', kind: 'search' }), cfg)).toMatchObject({ rawName: 'grep', input: {} });
   });
 
+  it('drops the shell allowlist notice Cursor sends when its own allowlist is empty', () => {
+    const item = toolItem(call({
+      title: '`ls`', kind: 'execute', status: 'completed', rawInput: { command: 'ls' },
+      content: [{ type: 'content', content: { type: 'text', text: 'Shell allowlist is empty' } }],
+    }), cfg);
+    expect(item.rawName).toBe('Bash');
+    expect(item.resultText).toBeUndefined();
+  });
+
   it('shows a Find search as a Glob on its pattern', () => {
     expect(toolItem(call({ title: 'Find `docs/*.md`', kind: 'search', rawInput: { pattern: 'docs/*.md' } }), cfg))
       .toMatchObject({ rawName: 'Glob', tool: 'file_glob', input: { pattern: 'docs/*.md' } });
