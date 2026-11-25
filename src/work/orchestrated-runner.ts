@@ -5,16 +5,18 @@ import {
 import type { Dispatch, InboxItem, NextMove, OrchestratedStep, WatchedEvent } from './work-types.js';
 import type { EffectivePreapprovals } from './preapprovals.js';
 
+type UpdateRound = (step: OrchestratedStep) => OrchestratedStep;
+
 export interface OrchestratedHost {
   getStep(jobId: string, stepId: string): OrchestratedStep | undefined;
   mutateStep(jobId: string, stepId: string, fn: (s: OrchestratedStep) => OrchestratedStep): void;
   sessionWorking(sessionId: string): boolean;
   // Resume the controller's own session. `action` rebinds its allowlist for a work turn;
   // undefined means it keeps the controller's own grant.
-  resumeController(jobId: string, stepId: string, action: string | undefined, note: string | undefined): void;
+  resumeController(jobId: string, stepId: string, action: string | undefined, note: string | undefined, selected?: string): void;
   spawnDispatch(jobId: string, stepId: string, dispatch: Dispatch): void;
-  resolveStep(jobId: string, stepId: string, output: string): void;
-  failStep(jobId: string, stepId: string, reason: string): void;
+  resolveStep(jobId: string, stepId: string, output: string, update?: UpdateRound): void;
+  failStep(jobId: string, stepId: string, reason: string, update?: UpdateRound): void;
   // Re-run delivery for this step at `at` (epoch ms). The only thing that ever un-holds a batch
   // parked by the external quiet period: nothing else is guaranteed to come along, since the
   // watcher pushes only when a signal moves and a quiet PR moves nothing. Idempotent per step —
@@ -87,40 +89,43 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
   // user's Approve becomes a silent no-op.
   if (step.state === 'gate_pending_approval') return;
   const productive = isProductive(step, p);
-  host.mutateStep(jobId, stepId, (s) => recordProgress(s, p));
+  const progress = recordProgress(step, p);
 
   const info: ActionInfo = {
     ...host.actionInfo,
     runtimeRefusal: (action, via) => host.runtimeRefusal?.(jobId, stepId, action, via),
   };
-  const verdict = validateNext(host.getStep(jobId, stepId)!, p.next, info, productive, host.preapprovalsFor(jobId, stepId));
+  const verdict = validateNext(progress, p.next, info, productive, host.preapprovalsFor(jobId, stepId));
 
   if (verdict.kind === 'reject') {
     // One corrective turn. A controller that violates policy twice running (with no accepted
     // move in between to earn forgiveness — see runMove) is not going to recover on a third try.
     if (step.pendingPolicyStrike) {
-      host.failStep(jobId, stepId, `controller violated policy twice: ${verdict.reason}`);
+      host.failStep(jobId, stepId, `controller violated policy twice: ${verdict.reason}`,
+        (s) => ({ ...recordProgress(s, p), pendingRound: undefined }));
       return;
     }
+    const item = stamp(host, { kind: 'policy-rejection', reason: verdict.reason });
+    const round = { id: host.newId(), action: step.controller, delivered: [item] };
     host.mutateStep(jobId, stepId, (s) => {
-      const item = stamp(host, { kind: 'policy-rejection', reason: verdict.reason });
-      return { ...deliverImmediate({ ...s, inbox: [...s.inbox, item] }, [item]), pendingPolicyStrike: true };
+      const updated = recordProgress(s, p);
+      return { ...deliverImmediate({ ...updated, inbox: [...s.inbox, item] }, [item]), pendingPolicyStrike: true, pendingRound: round };
     });
-    host.resumeController(jobId, stepId, undefined, undefined);
+    host.resumeController(jobId, stepId, undefined, undefined, round.id);
     return;
   }
 
-  host.mutateStep(jobId, stepId, (s) => ({ ...s, roundsSpent: s.roundsSpent + 1 }));
-
-  runMove(host, jobId, stepId, verdict.move, productive);
+  runMove(host, jobId, stepId, verdict.move, productive, (s) => ({
+    ...recordProgress(s, p), roundsSpent: s.roundsSpent + 1, pendingRound: undefined, pendingPolicyStrike: false,
+  }));
 }
 
 function openGate(
   host: OrchestratedHost, jobId: string, stepId: string,
-  gate: { draft: string; question: string },
+  gate: { draft: string; question: string }, update: UpdateRound,
 ): void {
   host.mutateStep(jobId, stepId, (s) => ({
-    ...s,
+    ...update(s),
     state: 'gate_pending_approval',
     gate: { ...gate, requestedAt: host.now() },
     // A fresh gate is an unanswered question — clear any verdict left over from a prior one,
@@ -136,17 +141,18 @@ function openGate(
   }));
 }
 
-function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: NextMove, productive = false): void {
-  // An accepted move is what earns forgiveness — clear it before acting.
-  host.mutateStep(jobId, stepId, (s) => ({ ...s, pendingPolicyStrike: false }));
+function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: NextMove, productive: boolean, update: UpdateRound): void {
   switch (move.kind) {
-    case 'self-round':
+    case 'self-round': {
+      const step = host.getStep(jobId, stepId)!;
+      const round = { id: host.newId(), action: move.action ?? step.controller, note: move.note, delivered: step.lastDelivered };
       host.mutateStep(jobId, stepId, (s) => ({
-        ...s, state: 'running', waitingOn: undefined,
+        ...update(s), state: 'running', waitingOn: undefined, pendingRound: round,
         consecutiveSelfRounds: productive ? 0 : s.consecutiveSelfRounds + 1,
       }));
-      host.resumeController(jobId, stepId, move.action, move.note);
+      host.resumeController(jobId, stepId, move.action, move.note, round.id);
       return;
+    }
 
     case 'dispatch': {
       const priorDispatches = host.getStep(jobId, stepId)!.dispatches;
@@ -164,7 +170,7 @@ function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: Ne
         };
       });
       host.mutateStep(jobId, stepId, (s) => ({
-        ...s,
+        ...update(s),
         dispatches: [...s.dispatches, ...created],
         state: 'waiting',
         consecutiveSelfRounds: 0,
@@ -179,20 +185,20 @@ function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: Ne
 
     case 'wait':
       host.mutateStep(jobId, stepId, (s) => ({
-        ...s, state: 'waiting', waitingOn: move.wait, consecutiveSelfRounds: 0,
+        ...update(s), state: 'waiting', waitingOn: move.wait, consecutiveSelfRounds: 0,
       }));
       return;
 
     case 'gate':
-      openGate(host, jobId, stepId, { draft: move.draft, question: move.question });
+      openGate(host, jobId, stepId, { draft: move.draft, question: move.question }, update);
       return;
 
     case 'resolve':
-      host.resolveStep(jobId, stepId, move.output);
+      host.resolveStep(jobId, stepId, move.output, update);
       return;
 
     case 'fail':
-      host.failStep(jobId, stepId, move.reason);
+      host.failStep(jobId, stepId, move.reason, update);
       return;
   }
 }
@@ -203,9 +209,10 @@ export function resolveGate(
   const step = host.getStep(jobId, stepId);
   if (!step || step.state !== 'gate_pending_approval') return;
   const item = stamp(host, { kind: 'gate-resolved', approved, ...(feedback ? { feedback } : {}) });
+  const round = { id: host.newId(), action: step.controller, delivered: [item] };
 
   host.mutateStep(jobId, stepId, (s) => ({
-    ...s,
+    ...deliverImmediate({ ...s, inbox: [...s.inbox, item] }, [item]),
     gate: undefined,
     // Durable answers to the voluntary gate: decline's reason survives in gateFeedback,
     // approve's yes survives in gateApproved — both outlive the transient gate-resolved
@@ -213,15 +220,9 @@ export function resolveGate(
     ...(approved ? { gateApproved: true } : {}),
     ...(approved && s.artifacts?.spec && !s.artifacts?.implPlan ? { specApprovedAt: host.now() } : {}),
     ...(feedback ? { gateFeedback: [...(s.gateFeedback ?? []), feedback] } : {}),
-    inbox: [...s.inbox, item],
+    pendingRound: round,
   }));
-
-  // The resolution is corrective feedback on the same round, not a fresh delivery cycle —
-  // deliverImmediate (not deliverInbox/drainForDelivery) so the resumed controller's envelope
-  // actually shows why, without spending the consecutive-self-round budget the way a real new
-  // event would.
-  host.mutateStep(jobId, stepId, (s) => deliverImmediate(s, [item]));
-  host.resumeController(jobId, stepId, undefined, undefined);
+  host.resumeController(jobId, stepId, undefined, undefined, round.id);
 }
 
 export function pushInbox(host: OrchestratedHost, jobId: string, stepId: string, item: NewItem): void {
@@ -252,6 +253,8 @@ export function deliverInbox(host: OrchestratedHost, jobId: string, stepId: stri
     }
     return;
   }
-  host.mutateStep(jobId, stepId, (s) => drainForDelivery(s).step);
-  host.resumeController(jobId, stepId, undefined, undefined);
+  const { step: drained } = drainForDelivery(step);
+  const round = { id: host.newId(), action: step.controller, delivered: drained.lastDelivered };
+  host.mutateStep(jobId, stepId, () => ({ ...drained, pendingRound: round }));
+  host.resumeController(jobId, stepId, undefined, undefined, round.id);
 }

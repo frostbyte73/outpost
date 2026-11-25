@@ -7,7 +7,7 @@ import { expandActionTurn } from '../action-turn.js';
 import type { JsonlTranscripts } from '../jsonl-transcripts.js';
 import type { McpServerConfig } from '../../integrations/mcp-config.js';
 import type {
-  AgentRuntime, CanonicalItem, RuntimeCapabilities, RuntimeHost, RuntimeId, RuntimeSession, StartCallbacks, StartOpts, TurnInput,
+  AgentRuntime, CanonicalItem, FirstTurnSeed, RuntimeCapabilities, RuntimeHost, RuntimeId, RuntimeSession, StartCallbacks, StartOpts, TurnInput,
 } from '../types.js';
 
 // Reads mostly never ask, and an agent's MCP calls can't be shown to route through request_permission, so push stays refused.
@@ -40,6 +40,8 @@ export interface AcpSessionPolicy {
   answerPermission?(call: AcpToolCall, options: AcpPermissionOption[]): { reply: PermissionReply; allowed?: GateCall[] };
   // Whether a call that settled with no recorded decision was in fact refused somewhere this session can't see by id.
   claimDenied?(call: AcpToolCall): boolean;
+  // Calls this policy admitted outside session/request_permission that haven't reached it yet.
+  hasPendingTools?(): boolean;
   onEnd(): void;
 }
 
@@ -64,10 +66,12 @@ export class AcpRuntime implements AgentRuntime {
   readonly id: RuntimeId;
   readonly capabilities = ACP_CAPABILITIES;
   readonly available: boolean;
+  readonly label?: string;
   readonly transcripts: JsonlTranscripts;
 
   constructor(readonly opts: AcpRuntimeOpts) {
     this.id = `acp:${opts.agent.id}`;
+    this.label = opts.agent.label;
     this.available = opts.bin !== null;
     this.transcripts = opts.transcripts;
   }
@@ -101,7 +105,9 @@ export class AcpSession implements RuntimeSession {
   private dead = false;
   private exitReported = false;
   private assistantText = '';
-  private readonly queued: TurnInput[] = [];
+  private readonly queued: { turn: TurnInput; seed?: FirstTurnSeed }[] = [];
+  private pendingSeed?: string;
+  private prepareRestartSeed?: (queuedSeed?: FirstTurnSeed) => FirstTurnSeed;
   private readonly calls = new Map<string, AcpToolCall>();
   private readonly gated = new Map<string, GateCall[]>();
   private readonly asked = new Set<string>();
@@ -110,6 +116,7 @@ export class AcpSession implements RuntimeSession {
   private readonly callWaiters = new Map<string, (call: AcpToolCall) => void>();
   private readonly policy: AcpSessionPolicy;
   private ended = false;
+  private pendingPermissions = 0;
 
   constructor(
     private readonly o: AcpRuntimeOpts, private readonly s: StartOpts, private readonly cb: StartCallbacks,
@@ -143,7 +150,11 @@ export class AcpSession implements RuntimeSession {
         env: { ...process.env, ...this.o.agent.env, ...this.policy.env, ...this.s.env },
         cwd: this.s.cwd,
         onNotification: (m, p) => this.onNotification(m, p),
-        onRequest: (m, p) => this.onRequest(m, p),
+        onRequest: async (m, p) => {
+          this.pendingPermissions++;
+          try { return await this.onRequest(m, p); }
+          finally { this.pendingPermissions--; }
+        },
         onStderr: (d) => this.cb.onError(d),
         onExit: (code) => this.onAgentExit(code),
       });
@@ -164,24 +175,34 @@ export class AcpSession implements RuntimeSession {
       }
       if (!this.caps.mcpCapabilities?.http) throw new Error("the agent can't reach Outpost's MCP server over HTTP");
       const mcpServers = this.mcpServers();
-      const stored = this.s.mode === 'resume' ? this.o.nativeIds.read(this.s.sessionId) : null;
+      const stored = this.s.mode === 'resume' ? this.s.nativeId ?? this.o.nativeIds.read(this.s.sessionId) : null;
       let model: string | undefined;
       if (stored && this.caps.loadSession) {
         // session/load replays the history as updates; the transcript already holds it.
         this.loading = true;
-        await this.conn.request('session/load', { sessionId: stored, cwd: this.s.cwd, mcpServers }, 120_000);
-        this.loading = false;
-        this.nativeId = stored;
-        this.prompted = true;
-      } else {
-        if (this.s.mode === 'resume') this.cb.onError(`[acp] ${this.o.agent.id} can't resume sessions; continuing in a fresh one\n`);
+        try {
+          await this.conn.request('session/load', { sessionId: stored, cwd: this.s.cwd, mcpServers }, 120_000);
+          this.nativeId = stored;
+          this.prompted = true;
+        } catch (error) {
+          if (!this.s.newTranscriptSegment || !/(?:unknown session\b|session.*(?:not found|does not exist))/i.test((error as Error).message)) throw error;
+        } finally { this.loading = false; }
+      }
+      if (!this.nativeId) {
+        if (this.s.mode === 'resume' && this.s.newTranscriptSegment) {
+          const { id, prepareSeed } = this.s.newTranscriptSegment();
+          this.s.transcriptId = id;
+          this.prepareRestartSeed = prepareSeed;
+        }
         const r = await this.conn.request<{ sessionId: string; models?: { currentModelId?: string } }>(
           'session/new', { cwd: this.s.cwd, mcpServers }, 120_000,
         );
         this.nativeId = r.sessionId;
         model = r.models?.currentModelId;
       }
-      this.o.nativeIds.write(this.s.sessionId, this.nativeId);
+      if (this.dead || this.s.acceptsCallbacks?.() === false) return;
+      if (this.s.saveNativeId) this.s.saveNativeId(this.nativeId);
+      else this.o.nativeIds.write(this.s.sessionId, this.nativeId);
       this.cb.onEvent({ type: 'session.started', sessionId: this.s.sessionId, ...(model ? { model } : {}), mcpServers: [] });
       this.ready = true;
       this.startNextTurn();
@@ -190,9 +211,9 @@ export class AcpSession implements RuntimeSession {
     }
   }
 
-  sendTurn(turn: TurnInput): void {
+  sendTurn(turn: TurnInput, seed?: FirstTurnSeed): void {
     if (this.dead) return;
-    this.queued.push(turn);
+    this.queued.push({ turn, seed });
     if (this.ready && !this.inTurn) this.startNextTurn();
   }
 
@@ -200,6 +221,14 @@ export class AcpSession implements RuntimeSession {
     if (!this.conn || !this.nativeId || !this.inTurn) return;
     this.interrupting = true;
     this.conn.notify('session/cancel', { sessionId: this.nativeId });
+  }
+
+  hasPendingTools(): boolean {
+    return this.pendingPermissions > 0 || this.gated.size > 0 || !!this.policy.hasPendingTools?.();
+  }
+
+  admitsTools(): boolean {
+    return !this.dead && !this.interrupting && this.s.canStartTool?.() !== false;
   }
 
   async kill(): Promise<void> {
@@ -240,7 +269,9 @@ export class AcpSession implements RuntimeSession {
     for (const [name, c] of this.o.mcpServers()) {
       if ((c.type === 'http' || c.type === 'sse') && c.url) {
         if (c.type === 'sse' && !this.caps.mcpCapabilities?.sse) continue;
-        out.push({ type: c.type, name, url: c.url, headers: pairs(c.headers) });
+        const headers = name === 'outpost' && this.s.launchCredential
+          ? { ...c.headers, 'X-Outpost-Launch': this.s.launchCredential } : c.headers;
+        out.push({ type: c.type, name, url: c.url, headers: pairs(headers) });
       } else if (c.command) {
         out.push({ name, command: c.command, args: c.args ?? [], env: pairs(c.env) });
       }
@@ -249,18 +280,23 @@ export class AcpSession implements RuntimeSession {
   }
 
   private startNextTurn(): void {
-    const turn = this.queued.shift();
-    if (!turn || this.dead) return;
+    const next = this.queued.shift();
+    if (!next || this.dead) return;
     try {
       this.policy.beforeTurn();
     } catch (e) {
       return this.refuse(`[acp] turn refused: ${(e as Error).message}`);
     }
+    const { turn } = next;
+    const seed = this.prepareRestartSeed?.(next.seed) ?? next.seed;
+    this.prepareRestartSeed = undefined;
     this.inTurn = true;
     let text = expandActionTurn(turn.text, this.o.actionBody);
     if (!this.prompted && this.s.appendSystemPrompt) text = `${this.s.appendSystemPrompt}\n\n${text}`;
     this.prompted = true;
     const prompt: unknown[] = [{ type: 'text', text }];
+    this.pendingSeed = seed?.token;
+    if (seed) prompt.push({ type: 'text', text: seed.block });
     if (turn.images?.length) {
       if (this.caps.promptCapabilities?.image) {
         for (const img of turn.images) prompt.push({ type: 'image', mimeType: img.mediaType, data: img.data });
@@ -271,8 +307,21 @@ export class AcpSession implements RuntimeSession {
     this.cb.onEvent({ type: 'turn.started' });
     this.record({ type: 'user_message', id: randomUUID(), text: turn.text });
     this.conn!.request<{ stopReason?: string }>('session/prompt', { sessionId: this.nativeId, prompt }, Infinity)
-      .then((r) => this.endTurn(r.stopReason))
-      .catch((e: Error) => { if (!this.dead) this.endTurn(undefined, e.message); });
+      .then((r) => {
+        if (this.dead || this.s.acceptsCallbacks?.() === false) return;
+        this.acceptSeed();
+        if (turn.deliveryId) turn.onAccepted?.(turn.deliveryId);
+        this.endTurn(r.stopReason);
+      })
+      .catch((e: Error & { rpcCode?: number }) => {
+        if (this.dead) return;
+        if (this.pendingSeed) {
+          if (e.rpcCode === -32601 || e.rpcCode === -32602) this.cb.onSeedRejected?.(this.pendingSeed);
+          else this.cb.onSeedUncertain?.(this.pendingSeed);
+          this.pendingSeed = undefined;
+        }
+        this.endTurn(undefined, e.message);
+      });
   }
 
   private endTurn(stopReason: string | undefined, error?: string): void {
@@ -280,6 +329,7 @@ export class AcpSession implements RuntimeSession {
     this.inTurn = false;
     this.interrupting = false;
     const host = this.o.host();
+    if (this.s.canStartTool?.() === false) return;
     if (error !== undefined) {
       this.cb.onEvent({ type: 'turn.completed', state: 'failed' });
       host.onTurnFailed(this.s.sessionId, 'acp_prompt_failed', error);
@@ -294,11 +344,12 @@ export class AcpSession implements RuntimeSession {
   }
 
   private onNotification(method: string, params: unknown): void {
-    this.s.log?.native({ method, params });
-    if (method !== 'session/update' || this.loading || this.dead) return;
+    if (method !== 'session/update' || this.loading || this.dead || this.s.acceptsCallbacks?.() === false) return;
     const p = params as { sessionId?: string; update?: AcpSessionUpdate } | null;
     if (!p?.update || p.sessionId !== this.nativeId) return;
     const u = p.update;
+    if (u.sessionUpdate === 'user_message_chunk') return;
+    this.s.log?.native({ method, params });
     const isToolUpdate = u.sessionUpdate === 'tool_call' || u.sessionUpdate === 'tool_call_update';
     if (isToolUpdate) {
       const id = (u as AcpToolCall).toolCallId;
@@ -357,7 +408,7 @@ export class AcpSession implements RuntimeSession {
     const p = params as { sessionId?: string; toolCall?: AcpToolCall; options?: AcpPermissionOption[] };
     const options = p.options ?? [];
     if (p.sessionId === this.nativeId && p.toolCall?.toolCallId) this.asked.add(p.toolCall.toolCallId);
-    if (this.dead || this.interrupting) {
+    if (this.dead || this.interrupting || this.s.canStartTool?.() === false) {
       if (this.policy.answerPermission && p.toolCall?.toolCallId) {
         const { allowed } = this.policy.answerPermission(mergeToolCall(this.calls, p.toolCall), options);
         if (allowed) this.release(p.toolCall.toolCallId, allowed, true);
@@ -412,7 +463,13 @@ export class AcpSession implements RuntimeSession {
   }
 
   private record(item: CanonicalItem): void {
-    this.o.transcripts.append(this.s.sessionId, this.s.cwd, item);
+    this.o.transcripts.append(this.s.transcriptId ?? this.s.sessionId, this.s.cwd, item);
+  }
+
+  private acceptSeed(): void {
+    const token = this.pendingSeed;
+    this.pendingSeed = undefined;
+    if (token && !this.dead) this.cb.onSeedAccepted?.(token);
   }
 
   private tripwire(what: string): void {

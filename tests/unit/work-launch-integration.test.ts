@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { WorkEngine } from '../../src/work/engine.js';
@@ -26,6 +26,7 @@ function makeHarness(opts: { snapshot?: TokenUsageSnapshot; concurrency?: number
   const spawns: string[] = [];
   const resumes: Array<{ sessionId: string; content: string }> = [];
   const working = new Set<string>();
+  let runtimeSwitch: Promise<void> | undefined;
   const sessionManager = {
     spawnDetached(sessionId: string) { spawns.push(sessionId); working.add(sessionId); },
     sendTurn() {},
@@ -35,6 +36,7 @@ function makeHarness(opts: { snapshot?: TokenUsageSnapshot; concurrency?: number
       working.add(sessionId);
     },
     close: async () => {},
+    runtimeSwitchPending: () => runtimeSwitch,
   } as never;
   const worktreeManager = { provision: async () => ({ path: dir }), get: () => undefined, archive: async () => {} } as never;
   const linearWriter = { setState: async () => undefined } as never;
@@ -61,7 +63,8 @@ function makeHarness(opts: { snapshot?: TokenUsageSnapshot; concurrency?: number
     now: () => 1,
   });
   return {
-    engine, queue, governor, spawns, resumes, working,
+    engine, queue, governor, spawns, resumes, working, dir,
+    setRuntimeSwitch: (pending: Promise<void> | undefined) => { runtimeSwitch = pending; },
     setSnapshot: (s: TokenUsageSnapshot | undefined) => { snapshot = s; },
   };
 }
@@ -87,6 +90,47 @@ async function seedExecuting(h: ReturnType<typeof makeHarness>, steps: ProposedS
 }
 
 describe('WorkEngine ↔ LaunchGovernor', () => {
+  it('preserves a controller delivery when its launch slot opens during a runtime switch', async () => {
+    const h = makeHarness({ snapshot: blocking });
+    const job = h.engine.createJob({ source: 'manual', title: 't', description: 'd' });
+    const step: OrchestratedStep = {
+      id: 'step-switch', title: 't', description: 'd', type: 'orchestrated',
+      controller: 'code.orchestrate-pr', workspace: { kind: 'none' },
+      state: 'running', sessionId: 'switch-session', goal: 'g',
+      dispatches: [], inbox: [], roundsSpent: 0, consecutiveSelfRounds: 0,
+      createdAt: 1, updatedAt: 1,
+    };
+    h.queue.upsert({ ...h.queue.get(job.id)!, steps: [step], state: 'executing' });
+    h.engine.rehydrateSessionBindings();
+    let finishSwitch!: () => void;
+    h.setRuntimeSwitch(new Promise<void>((resolve) => { finishSwitch = resolve; }));
+    h.working.add(step.sessionId!);
+    h.engine.onStepProgress(job.id, step.id, {
+      next: { kind: 'wait', wait: { reason: 'Waiting for input', events: ['pr-state'] } },
+    });
+    h.engine.pushStepInbox(job.id, step.id, { kind: 'user-message', body: 'Continue on the new runtime' });
+    h.working.delete(step.sessionId!);
+    h.engine.onSessionExit(step.sessionId!, null, { expected: 'runtime-switch', stderrTail: '' });
+    h.engine.onControllerTurnEnded(step.sessionId!);
+    await flush();
+    h.setSnapshot(healthy);
+    h.governor.onUsageSnapshot();
+    await flush();
+    expect(h.resumes).toHaveLength(0);
+    const selected = h.queue.get(job.id)!.steps[0] as OrchestratedStep;
+    expect(selected.pendingRound?.delivered).toMatchObject([{ kind: 'user-message', body: 'Continue on the new runtime' }]);
+    h.setRuntimeSwitch(undefined);
+    finishSwitch();
+    await flush();
+    expect(h.resumes.map((x) => x.sessionId)).toEqual([step.sessionId]);
+    h.engine.onSessionExit(step.sessionId!, null, { expected: 'runtime-switch', stderrTail: '' });
+    h.engine.onControllerTurnEnded(step.sessionId!);
+    expect(h.queue.get(job.id)!.steps[0]).toMatchObject({ sessionId: step.sessionId, state: 'running' });
+    expect(h.queue.get(job.id)!.steps[0]?.failure).toBeUndefined();
+    expect(h.governor.summary().active).toBe(1);
+    expect(JSON.parse(readFileSync(join(h.dir, 'jobs', job.id, 'steps', step.id, 'envelope.json'), 'utf8')))
+      .toMatchObject({ boundAction: step.controller, delivered: selected.pendingRound?.delivered });
+  });
   it('a blocking snapshot parks the first step; healthy + onUsageSnapshot spawns it', async () => {
     const h = makeHarness({ snapshot: blocking, concurrency: 1 });
     await seedExecuting(h, [actionStep()]);

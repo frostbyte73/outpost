@@ -52,6 +52,7 @@ interface CursorSessionState {
   decisions: Map<string, Promise<Decision>>;
   allowedByContent: Map<string, GateCall[][]>;
   deniedByContent: Map<string, number>;
+  deciding: number;
 }
 
 // Cursor's `agent acp` behind Outpost's sessions, gated by fail-closed hooks in a per-session data dir.
@@ -96,6 +97,7 @@ export class CursorRuntime implements AgentRuntime {
     try { p = JSON.parse(body) as CursorHookPayload; } catch { return cursorDeny('Outpost could not read this hook call.'); }
     const state = sessionId ? this.sessions.get(sessionId) : undefined;
     if (!state) return cursorDeny('This Cursor session is not one Outpost started, so the call was not run.');
+    if (!state.session.admitsTools()) return cursorDeny('This session is stopping, so the call was not run.');
     const fileHook = p.hook_event_name === 'preToolUse' && (p.tool_name === 'Read' || p.tool_name === 'Write');
     // Every preToolUse hook but Shell's carries the ACP toolCallId, so its decision is recorded straight against that call.
     const acpId = p.hook_event_name === 'preToolUse' && p.tool_name !== 'Shell' ? p.tool_use_id : undefined;
@@ -120,7 +122,8 @@ export class CursorRuntime implements AgentRuntime {
       pending = this.gate(sessionId!, { ...input.call, gateId: p.tool_use_id });
       state.decisions.set(input.key, pending);
     }
-    const d = await pending;
+    state.deciding++;
+    const d = await pending.finally(() => { state.deciding--; });
     if (fresh && input.contentKey) {
       if (d.allow) state.allowedByContent.set(input.contentKey, [...(state.allowedByContent.get(input.contentKey) ?? []), d.calls]);
       else state.deniedByContent.set(input.contentKey, (state.deniedByContent.get(input.contentKey) ?? 0) + 1);
@@ -143,7 +146,7 @@ export class CursorRuntime implements AgentRuntime {
     const configDir = join(dataDir, 'config');
     const hooks = hooksJson(this.hookTimeoutSec);
     const state: CursorSessionState = {
-      cwd: s.cwd, dataDir, session, decisions: new Map(), allowedByContent: new Map(), deniedByContent: new Map(),
+      cwd: s.cwd, dataDir, session, decisions: new Map(), allowedByContent: new Map(), deniedByContent: new Map(), deciding: 0,
     };
     return {
       env: {
@@ -173,6 +176,7 @@ export class CursorRuntime implements AgentRuntime {
         state.deniedByContent.set(key!, n - 1);
         return true;
       },
+      hasPendingTools: () => state.deciding > 0 || [...state.allowedByContent.values()].some((calls) => calls.length > 0),
       onEnd: () => {
         this.sessions.delete(s.sessionId);
         const host = this.opts.host();

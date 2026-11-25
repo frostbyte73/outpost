@@ -121,6 +121,7 @@ export const work = {
   },
 
   async createJob(input)         { return call(() => workApi.createJob(input)); },
+  async setJobRuntime(id, runtime) { return call(() => workApi.setJobRuntime(id, runtime)); },
   async approve(id, body)        { return call(() => workApi.approve(id, body)); },
   async reject(id, body)         { return call(() => workApi.reject(id, body)); },
   async abandon(id)              { return call(() => workApi.abandon(id)); },

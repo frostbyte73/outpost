@@ -28,7 +28,7 @@ import type {
   WorkspaceRef,
   SessionStall,
 } from './work-types.js';
-import { augmentEnvelopeWithLessons, buildActionCatalog, planStepView, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry, type CatalogScope } from './envelope.js';
+import { augmentEnvelopeWithLessons, buildActionCatalog, planStepView, updateEnvelopeCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry, type CatalogScope } from './envelope.js';
 import { readonlyView, waitWorkspaceError, workspaceError } from './workspace.js';
 import { waitSessionContext } from './wait-session-context.js';
 import { expectRepoOf, parsePrUrl, PR_URL_RE } from './pr-url.js';
@@ -290,6 +290,49 @@ export class WorkEngine {
     return { jobId: role.jobId, stepId: role.stepId };
   }
 
+  sessionSwitchRefusal(sessionId: string, target: RuntimeId): string | undefined {
+    const role = this.roleBySession.get(sessionId);
+    if (!role) return this.actionForSession(sessionId) ? 'This session cannot switch runtimes' : undefined;
+    if (role.role !== 'step') return 'This session cannot switch runtimes';
+    const step = this.opts.queue.get(role.jobId)?.steps.find((s) => s.id === role.stepId);
+    if (!step || isTerminalStep(step) || step.sessionId !== sessionId) return 'This step session cannot switch runtimes';
+    if (this.acceptingDrafts.has(sessionId)) return 'Wait for the draft decision to finish';
+    const launchRefusal = this.sessionRuntimeRefusal(sessionId, target);
+    if (launchRefusal) return launchRefusal;
+    const pending = step.type === 'orchestrated' ? step.pendingRound?.action : undefined;
+    const action = this.pendingBindings.get(sessionId) ?? pending;
+    const refusal = action && this.runtimeRefusal(action, target);
+    if (refusal) return refusal;
+    const draft = this.draftForSession(sessionId);
+    if (draft?.approvedAt && (this.opts.sessionManager.isWorking(sessionId) || draft.calls.some((c) => !c.consumedAt))) {
+      return 'Finish the approved write draft before switching runtimes';
+    }
+    return undefined;
+  }
+
+  sessionRuntimeRefusal(sessionId: string, target: RuntimeId): string | undefined {
+    const role = this.roleBySession.get(sessionId);
+    const step = role?.role === 'step' ? this.opts.queue.get(role.jobId)?.steps.find((s) => s.id === role.stepId) : undefined;
+    const action = step ? actionNameForStep(step) : undefined;
+    for (const name of new Set([action, this.actionForSession(sessionId)])) {
+      const refusal = name && this.runtimeRefusal(name, target);
+      if (refusal) return refusal;
+    }
+    return undefined;
+  }
+
+  onRuntimeSwitched(sessionId: string, interrupted: boolean): void {
+    const role = this.roleBySession.get(sessionId);
+    if (role?.role !== 'step' || this.pendingBindings.has(sessionId) || this.opts.sessionManager.isWorking(sessionId)) return;
+    const step = this.opts.queue.get(role.jobId)?.steps.find((s) => s.id === role.stepId);
+    if (step?.sessionId !== sessionId) return;
+    if (step.state === 'running') {
+      if (interrupted) this.onApiStop(sessionId, 'Runtime stopped. Resume to continue this step.');
+      return;
+    }
+    this.onControllerTurnEnded(sessionId);
+  }
+
   // The message a submit_* tool answers with while the user is driving. Deliberately tells the
   // model not to retry: a retry loop against a gate only the user can open burns the round
   // budget and buries the conversation in tool errors.
@@ -466,7 +509,10 @@ export class WorkEngine {
     const j = this.opts.queue.get(jobId);
     if (!j) return 0;
     const live = currentStalls(j);
-    const picked = only ? live.filter(only) : live;
+    const picked = live.filter((stall) => {
+      const step = j.steps.find((s) => s.id === stall.stepId);
+      return (!only || only(stall)) && (who === 'user' || step?.type !== 'orchestrated' || !step.pendingRound?.delivery);
+    });
     if (!picked.length) {
       if ((j.stalls?.length ?? 0) !== live.length) this.mutate(jobId, (jj) => ({ ...jj, stalls: live }));
       return 0;
@@ -479,8 +525,8 @@ export class WorkEngine {
       const s = st.stepId ? j.steps.find((x) => x.id === st.stepId) : undefined;
       const resumed = !st.stepId ? this.resumeOrchestratorSession(jobId, st.sessionId, who === 'user')
         : st.dispatchId ? this.dispatchResume(jobId, st.stepId, st.dispatchId)
-        : s?.type === 'orchestrated' ? this.resumeControllerRound(jobId, st.stepId, s.boundAction, undefined)
-        : this.dispatchActionResume(jobId, st.stepId);
+        : s?.type === 'orchestrated' ? this.resumeControllerRound(jobId, st.stepId, s.pendingRound?.action ?? s.boundAction, s.pendingRound?.note, s.pendingRound?.id, who === 'user')
+        : this.dispatchActionResume(jobId, st.stepId, who === 'user');
       void resumed.catch((e) => console.warn(`[work] resuming stalled session ${st.sessionId.slice(0, 8)} failed: ${(e as Error).message}`));
     }
     return picked.length;
@@ -522,6 +568,7 @@ export class WorkEngine {
   // genuine hang. Undefined when the session isn't a step's, or when ending the turn is
   // legitimate for the state it's in.
   private unresolvedFailable(sessionId: string): { jobId: string; stepId: string } | undefined {
+    if (this.opts.sessionManager.runtimeSwitchPending?.(sessionId)) return undefined;
     // The user is driving: a turn ending without a submit is a reply waiting on their next
     // message, not a hang. It can't disarm itself the way autopilot does either —
     // noteSessionActivity fires on tool calls, and a conversational reply makes none.
@@ -623,6 +670,12 @@ export class WorkEngine {
         // subprocess through sendOrResume. Clearing it here would cold-respawn the action and
         // discard everything they had agreed.
         if (s.sessionId && s.state === 'running' && !this.opts.interactive?.isInteractive(s.sessionId)) {
+          const runtimeVersion = this.opts.sessionManager.runtimeVersion?.(s.sessionId);
+          if (s.type === 'orchestrated' && s.pendingRound && !s.pendingRound.delivery) continue;
+          if ((s.type === 'orchestrated' && s.pendingRound?.delivery) || (runtimeVersion && runtimeVersion !== s.sessionId)) {
+            this.onRuntimeSwitched(s.sessionId, true);
+            continue;
+          }
           const label = this.stepLabel(j.id, s.id);
           this.mutateStep(j.id, s.id, (st) => ({
             ...st, sessionId: undefined, updatedAt: this.ctx.now(),
@@ -725,6 +778,7 @@ export class WorkEngine {
 
   // A crash fires no Stop hook, so without this a step whose subprocess died stays `running` forever.
   onSessionExit(sessionId: string, code: number | null, exit: SessionExit): void {
+    if (exit.expected === 'runtime-switch') this.owedStaleStops.delete(sessionId);
     if (exit.expected) return;
     const target = this.unresolvedFailable(sessionId);
     if (!target) return;
@@ -922,6 +976,9 @@ export class WorkEngine {
   // mutation that records the session id live in `run` — a parked (queued, not yet fired)
   // launch must leave the job/step looking un-started (orchestratorSessionId / step.sessionId
   // unset) so decide() + reconcilePendingLaunches recreate it after a daemon restart.
+  private readonly pendingBindings = new Map<string, string>();
+  private readonly acceptingDrafts = new Set<string>();
+
   private submitLaunch(o: {
     key: string; jobId: string; stepId?: string; sessionId: string;
     action: string; label?: string; run: () => boolean;
@@ -929,8 +986,18 @@ export class WorkEngine {
     // bypassing the headroom + concurrency gate — a manual run must always start.
     userInitiated?: boolean;
   }): void {
+    this.pendingBindings.set(o.sessionId, o.action);
+    const run = () => {
+      const switching = this.opts.sessionManager.runtimeSwitchPending?.(o.sessionId);
+      if (switching) {
+        void switching.catch(() => {}).then(() => this.submitLaunch(o));
+        return false;
+      }
+      this.pendingBindings.delete(o.sessionId);
+      return o.run();
+    };
     const gov = this.opts.governor;
-    if (!gov) { o.run(); return; }  // no governor wired (unit harnesses) → fire synchronously
+    if (!gov) { run(); return; }  // no governor wired (unit harnesses) → fire synchronously
     const job = this.opts.queue.get(o.jobId);
     const priority: LaunchPriority = o.userInitiated ? 'user'
       : (job?.highPriority || isReactiveAction(o.action)) ? 'immediate' : 'queued';
@@ -939,7 +1006,7 @@ export class WorkEngine {
       key: o.key, jobId: o.jobId, stepId: o.stepId, sessionId: o.sessionId,
       priority, enqueuedAt: this.ctx.now(), jobInProgress,
       ...(o.label ? { label: o.label } : {}),
-      run: o.run,
+      run,
     });
   }
 
@@ -1059,6 +1126,12 @@ export class WorkEngine {
       for (const s of j.steps) {
         if (s.type !== 'orchestrated' || s.cancelled) continue;
         if (s.state === 'resolved' || s.state === 'failed') continue;
+        const round = s.pendingRound;
+        if (s.sessionId && s.state === 'running' && round && !round.delivery && !this.opts.interactive?.isInteractive(s.sessionId)) {
+          const sessionId = s.sessionId;
+          void this.resumeControllerRound(j.id, s.id, round.action, round.note, round.id)
+            .catch((error) => this.onApiStop(sessionId, (error as Error).message));
+        }
         for (const d of s.dispatches) {
           if (d.status !== 'queued') continue;
           void this.spawnDispatchSession(j.id, s.id, d).catch((e) =>
@@ -1323,6 +1396,9 @@ export class WorkEngine {
     // Resuming an idle planner drags every earlier round of the job along (CS-2041's reached
     // 361k tokens); only one that's mid-turn is resumed, since a second would race it to submit_plan.
     if (midTurn) {
+      const current = this.opts.queue.get(jobId);
+      const catalog = this.buildActionCatalog({ kind: 'plannable' }, current);
+      if (catalog) updateEnvelopeCatalog(envelopePath, catalog);
       const followup = `User reopened the orchestrator with this feedback:\n\n${feedback}\n\nRe-read $OUTPOST_ENVELOPE (now in mode=replan, with currentSteps and userFeedback). Post an amended plan via submit_plan with mode=replan.`;
       this.opts.sessionManager.sendOrResume(
         midTurn,
@@ -1651,7 +1727,13 @@ export class WorkEngine {
         if (!job || cur?.type !== 'action' || cur.state !== 'running' || cur.cancelled || cur.failure) return false;
         this.opts.writeSystemPrompt?.(sessionId, waitSessionContext(job, stepId));
         this.stampActionSession(sessionId, cur.action, cur.title || 'Step');
-        this.opts.sessionManager.spawnDetached(sessionId, cwd);
+        const runtime = this.runtimeFor(cur.action, job);
+        const refusal = this.runtimeRefusal(cur.action, runtime);
+        if (refusal) {
+          this.onStepFailed(jobId, stepId, refusal, { journal: false });
+          return false;
+        }
+        this.opts.sessionManager.spawnDetached(sessionId, cwd, undefined, undefined, runtime);
         this.mutateStep(jobId, stepId, (st) => st.type === 'action'
           ? this.appendStepEvent({ ...st, state: 'waiting', manualSession: { id: sessionId, cwd }, updatedAt: this.ctx.now() }, 'spawned', 'orchestrator')
           : st);
@@ -1850,8 +1932,15 @@ export class WorkEngine {
   // Returns the outcome (see submitDraft/onWriteDraftReady) so the HTTP route can answer a
   // refused accept with a real status instead of 200-and-nothing-changed. Async: a
   // file-referencing call is hashed from disk before the accept can be recorded.
-  acceptDraft(jobId: string, stepId: string, draftId: string, calls: PinnedCall[]): Promise<DraftDecisionResult> {
-    return acceptDraftImpl(this.draftHost(), jobId, stepId, draftId, calls);
+  async acceptDraft(jobId: string, stepId: string, draftId: string, calls: PinnedCall[]): Promise<DraftDecisionResult> {
+    const sessionId = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId)?.sessionId;
+    if (!sessionId) return acceptDraftImpl(this.draftHost(), jobId, stepId, draftId, calls);
+    if (this.opts.sessionManager.runtimeSwitchPending?.(sessionId) || this.acceptingDrafts.has(sessionId)) {
+      return { ok: false, status: 409, reason: 'A runtime switch or draft decision is in progress' };
+    }
+    this.acceptingDrafts.add(sessionId);
+    try { return await acceptDraftImpl(this.draftHost(), jobId, stepId, draftId, calls); }
+    finally { this.acceptingDrafts.delete(sessionId); }
   }
 
   // PWA "Propose changes": records feedback and resumes the same session for a redraft.
@@ -1883,7 +1972,7 @@ export class WorkEngine {
   // Resume a write-draft action's persistent session for its next turn (commit after
   // approval, or redraft after feedback). Rebuilds the envelope at the stable path so the
   // resumed session re-reads the current phase/draft/feedback, then sendOrResume's it.
-  private async dispatchActionResume(jobId: string, stepId: string): Promise<void> {
+  private async dispatchActionResume(jobId: string, stepId: string, explicitRetry = false): Promise<void> {
     const j = this.opts.queue.get(jobId);
     const s = j?.steps.find((x) => x.id === stepId);
     if (!j || !s || s.type !== 'action' || !s.sessionId) return;
@@ -1916,15 +2005,20 @@ export class WorkEngine {
       key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: actionName, label: actionName,
       run: () => {
         const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
-        if (!cur || cur.type !== 'action' || cur.cancelled || cur.failure) return false;
+        if (!cur || cur.type !== 'action' || cur.cancelled || cur.failure || cur.sessionId !== sessionId) return false;
+        const refusal = this.runtimeRefusal(actionName, this.opts.sessionManager.runtimeOf?.(sessionId) ?? 'claude');
+        if (refusal) { this.onApiStop(sessionId, refusal); return false; }
         this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
         this.bindAction(sessionId, actionName);
-        this.opts.sessionManager.sendOrResume(
-          sessionId,
-          cwd,
-          { text: this.resumePrompt(sessionId, actionName) },
-          { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'action' },
-        );
+        try {
+          this.opts.sessionManager.sendOrResume(
+            sessionId, cwd, { text: this.resumePrompt(sessionId, actionName), retryDelivery: explicitRetry },
+            { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'action' },
+          );
+        } catch (error) {
+          this.onApiStop(sessionId, (error as Error).message);
+          return false;
+        }
         return true;
       },
     });
@@ -2157,7 +2251,7 @@ export class WorkEngine {
   // `journal: false` for failures the action itself didn't cause — a daemon bounce or a
   // workspace that wouldn't provision say nothing about the skill, and would crowd real
   // lessons out of the bounded per-action journal.
-  onStepFailed(jobId: string, stepId: string, reason: string, opts: { journal?: boolean } = {}): void {
+  onStepFailed(jobId: string, stepId: string, reason: string, opts: { journal?: boolean; updateRound?: (s: OrchestratedStep) => OrchestratedStep } = {}): void {
     // Same dispatch short-circuit as onStepResolved: a dispatch's failure is the
     // controller's to interpret via the next inbox delivery, not an automatic step failure.
     const parentStepId = this.findDispatchStepId(jobId, stepId);
@@ -2167,7 +2261,8 @@ export class WorkEngine {
     }
     if (opts.journal !== false) this.journalBlocker(jobId, stepId, reason);
     this.mutateStep(jobId, stepId, (s) => {
-      const next: Step = { ...s, failure: { reason, at: this.ctx.now() } };
+      const step = s.type === 'orchestrated' && opts.updateRound ? opts.updateRound(s) : s;
+      const next: Step = { ...step, failure: { reason, at: this.ctx.now() } };
       // action steps reach failure only through `.failure` — this is the sole producer
       // of `state: 'failed'`, and only orchestrated steps go through it. Set both so they
       // agree, rather than leaving `state` frozen at whatever it was mid-round: a step the
@@ -2226,16 +2321,16 @@ export class WorkEngine {
       // throw anywhere else (envelope build/write, lesson augmentation, action catalog) is
       // an unhandled rejection that would leave the step hung or the dispatch stuck
       // `queued`, with no failure event and no global unhandledRejection handler to catch it.
-      resumeController: (jobId, stepId, action, note) => {
-        this.resumeControllerRound(jobId, stepId, action, note).catch((e) =>
+      resumeController: (jobId, stepId, action, note, selected) => {
+        this.resumeControllerRound(jobId, stepId, action, note, selected).catch((e) =>
           this.onStepFailed(jobId, stepId, `controller resume failed: ${(e as Error).message ?? e}`, { journal: false }));
       },
       spawnDispatch: (jobId, stepId, d) => {
         this.spawnDispatchSession(jobId, stepId, d).catch((e) =>
           this.settleDispatch(jobId, stepId, d.id, 'failed', { failure: `dispatch spawn failed: ${(e as Error).message ?? e}` }));
       },
-      resolveStep: (jobId, stepId, output) => this.resolveStepByController(jobId, stepId, output),
-      failStep: (jobId, stepId, reason) => this.onStepFailed(jobId, stepId, reason),
+      resolveStep: (jobId, stepId, output, update) => this.resolveStepByController(jobId, stepId, output, update),
+      failStep: (jobId, stepId, reason, updateRound) => this.onStepFailed(jobId, stepId, reason, { updateRound }),
       scheduleDelivery: (jobId, stepId, at) => this.scheduleDelivery(jobId, stepId, at),
       actionInfo: {
         sideEffects: (a) => this.opts.actionRegistry?.getAction(a)?.frontmatter.outpost.side_effects,
@@ -2270,6 +2365,10 @@ export class WorkEngine {
   // wake after every move rather than trusting each branch to remember.
   onStepProgress(jobId: string, stepId: string, p: ProgressPayload): void {
     if (!this.jobAcceptsStepWork(jobId)) return;
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    if (step?.type === 'orchestrated' && step.pendingRound && !step.pendingRound.delivery) {
+      throw new Error('The next controller round has not started');
+    }
     applyMove(this.orchestratedHost(), jobId, stepId, p);
     this.syncOrchestratedWake(jobId, stepId);
     void this.refreshUnpushedWork(jobId, stepId);
@@ -2368,13 +2467,13 @@ export class WorkEngine {
   // the only one that archives the worktree. Reached only through the orchestrated host, never
   // from a route or an MCP tool: those cannot prove they are the controller deciding rather
   // than a bound action reporting its own output (see onStepResolved).
-  private resolveStepByController(jobId: string, stepId: string, _output: string): void {
+  private resolveStepByController(jobId: string, stepId: string, _output: string, update?: (s: OrchestratedStep) => OrchestratedStep): void {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (step?.type !== 'orchestrated' || step.state === 'resolved') return;
-    this.settleOrchestratedStep(jobId, stepId, 'archive');
     this.mutateStep(jobId, stepId, (s) => this.appendStepEvent(
-      { ...s, state: 'resolved', updatedAt: this.ctx.now() }, 'resolved', 'session',
+      { ...(s.type === 'orchestrated' && update ? update(s) : s), state: 'resolved', updatedAt: this.ctx.now() }, 'resolved', 'session',
     ));
+    this.settleOrchestratedStep(jobId, stepId, 'archive');
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'step_resolved', who: 'session', stepId, body: this.stepLabel(jobId, stepId),
     }));
@@ -2438,6 +2537,7 @@ export class WorkEngine {
 
   private async resumeControllerRound(
     jobId: string, stepId: string, action: string | undefined, note: string | undefined,
+    selected?: string, explicitRetry = false,
   ): Promise<void> {
     const j = this.opts.queue.get(jobId);
     const s = j?.steps.find((x) => x.id === stepId);
@@ -2446,38 +2546,9 @@ export class WorkEngine {
     if (!j || !s || s.type !== 'orchestrated' || !s.sessionId) return;
     const sessionId = s.sessionId;
     const boundAction = action ?? s.controller;
-    // OrchestratedEnvelope has no typePayload wrapper; writeGate is added here, as a sibling
-    // top-level field to boundAction/delivered, so a controller resumed after the user acts on
-    // its own draft (accept/revise/deny) can tell whether it's drafting or committing, and see
-    // any redraft feedback. orchestratedHandler.buildEnvelope (steps/orchestrated.ts) computes
-    // the same field independently for its own direct caller in decide() — the cold-spawn path,
-    // reached when reconcileInterruptedSteps clears a dead controller's sessionId mid-draft —
-    // so a respawned controller doesn't lose track of its phase either.
-    // Scoped to `boundAction`: an approved-but-partially-consumed draft from an EARLIER round
-    // bound to a different action (`code.merge-pr`'s failed merge, say) must not surface here
-    // once the controller rebinds to something else (`code.fix-ci`) — see currentDraftForRaiser.
-    //
-    // Assigned unconditionally, NOT `...(writeGate ? { writeGate } : {})`: `s` here is the step
-    // as it stood BEFORE this resume persists the new `boundAction` (that happens later, inside
-    // `run()`), so orchestratedHandler.buildEnvelope's OWN internal writeGate computation just
-    // below still reads the OLD `s.boundAction` and can contribute a stale (but non-empty)
-    // writeGate to the spread. A conditional-spread here would only ever ADD a key, never
-    // overwrite one buildEnvelope's spread already set — an unconditional `writeGate: undefined`
-    // is what actually clears it (JSON.stringify drops it, same absence as never having set it).
-    const writeGate = writeGateFor(currentDraftForRaiser(s, { kind: 'controller' }, boundAction));
-    const envelope = {
-      ...orchestratedHandler.buildEnvelope(s, j, this.ctx),
-      boundAction,
-      ...(note ? { boundNote: note } : {}),
-      // Persisted on the step by drainForDelivery, so a cold resume still shows what woke it.
-      ...(s.lastDelivered?.length ? { delivered: s.lastDelivered } : {}),
-      writeGate,
-      // Scoped to the controller, not to `boundAction` — a work turn hands back to a decision
-      // turn in the same session, and that turn picks the next round out of this same catalog.
-      actionCatalog: this.buildActionCatalog({ kind: 'controller', controller: s.controller }),
-    };
-    const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, stepId, envelope);
-    augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent(boundAction) ?? []);
+    const round = selected ? s.pendingRound : { id: randomUUID(), action: boundAction, note, delivered: s.lastDelivered };
+    if (!round || (selected && round.id !== selected)) return;
+    if (!selected) this.mutateStep(jobId, stepId, (st) => st.type === 'orchestrated' ? { ...st, pendingRound: round } : st);
 
     // A trailing Stop from the round we're superseding must not fail this live step.
     // Recorded synchronously — a queued launch may only fire once that Stop frees the slot.
@@ -2500,30 +2571,50 @@ export class WorkEngine {
     this.submitLaunch({
       key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: boundAction, label: boundAction,
       run: () => {
-        const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+        const currentJob = this.opts.queue.get(jobId);
+        const cur = currentJob?.steps.find((x) => x.id === stepId);
         // `cancelled` alone is not enough: it's the plan-editor flag, never set by a settle. The
         // step can go terminal while this resume is suspended in provision() above (seconds of
         // real git work) or parked in the governor — a mark-resolved landing there would
         // otherwise spawn a fresh turn on a session the settle just closed. Mirrors the
         // status re-read in spawnDispatchSession's run().
-        if (!cur || cur.type !== 'orchestrated' || cur.cancelled) return false;
+        if (!currentJob || !cur || cur.type !== 'orchestrated' || cur.cancelled || cur.sessionId !== sessionId
+          || cur.pendingRound?.id !== round.id) return false;
         if (cur.failure || cur.state === 'resolved' || cur.state === 'failed') return false;
+        if (cur.pendingRound.delivery && !explicitRetry) return false;
         // The job can be abandoned/deleted between the resume and the fire, too.
         if (!this.jobAcceptsStepWork(jobId)) return false;
+        const refusal = this.runtimeRefusal(boundAction, this.opts.sessionManager.runtimeOf?.(sessionId) ?? 'claude');
+        if (refusal) { this.onApiStop(sessionId, refusal); return false; }
+        const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, stepId, {
+          ...orchestratedHandler.buildEnvelope(cur, currentJob, this.ctx),
+          boundAction,
+          ...(note ? { boundNote: note } : {}),
+          ...(round.delivered?.length ? { delivered: round.delivered } : {}),
+          // Clear drafts raised under a different bound action.
+          writeGate: writeGateFor(currentDraftForRaiser(cur, { kind: 'controller' }, boundAction)),
+          actionCatalog: this.buildActionCatalog({ kind: 'controller', controller: cur.controller }),
+        });
+        augmentEnvelopeWithLessons(envelopePath, this.opts.journalStore?.recent(boundAction) ?? []);
         this.roleBySession.set(sessionId, { role: 'step', jobId, stepId });
         this.bindAction(sessionId, boundAction);
-        // Persist the same identity onto the step (see OrchestratedStep.boundAction) — this is
-        // the ONLY point a controller session's bound action ever changes, so it's the only
-        // point that needs to write it. Unconditional, not just when `action` was given: a
-        // plain wake-up resolves `boundAction` back to `s.controller`, and persisting that is
-        // what retires a stale sub-action from an earlier round.
-        this.mutateStep(jobId, stepId, (st) => st.type === 'orchestrated' ? { ...st, boundAction } : st);
-        this.opts.sessionManager.sendOrResume(
-          sessionId,
-          cwd,
-          { text: this.resumePrompt(sessionId, boundAction) },
-          { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'orchestrated' },
-        );
+        // Persist admission before a provider can execute the turn.
+        const deliveryId = randomUUID();
+        this.mutateStep(jobId, stepId, (st) => st.type === 'orchestrated' ? {
+          ...st, boundAction, pendingRound: { ...round, delivery: { id: deliveryId, state: 'admitted' } },
+        } : st);
+        try {
+          this.opts.sessionManager.sendOrResume(sessionId, cwd, {
+            text: this.resumePrompt(sessionId, boundAction), deliveryId, retryDelivery: explicitRetry,
+            onAccepted: (id) => this.mutateStep(jobId, stepId, (st) => {
+              if (st.type !== 'orchestrated' || st.pendingRound?.delivery?.id !== id) return st;
+              return { ...st, pendingRound: { ...st.pendingRound, delivery: { id, state: 'accepted' } } };
+            }),
+          }, { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: stepId, STEP_TYPE: 'orchestrated' });
+        } catch (error) {
+          this.onApiStop(sessionId, (error as Error).message);
+          return false;
+        }
         return true;
       },
     });
@@ -2599,6 +2690,12 @@ export class WorkEngine {
         // missed (or predates it).
         const target = cur.dispatches.find((d) => d.id === dispatch.id);
         if (!target || target.status !== 'queued') return false;
+        const runtime = this.runtimeFor(dispatch.action, this.opts.queue.get(jobId));
+        const refusal = this.runtimeRefusal(dispatch.action, runtime);
+        if (refusal) {
+          this.onStepFailed(jobId, dispatch.id, refusal, { journal: false });
+          return false;
+        }
         this.roleBySession.set(sessionId, { role: 'dispatch', jobId, stepId, dispatchId: dispatch.id });
         this.bindAction(sessionId, dispatch.action);
         this.stampActionSession(sessionId, dispatch.action, dispatch.action);
@@ -2613,7 +2710,7 @@ export class WorkEngine {
         });
         this.opts.sessionManager.spawnDetached(sessionId, cwd, {
           OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId, STEP_ID: dispatch.id, STEP_TYPE: 'action',
-        }, 'default', this.runtimeFor(dispatch.action, this.opts.queue.get(jobId)));
+        }, 'default', runtime);
         this.opts.sessionManager.sendTurn(sessionId, { text: `/${dispatch.action}` });
         return true;
       },
@@ -2630,6 +2727,14 @@ export class WorkEngine {
     const cur = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     const wsErr = cur ? workspaceError(cur.workspace) : null;
     if (wsErr) throw new Error(`${wsErr}. Edit the step's workspace to repair it — that re-runs it.`);
+    const runtimeVersion = cur?.sessionId ? this.opts.sessionManager.runtimeVersion?.(cur.sessionId) : undefined;
+    if (cur?.sessionId && !isTerminalStep(cur)
+      && ((cur.type === 'orchestrated' && cur.pendingRound) || (runtimeVersion && runtimeVersion !== cur.sessionId))) {
+      if (!this.resumeStalls(jobId, (stall) => stall.sessionId === cur.sessionId)) {
+        throw new Error('The selected runtime can resume once this attempt is interrupted and ready to resume.');
+      }
+      return;
+    }
     // Retry means "start this over", not "keep my conversation" — the step cold-respawns
     // under a fresh session id, so a flag left behind only lingers in the store and keeps the
     // old session reading as driven in the timeline.
@@ -3052,8 +3157,20 @@ export class WorkEngine {
       run: () => {
         const cur = this.opts.queue.get(jobId);
         if (!cur || cur.state === 'abandoned' || cur.state === 'done' || cur.state === 'failed') return false;
+        const runtime = this.runtimeFor(actionName, cur);
+        const refusal = this.runtimeRefusal(actionName, runtime);
+        if (refusal) {
+          this.mutate(jobId, (job) => this.appendEvent({
+            ...job, state: 'failed', failure: { at: this.ctx.now(), reason: refusal },
+          }, {
+            kind: 'state_changed', who: 'system', body: refusal,
+          }));
+          return false;
+        }
+        const catalog = this.buildActionCatalog({ kind: 'plannable' }, cur);
+        if (catalog) updateEnvelopeCatalog(envelopePath, catalog);
         this.opts.sessionManager.spawnDetached(
-          sessionId, cwd, { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId }, 'default', this.runtimeFor(actionName, cur),
+          sessionId, cwd, { OUTPOST_ENVELOPE: envelopePath, JOB_ID: jobId }, 'default', runtime,
         );
         this.roleBySession.set(sessionId, { role: 'orchestrator', jobId });
         this.bindAction(sessionId, actionName);
@@ -3115,8 +3232,15 @@ export class WorkEngine {
       key: `${jobId}#${stepId}`, jobId, stepId, sessionId, action: actionName, label: actionName,
       run: () => {
         // Re-validate: the step may have been cancelled/retried/started while parked.
-        const cur = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
+        const job = this.opts.queue.get(jobId);
+        const cur = job?.steps.find((x) => x.id === stepId);
         if (!cur || cur.cancelled || cur.failure || cur.sessionId) return false;
+        const runtime = this.runtimeFor(actionName, job);
+        const refusal = this.runtimeRefusal(actionName, runtime);
+        if (refusal) {
+          this.onStepFailed(jobId, stepId, refusal, { journal: false });
+          return false;
+        }
         // Action-bound step sessions always run in `default` permission mode so the
         // PreToolUse hook fires on every call — the hook denies-on-miss for action
         // sessions (no interactive approver attached). Without this, the user's global
@@ -3128,7 +3252,7 @@ export class WorkEngine {
           JOB_ID: jobId,
           STEP_ID: stepId,
           STEP_TYPE: s.type,
-        }, 'default', this.runtimeFor(actionName, this.opts.queue.get(jobId)));
+        }, 'default', runtime);
         this.stampActionSession(sessionId, actionName, s.title || 'Step');
         this.mutateStep(jobId, stepId, (st) => this.appendStepEvent({ ...st, sessionId } as Step, 'spawned', 'orchestrator'));
         this.mutate(jobId, (j) => this.appendEvent(j, {
@@ -3146,6 +3270,10 @@ export class WorkEngine {
 
   private mutate(jobId: string, fn: (j: JobRecord) => JobRecord): JobRecord | undefined {
     return this.opts.queue.mutate(jobId, fn);
+  }
+
+  setJobRuntime(jobId: string, runtime: RuntimeId): JobRecord | undefined {
+    return this.mutate(jobId, (job) => ({ ...job, runtime }));
   }
 
   private mutateStep(jobId: string, stepId: string, fn: (s: Step) => Step): void {

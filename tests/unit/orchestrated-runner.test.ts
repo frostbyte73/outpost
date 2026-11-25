@@ -46,7 +46,7 @@ describe('applyMove', () => {
   it('resumes the controller on a self-round and charges the counter', () => {
     const { h, get } = host(step({ consecutiveSelfRounds: 1 }));
     applyMove(h, 'j1', 's1', { next: { kind: 'self-round', action: 'code.implement', note: 'go' } });
-    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.implement', 'go');
+    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.implement', 'go', get().pendingRound?.id);
     expect(get().consecutiveSelfRounds).toBe(2);
     expect(get().state).toBe('running');
   });
@@ -71,7 +71,7 @@ describe('applyMove', () => {
     expect(get().lastDelivered?.some((i) => i.kind === 'policy-rejection')).toBeFalsy();
     expect(get().pendingPolicyStrike).toBe(false);
     expect(get().state).toBe('running');
-    expect(h.resumeController).toHaveBeenLastCalledWith('j1', 's1', 'code.implement', undefined);
+    expect(h.resumeController).toHaveBeenLastCalledWith('j1', 's1', 'code.implement', undefined, get().pendingRound?.id);
   });
 
   it('a gate resets the consecutive-self-round count', () => {
@@ -133,7 +133,7 @@ describe('applyMove', () => {
     expect(get().pendingPolicyStrike).toBe(false);
     expect(get().consecutiveSelfRounds).toBe(0);
     expect(get().state).toBe('running');
-    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.review-diff', undefined);
+    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', 'code.review-diff', undefined, get().pendingRound?.id);
   });
 
   it('does not fail a step for two productive self-rounds in a row at the cap', () => {
@@ -247,7 +247,7 @@ describe('applyMove', () => {
     // gate-resolved lands in lastDelivered, which the next delivery overwrites — gateApproved
     // is what a controller resuming later (or on a fresh spawn) still reads to know it said yes.
     expect(get().gateApproved).toBe(true);
-    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', undefined, undefined);
+    expect(h.resumeController).toHaveBeenCalledWith('j1', 's1', undefined, undefined, get().pendingRound?.id);
   });
 
   // The PWA can now approve WITH a note (previously the only way to send words was a decline,
@@ -350,7 +350,7 @@ describe('applyMove', () => {
     const { h } = host(step({ consecutiveSelfRounds: MAX_CONSECUTIVE_SELF_ROUNDS }));
     applyMove(h, 'j1', 's1', { next: { kind: 'self-round' } });
     applyMove(h, 'j1', 's1', { next: { kind: 'self-round' } });
-    expect(h.failStep).toHaveBeenCalledWith('j1', 's1', expect.stringMatching(/policy/i));
+    expect(h.failStep).toHaveBeenCalledWith('j1', 's1', expect.stringMatching(/policy/i), expect.any(Function));
   });
 
   it('clears the policy strike on an accepted move, so a later violation gets one more correction', () => {
@@ -378,11 +378,11 @@ describe('applyMove', () => {
   it('routes resolve and fail to the host', () => {
     const a = host(step());
     applyMove(a.h, 'j1', 's1', { next: { kind: 'resolve', output: 'merged' } });
-    expect(a.h.resolveStep).toHaveBeenCalledWith('j1', 's1', 'merged');
+    expect(a.h.resolveStep).toHaveBeenCalledWith('j1', 's1', 'merged', expect.any(Function));
 
     const b = host(step());
     applyMove(b.h, 'j1', 's1', { next: { kind: 'fail', reason: 'stuck' } });
-    expect(b.h.failStep).toHaveBeenCalledWith('j1', 's1', 'stuck');
+    expect(b.h.failStep).toHaveBeenCalledWith('j1', 's1', 'stuck', expect.any(Function));
   });
 
   // A controller's own submit_step_progress call can land after the step has already been

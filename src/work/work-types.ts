@@ -279,6 +279,8 @@ export interface OrchestratedStep extends StepBase {
   // The batch most recently handed to the controller. Persisted rather than passed as an
   // argument so a cold resume can still show the controller what woke it.
   lastDelivered?: InboxItem[];
+  pendingRound?: { id: string; action: string; note?: string; delivered?: InboxItem[];
+    delivery?: { id: string; state: 'admitted' | 'accepted' } };
   waitingOn?: WaitSpec;
   roundsSpent: number;
   consecutiveSelfRounds: number;

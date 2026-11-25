@@ -28,6 +28,7 @@ import { actions } from '../../state/actions.js';
 import { keymap } from '../../state/keymap.js';
 import { settings } from '../../state/settings.js';
 import { startSession } from '../../session-launch.js';
+import { loadRuntimeOptions } from '../../net/sessions.js';
 import { startScheduleDraft } from '../schedules/draft.js';
 import { sendUserMessage, sessionWsReadyState } from '../session-view/session-ws.js';
 import { openAddProjectSheet } from '../cwd-picker.js';
@@ -466,6 +467,7 @@ function step2Html() {
         <div><span class="o-kbd">&#8984;&#8679;&crarr;</span>track as job</div>
         <div><span class="o-kbd">&#8679;&#8984;S</span>schedule</div>
       </div>
+      <label>Runtime <select id="p-runtime" disabled><option value="claude">Claude</option></select></label>
       <div class="p-launch-row">
         <button type="button" class="p-launch-btn o-btn o-btn--primary" data-launch="session">Send</button>
         <button type="button" class="p-launch-btn o-btn o-btn--default" data-launch="track">Track</button>
@@ -544,6 +546,11 @@ function renderStep2() {
   bindMobileBar(modalEl);
   bindCwdBar(modalEl.querySelector('#p-cwd-bar'));
   bindPromptArea();
+  const runtimeSelect = modalEl.querySelector('#p-runtime');
+  void loadRuntimeOptions(runtimeSelect, 'claude').catch((e) => showLaunchError(e.message));
+  runtimeSelect.addEventListener('change', () => {
+    modalEl.querySelector('.model-chip').hidden = runtimeSelect.value !== 'claude';
+  });
   modalEl.querySelector('.model-chip')?.addEventListener('click', cycleModel);
   wirePreapprovalsControl(modalEl, 'palette');
   modalEl.querySelector('.p-launch-row')?.addEventListener('click', (e) => {
@@ -803,6 +810,7 @@ function acceptAutocomplete(item) {
 }
 
 function cycleModel() {
+  if (modalEl?.querySelector('#p-runtime')?.value !== 'claude') return;
   modelIndex = (modelIndex + 1) % MODEL_CHOICES.length;
   const chip = modalEl?.querySelector('.model-chip');
   if (chip) chip.textContent = MODEL_CHOICES[modelIndex].label;
@@ -846,7 +854,8 @@ async function launchSession() {
       spawnCwd: cwd,
       spawnMode: worktreeMode === 'worktree' ? 'worktree' : undefined,
       baseBranch: spawnBaseBranch,
-      model: MODEL_CHOICES[modelIndex].id ?? undefined,
+      model: modalEl?.querySelector('#p-runtime')?.value === 'claude' ? MODEL_CHOICES[modelIndex].id ?? undefined : undefined,
+      runtime: modalEl?.querySelector('#p-runtime')?.value || undefined,
       approvalMode: defaultApprovalMode !== 'ask' ? defaultApprovalMode : undefined,
       title: deriveTitle(prompt, cwd),
     });
@@ -906,6 +915,7 @@ async function launchTrack() {
       const planReview = modalEl?.querySelector('[data-track="plan-review"]')?.value;
       const res = await work.createJob({
         title, description,
+        runtime: modalEl?.querySelector('#p-runtime')?.value || undefined,
         ...(fs ? { preapprovals: readPreapprovalsControl(fs) } : {}),
         ...(planReview === 'auto' ? { planReview } : {}),
       });

@@ -98,7 +98,15 @@ export type CanonicalEvent = { subagent?: SubagentRef } & (
 
 export interface TurnInput {
   text: string;
+  deliveryId?: string;
+  retryDelivery?: boolean;
+  onAccepted?: (deliveryId: string) => void;
   images?: { mediaType: string; data: string }[];
+}
+
+export interface FirstTurnSeed {
+  token: string;
+  block: string;
 }
 
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions';
@@ -106,6 +114,14 @@ export type SessionModel = 'sonnet' | 'opus' | 'haiku' | 'fable';
 
 export interface StartOpts {
   sessionId: string;
+  transcriptId?: string;
+  nativeId?: string;
+  redactSeeds?: readonly string[];
+  saveNativeId?: (id: string) => void;
+  newTranscriptSegment?: () => { id: string; prepareSeed: (queuedSeed?: FirstTurnSeed) => FirstTurnSeed };
+  acceptsCallbacks?: () => boolean;
+  canStartTool?: () => boolean;
+  launchCredential?: string;
   mode: 'new' | 'resume';
   cwd: string;
   env: Record<string, string>;
@@ -118,13 +134,17 @@ export interface StartOpts {
 }
 
 export interface StartCallbacks {
+  onSeedAccepted?: (token: string) => void;
+  onSeedRejected?: (token: string) => void;
+  onSeedUncertain?: (token: string) => void;
   onEvent: (e: CanonicalEvent) => void;
   onError: (msg: string) => void;
   onExit: (code: number | null) => void;
 }
 
 export interface RuntimeSession {
-  sendTurn(turn: TurnInput): void;
+  sendTurn(turn: TurnInput, seed?: FirstTurnSeed): void;
+  hasPendingTools?(): boolean;
   interrupt(): void;
   kill(): Promise<void>;
 }
@@ -174,6 +194,10 @@ export interface RuntimeCapabilities {
 export type SessionKind = 'normal' | 'action-edit' | 'skill-edit' | 'schedule-edit';
 
 export interface SessionInfo {
+  runtime?: RuntimeId;
+  runtimeAvailable?: boolean;
+  runtimeVersion?: string;
+  canSwitchRuntime?: boolean;
   id: string;
   title: string;
   lastModified: number;
@@ -248,12 +272,13 @@ export interface TranscriptProject {
 
 // Reads a runtime's own on-disk session history.
 export interface TranscriptReader {
+  locateTranscript?(id: string): string | undefined;
   // One entry per physical history dir whose cwd still exists or is a known worktree.
   scanProjectDirs(knownWorktreePaths: ReadonlySet<string>): TranscriptProject[];
   // Where the runtime would keep history for a cwd it has none for yet.
   projectDirFor(cwd: string): string;
   // `projectDir` is one scanProjectDirs returned; `id` is already checked to be a bare id.
-  readItems(projectDir: string, id: string): CanonicalItem[];
+  readItems(projectDir: string, id: string, seedTokens?: readonly string[], forHandoff?: boolean): CanonicalItem[];
   readSubagents(projectDir: string, id: string): SubagentInfo[];
   deleteTranscript(projectDir: string, id: string): boolean;
 }
@@ -261,6 +286,7 @@ export interface TranscriptReader {
 // One agent harness behind Outpost's sessions.
 export interface AgentRuntime {
   readonly id: string;
+  readonly label?: string;
   readonly capabilities: RuntimeCapabilities;
   // False when the harness isn't installed; such a runtime refuses every action.
   readonly available: boolean;

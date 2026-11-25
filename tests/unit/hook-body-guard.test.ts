@@ -124,7 +124,7 @@ describe('the real hook callbacks guard their bodies', () => {
   }
 
   it.each(BODY_CALLBACKS)('%s parses via parseJsonObject and throws on a non-object', (name) => {
-    const body = callbackBody(daemon, name, 'async (body) => {', '    ');
+    const body = callbackBody(daemon, name, 'async (body', '    ');
     expect(body).toContain('parseJsonObject(body)');
     const guard = body.indexOf("throw new Error('invalid json body')");
     expect(guard, `${name} accepts a body that is not a plain object`).toBeGreaterThan(-1);

@@ -14,10 +14,11 @@ import { PRETOOL_HOOK_COMMAND } from './pretool-hook.js';
 import { codexConfigArgs, REQUIRED_OFF_FEATURES } from './thread-config.js';
 import { codexCanonicalTool } from './tools.js';
 import { expandActionTurn } from '../action-turn.js';
+import { isHandoffSeed } from '../../session/handoff-seed.js';
 import type { JsonlTranscripts } from '../jsonl-transcripts.js';
 import type { McpServerConfig } from '../../integrations/mcp-config.js';
 import type {
-  AgentRuntime, RuntimeCapabilities, RuntimeHost, RuntimeSession, StartCallbacks, StartOpts, TurnInput,
+  AgentRuntime, FirstTurnSeed, RuntimeCapabilities, RuntimeHost, RuntimeSession, StartCallbacks, StartOpts, TurnInput,
 } from '../types.js';
 
 export interface CodexRuntimeOpts {
@@ -55,7 +56,7 @@ export class CodexRuntime implements AgentRuntime {
   readonly available: boolean;
   readonly transcripts: JsonlTranscripts;
   private trust: HookTrust | undefined;
-  private readonly threads = new Map<string, { sessionId: string; cwd: string; tracker: CallTracker }>();
+  private readonly threads = new Map<string, { sessionId: string; cwd: string; tracker: CallTracker; canStartTool?: () => boolean }>();
   private readonly hookTimeoutSec: number;
 
   constructor(readonly opts: CodexRuntimeOpts) {
@@ -81,22 +82,33 @@ export class CodexRuntime implements AgentRuntime {
     let p: CodexPreToolPayload;
     try { p = JSON.parse(body) as CodexPreToolPayload; } catch { return 'deny:Outpost could not read this hook call.'; }
     const thread = this.threads.get(p.session_id);
-    const d = await decideCodexPreTool(p, () => thread, (req) => this.opts.host().gateToolCall(req));
-    if (!d.allow) {
-      thread?.tracker.noteDenied(p.tool_use_id);
-      return `deny:${d.reason || 'Outpost denied this call.'}`;
+    if (thread?.canStartTool?.() === false) return 'deny:Runtime switch in progress';
+    if (thread) thread.tracker.pendingDecisions++;
+    try {
+      const d = await decideCodexPreTool(p, () => thread, (req) => this.opts.host().gateToolCall(req));
+      if (!d.allow) {
+        thread?.tracker.noteDenied(p.tool_use_id);
+        return `deny:${d.reason || 'Outpost denied this call.'}`;
+      }
+      thread!.tracker.noteGated(p.tool_use_id, codexCanonicalTool(p.tool_name), p.tool_input);
+      return '{"decision":"allow"}';
+    } finally {
+      if (thread) thread.tracker.pendingDecisions--;
     }
-    thread!.tracker.noteGated(p.tool_use_id, codexCanonicalTool(p.tool_name), p.tool_input);
-    return '{"decision":"allow"}';
   }
 
   spawnServer(cwd: string, env: Record<string, string>, handlers: {
     onNotification: (method: string, params: unknown) => void; onStderr: (s: string) => void; onExit: (code: number | null) => void;
-  }): CodexAppServer {
+  }, launchCredential?: string): CodexAppServer {
+    const mcpServers = this.opts.mcpServers();
+    const outpost = mcpServers.get('outpost');
+    if (launchCredential && outpost?.type === 'http') {
+      mcpServers.set('outpost', { ...outpost, headers: { ...outpost.headers, 'X-Outpost-Launch': launchCredential } });
+    }
     const config = codexConfigArgs({
       hookTimeoutSec: this.hookTimeoutSec,
       ...(this.trust ? { trust: this.trust } : {}),
-      mcpServers: this.opts.mcpServers(),
+      mcpServers,
     });
     return new CodexAppServer({
       bin: this.opts.bin!,
@@ -122,7 +134,7 @@ export class CodexRuntime implements AgentRuntime {
     return verdict;
   }
 
-  register(threadId: string, thread: { sessionId: string; cwd: string; tracker: CallTracker }): void {
+  register(threadId: string, thread: { sessionId: string; cwd: string; tracker: CallTracker; canStartTool?: () => boolean }): void {
     this.threads.set(threadId, thread);
   }
 
@@ -141,7 +153,10 @@ class CodexSession implements RuntimeSession {
   private inTurn = false;
   private dead = false;
   private exitReported = false;
-  private readonly queued: TurnInput[] = [];
+  private readonly queued: { turn: TurnInput; seed?: FirstTurnSeed }[] = [];
+  private seedToken?: string;
+  private seededText?: string;
+  private prepareRestartSeed?: (queuedSeed?: FirstTurnSeed) => FirstTurnSeed;
   // A turn/start response can land after its turn ended; its id must not become the live turn's.
   private readonly endedTurns = new Set<string>();
   private readonly tracker = new CallTracker();
@@ -160,7 +175,9 @@ class CodexSession implements RuntimeSession {
       const features = await this.listFeatures();
       const stillOn = featuresStillOn(features, REQUIRED_OFF_FEATURES);
       if (stillOn.length > 0) throw new Error(`Codex did not disable ${stillOn.join(', ')}, which Outpost's gate needs off`);
-      this.rt.opts.nativeIds.write(this.s.sessionId, this.threadId!);
+      if (this.dead || this.s.acceptsCallbacks?.() === false) return;
+      if (this.s.saveNativeId) this.s.saveNativeId(this.threadId!);
+      else this.rt.opts.nativeIds.write(this.s.sessionId, this.threadId!);
       this.cb.onEvent({ type: 'session.started', sessionId: this.s.sessionId, ...(this.model ? { model: this.model } : {}), mcpServers: [] });
       this.ready = true;
       this.startNextTurn();
@@ -170,24 +187,43 @@ class CodexSession implements RuntimeSession {
   }
 
   // A turn sent while one is running waits for it to end, as a Claude session's follow-ups do.
-  sendTurn(turn: TurnInput): void {
+  sendTurn(turn: TurnInput, seed?: FirstTurnSeed): void {
     if (this.dead) return;
-    this.queued.push(turn);
+    this.queued.push({ turn, seed });
     if (this.ready && !this.inTurn) this.startNextTurn();
   }
 
   private startNextTurn(): void {
-    const turn = this.queued.shift();
-    if (!turn || this.dead) return;
+    const next = this.queued.shift();
+    if (!next || this.dead) return;
+    const { turn } = next;
+    const seed = this.prepareRestartSeed?.(next.seed) ?? next.seed;
+    this.prepareRestartSeed = undefined;
     this.inTurn = true;
     const text = expandActionTurn(turn.text, this.rt.opts.actionBody);
     const input: unknown[] = [{ type: 'text', text, text_elements: [] }];
+    if (seed) {
+      this.seedToken = seed.token;
+      this.seededText = turn.text;
+      input.push({ type: 'text', text: seed.block, text_elements: [] });
+    }
     for (const img of turn.images ?? []) input.push({ type: 'localImage', path: this.writeImage(img) });
     this.server!.request<{ turn: { id: string } }>('turn/start', { threadId: this.threadId, input }, Infinity)
-      .then((res) => { if (this.inTurn && !this.endedTurns.has(res.turn.id)) this.turnId ??= res.turn.id; })
-      .catch((e: Error) => {
+      .then((res) => {
+        if (this.dead || this.s.acceptsCallbacks?.() === false) return;
+        if (seed) this.cb.onSeedAccepted?.(seed.token);
+        if (turn.deliveryId) turn.onAccepted?.(turn.deliveryId);
+        if (this.inTurn && !this.endedTurns.has(res.turn.id)) this.turnId ??= res.turn.id;
+      })
+      .catch((e: Error & { rpcCode?: number }) => {
+        if (this.dead) return;
+        if (seed) {
+          if (e.rpcCode === -32601 || e.rpcCode === -32602) this.cb.onSeedRejected?.(seed.token);
+          else this.cb.onSeedUncertain?.(seed.token);
+        }
         this.cb.onError(`[codex] turn/start failed: ${e.message}\n`);
         this.inTurn = false;
+        if (this.s.canStartTool?.() !== false) this.rt.opts.host().onTurnFailed(this.s.sessionId, 'codex_turn_start_failed', e.message);
         this.startNextTurn();
       });
   }
@@ -198,6 +234,8 @@ class CodexSession implements RuntimeSession {
     this.server.request('turn/interrupt', { threadId: this.threadId, turnId: this.turnId })
       .catch((e: Error) => this.cb.onError(`[codex] interrupt failed: ${e.message}`));
   }
+
+  hasPendingTools(): boolean { return this.tracker.hasPendingCalls; }
 
   async kill(): Promise<void> {
     this.dead = true;
@@ -218,22 +256,36 @@ class CodexSession implements RuntimeSession {
       onNotification: (m, p) => this.onNotification(m, p),
       onStderr: (d) => this.cb.onError(d),
       onExit: (code) => { if (this.server === server && !this.dead) this.reportExit(code); },
-    });
+    }, this.s.launchCredential);
     this.server = server;
     await server.initialize();
-    const native = this.s.mode === 'resume' ? this.rt.opts.nativeIds.read(this.s.sessionId) : null;
+    const native = this.s.mode === 'resume'
+      ? this.s.nativeId ?? this.rt.opts.nativeIds.read(this.s.sessionId) : null;
     const params = {
       cwd: this.s.cwd,
       approvalPolicy: 'never',
       sandbox: 'danger-full-access',
       ...(this.s.appendSystemPrompt ? { developerInstructions: this.s.appendSystemPrompt } : {}),
     };
-    const started = native
-      ? await server.request<ThreadStartResult>('thread/resume', { threadId: native, ...params })
-      : await server.request<ThreadStartResult>('thread/start', params);
+    let started: ThreadStartResult;
+    if (native) {
+      try {
+        started = await server.request<ThreadStartResult>('thread/resume', { threadId: native, ...params });
+      } catch (error) {
+        if (!this.s.newTranscriptSegment || !/(thread|rollout).*(not found|does not exist|no such file)/i.test((error as Error).message)) throw error;
+        const { id, prepareSeed } = this.s.newTranscriptSegment();
+        this.s.transcriptId = id;
+        this.s.mode = 'new';
+        this.prepareRestartSeed = prepareSeed;
+        started = await server.request<ThreadStartResult>('thread/start', params);
+      }
+    } else {
+      started = await server.request<ThreadStartResult>('thread/start', params);
+    }
     this.threadId = started.thread.id;
     this.model = started.model;
-    this.rt.register(this.threadId, { sessionId: this.s.sessionId, cwd: this.s.cwd, tracker: this.tracker });
+    if (this.dead) throw new Error('Session was closed');
+    this.rt.register(this.threadId, { sessionId: this.s.sessionId, cwd: this.s.cwd, tracker: this.tracker, canStartTool: this.s.canStartTool });
     return this.rt.verifyHook(await server.request<HooksListResponse>('hooks/list', { threadId: this.threadId }));
   }
 
@@ -251,9 +303,17 @@ class CodexSession implements RuntimeSession {
   }
 
   private onNotification(method: string, params: unknown): void {
-    this.s.log?.native({ method, params });
+    if (this.dead || this.s.acceptsCallbacks?.() === false) return;
     const p = params as { threadId?: string; turnId?: string; turn?: { id: string; status: string; error?: { message?: string; codexErrorInfo?: unknown } | null }; item?: CodexItem };
     if (p?.threadId && p.threadId !== this.threadId) return;
+    if (p?.item?.type === 'userMessage' && 'content' in p.item && this.seedToken
+      && p.item.content.some((part) => isHandoffSeed(part.text, this.seedToken))) {
+      p.item = { ...p.item, content: [
+        { type: 'text', text: this.seededText },
+        ...p.item.content.filter((part) => part.type !== 'text'),
+      ] };
+    }
+    if (!this.seedToken || (method !== 'turn/started' && method !== 'turn/completed')) this.s.log?.native({ method, params });
     if ((method === 'item/started' || method === 'item/completed') && p.item) {
       const ungated = this.tracker.ungatedCall(p.item);
       if (ungated) return this.tripwire(ungated);
@@ -279,16 +339,20 @@ class CodexSession implements RuntimeSession {
       });
     }
     const canonical = toCanonicalItem(item);
-    if (canonical) this.rt.transcripts.append(this.s.sessionId, this.s.cwd, canonical);
+    if (canonical) this.rt.transcripts.append(this.s.transcriptId ?? this.s.sessionId, this.s.cwd, canonical);
   }
 
   private onTurnCompleted(turn: { id: string; status: string; error?: { message?: string; codexErrorInfo?: unknown } | null }): void {
     this.endedTurns.add(turn.id);
     this.turnId = undefined;
     this.inTurn = false;
+    this.seedToken = undefined;
+    this.seededText = undefined;
     const host = this.rt.opts.host();
-    if (turn.status !== 'failed') host.onTurnEnded(this.s.sessionId);
-    else host.onTurnFailed(this.s.sessionId, turnErrorCode(turn.error?.codexErrorInfo), turn.error?.message);
+    if (this.s.canStartTool?.() !== false) {
+      if (turn.status !== 'failed') host.onTurnEnded(this.s.sessionId);
+      else host.onTurnFailed(this.s.sessionId, turnErrorCode(turn.error?.codexErrorInfo), turn.error?.message);
+    }
     this.startNextTurn();
   }
 

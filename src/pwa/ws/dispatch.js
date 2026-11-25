@@ -159,10 +159,10 @@ const sessionHandlers = {
   'item.completed'(e, sid, isCurrent) {
     const item = e.item;
     if (item?.type === 'assistant_message') {
-      const sig = `${item.messageId}|${item.text}`;
+      const sig = item.messageId ? `${item.messageId}|${item.text}` : `${sid}|${item.id}`;
       if (subagents.hasBlockSig(sig)) return;
       subagents.markBlockSigSeen(sig);
-      sessions.for(sid).appendTranscript({ role: 'assistant', text: item.text, msgId: item.messageId });
+      sessions.for(sid).appendTranscript({ role: 'assistant', itemId: item.id, text: item.text, msgId: item.messageId });
       if (!sessions.getSlice(sid)?.thinking) deps.startThinking(sid);
       if (isCurrent) deps.renderSession();
       return;

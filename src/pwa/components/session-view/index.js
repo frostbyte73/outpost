@@ -43,6 +43,7 @@ import { bindAskCardHandlers } from '../ask-card.js';
 import { submitAskAnswer } from '../ask-flow.js';
 import { inlineApprovalCardHtml, bindApprovalCardHandlers } from './approval-card.js';
 import { computeGitInfo, resolveSessionTitle, sessionRunMeta, archiveSession, deleteSession } from './session-actions.js';
+import { loadRuntimeOptions, sessionsApi } from '../../net/sessions.js';
 import { agentsStripHtml, refreshAgentsSheet } from '../agents-sheet/index.js';
 import { refreshTodosSheet } from '../todos-sheet.js';
 import { deriveSkillLabel } from '../../vm/sessions.js';
@@ -97,6 +98,11 @@ function buildSkeleton(mount) {
     <div class="sv-banner-region"></div>
     <div class="sv-composer-wrap">
       <div class="sv-meter-region"></div>
+      <div class="sv-runtime" hidden>
+        <label><span>Runtime</span> <select aria-label="Switch runtime" disabled></select></label>
+        <span class="runtime-switch-consequence" hidden>The current response may end early.</span>
+        <span role="status"></span>
+      </div>
       <div class="sv-slash-palette" hidden></div>
       <div class="sv-attachments" hidden></div>
       <div class="sv-composer-row">
@@ -706,7 +712,7 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   // payload carries these so the WS URL query string can carry them to the
   // daemon on first connect.
   const spawn = (meta.cwd || meta.spawnMode || meta.baseBranch || meta.model || meta.approvalMode)
-    ? { cwd: meta.cwd, spawnMode: meta.spawnMode, baseBranch: meta.baseBranch, model: meta.model, approvalMode: meta.approvalMode }
+    ? { cwd: meta.cwd, spawnMode: meta.spawnMode, baseBranch: meta.baseBranch, model: meta.model, runtime: meta.runtime, approvalMode: meta.approvalMode }
     : null;
   // NB: do NOT arm pendingDefaultPush here off `spawn`. Both mount paths supply
   // meta.cwd for EXISTING sessions too (resolveSessionContext / mobile mount), so
@@ -743,6 +749,50 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   const unwireComposer = wireComposer(dom, sessionId, paletteState);
   bindTranscriptHandlers(dom, sessionId);
   const unwireHeader = wireHeader(dom, sessionId, meta);
+  const runtimeControl = mount.querySelector('.sv-runtime');
+  const runtimeSelect = runtimeControl.querySelector('select');
+  const runtimeStatus = runtimeControl.querySelector('[role="status"]');
+  const runtimeLabel = runtimeControl.querySelector('label span');
+  const runtimeConsequence = runtimeControl.querySelector('.runtime-switch-consequence');
+  let runtimeVersion;
+  let selectedRuntime;
+  let switchingRuntime = false;
+  const paintRuntime = () => {
+    const metadata = sessions.get().projects.flatMap((p) => p.sessions).find((s) => s.id === sessionId);
+    runtimeControl.hidden = !metadata?.runtime || (!metadata.canSwitchRuntime && metadata.runtimeAvailable);
+    const active = !!sessions.getSlice(sessionId)?.thinking;
+    runtimeLabel.textContent = active ? 'Stop and switch' : 'Runtime';
+    runtimeConsequence.hidden = !active;
+    if (!metadata?.runtime || switchingRuntime || runtimeVersion === metadata.runtimeVersion) return;
+    runtimeVersion = metadata.runtimeVersion;
+    selectedRuntime = metadata.runtime;
+    runtimeSelect.disabled = true;
+    void loadRuntimeOptions(runtimeSelect, selectedRuntime).catch((e) => { runtimeStatus.textContent = e.message; });
+  };
+  runtimeSelect.addEventListener('change', async () => {
+    const target = runtimeSelect.value;
+    if (sessions.getSlice(sessionId)?.thinking && !window.confirm('Stop and switch runtime? The current response may end early.')) {
+      runtimeSelect.value = selectedRuntime;
+      return;
+    }
+    switchingRuntime = true;
+    runtimeSelect.disabled = true;
+    runtimeStatus.textContent = 'Switching runtime…';
+    try {
+      const result = await sessionsApi.switchRuntime(sessionId, target, runtimeVersion);
+      runtimeVersion = result.version;
+      selectedRuntime = result.runtime;
+      runtimeStatus.textContent = 'Runtime selected for the next turn.';
+    } catch (error) {
+      runtimeSelect.value = selectedRuntime;
+      runtimeStatus.textContent = error.message;
+    } finally {
+      switchingRuntime = false;
+      runtimeSelect.disabled = false;
+    }
+  });
+  const unsubRuntime = sessions.subscribe(paintRuntime);
+  paintRuntime();
   dom.modeSelect?.addEventListener('change', () => {
     const mode = dom.modeSelect.value;
     if (!APPROVAL_MODES.includes(mode)) return;
@@ -932,6 +982,7 @@ export function mountSessionView(mount, sessionId, meta = {}) {
 
   return {
     unmount() {
+      unsubRuntime();
       document.removeEventListener('visibilitychange', onVisibility);
       unsubActivity();
       unsubSlice();
