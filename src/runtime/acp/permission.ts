@@ -10,7 +10,7 @@ export interface AcpToolCall {
   rawInput?: unknown;
   rawOutput?: unknown;
   locations?: { path: string }[];
-  content?: { type: string; path?: string; content?: { type: string; text?: string } }[];
+  content?: { type: string; path?: string; oldText?: string | null; newText?: string; content?: { type: string; text?: string } }[];
 }
 
 export interface AcpPermissionOption {

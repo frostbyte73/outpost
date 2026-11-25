@@ -26,9 +26,50 @@ export function mergeToolCall(calls: Map<string, AcpToolCall>, u: AcpToolCall): 
   return merged;
 }
 
+// Claude-shaped name and input for the transcript's renderers, read from what the agent sent. Cursor titles
+// calls for display ("Edit `/a.ts`", "`ls -la`") and often sends no rawInput, so the input is read off the title.
+// A call is renamed only when its primary field is recoverable: an empty Edit or Grep tile is worse than a titled one.
+function displayCall(call: AcpToolCall, cfg: AcpAgentConfig): { rawName: string; input: Record<string, unknown> } | undefined {
+  const title = call.title ?? '';
+  const raw = (call.rawInput && typeof call.rawInput === 'object' ? call.rawInput : {}) as Record<string, unknown>;
+  const str = (v: unknown): string | undefined => (typeof v === 'string' && v ? v : undefined);
+  const location = call.locations?.find((l) => typeof l.path === 'string')?.path;
+  const quoted = /`([^`]+)`/.exec(title)?.[1];
+  switch (call.kind) {
+    case 'execute': {
+      const command = str(raw[cfg.shellCommandField]) ?? /^`(.+)`$/s.exec(title)?.[1] ?? str(title);
+      return command ? { rawName: 'Bash', input: { command } } : undefined;
+    }
+    case 'edit': {
+      const file_path = location ?? quoted;
+      if (!file_path) return undefined;
+      const diff = (call.content ?? []).find((c) => c.type === 'diff' && c.path === file_path);
+      return {
+        rawName: 'Edit',
+        input: { file_path, ...(diff ? { old_string: diff.oldText ?? '', new_string: diff.newText ?? '' } : {}) },
+      };
+    }
+    case 'read': {
+      const file_path = location ?? /^Read\s+`?([^`]+?)`?$/.exec(title)?.[1];
+      return file_path ? { rawName: 'Read', input: { file_path } } : undefined;
+    }
+    case 'search': {
+      const pattern = str(raw.pattern) ?? str(raw.query) ?? quoted;
+      return pattern ? { rawName: 'Grep', input: { pattern, path: str(raw.path) ?? location } } : undefined;
+    }
+    case 'fetch': {
+      const url = str(raw.url);
+      return url ? { rawName: 'WebFetch', input: { url } } : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
 // The canonical item for a call as it stands now.
 export function toolItem(call: AcpToolCall, cfg: AcpAgentConfig): ToolCallItem {
   const mcp = call.kind === 'other' ? mcpToolName(call.title, cfg) : undefined;
+  const shown = mcp ? undefined : displayCall(call, cfg);
   const status: ItemStatus = call.status === 'completed' ? 'completed' : call.status === 'failed' ? 'failed' : 'inProgress';
   const text = (call.content ?? []).map((c) => c.content?.type === 'text' ? c.content.text : undefined).filter(Boolean).join('\n');
   return {
@@ -36,8 +77,8 @@ export function toolItem(call: AcpToolCall, cfg: AcpAgentConfig): ToolCallItem {
     id: call.toolCallId,
     kind: mcp ? 'mcp_tool_call' : KIND[call.kind ?? ''] ?? 'dynamic_tool_call',
     tool: mcp ?? CANONICAL_TOOL[call.kind ?? ''] ?? `native:${call.title ?? call.kind ?? 'unknown'}`,
-    rawName: call.title ?? call.kind ?? 'unknown',
-    input: call.rawInput ?? {},
+    rawName: shown?.rawName ?? call.title ?? call.kind ?? 'unknown',
+    input: shown ? { ...(call.rawInput && typeof call.rawInput === 'object' ? call.rawInput : {}), ...shown.input } : call.rawInput ?? {},
     status,
     ...(text ? { resultText: text } : {}),
   };
