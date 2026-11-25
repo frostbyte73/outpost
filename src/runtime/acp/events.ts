@@ -55,7 +55,10 @@ function displayCall(call: AcpToolCall, cfg: AcpAgentConfig): { rawName: string;
     }
     case 'search': {
       const pattern = str(raw.pattern) ?? str(raw.query) ?? quoted;
-      return pattern ? { rawName: 'Grep', input: { pattern, path: str(raw.path) ?? location } } : undefined;
+      if (!pattern) return undefined;
+      const path = str(raw.path) ?? location;
+      // Cursor titles its glob tool "Find" and its content search "grep"; both arrive as kind search.
+      return { rawName: /^Find\b/.test(title) ? 'Glob' : 'Grep', input: { pattern, ...(path ? { path } : {}) } };
     }
     case 'fetch': {
       const url = str(raw.url);
@@ -76,7 +79,7 @@ export function toolItem(call: AcpToolCall, cfg: AcpAgentConfig): ToolCallItem {
     type: 'tool_call',
     id: call.toolCallId,
     kind: mcp ? 'mcp_tool_call' : KIND[call.kind ?? ''] ?? 'dynamic_tool_call',
-    tool: mcp ?? CANONICAL_TOOL[call.kind ?? ''] ?? `native:${call.title ?? call.kind ?? 'unknown'}`,
+    tool: mcp ?? (shown?.rawName === 'Glob' ? 'file_glob' : CANONICAL_TOOL[call.kind ?? ''] ?? `native:${call.title ?? call.kind ?? 'unknown'}`),
     rawName: shown?.rawName ?? call.title ?? call.kind ?? 'unknown',
     input: shown ? { ...(call.rawInput && typeof call.rawInput === 'object' ? call.rawInput : {}), ...shown.input } : call.rawInput ?? {},
     status,
@@ -97,7 +100,12 @@ export function mapAcpUpdate(update: AcpSessionUpdate, calls: Map<string, AcpToo
       return [{ type: 'item.started', item: toolItem(mergeToolCall(calls, update as AcpToolCall), cfg) }];
     case 'tool_call_update': {
       const call = mergeToolCall(calls, update as AcpToolCall);
-      return call.status === 'completed' || call.status === 'failed' ? [{ type: 'item.completed', item: toolItem(call, cfg) }] : [];
+      // Cursor's first frame is a placeholder ("Find", "grep", "Edit File") with rawInput {}.
+      // The arguments, and an edit's diff, arrive on a later update — often before the call finishes.
+      if (call.status === 'completed' || call.status === 'failed') return [{ type: 'item.completed', item: toolItem(call, cfg) }];
+      const u = update as AcpToolCall;
+      if (u.title == null && u.rawInput == null && u.locations == null && u.content == null) return [];
+      return [{ type: 'item.updated', item: toolItem(call, cfg) }];
     }
     default:
       return [];

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toolItem } from '../../src/runtime/acp/events.js';
+import { mapAcpUpdate, toolItem } from '../../src/runtime/acp/events.js';
 import type { AcpToolCall } from '../../src/runtime/acp/permission.js';
 import type { AcpAgentConfig } from '../../src/runtime/acp/config.js';
 
@@ -47,6 +47,39 @@ describe('toolItem display names', () => {
     expect(toolItem(call({ title: 'grep', kind: 'search', rawInput: { pattern: 'ships', path: 'src' } }), cfg))
       .toMatchObject({ rawName: 'Grep', tool: 'file_grep', input: { pattern: 'ships', path: 'src' } });
     expect(toolItem(call({ title: 'grep', kind: 'search' }), cfg)).toMatchObject({ rawName: 'grep', input: {} });
+  });
+
+  it('shows a Find search as a Glob on its pattern', () => {
+    expect(toolItem(call({ title: 'Find `docs/*.md`', kind: 'search', rawInput: { pattern: 'docs/*.md' } }), cfg))
+      .toMatchObject({ rawName: 'Glob', tool: 'file_glob', input: { pattern: 'docs/*.md' } });
+  });
+
+  it('fills a placeholder call in when the arguments arrive, and again when it finishes', () => {
+    const calls = new Map();
+    const id = 'call-1';
+    const started = mapAcpUpdate(
+      { sessionUpdate: 'tool_call', toolCallId: id, title: 'grep', kind: 'search', status: 'pending', rawInput: {} },
+      calls, cfg,
+    );
+    expect(started).toMatchObject([{ type: 'item.started', item: { rawName: 'grep', input: {} } }]);
+    const filled = mapAcpUpdate(
+      { sessionUpdate: 'tool_call_update', toolCallId: id, title: 'grep "ships"', rawInput: { pattern: 'ships', path: 'src' } },
+      calls, cfg,
+    );
+    expect(filled).toMatchObject([{ type: 'item.updated', item: { rawName: 'Grep', input: { pattern: 'ships', path: 'src' } } }]);
+    const running = mapAcpUpdate(
+      { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'in_progress' },
+      calls, cfg,
+    );
+    expect(running).toEqual([]);
+    const done = mapAcpUpdate(
+      { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'src/a.ts' } }] },
+      calls, cfg,
+    );
+    expect(done).toMatchObject([{
+      type: 'item.completed',
+      item: { rawName: 'Grep', input: { pattern: 'ships', path: 'src' }, resultText: 'src/a.ts', status: 'completed' },
+    }]);
   });
 
   it('leaves MCP calls named by their title', () => {

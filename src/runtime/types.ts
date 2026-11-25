@@ -89,6 +89,7 @@ export type CanonicalEvent = { subagent?: SubagentRef } & (
   | { type: 'session.started'; sessionId: string; model?: string; mcpServers: { name: string; status: string }[] }
   | { type: 'turn.started' }
   | { type: 'item.started'; item: CanonicalItem }
+  | { type: 'item.updated'; item: CanonicalItem }
   | { type: 'item.completed'; item: CanonicalItem }
   | { type: 'content.delta'; stream: 'assistant_text' | 'reasoning' | 'tool_input'; text: string }
   | { type: 'usage.updated'; usage: UsageUpdate }

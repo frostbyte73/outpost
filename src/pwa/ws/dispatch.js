@@ -156,6 +156,13 @@ const sessionHandlers = {
     if (isCurrent) deps.renderSession();
   },
 
+  // Cursor sends the call first with an empty input, then a later frame with the
+  // arguments (and, for an edit, the diff). Replace the tile instead of leaving
+  // the placeholder `{}` that item.started already painted.
+  'item.updated'(e, sid, isCurrent) {
+    if (reviseToolCall(e.item, sid) && isCurrent) deps.renderSession();
+  },
+
   'item.completed'(e, sid, isCurrent) {
     const item = e.item;
     if (item?.type === 'assistant_message') {
@@ -167,7 +174,10 @@ const sessionHandlers = {
       if (isCurrent) deps.renderSession();
       return;
     }
-    if (item?.type === 'tool_call' && completeToolCall(item, sid) && isCurrent) deps.renderSession();
+    if (item?.type === 'tool_call') {
+      const revised = reviseToolCall(item, sid);
+      if ((revised || completeToolCall(item, sid)) && isCurrent) deps.renderSession();
+    }
   },
 
   'usage.updated'(e, sid) {
@@ -333,6 +343,21 @@ function noteStreaming(sid, isCurrent) {
   if (sessions.getSlice(sid)?.thinking) return;
   deps.startThinking(sid);
   if (isCurrent) deps.renderSession();
+}
+
+// Writes the latest snapshot of a tool call onto its transcript row. The first frame
+// often has an empty input; a later update or the completion carries the real arguments.
+function reviseToolCall(item, sid) {
+  if (!item || item.type !== 'tool_call') return false;
+  const entry = toolUseEntry(item);
+  const has = sessions.getSlice(sid)?.transcript.some((m) => m.role === 'tool_use' && m.toolUseId === item.id);
+  const S = sessions.for(sid);
+  if (!has) {
+    S.appendTranscript(entry);
+    return true;
+  }
+  S.mapTranscript((m) => (m.role === 'tool_use' && m.toolUseId === item.id ? { ...m, ...entry } : m));
+  return true;
 }
 
 // Applies a finished tool call to the active-tool stack, tasks, asks and subagents; true if the view changed.

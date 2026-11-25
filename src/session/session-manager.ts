@@ -649,7 +649,7 @@ export class SessionManager {
       },
       onEvent: (e) => {
         if (!current()) return;
-        if (segment && (e.type === 'item.started' || e.type === 'item.completed')) {
+        if (segment && (e.type === 'item.started' || e.type === 'item.updated' || e.type === 'item.completed')) {
           e = { ...e, item: segmentItem(e.item, sessionId, segment.id) };
         }
         s.lastActivity = Date.now();
