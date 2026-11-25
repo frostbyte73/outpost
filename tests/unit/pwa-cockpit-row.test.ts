@@ -38,3 +38,26 @@ describe('cockpit row archive', () => {
     expect((row.el.querySelector('.ckb-archive') as HTMLButtonElement).hidden).toBe(true);
   });
 });
+
+describe('cockpit session menu', () => {
+  it('a session row carries promote and delete, and opening it does not expand the row', () => {
+    let toggled = false;
+    const row = createRow(model, { onToggle: () => { toggled = true; }, onAction: noop, onArchive: noop, onOpenFull: noop, onHover: noop, initialView: view });
+    const menu = row.el.querySelector('.ckb-menu') as HTMLElement;
+    expect((row.el.querySelector('.ckb-menu-wrap') as HTMLElement).hidden).toBe(false);
+    expect(menu.textContent).toContain('Promote to tracked');
+    expect(menu.textContent).toContain('Delete');
+    expect(menu.textContent).not.toContain('Open diff');
+    (row.el.querySelector('.ckb-menu-btn') as HTMLButtonElement).click();
+    expect(menu.hidden).toBe(false);
+    expect(toggled).toBe(false);
+    row.destroy();
+  });
+
+  it('a job row has no session menu', () => {
+    const job = { ...model, key: 'job:j', kind: 'job', id: 'j', dismissable: false };
+    const row = createRow(job, { onToggle: noop, onAction: noop, onArchive: noop, onOpenFull: noop, onHover: noop, initialView: view });
+    expect((row.el.querySelector('.ckb-menu-wrap') as HTMLElement).hidden).toBe(true);
+    row.destroy();
+  });
+});

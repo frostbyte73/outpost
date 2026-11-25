@@ -26,6 +26,19 @@ export function mergeToolCall(calls: Map<string, AcpToolCall>, u: AcpToolCall): 
   return merged;
 }
 
+// An ACP diff carries the whole file before and after, but the Edit tile renders old_string/new_string as the
+// change, so the lines both sides share at the head and tail are dropped. A new file (empty old side) keeps all.
+function changedLines(oldText: string, newText: string): { old_string: string; new_string: string } {
+  if (!oldText || oldText === newText) return { old_string: oldText, new_string: newText };
+  const a = oldText.split('\n');
+  const b = newText.split('\n');
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (tail < a.length - head && tail < b.length - head && a[a.length - 1 - tail] === b[b.length - 1 - tail]) tail++;
+  return { old_string: a.slice(head, a.length - tail).join('\n'), new_string: b.slice(head, b.length - tail).join('\n') };
+}
+
 // Claude-shaped name and input for the transcript's renderers, read from what the agent sent. Cursor titles
 // calls for display ("Edit `/a.ts`", "`ls -la`") and often sends no rawInput, so the input is read off the title.
 // A call is renamed only when its primary field is recoverable: an empty Edit or Grep tile is worse than a titled one.
@@ -46,7 +59,7 @@ function displayCall(call: AcpToolCall, cfg: AcpAgentConfig): { rawName: string;
       const diff = (call.content ?? []).find((c) => c.type === 'diff' && c.path === file_path);
       return {
         rawName: 'Edit',
-        input: { file_path, ...(diff ? { old_string: diff.oldText ?? '', new_string: diff.newText ?? '' } : {}) },
+        input: { file_path, ...(diff ? changedLines(diff.oldText ?? '', diff.newText ?? '') : {}) },
       };
     }
     case 'read': {

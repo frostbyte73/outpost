@@ -70,10 +70,6 @@ function buildSkeleton(mount) {
         <span class="sv-header-live" aria-hidden="true" hidden></span>
         <span class="sv-header-meta-text"></span>
       </span>
-      <div class="sv-runtime" hidden>
-        <label class="o-field"><span>Runtime</span><select class="o-select" aria-label="Switch runtime" disabled></select></label>
-        <span class="sv-runtime-status" role="status"></span>
-      </div>
       <div class="sv-header-actions">
         <button class="sv-header-promote" type="button">Promote to tracked <span class="o-kbd"></span></button>
         <button class="sv-header-archive" type="button" hidden>Archive <span class="o-kbd"></span></button>
@@ -85,6 +81,10 @@ function buildSkeleton(mount) {
       </div>
     </div>
     <div class="sv-toolbar">
+      <div class="sv-runtime" hidden>
+        <label class="o-field"><span>Runtime</span><select class="o-select" aria-label="Switch runtime" disabled></select></label>
+        <span class="sv-runtime-status" role="status"></span>
+      </div>
       <label class="sv-mode-chip">
         <span class="sv-mode-chip-label">Mode</span>
         <select class="sv-mode-select" aria-label="Permission mode for this session">${modeOptions}</select>
@@ -133,6 +133,7 @@ function buildSkeleton(mount) {
     attach:    mount.querySelector('.sv-attach'),
     attachInput: mount.querySelector('.sv-attach-input'),
     attachments: mount.querySelector('.sv-attachments'),
+    toolbar:   mount.querySelector('.sv-toolbar'),
     modeChip:  mount.querySelector('.sv-mode-chip'),
     modeSelect:mount.querySelector('.sv-mode-select'),
     jumpWrap:  mount.querySelector('.sv-jump-wrap'),
@@ -722,6 +723,19 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   openSessionWs(sessionId, spawn);
 
   const dom = buildSkeleton(mount);
+  // A cockpit session row already names the session and carries its ⋯ menu, so this
+  // mount keeps only the controls that belong to the transcript: mode row plus expand.
+  if (meta.cockpit) {
+    mount.classList.add('sv-cockpit');
+    const expand = document.createElement('button');
+    expand.type = 'button';
+    expand.className = 'sv-expand';
+    expand.innerHTML = MAXIMIZE_ICON;
+    expand.title = 'Open full view';
+    expand.setAttribute('aria-label', 'Open full view');
+    expand.addEventListener('click', (e) => { e.stopPropagation(); meta.onMaximize?.(); });
+    dom.toolbar.append(expand);
+  }
   // When the composer-wrap grows (multi-line message, slash palette popping
   // open, meter breakdown expanding), nudge the transcript's scrollTop by the
   // same delta so already-visible content doesn't jump as the transcript's
@@ -751,7 +765,7 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   const runtimeControl = mount.querySelector('.sv-runtime');
   const runtimeSelect = runtimeControl.querySelector('select');
   const statusEl = runtimeControl.querySelector('[role="status"]');
-  // Header space is tight: the status ellipsizes, so the full text rides along as a tooltip.
+  // The mode row is tight: the status ellipsizes, so the full text rides along as a tooltip.
   const setRuntimeStatus = (text) => { statusEl.textContent = text; statusEl.title = text; };
   const runtimeLabel = runtimeControl.querySelector('label span');
   let runtimeVersion;

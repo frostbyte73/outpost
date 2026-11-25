@@ -68,11 +68,10 @@ html[data-layout="mobile"] .sv-header { display: none; }
   animation: sv-header-pulse var(--pulse) ease-in-out infinite;
 }
 @keyframes sv-header-pulse { 50% { opacity: 0.4; } }
-/* Runtime switcher: sits just left of the actions, pushed right with them. On
-   mobile the header is otherwise hidden (mobile-header.js owns that chrome), so
-   it shows alone as a slim bar — and not at all while the control is hidden. */
+/* Runtime switcher: leads the mode row. On mobile the toolbar is otherwise hidden
+   (the #header carries the mode chip), so it shows alone as a slim bar — and not
+   at all while the control is hidden. */
 .sv-runtime {
-  margin-left: auto;
   flex: 0 1 auto;
   min-width: 0;
   display: flex;
@@ -83,7 +82,6 @@ html[data-layout="mobile"] .sv-header { display: none; }
 }
 .sv-runtime[hidden] { display: none; }
 .sv-runtime .o-select { --select-bg: var(--bg-elev); }
-.sv-runtime:not([hidden]) + .sv-header-actions { margin-left: 0; }
 .sv-runtime-status {
   min-width: 0;
   max-width: 24ch;
@@ -92,11 +90,11 @@ html[data-layout="mobile"] .sv-header { display: none; }
   white-space: nowrap;
 }
 .sv-runtime-status:empty { display: none; }
-html[data-layout="mobile"] .sv-header:has(> .sv-runtime:not([hidden])) {
+html[data-layout="mobile"] .sv-toolbar:has(> .sv-runtime:not([hidden])) {
   display: flex;
   padding: 8px 14px;
 }
-html[data-layout="mobile"] .sv-header > :not(.sv-runtime) { display: none; }
+html[data-layout="mobile"] .sv-toolbar > :not(.sv-runtime) { display: none; }
 .sv-header-actions {
   margin-left: auto;
   flex: none;
@@ -159,10 +157,8 @@ html[data-layout="mobile"] .sv-header > :not(.sv-runtime) { display: none; }
 
 /* Per-mount toolbar sitting above the transcript. Mobile hides it because the
    #header already carries the mode chip; on desktop the mode select is the
-   only per-session permission-mode surface (folded next to the new header
-   above rather than removed — it's still the one interactive mode control).
-   Subagents live in the persistent right rail and "Open diff" in the header's
-   ⋯ menu, so the toolbar carries nothing else. */
+   only per-session permission-mode surface. In the cockpit the runtime switch
+   and the expand control join this row, and the ⋯ menu lives on the row. */
 .sv-toolbar {
   flex: 0 0 auto;
   display: flex;
@@ -172,6 +168,23 @@ html[data-layout="mobile"] .sv-header > :not(.sv-runtime) { display: none; }
   border-bottom: 1px solid var(--line-soft);
 }
 html[data-layout="mobile"] .sv-toolbar { display: none; }
+/* A cockpit session row already shows the name and the ⋯ menu. Keep the mode
+   row, with runtime leading it and the expand control pushed to the right. */
+.sv-cockpit > .sv-header { display: none; }
+.sv-cockpit .sv-toolbar { flex-wrap: wrap; }
+.sv-expand {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  background: var(--bg-elev);
+  border: 1px solid var(--line);
+  border-radius: var(--r-control);
+  padding: 3px 8px;
+  color: var(--text-mute);
+  cursor: pointer;
+}
+.sv-expand:hover { color: var(--text); background: var(--bg-elev-2); }
+.sv-expand:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .sv-mode-chip {
   display: inline-flex;

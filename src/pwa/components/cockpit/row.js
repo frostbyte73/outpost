@@ -1,6 +1,9 @@
 import { escapeHtml } from '../../util.js';
 import { relPast } from '../../utils/formatting.js';
+import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
 import { OPENABLE } from '../../vm/cockpit-board.js';
+import { openDiffForSession, promoteSessionToJob } from '../../app-bridge.js';
+import { computeGitInfo, deleteSession } from '../session-view/session-actions.js';
 import { syncFeeds, teardownFeeds } from './feeds.js';
 
 const GLYPH = { live: '◉', you: '●', parked: '○', failed: '✕', done: '●', idle: '·' };
@@ -27,6 +30,14 @@ function idleArchiveLabel(m) {
   return m.kind === 'job' ? 'Dismiss' : 'Archive';
 }
 
+function sessionMenuHtml(id) {
+  const { diffable } = computeGitInfo(id);
+  const items = [`<button type="button" class="ckb-menu-item" data-action="promote">Promote to tracked</button>`];
+  if (diffable) items.push(`<button type="button" class="ckb-menu-item" data-action="open-diff">Open diff</button>`);
+  items.push(`<button type="button" class="ckb-menu-item ckb-menu-item-danger" data-action="delete">Delete</button>`);
+  return items.join('');
+}
+
 export function hasOpenableAction(model) {
   return model.actions.some((a) => OPENABLE.has(a.kind));
 }
@@ -43,6 +54,10 @@ export function createRow(model, ctx) {
       <span class="ckb-acts">
         <button type="button" class="o-btn o-btn--ghost sm ckb-archive" hidden>Archive</button>
         <span class="ckb-act"></span>
+        <div class="ckb-menu-wrap" hidden>
+          <button type="button" class="ckb-menu-btn" aria-haspopup="true" aria-expanded="false" aria-label="More actions">⋯</button>
+          <div class="ckb-menu" hidden role="menu"></div>
+        </div>
       </span>
       <button type="button" class="ckb-caret" aria-expanded="false" aria-label="Expand">${CHEVRON}</button>
     </div>
@@ -52,8 +67,59 @@ export function createRow(model, ctx) {
     glyph: el.querySelector('.ckb-glyph'), ref: el.querySelector('.ckb-ref'), title: el.querySelector('.ckb-title'),
     meta: el.querySelector('.ckb-meta'), status: el.querySelector('.ckb-status'), age: el.querySelector('.ckb-age'), act: el.querySelector('.ckb-act'), archive: el.querySelector('.ckb-archive'),
     caret: el.querySelector('.ckb-caret'), feeds: el.querySelector('.ckb-feeds'), body: el.querySelector('.ckb-body'),
+    menuWrap: el.querySelector('.ckb-menu-wrap'), menuBtn: el.querySelector('.ckb-menu-btn'), menu: el.querySelector('.ckb-menu'),
   };
   let current = model;
+  const closeMenu = () => {
+    dom.menu.hidden = true;
+    dom.menuBtn.setAttribute('aria-expanded', 'false');
+  };
+  // Fixed, not absolute: the board scrolls sideways, and that overflow clips a dropdown that hangs off a row.
+  const placeMenu = () => {
+    const r = dom.menuBtn.getBoundingClientRect();
+    const menu = dom.menu;
+    menu.style.position = 'fixed';
+    menu.hidden = false;
+    const width = menu.getBoundingClientRect().width;
+    const height = menu.getBoundingClientRect().height;
+    const left = Math.max(8, Math.min(r.right - width, window.innerWidth - width - 8));
+    const below = r.bottom + 4;
+    menu.style.left = `${left}px`;
+    menu.style.top = `${below + height > window.innerHeight - 8 ? Math.max(8, r.top - 4 - height) : below}px`;
+  };
+  dom.menuBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (dom.menu.hidden) {
+      placeMenu();
+      dom.menuBtn.setAttribute('aria-expanded', 'true');
+    } else {
+      closeMenu();
+    }
+  });
+  dom.menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn || current.kind !== 'session') return;
+    e.stopPropagation();
+    closeMenu();
+    const action = btn.dataset.action;
+    if (action === 'promote') promoteSessionToJob(current.id);
+    else if (action === 'open-diff') openDiffForSession(current.id);
+    else if (action === 'delete') void deleteSession(current.id);
+  });
+  const onOutsideClick = (e) => {
+    if (dom.menu.hidden) return;
+    if (e.target.closest('.ckb-menu-wrap') === dom.menuWrap) return;
+    closeMenu();
+  };
+  document.addEventListener('click', onOutsideClick);
+  const onScroll = () => { if (!dom.menu.hidden) closeMenu(); };
+  document.addEventListener('scroll', onScroll, true);
+  dom.menuWrap.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape' || dom.menu.hidden) return;
+    e.stopPropagation();
+    closeMenu();
+    dom.menuBtn.focus();
+  });
   let sig = '';
   let body = null;
   let bodyMode = null;
@@ -98,6 +164,8 @@ export function createRow(model, ctx) {
     }
     dom.archive.hidden = m.kind !== 'session' && !m.dismissable;
     if (!dom.archive.disabled) dom.archive.textContent = idleArchiveLabel(m);
+    dom.menuWrap.hidden = m.kind !== 'session';
+    if (m.kind === 'session') setHtmlIfChanged(dom.menu, sessionMenuHtml(m.id));
     dom.caret.hidden = m.kind === 'other';
     dom.caret.setAttribute('aria-expanded', String(!!view.mode));
 
@@ -127,6 +195,12 @@ export function createRow(model, ctx) {
       sig = '';
       update(current, lastView);
     },
-    destroy() { body?.unmount(); teardownFeeds(dom.feeds); el.remove(); },
+    destroy() {
+      document.removeEventListener('click', onOutsideClick);
+      document.removeEventListener('scroll', onScroll, true);
+      body?.unmount();
+      teardownFeeds(dom.feeds);
+      el.remove();
+    },
   };
 }

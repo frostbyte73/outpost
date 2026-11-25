@@ -89,6 +89,12 @@ seededTest('the caret opens a job’s history and a session’s composer in plac
   const session = outpostPage.locator(`.ckb-item[data-row-key="session:${MANUAL_SESSION}"]`);
   await session.locator('.ckb-caret').click();
   await expect(session.locator('.ckb-body .ckb-session .sv-composer')).toBeVisible();
+  await expect(session.locator('.sv-header')).toBeHidden();
+  await expect(session.locator('.sv-toolbar .sv-expand')).toBeVisible();
+  await expect(session.locator('.sv-toolbar .sv-mode-select')).toBeVisible();
+  await session.locator('.ckb-menu-btn').click();
+  await expect(session.locator('.ckb-menu')).toBeVisible();
+  await expect(session.locator('.ckb-menu')).toContainText('Promote to tracked');
   await expect(outpostPage.locator('.o-sidebar-item[data-surface="cockpit"]')).toHaveClass(/is-active/);
 });
 

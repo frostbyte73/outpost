@@ -286,7 +286,7 @@ function mountSessionBody(el, model) {
   el.innerHTML = '<div class="ckb-session"></div>';
   const ctx = peekSessionHint(model.id) ?? { cwd: model.cwd };
   const view = mountSessionView(el.querySelector('.ckb-session'), model.id, {
-    ...ctx, scopedHotkeys: true, onMaximize: () => nav.select('sessions', model.id),
+    ...ctx, scopedHotkeys: true, cockpit: true, onMaximize: () => nav.select('sessions', model.id),
   });
   return { update() {}, unmount() { view.unmount(); el.textContent = ''; } };
 }

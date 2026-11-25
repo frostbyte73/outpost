@@ -34,6 +34,22 @@ describe('toolItem display names', () => {
     }), cfg)).toMatchObject({ rawName: 'Edit', input: { file_path: '/w/a.txt', old_string: 'a', new_string: 'b' } });
   });
 
+  it('trims an edit diff of the whole-file context both sides share', () => {
+    const item = toolItem(call({
+      title: 'Edit a.txt', kind: 'edit', locations: [{ path: '/w/a.txt' }],
+      content: [{ type: 'diff', path: '/w/a.txt', oldText: 'one\ntwo\nthree\nfour', newText: 'one\n2\n2b\nthree\nfour' }],
+    }), cfg);
+    expect(item.input).toMatchObject({ old_string: 'two', new_string: '2\n2b' });
+  });
+
+  it('keeps all of a new file', () => {
+    const item = toolItem(call({
+      title: 'Write a.txt', kind: 'edit', locations: [{ path: '/w/a.txt' }],
+      content: [{ type: 'diff', path: '/w/a.txt', oldText: null, newText: 'x\ny' }],
+    }), cfg);
+    expect(item.input).toMatchObject({ old_string: '', new_string: 'x\ny' });
+  });
+
   it('keeps an edit title that names no file, rather than rendering an empty Edit', () => {
     expect(toolItem(call({ title: 'Edit File', kind: 'edit' }), cfg)).toMatchObject({ rawName: 'Edit File', input: {} });
   });
