@@ -64,6 +64,17 @@ export const metaApi = {
   },
   claudeAuthCancel(flowId)     { return request('/api/claude/auth/cancel', postJson({ flowId })); },
 
+  // The runtimes the daemon can run sessions on, with each one's sign-in state. Codex and
+  // Cursor sign in through a link the daemon relays; nothing is pasted back, the CLI finishes
+  // on its own once the link is approved. `addAcpRuntime` takes an acp-agents.json entry.
+  runtimes()                   { return request('/api/runtimes'); },
+  runtimeAuthStart(runtime)    { return request('/api/runtimes/auth/start', postJson({ runtime })); },
+  runtimeAuthCancel(runtime)   { return request('/api/runtimes/auth/cancel', postJson({ runtime })); },
+  addAcpRuntime(agent)         { return request('/api/runtimes/acp', postJson(agent)); },
+  removeAcpRuntime(id) {
+    return request('/api/runtimes/acp', { method: 'DELETE', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }) });
+  },
+
   denialVerdict(actionName, denialId, body) {
     return request(
       `/api/actions/${encodeURIComponent(actionName)}/denials/${encodeURIComponent(denialId)}/verdict`,

@@ -22,7 +22,7 @@ import { usage } from '../../state/usage.js';
 import { grantsStore, mcpHasWarning, pendingHasWarning, claudeAuthHasWarning } from '../../state/grants.js';
 import { settingsSections } from '../../vm/settings.js';
 import { renderMcp } from './mcp.js';
-import { renderClaudeAuth } from './claude-auth.js';
+import { renderRuntimes } from './runtimes.js';
 import { renderThemeGrid, renderModeToggle } from '../theme-picker.js';
 import { mountPushSection } from '../push/index.js';
 import { renderPermissions } from '../permissions/index.js';
@@ -63,7 +63,7 @@ export function renderList(mount) {
     const warnFlags = {
       mcp: mcpHasWarning(grantsStore.get()),
       permissions: pendingHasWarning(grantsStore.get()),
-      'claude-account': claudeAuthHasWarning(grantsStore.get()),
+      runtimes: claudeAuthHasWarning(grantsStore.get()),
       updates: updateAvailable(updateStore.get().status),
     };
     const groups = settingsSections(warnFlags, isDesktop());
@@ -92,7 +92,7 @@ export function renderList(mount) {
   const unsubNav = nav.subscribe(paint);
   const unsubGrants = grantsStore.subscribe(paint);
   const unsubUpdate = updateStore.subscribe(paint);
-  // Kick off the lazy loads whose results feed the MCP, Permissions and Claude account
+  // Kick off the lazy loads whose results feed the MCP, Permissions and Runtimes
   // warn-dots as soon as the surface opens, not only once the user drills into one of them.
   void grantsStore.ensureMcpLoaded();
   void grantsStore.loadPending();
@@ -403,7 +403,9 @@ const SECTION_RENDERERS = {
   'pr-reviews': renderPrReviews,
   improver: renderImprover,
   mcp: renderMcp,
-  'claude-account': renderClaudeAuth,
+  runtimes: renderRuntimes,
+  // Push notifications sent before the rename still deep-link here.
+  'claude-account': renderRuntimes,
   notifications: renderNotifications,
   tailscale: renderTailscale,
   updates: renderUpdates,

@@ -34,7 +34,9 @@ import { codexVersion, resolveCodexBin } from './runtime/codex/bin.js';
 import { CodexRuntime } from './runtime/codex/runtime.js';
 import { cursorVersion, resolveCursorBin } from './runtime/cursor/bin.js';
 import { CursorRuntime } from './runtime/cursor/runtime.js';
-import { loadAcpAgents } from './runtime/acp/config.js';
+import { loadAcpAgents, type AcpAgentConfig } from './runtime/acp/config.js';
+import { registerRuntimesRoutes } from './routes/runtimes.js';
+import { RuntimeLoginFlows } from './integrations/runtime-login.js';
 import { AcpRuntime } from './runtime/acp/runtime.js';
 import { findOnPath } from './runtime/bin.js';
 import { JsonlTranscripts } from './runtime/jsonl-transcripts.js';
@@ -303,7 +305,8 @@ async function main() {
     nativeIds,
     actionBody: (name) => actionRegistry.getAction(name)?.body,
   });
-  const acpRuntimes = loadAcpAgents(join(RUNTIME_DIR, 'acp-agents.json')).map((agent) => {
+  const acpAgentsPath = join(RUNTIME_DIR, 'acp-agents.json');
+  const buildAcpRuntime = (agent: AcpAgentConfig): AcpRuntime => {
     const bin = findOnPath(agent.command);
     console.log(bin ? `[daemon] acp:${agent.id} at ${bin}` : `[daemon] acp:${agent.id} not installed; actions set to run on it are refused`);
     return new AcpRuntime({
@@ -315,7 +318,8 @@ async function main() {
       nativeIds,
       actionBody: (name) => actionRegistry.getAction(name)?.body,
     });
-  });
+  };
+  const acpRuntimes = loadAcpAgents(acpAgentsPath).map(buildAcpRuntime);
   const runtimes = new RuntimeRegistry(runtime, [codex, cursor, ...acpRuntimes]);
   const deliverActions = (actionsDir: string) => runtime.deliverActions(actionsDir);
   const runtimeLogDir = join(RUNTIME_DIR, 'runtime-logs');
@@ -1087,6 +1091,10 @@ async function main() {
     permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
   });
   registerAuthRoutes(server, { loginFlows, claudeLogin, connectors: new McpConnectorList(join(RUNTIME_DIR, 'mcp-connectors.json')) });
+  const resolveLoginBin = (r: 'codex' | 'cursor') => (r === 'codex' ? resolveCodexBin() : resolveCursorBin());
+  registerRuntimesRoutes(server, {
+    runtimes, login: new RuntimeLoginFlows(resolveLoginBin), resolveBin: resolveLoginBin, acpAgentsPath, buildAcpRuntime,
+  });
   registerRunsRoutes(server, { runsStore, usageLedger, getAccountUsage: () => latestAccountUsage });
   registerSchedulesRoutes(server, { store: schedulesStore, scheduler, notify: notifyAll, tokenStatus: (id) => tokenScheduler.describe(id) });
   registerPreferencesRoutes(server, { preferencesStore, notify: notifyAll });

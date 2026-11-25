@@ -46,6 +46,17 @@ describe('unenforceableGroups', () => {
   });
 });
 
+describe('RuntimeRegistry.register', () => {
+  it('lists a runtime connected after startup, and drops it again, but never Claude', () => {
+    const reg = new RuntimeRegistry(rt('claude'));
+    reg.register(rt('acp:goose'));
+    expect(reg.listAvailable().map((r) => r.id)).toEqual(['claude', 'acp:goose']);
+    expect(reg.unregister('acp:goose')).toBe(true);
+    expect(reg.unregister('claude')).toBe(false);
+    expect(reg.all().map((r) => r.id)).toEqual(['claude']);
+  });
+});
+
 describe('RuntimeRegistry.refusal', () => {
   it('names a runtime that is not installed rather than blaming the groups', () => {
     const reg = new RuntimeRegistry(rt('claude'), [rt('codex', { available: false })]);

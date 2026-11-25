@@ -157,7 +157,7 @@ function wireBodyButtons(el, job) {
       else if (kind === 'wait-session') { const s = stepOf(job, stepId); if (s) openWaitStepSession(job, s); }
       else if (kind === 'abandon') { if (confirm('Abandon this job? Active sessions will be closed and worktrees archived.')) void work.abandon(job.id); }
       else if (kind === 'resume-stalled') void work.resumeStalled(job.id);
-      else if (kind === 'sign-in') nav.select('settings', 'claude-account');
+      else if (kind === 'sign-in') nav.select('settings', 'runtimes');
       else if (kind === 'hand-back') void sessionsApi.setInteractive(btn.getAttribute('data-session-id'), false);
     });
   });

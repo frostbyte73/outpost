@@ -2,10 +2,10 @@ import { escapeHtml } from '../../util.js';
 import { grantsStore } from '../../state/grants.js';
 import { metaApi } from '../../net/meta.js';
 import { setHtmlIfChanged } from '../../utils/keyed-rows.js';
-import { detailShell, block } from './detail-shell.js';
+import { block } from './detail-shell.js';
 import { claudeAccountRow } from '../../vm/settings.js';
 
-// Settings > Claude account. Sibling of mcp.js, one level up: that panel re-authorizes
+// Settings > Runtimes > Claude. Sibling of mcp.js, one level up: that panel re-authorizes
 // individual MCP servers, this one re-authorizes Claude Code itself.
 //
 // The reason it exists as a remote flow at all is that a lapse here is self-blocking — every
@@ -76,12 +76,11 @@ function flowHtml(state) {
   `;
 }
 
-export function renderClaudeAuth(mount) {
-  const body = detailShell(mount, 'Claude account',
-    'The sign-in every spawned session runs on. When this lapses nothing can start — including a session that could fix it — so it is re-authorized from here instead.');
-  const section = block(body, 'Account', `
+export function mountClaudeAuth(body) {
+  const section = block(body, 'Claude', `
     <div class="o-row-group claude-auth-account"></div>
     <div class="claude-auth-flow"></div>
+    <p class="settings-note">Claude is the sign-in every spawned session runs on. When it lapses nothing can start — including a session that could fix it — so it is re-authorized from here instead.</p>
   `);
   const accountEl = section.querySelector('.claude-auth-account');
   const flowEl = section.querySelector('.claude-auth-flow');
@@ -154,7 +153,7 @@ export function renderClaudeAuth(mount) {
     if (id) await metaApi.claudeAuthCancel(id).catch(() => {});
   }
 
-  body.addEventListener('click', (e) => {
+  section.addEventListener('click', (e) => {
     if (e.target.closest('.claude-auth-start')) { void startFlow(); return; }
     if (e.target.closest('.claude-auth-copy')) {
       void navigator.clipboard.writeText(state.flow?.authUrl ?? '').then(() => {
@@ -172,12 +171,12 @@ export function renderClaudeAuth(mount) {
     }
   });
 
-  body.addEventListener('input', (e) => {
+  section.addEventListener('input', (e) => {
     if (e.target.classList.contains('claude-auth-input')) state.pasted = e.target.value;
   });
 
   // Enter is what a phone keyboard offers after a paste.
-  body.addEventListener('keydown', (e) => {
+  section.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && e.target.classList.contains('claude-auth-input')) {
       e.preventDefault();
       void finishFlow();

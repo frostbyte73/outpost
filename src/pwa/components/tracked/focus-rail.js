@@ -86,7 +86,7 @@ function runFocusCta(job, cta) {
     return;
   }
   if (cta.action === 'claude-auth') {
-    nav.select('settings', 'claude-account');
+    nav.select('settings', 'runtimes');
     return;
   }
   // review-gate / review-diff / watch: land on the relevant timeline step.

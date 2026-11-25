@@ -3,7 +3,7 @@
 //   2. Web Push handler with foreground suppression (visible window → in-page message)
 //   3. notificationclick handler that deep-links to /?session=<id>&approval=<id>, or for the
 //      payloads with no session of their own: `kind: 'draft'` → /?job=<id>, `kind:
-//      'mcp-expiry'` → /?settings=mcp, `kind: 'claude-auth'` → /?settings=claude-account —
+//      'mcp-expiry'` → /?settings=mcp, `kind: 'claude-auth'` → /?settings=runtimes —
 //      see deep-links.js's SURFACE_PARAMS
 
 self.addEventListener('install', () => self.skipWaiting());
@@ -46,7 +46,7 @@ self.addEventListener('notificationclick', (event) => {
   const target = data.kind === 'mcp-expiry'
     ? { surface: 'settings', id: 'mcp', param: 'settings' }
     : data.kind === 'claude-auth'
-    ? { surface: 'settings', id: 'claude-account', param: 'settings' }
+    ? { surface: 'settings', id: 'runtimes', param: 'settings' }
     : data.kind === 'draft' && data.jobId
       ? { surface: 'tracked', id: data.jobId, param: 'job' }
       : { sessionId: data.sessionId, approvalId: data.approvalId };

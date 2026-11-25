@@ -38,7 +38,7 @@ src/
       hooks.ts, decide.ts                 # the inline hook command + hooks.json install; hook payload → gate call
     acp/                   # any Agent Client Protocol agent over stdio JSON-RPC, one runtime per configured agent
       runtime.ts, connection.ts           # AcpRuntime + session (gate, tripwire, pins), the bidirectional stdio client
-      config.ts                           # ~/.outpost/acp-agents.json: seeded, validated, read at boot
+      config.ts                           # ~/.outpost/acp-agents.json: seeded, validated, read at boot; Settings > Runtimes adds/removes entries live
       permission.ts, events.ts            # request_permission → gate calls + reply; session/update → canonical
 
   routes/                # HTTP route factories: registerXRoutes(server, deps)

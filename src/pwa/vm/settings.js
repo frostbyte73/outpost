@@ -20,7 +20,7 @@ export const SETTINGS_SECTIONS = [
       { key: 'editor', label: 'External editor', icon: '✎' },
       { key: 'permissions', label: 'Permissions', icon: '◉' },
       { key: 'pre-approvals', label: 'Pre-approvals', icon: '✓' },
-      { key: 'claude-account', label: 'Claude account', icon: '✦' },
+      { key: 'runtimes', label: 'Runtimes', icon: '✦' },
       { key: 'mcp', label: 'MCP connections', icon: '◈' },
       { key: 'notifications', label: 'Notifications', icon: '✉' },
       { key: 'projects', label: 'Projects', icon: '▣' },
@@ -138,6 +138,42 @@ export function claudeAccountRow(auth) {
     };
   }
   return { title, sub: sub || null, tone: 'ok', statusLabel: 'Signed in', needsAttention: false, failedSince: null, note: null };
+}
+
+const NOT_INSTALLED_HINT = {
+  codex: 'The codex CLI is not on the daemon\'s PATH.',
+  cursor: 'The Cursor CLI (agent) is not on the daemon\'s PATH.',
+};
+
+// One row of the Runtimes page for a runtime other than Claude (whose row is claudeAccountRow's).
+// A signed-out runtime is not a failure the way Claude is: nothing else depends on it, so it
+// reads as a prompt to sign in, never as danger.
+export function runtimeRow(rt) {
+  const acp = rt.kind === 'acp';
+  const command = rt.command ? [rt.command, ...(rt.args ?? [])].join(' ') : null;
+  const row = {
+    id: rt.id,
+    label: rt.label,
+    kind: rt.kind,
+    canLogin: !!rt.canLogin && rt.available,
+    removable: acp,
+    flow: rt.flow ?? null,
+  };
+  if (!rt.available) {
+    return {
+      ...row, tone: 'warn', statusLabel: 'Not installed',
+      sub: acp ? `\`${rt.command}\` is not on the daemon's PATH.` : NOT_INSTALLED_HINT[rt.kind] ?? null,
+    };
+  }
+  if (!rt.canLogin) {
+    return { ...row, tone: 'ok', statusLabel: 'Installed', sub: command, note: 'Sign in with the agent\'s own CLI on the daemon host — Outpost can\'t drive its login.' };
+  }
+  const account = rt.account;
+  if (!account || account.error) {
+    return { ...row, tone: 'warn', statusLabel: 'Unknown', sub: account?.error ?? null, signedIn: false };
+  }
+  if (!account.loggedIn) return { ...row, tone: 'warn', statusLabel: 'Signed out', sub: null, signedIn: false };
+  return { ...row, tone: 'ok', statusLabel: 'Signed in', sub: account.detail ?? null, signedIn: true };
 }
 
 const CONNECTOR_LABEL = {

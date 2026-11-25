@@ -63,6 +63,37 @@ export function loadAcpAgents(path: string): AcpAgentConfig[] {
   return out;
 }
 
+// The file's raw entries, so an edit writes back what it didn't touch — including an entry
+// loadAcpAgents skipped, which the user may be mid-fixing by hand.
+function readRawEntries(path: string): unknown[] {
+  if (!existsSync(path)) loadAcpAgents(path);
+  let raw: unknown;
+  try { raw = JSON.parse(readFileSync(path, 'utf8')); } catch {
+    throw new Error(`${path} is not valid JSON; fix it by hand before editing agents from here`);
+  }
+  const entries = (raw as { agents?: unknown } | null)?.agents;
+  if (!Array.isArray(entries)) throw new Error(`${path} has no "agents" array; fix it by hand before editing agents from here`);
+  return entries;
+}
+
+// Appends one agent, refusing what loadAcpAgents would skip so a bad submission never lands in the file.
+export function addAcpAgent(path: string, candidate: unknown): AcpAgentConfig {
+  const entries = readRawEntries(path);
+  const existing = loadAcpAgents(path);
+  const agent = parseAgent(candidate, existing);
+  if (typeof agent === 'string') throw new Error(agent);
+  writeJsonAtomic(path, { agents: [...entries, agent] });
+  return agent;
+}
+
+export function removeAcpAgent(path: string, id: string): boolean {
+  const entries = readRawEntries(path);
+  const kept = entries.filter((e) => (e as { id?: unknown } | null)?.id !== id);
+  if (kept.length === entries.length) return false;
+  writeJsonAtomic(path, { agents: kept });
+  return true;
+}
+
 function parseAgent(e: unknown, seen: AcpAgentConfig[]): AcpAgentConfig | string {
   if (!e || typeof e !== 'object') return 'not an object';
   const o = e as Record<string, unknown>;

@@ -21,6 +21,20 @@ export class RuntimeRegistry {
     return this.byId.get(id);
   }
 
+  // Every runtime the daemon knows, installed or not — what the Runtimes page lists.
+  all(): AgentRuntime[] {
+    return [...this.byId.values()];
+  }
+
+  register(rt: AgentRuntime): void {
+    if (rt.id === this.claude.id) throw new Error(`${rt.id} is built in`);
+    this.byId.set(rt.id, rt);
+  }
+
+  unregister(id: string): boolean {
+    return id !== this.claude.id && this.byId.delete(id);
+  }
+
   listAvailable(): { id: RuntimeId; label: string }[] {
     return [...this.byId.values()].flatMap((r) => r.available && isRuntimeId(r.id)
       ? [{ id: r.id, label: r.label ?? runtimeLabel(r.id) }]
