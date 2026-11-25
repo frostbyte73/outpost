@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { writeJsonAtomic } from '../../permissions/permission-groups-loader.js';
-import { ACP_AGENT_ID } from '../types.js';
+import { ACP_AGENT_ID, RUNTIME_IDS } from '../types.js';
 
 export interface AcpAgentConfig {
   id: string;
@@ -68,6 +68,8 @@ function parseAgent(e: unknown, seen: AcpAgentConfig[]): AcpAgentConfig | string
   const o = e as Record<string, unknown>;
   if (typeof o.id !== 'string' || !ACP_AGENT_ID.test(o.id)) return 'id must match [a-z0-9][a-z0-9-]*';
   if (seen.some((a) => a.id === o.id)) return `duplicate id ${o.id}`;
+  // A native runtime already owns this name; an `acp:` twin would list as a second, lowercase entry.
+  if ((RUNTIME_IDS as readonly string[]).includes(o.id)) return `${o.id} is a built-in runtime, not an ACP agent`;
   if (typeof o.command !== 'string' || !o.command) return 'command must be a non-empty string';
   const args = o.args ?? [];
   if (!Array.isArray(args) || !args.every((a) => typeof a === 'string')) return 'args must be a string[]';

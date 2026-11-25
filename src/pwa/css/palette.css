@@ -278,6 +278,7 @@ html[data-layout="desktop"] .o-palette {
   display: flex;
   gap: 12px;
 }
+.p-runtime { margin-top: 10px; }
 .p-launch-error {
   margin-top: 8px;
   font-size: 12px;

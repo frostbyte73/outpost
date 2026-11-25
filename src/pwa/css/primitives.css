@@ -503,6 +503,32 @@ html[data-layout="mobile"] .o-menu-body {
 html[data-layout="mobile"] .o-menu-body[hidden] { display: none; }
 html[data-layout="mobile"] .o-menu-body > * { width: 100%; text-align: left; }
 
+/* ── Labeled select (§7.5) — a dim 12px label beside an input-spec select ── */
+.o-field { display: inline-flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; color: var(--text-dim); }
+/* The native arrow ignores our padding and overflows the box, so draw our own from two
+   gradients (currentColor keeps it on-token). --select-bg lets a container on an elevated
+   plane (the session header) match its neighbours instead of punching a --bg hole. */
+.o-select {
+  font: inherit; font-size: 13px;
+  appearance: none;
+  background-color: var(--select-bg, var(--bg)); color: var(--text);
+  background-image:
+    linear-gradient(45deg, transparent 50%, currentColor 50%),
+    linear-gradient(135deg, currentColor 50%, transparent 50%);
+  background-position: calc(100% - 13px) 50%, calc(100% - 8px) 50%;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  border: 1px solid var(--line); border-radius: var(--r-control);
+  padding: 4px 26px 4px 8px;
+  min-width: 0; max-width: 100%;
+  cursor: pointer;
+  transition: border-color var(--dur-1) var(--ease);
+}
+.o-select:hover:not(:disabled) { border-color: var(--text-dim); }
+.o-select:focus { outline: none; border-color: var(--accent); }
+.o-select:disabled { color: var(--text-dim); cursor: not-allowed; }
+.o-select option { color: var(--text); background: var(--bg-elev); }
+
 /* ── Pre-approvals control (job creation, plan review, running step, schedules) ── */
 .o-preapprovals { border: 0; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 .o-preapprovals-row { display: grid; grid-template-columns: 120px 1fr; align-items: center; gap: 8px 16px; font-size: 13px; }

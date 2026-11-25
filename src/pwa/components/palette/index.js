@@ -467,7 +467,7 @@ function step2Html() {
         <div><span class="o-kbd">&#8984;&#8679;&crarr;</span>track as job</div>
         <div><span class="o-kbd">&#8679;&#8984;S</span>schedule</div>
       </div>
-      <label>Runtime <select id="p-runtime" disabled><option value="claude">Claude</option></select></label>
+      <label class="o-field p-runtime"><span>Runtime</span><select class="o-select" id="p-runtime" disabled><option value="claude">Claude</option></select></label>
       <div class="p-launch-row">
         <button type="button" class="p-launch-btn o-btn o-btn--primary" data-launch="session">Send</button>
         <button type="button" class="p-launch-btn o-btn o-btn--default" data-launch="track">Track</button>

@@ -68,6 +68,35 @@ html[data-layout="mobile"] .sv-header { display: none; }
   animation: sv-header-pulse var(--pulse) ease-in-out infinite;
 }
 @keyframes sv-header-pulse { 50% { opacity: 0.4; } }
+/* Runtime switcher: sits just left of the actions, pushed right with them. On
+   mobile the header is otherwise hidden (mobile-header.js owns that chrome), so
+   it shows alone as a slim bar — and not at all while the control is hidden. */
+.sv-runtime {
+  margin-left: auto;
+  flex: 0 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.sv-runtime[hidden] { display: none; }
+.sv-runtime .o-select { --select-bg: var(--bg-elev); }
+.sv-runtime:not([hidden]) + .sv-header-actions { margin-left: 0; }
+.sv-runtime-status {
+  min-width: 0;
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sv-runtime-status:empty { display: none; }
+html[data-layout="mobile"] .sv-header:has(> .sv-runtime:not([hidden])) {
+  display: flex;
+  padding: 8px 14px;
+}
+html[data-layout="mobile"] .sv-header > :not(.sv-runtime) { display: none; }
 .sv-header-actions {
   margin-left: auto;
   flex: none;

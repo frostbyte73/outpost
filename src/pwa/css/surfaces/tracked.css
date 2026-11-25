@@ -150,6 +150,8 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   font-size: 12px;
   color: var(--text-mute);
 }
+.tk-runtime-error { color: var(--danger); }
+.tk-runtime-error:empty { display: none; }
 .tk-priority-toggle {
   display: inline-flex;
   align-items: center;

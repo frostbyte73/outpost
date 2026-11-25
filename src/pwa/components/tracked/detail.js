@@ -119,7 +119,7 @@ function renderLaunchRow(job) {
   if (!badge && !showPriorityToggle) return '';
   return `
     <div class="tk-launch-row">
-      ${showPriorityToggle ? '<label>Run on <select class="tk-runtime" disabled></select></label><span class="tk-runtime-error" role="status"></span>' : ''}
+      ${showPriorityToggle ? '<label class="o-field"><span>Runtime</span><select class="o-select tk-runtime" disabled></select></label><span class="tk-runtime-error" role="status"></span>' : ''}
       ${badge ? `<span class="o-pill ${launchPillClass(badge.kind)}">${escapeHtml(badge.label)}</span>` : ''}
       ${showPriorityToggle ? `
         <label class="tk-priority-toggle" title="Run immediately, ignore the token queue">
@@ -324,14 +324,13 @@ export function renderTrackedDetail(root, jobId) {
   const priorityToggle = root.querySelector('.tk-priority-checkbox');
   const runtimeSelect = root.querySelector('.tk-runtime');
   if (runtimeSelect) {
-    const current = job.runtime ?? 'claude';
+    let current = job.runtime ?? 'claude';
     const error = root.querySelector('.tk-runtime-error');
-    runtimeSelect.add(new Option(current === 'claude' ? 'Claude' : current, current));
     void loadRuntimeOptions(runtimeSelect, current).catch((e) => { error.textContent = e.message; });
     runtimeSelect.addEventListener('change', async () => {
       runtimeSelect.disabled = true;
       error.textContent = '';
-      try { await work.setJobRuntime(job.id, runtimeSelect.value); }
+      try { await work.setJobRuntime(job.id, runtimeSelect.value); current = runtimeSelect.value; }
       catch (e) { runtimeSelect.value = current; error.textContent = e.message; }
       finally { runtimeSelect.disabled = false; }
     });

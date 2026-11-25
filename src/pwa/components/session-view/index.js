@@ -70,6 +70,10 @@ function buildSkeleton(mount) {
         <span class="sv-header-live" aria-hidden="true" hidden></span>
         <span class="sv-header-meta-text"></span>
       </span>
+      <div class="sv-runtime" hidden>
+        <label class="o-field"><span>Runtime</span><select class="o-select" aria-label="Switch runtime" disabled></select></label>
+        <span class="sv-runtime-status" role="status"></span>
+      </div>
       <div class="sv-header-actions">
         <button class="sv-header-promote" type="button">Promote to tracked <span class="o-kbd"></span></button>
         <button class="sv-header-archive" type="button" hidden>Archive <span class="o-kbd"></span></button>
@@ -98,11 +102,6 @@ function buildSkeleton(mount) {
     <div class="sv-banner-region"></div>
     <div class="sv-composer-wrap">
       <div class="sv-meter-region"></div>
-      <div class="sv-runtime" hidden>
-        <label><span>Runtime</span> <select aria-label="Switch runtime" disabled></select></label>
-        <span class="runtime-switch-consequence" hidden>The current response may end early.</span>
-        <span role="status"></span>
-      </div>
       <div class="sv-slash-palette" hidden></div>
       <div class="sv-attachments" hidden></div>
       <div class="sv-composer-row">
@@ -751,9 +750,10 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   const unwireHeader = wireHeader(dom, sessionId, meta);
   const runtimeControl = mount.querySelector('.sv-runtime');
   const runtimeSelect = runtimeControl.querySelector('select');
-  const runtimeStatus = runtimeControl.querySelector('[role="status"]');
+  const statusEl = runtimeControl.querySelector('[role="status"]');
+  // Header space is tight: the status ellipsizes, so the full text rides along as a tooltip.
+  const setRuntimeStatus = (text) => { statusEl.textContent = text; statusEl.title = text; };
   const runtimeLabel = runtimeControl.querySelector('label span');
-  const runtimeConsequence = runtimeControl.querySelector('.runtime-switch-consequence');
   let runtimeVersion;
   let selectedRuntime;
   let switchingRuntime = false;
@@ -762,12 +762,12 @@ export function mountSessionView(mount, sessionId, meta = {}) {
     runtimeControl.hidden = !metadata?.runtime || (!metadata.canSwitchRuntime && metadata.runtimeAvailable);
     const active = !!sessions.getSlice(sessionId)?.thinking;
     runtimeLabel.textContent = active ? 'Stop and switch' : 'Runtime';
-    runtimeConsequence.hidden = !active;
+    runtimeSelect.title = active ? 'The current response may end early.' : '';
     if (!metadata?.runtime || switchingRuntime || runtimeVersion === metadata.runtimeVersion) return;
     runtimeVersion = metadata.runtimeVersion;
     selectedRuntime = metadata.runtime;
     runtimeSelect.disabled = true;
-    void loadRuntimeOptions(runtimeSelect, selectedRuntime).catch((e) => { runtimeStatus.textContent = e.message; });
+    void loadRuntimeOptions(runtimeSelect, selectedRuntime).catch((e) => { setRuntimeStatus(e.message); });
   };
   runtimeSelect.addEventListener('change', async () => {
     const target = runtimeSelect.value;
@@ -777,15 +777,15 @@ export function mountSessionView(mount, sessionId, meta = {}) {
     }
     switchingRuntime = true;
     runtimeSelect.disabled = true;
-    runtimeStatus.textContent = 'Switching runtime…';
+    setRuntimeStatus('Switching runtime…');
     try {
       const result = await sessionsApi.switchRuntime(sessionId, target, runtimeVersion);
       runtimeVersion = result.version;
       selectedRuntime = result.runtime;
-      runtimeStatus.textContent = 'Runtime selected for the next turn.';
+      setRuntimeStatus('Runtime selected for the next turn.');
     } catch (error) {
       runtimeSelect.value = selectedRuntime;
-      runtimeStatus.textContent = error.message;
+      setRuntimeStatus(error.message);
     } finally {
       switchingRuntime = false;
       runtimeSelect.disabled = false;
