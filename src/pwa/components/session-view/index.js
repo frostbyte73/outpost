@@ -767,16 +767,12 @@ export function mountSessionView(mount, sessionId, meta = {}) {
   const statusEl = runtimeControl.querySelector('[role="status"]');
   // The mode row is tight: the status ellipsizes, so the full text rides along as a tooltip.
   const setRuntimeStatus = (text) => { statusEl.textContent = text; statusEl.title = text; };
-  const runtimeLabel = runtimeControl.querySelector('label span');
   let runtimeVersion;
   let selectedRuntime;
   let switchingRuntime = false;
   const paintRuntime = () => {
     const metadata = sessions.get().projects.flatMap((p) => p.sessions).find((s) => s.id === sessionId);
     runtimeControl.hidden = !metadata?.runtime || (!metadata.canSwitchRuntime && metadata.runtimeAvailable);
-    const active = !!sessions.getSlice(sessionId)?.thinking;
-    runtimeLabel.textContent = active ? 'Stop and switch' : 'Runtime';
-    runtimeSelect.title = active ? 'The current response may end early.' : '';
     if (!metadata?.runtime || switchingRuntime || runtimeVersion === metadata.runtimeVersion) return;
     runtimeVersion = metadata.runtimeVersion;
     selectedRuntime = metadata.runtime;
@@ -796,7 +792,7 @@ export function mountSessionView(mount, sessionId, meta = {}) {
       const result = await sessionsApi.switchRuntime(sessionId, target, runtimeVersion);
       runtimeVersion = result.version;
       selectedRuntime = result.runtime;
-      setRuntimeStatus('Runtime selected for the next turn.');
+      setRuntimeStatus('');
     } catch (error) {
       runtimeSelect.value = selectedRuntime;
       setRuntimeStatus(error.message);

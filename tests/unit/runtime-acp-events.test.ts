@@ -74,24 +74,37 @@ describe('toolItem display names', () => {
     expect(item.resultText).toBeUndefined();
   });
 
+  it('holds an edit back until its diff arrives, rather than rendering an empty Edit', () => {
+    const calls = new Map();
+    const id = 'edit-1';
+    expect(mapAcpUpdate(
+      { sessionUpdate: 'tool_call', toolCallId: id, title: 'Edit `/w/a.txt`', kind: 'edit', status: 'pending', locations: [{ path: '/w/a.txt' }] },
+      calls, cfg,
+    )).toEqual([]);
+    expect(mapAcpUpdate(
+      { sessionUpdate: 'tool_call_update', toolCallId: id, content: [{ type: 'diff', path: '/w/a.txt', oldText: 'a', newText: 'b' }] },
+      calls, cfg,
+    )).toMatchObject([{ type: 'item.started', item: { rawName: 'Edit', input: { file_path: '/w/a.txt', old_string: 'a', new_string: 'b' } } }]);
+  });
+
   it('shows a Find search as a Glob on its pattern', () => {
     expect(toolItem(call({ title: 'Find `docs/*.md`', kind: 'search', rawInput: { pattern: 'docs/*.md' } }), cfg))
       .toMatchObject({ rawName: 'Glob', tool: 'file_glob', input: { pattern: 'docs/*.md' } });
   });
 
-  it('fills a placeholder call in when the arguments arrive, and again when it finishes', () => {
+  it('holds a placeholder call back until its arguments arrive, then starts it as a Grep', () => {
     const calls = new Map();
     const id = 'call-1';
     const started = mapAcpUpdate(
       { sessionUpdate: 'tool_call', toolCallId: id, title: 'grep', kind: 'search', status: 'pending', rawInput: {} },
       calls, cfg,
     );
-    expect(started).toMatchObject([{ type: 'item.started', item: { rawName: 'grep', input: {} } }]);
+    expect(started).toEqual([]);
     const filled = mapAcpUpdate(
       { sessionUpdate: 'tool_call_update', toolCallId: id, title: 'grep "ships"', rawInput: { pattern: 'ships', path: 'src' } },
       calls, cfg,
     );
-    expect(filled).toMatchObject([{ type: 'item.updated', item: { rawName: 'Grep', input: { pattern: 'ships', path: 'src' } } }]);
+    expect(filled).toMatchObject([{ type: 'item.started', item: { rawName: 'Grep', input: { pattern: 'ships', path: 'src' } } }]);
     const running = mapAcpUpdate(
       { sessionUpdate: 'tool_call_update', toolCallId: id, status: 'in_progress' },
       calls, cfg,

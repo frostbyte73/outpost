@@ -115,6 +115,18 @@ export function toolItem(call: AcpToolCall, cfg: AcpAgentConfig): ToolCallItem {
   };
 }
 
+// Kinds whose tile needs the call's arguments to say anything; delete and move show their title as-is.
+const ARGUMENT_KINDS: ReadonlySet<string> = new Set(['execute', 'edit', 'read', 'search', 'fetch']);
+
+// Cursor's first frame names a search, read or edit before its arguments arrive, and an edit's diff can come later
+// still. A tile painted from that frame is empty, so the call waits for the frame that fills it in.
+function awaitingArguments(call: AcpToolCall, cfg: AcpAgentConfig): boolean {
+  if (call.status === 'completed' || call.status === 'failed') return false;
+  if (!ARGUMENT_KINDS.has(call.kind ?? '')) return false;
+  if (!displayCall(call, cfg)) return true;
+  return call.kind === 'edit' && !(call.content ?? []).some((c) => c.type === 'diff');
+}
+
 // Canonical events for one session/update, merging tool frames into `calls` as a side effect.
 export function mapAcpUpdate(update: AcpSessionUpdate, calls: Map<string, AcpToolCall>, cfg: AcpAgentConfig): CanonicalEvent[] {
   switch (update.sessionUpdate) {
@@ -124,16 +136,20 @@ export function mapAcpUpdate(update: AcpSessionUpdate, calls: Map<string, AcpToo
       if (!text) return [];
       return [{ type: 'content.delta', stream: update.sessionUpdate === 'agent_message_chunk' ? 'assistant_text' : 'reasoning', text }];
     }
-    case 'tool_call':
-      return [{ type: 'item.started', item: toolItem(mergeToolCall(calls, update as AcpToolCall), cfg) }];
-    case 'tool_call_update': {
+    case 'tool_call': {
       const call = mergeToolCall(calls, update as AcpToolCall);
-      // Cursor's first frame is a placeholder ("Find", "grep", "Edit File") with rawInput {}.
-      // The arguments, and an edit's diff, arrive on a later update — often before the call finishes.
+      if (awaitingArguments(call, cfg)) return [];
+      return [{ type: 'item.started', item: toolItem(call, cfg) }];
+    }
+    case 'tool_call_update': {
+      const before = calls.get((update as AcpToolCall).toolCallId);
+      const wasAwaiting = !before || awaitingArguments(before, cfg);
+      const call = mergeToolCall(calls, update as AcpToolCall);
       if (call.status === 'completed' || call.status === 'failed') return [{ type: 'item.completed', item: toolItem(call, cfg) }];
       const u = update as AcpToolCall;
       if (u.title == null && u.rawInput == null && u.locations == null && u.content == null) return [];
-      return [{ type: 'item.updated', item: toolItem(call, cfg) }];
+      if (awaitingArguments(call, cfg)) return [];
+      return [{ type: wasAwaiting ? 'item.started' : 'item.updated', item: toolItem(call, cfg) }];
     }
     default:
       return [];
