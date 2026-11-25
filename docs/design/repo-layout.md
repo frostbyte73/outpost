@@ -33,6 +33,9 @@ src/
       thread-config.ts, hook-trust.ts     # `--config` overrides; the trust + feature handshake
       items.ts, events.ts, call-tracker.ts  # v2 items → canonical; ungated-call tripwire, pin release
       tools.ts                            # tool-name mapping
+    cursor/                # Cursor's `agent acp`, on the ACP session, gated by fail-closed Cursor hooks
+      runtime.ts, bin.ts                  # CursorRuntime: per-session data dir, hook ledger, request replay; binary lookup
+      hooks.ts, decide.ts                 # the inline hook command + hooks.json install; hook payload → gate call
     acp/                   # any Agent Client Protocol agent over stdio JSON-RPC, one runtime per configured agent
       runtime.ts, connection.ts           # AcpRuntime + session (gate, tripwire, pins), the bidirectional stdio client
       config.ts                           # ~/.outpost/acp-agents.json: seeded, validated, read at boot

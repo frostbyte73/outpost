@@ -30,6 +30,19 @@ const UNGATED_KINDS = new Set(['read', 'search', 'think', 'switch_mode']);
 
 const CANCELLED: PermissionReply = { outcome: { outcome: 'cancelled' } };
 
+// What differs between one ACP agent's gating and another's; the session owns the rest.
+export interface AcpSessionPolicy {
+  env: Record<string, string>;
+  ungatedKinds: ReadonlySet<string>;
+  beforeBoot(): void;
+  beforeTurn(): void;
+  // Absent: gate the request through the host.
+  answerPermission?(call: AcpToolCall, options: AcpPermissionOption[]): { reply: PermissionReply; allowed?: GateCall[] };
+  // Whether a call that settled with no recorded decision was in fact refused somewhere this session can't see by id.
+  claimDenied?(call: AcpToolCall): boolean;
+  onEnd(): void;
+}
+
 export interface AcpRuntimeOpts {
   agent: AcpAgentConfig;
   bin: string | null;
@@ -60,7 +73,10 @@ export class AcpRuntime implements AgentRuntime {
   }
 
   start(s: StartOpts, cb: StartCallbacks): RuntimeSession {
-    const session = new AcpSession(this.opts, s, cb);
+    const session = new AcpSession(this.opts, s, cb, () => ({
+      env: {}, ungatedKinds: UNGATED_KINDS,
+      beforeBoot: () => {}, beforeTurn: () => {}, onEnd: () => {},
+    }));
     void session.boot();
     return session;
   }
@@ -73,7 +89,7 @@ export class AcpRuntime implements AgentRuntime {
 }
 
 // One agent process holding one ACP session; turns sent before it is ready wait.
-class AcpSession implements RuntimeSession {
+export class AcpSession implements RuntimeSession {
   private conn: AcpConnection | undefined;
   private nativeId: string | undefined;
   private caps: AgentCapabilities = {};
@@ -89,16 +105,42 @@ class AcpSession implements RuntimeSession {
   private readonly calls = new Map<string, AcpToolCall>();
   private readonly gated = new Map<string, GateCall[]>();
   private readonly asked = new Set<string>();
+  private readonly denied = new Set<string>();
   private readonly settled = new Set<string>();
+  private readonly callWaiters = new Map<string, (call: AcpToolCall) => void>();
+  private readonly policy: AcpSessionPolicy;
+  private ended = false;
 
-  constructor(private readonly o: AcpRuntimeOpts, private readonly s: StartOpts, private readonly cb: StartCallbacks) {}
+  constructor(
+    private readonly o: AcpRuntimeOpts, private readonly s: StartOpts, private readonly cb: StartCallbacks,
+    makePolicy: (session: AcpSession) => AcpSessionPolicy,
+  ) {
+    this.policy = makePolicy(this);
+  }
+
+  // The agent's stdout and a hook's HTTP call race to the daemon, so a hook may land before its tool_call frame.
+  toolCall(id: string, waitMs: number): Promise<AcpToolCall | undefined> {
+    const known = this.calls.get(id);
+    if (known || waitMs <= 0) return Promise.resolve(known);
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => { this.callWaiters.delete(id); resolve(undefined); }, waitMs);
+      this.callWaiters.set(id, (c) => { clearTimeout(timer); resolve(c); });
+    });
+  }
+
+  // Records a decision made outside session/request_permission (a hook) against the ACP call it gated.
+  noteDecision(toolCallId: string, allowed: GateCall[] | undefined): void {
+    if (allowed) this.gated.set(toolCallId, allowed);
+    else this.denied.add(toolCallId);
+  }
 
   async boot(): Promise<void> {
     try {
+      this.policy.beforeBoot();
       this.conn = new AcpConnection({
         command: this.o.bin!,
         args: this.o.agent.args,
-        env: { ...process.env, ...this.o.agent.env, ...this.s.env },
+        env: { ...process.env, ...this.o.agent.env, ...this.policy.env, ...this.s.env },
         cwd: this.s.cwd,
         onNotification: (m, p) => this.onNotification(m, p),
         onRequest: (m, p) => this.onRequest(m, p),
@@ -163,6 +205,7 @@ class AcpSession implements RuntimeSession {
   async kill(): Promise<void> {
     this.dead = true;
     this.releaseOpenPins();
+    this.end();
     await this.conn?.kill();
   }
 
@@ -171,7 +214,14 @@ class AcpSession implements RuntimeSession {
     this.dead = true;
     this.queued.length = 0;
     this.releaseOpenPins();
+    this.end();
     this.reportExit(code);
+  }
+
+  private end(): void {
+    if (this.ended) return;
+    this.ended = true;
+    this.policy.onEnd();
   }
 
   private releaseOpenPins(): void {
@@ -181,7 +231,7 @@ class AcpSession implements RuntimeSession {
 
   private release(toolUseId: string, calls: GateCall[], interrupted: boolean): void {
     const host = this.o.host();
-    for (const g of calls) host.onToolFailed({ sessionId: this.s.sessionId, toolUseId, tool: g.tool, input: g.input, interrupted });
+    for (const g of calls) host.onToolFailed({ sessionId: this.s.sessionId, toolUseId: g.gateId ?? toolUseId, tool: g.tool, input: g.input, interrupted });
   }
 
   private mcpServers(): unknown[] {
@@ -201,6 +251,11 @@ class AcpSession implements RuntimeSession {
   private startNextTurn(): void {
     const turn = this.queued.shift();
     if (!turn || this.dead) return;
+    try {
+      this.policy.beforeTurn();
+    } catch (e) {
+      return this.refuse(`[acp] turn refused: ${(e as Error).message}`);
+    }
     this.inTurn = true;
     let text = expandActionTurn(turn.text, this.o.actionBody);
     if (!this.prompted && this.s.appendSystemPrompt) text = `${this.s.appendSystemPrompt}\n\n${text}`;
@@ -254,6 +309,8 @@ class AcpSession implements RuntimeSession {
     const events = mapAcpUpdate(u, this.calls, this.o.agent);
     if (isToolUpdate) {
       const call = this.calls.get((u as AcpToolCall).toolCallId)!;
+      this.callWaiters.get(call.toolCallId)?.(call);
+      this.callWaiters.delete(call.toolCallId);
       if (this.ranUngated(call)) return this.tripwire(`${call.kind ?? 'unclassified'} call ${call.toolCallId}`);
       if (call.status === 'completed' || call.status === 'failed') this.settle(call);
     }
@@ -263,16 +320,22 @@ class AcpSession implements RuntimeSession {
 
   // Waits past in_progress: Cursor reports it before asking
   private ranUngated(call: AcpToolCall): boolean {
-    if (call.kind && UNGATED_KINDS.has(call.kind)) return false;
-    if (call.status === 'completed') return !this.gated.has(call.toolCallId);
-    if (call.status !== 'failed') return false;
-    return !this.asked.has(call.toolCallId);
+    if (call.kind && this.policy.ungatedKinds.has(call.kind)) return false;
+    const id = call.toolCallId;
+    // Cursor reports a call its hook refused as completed, not failed.
+    const unlinked = call.status === 'completed'
+      ? !this.gated.has(id) && !this.denied.has(id)
+      : call.status === 'failed' && !this.asked.has(id) && !this.gated.has(id) && !this.denied.has(id);
+    if (!unlinked || !this.policy.claimDenied?.(call)) return unlinked;
+    this.denied.add(id);
+    return false;
   }
 
   private settle(call: AcpToolCall): void {
     this.settled.add(call.toolCallId);
     this.calls.delete(call.toolCallId);
     this.asked.delete(call.toolCallId);
+    this.denied.delete(call.toolCallId);
     this.record(toolItem(call, this.o.agent));
     const seen = this.gated.get(call.toolCallId);
     if (!seen) return;
@@ -294,11 +357,22 @@ class AcpSession implements RuntimeSession {
     const p = params as { sessionId?: string; toolCall?: AcpToolCall; options?: AcpPermissionOption[] };
     const options = p.options ?? [];
     if (p.sessionId === this.nativeId && p.toolCall?.toolCallId) this.asked.add(p.toolCall.toolCallId);
-    if (this.dead || this.interrupting) return CANCELLED;
+    if (this.dead || this.interrupting) {
+      if (this.policy.answerPermission && p.toolCall?.toolCallId) {
+        const { allowed } = this.policy.answerPermission(mergeToolCall(this.calls, p.toolCall), options);
+        if (allowed) this.release(p.toolCall.toolCallId, allowed, true);
+      }
+      return CANCELLED;
+    }
     if (p.sessionId !== this.nativeId || !p.toolCall?.toolCallId) return permissionReply(options, false);
     if (!options.some((o) => o.kind === 'allow_once')) return this.deny(options, 'The agent offered no one-time approval, so Outpost refused the call.');
     this.settled.delete(p.toolCall.toolCallId);
     const call = mergeToolCall(this.calls, p.toolCall);
+    if (this.policy.answerPermission) {
+      const { reply, allowed } = this.policy.answerPermission(call, options);
+      this.noteDecision(call.toolCallId, allowed);
+      return reply;
+    }
     const gateCalls = gateCallsFor(call, this.s.cwd, this.o.agent);
     if ('deny' in gateCalls) return this.deny(options, gateCalls.deny);
     const allowed: GateCall[] = [];

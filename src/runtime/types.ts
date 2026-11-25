@@ -1,6 +1,6 @@
 import type { NdjsonLog } from './event-ndjson.js';
 
-export const RUNTIME_IDS = ['claude', 'codex'] as const;
+export const RUNTIME_IDS = ['claude', 'codex', 'cursor'] as const;
 export type RuntimeId = (typeof RUNTIME_IDS)[number] | `acp:${string}`;
 export const RUNTIME_ID_HINT = `${RUNTIME_IDS.join('|')}|acp:<id>`;
 
