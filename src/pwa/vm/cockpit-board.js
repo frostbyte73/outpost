@@ -100,27 +100,10 @@ const ACTION_TEXT = {
   driven: () => 'You have the wheel',
 };
 
-const ACTION_BUTTON = {
-  'plan-review': () => 'Review plan',
-  gate: (a) => (a.phase === 'spec' ? 'Review spec' : a.phase === 'plan' ? 'Review plan' : 'Review'),
-  draft: () => 'Review write',
-  failed: () => 'Review',
-  wait: () => 'Review',
-  stall: (a) => (a.auth ? 'Sign in' : 'Resume'),
-  push: () => 'Review diff',
-  approval: () => 'Review',
-  driven: () => 'Open',
-};
-
 function actionsText(actions, j) {
   if (actions.length === 1) return ACTION_TEXT[actions[0].kind](actions[0], j);
   if (actions.every((a) => a.kind === 'draft')) return `${actions.length} writes to approve`;
   return `${actions.length} need you`;
-}
-
-function actionLabel(actions) {
-  if (!actions.length) return null;
-  return actions.length === 1 ? ACTION_BUTTON[actions[0].kind](actions[0]) : 'Review';
 }
 
 function prNumber(url) {
@@ -165,7 +148,7 @@ function jobRow(j, pendingApprovals, openingWaits) {
     key: `job:${j.id}`, kind: 'job', id: j.id,
     ref: j.externalRef?.issueIdentifier ?? null, refMono: true, kindLabel: null,
     title: j.title ?? '(untitled job)', tone, status, time: j.updatedAt ?? 0,
-    actions, actionLabel: actionLabel(actions), feeds,
+    actions, actionLabel: null, feeds,
     dismissable: finished,
     // A finished job is never touched again, so its last write is when it finished.
     engagedAt: Math.max(j.lastEngagedAt ?? j.createdAt ?? 0, finished ? (j.updatedAt ?? 0) : 0),
@@ -189,7 +172,7 @@ function sessionRow(s, cwd, slice, pendingApprovals, localEngaged, activity) {
     key: `session:${s.id}`, kind: 'session', id: s.id,
     ref: shortName(cwd), refMono: true, kindLabel: null,
     title: s.title ?? 'Untitled session', tone, status, time: s.lastModified ?? 0,
-    actions, actionLabel: actionLabel(actions),
+    actions, actionLabel: actions.length ? 'Review' : null,
     feeds: signals.working || pending.length ? [{ sessionId: s.id, stepId: null, repo: null, action: null }] : [],
     engagedAt: Math.max(s.lastEngagedAt ?? s.lastModified ?? 0, localEngaged.get(s.id) ?? 0),
     createdAt: s.lastModified ?? 0, cwd, inboxItem: null,

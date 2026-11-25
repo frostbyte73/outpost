@@ -146,11 +146,30 @@ html[data-layout="mobile"] .cockpit-group:first-child { margin-top: 0; }
   .ckb-session .sv-header .o-kbd { display: none; }
   .ckb-glyph { grid-area: glyph; }
   .ckb-lead { grid-area: lead; }
-  .ckb-status { grid-area: status; }
+  .ckb-status { grid-area: status; text-align: left; }
   .ckb-age { grid-area: age; }
   .ckb-acts { grid-area: acts; }
   .ckb-caret { grid-area: caret; }
   .ckb-feeds { margin-left: var(--gap-3); }
+}
+/* Rows subgrid onto one track set per group, so the actions column is exactly as wide as the group's widest buttons
+   and status/age still line up. The edge tracks absorb the row's rail and padding, built from the same tokens as
+   .ckb-line so a density change moves both together. The fixed --ckb-acts-w rules above are the fallback where
+   subgrid is missing. */
+@supports (grid-template-columns: subgrid) {
+  .ckb-view .o-row-group {
+    display: grid;
+    grid-template-columns: calc(2px + var(--gap-3) + 16px) minmax(0, 1fr) 120px 64px max-content calc(24px + var(--gap-2));
+    column-gap: var(--gap-3); align-content: start;
+  }
+  /* .o-row's 14px gap would otherwise open a band between the line and its feeds/body. */
+  .ckb-view .o-row-group > .ckb-item { display: grid; grid-column: 1 / -1; grid-template-columns: subgrid; row-gap: 0; column-gap: normal; }
+  .ckb-view .o-row-group > .ckb-item > * { grid-column: 1 / -1; }
+  .ckb-view .o-row-group .ckb-line { grid-template-columns: subgrid; }
+  @container (max-width: 520px) {
+    .ckb-view .o-row-group, .ckb-view .o-row-group > .ckb-item { display: block; }
+    .ckb-view .o-row-group .ckb-line { grid-template-columns: 16px minmax(0, 1fr) auto 24px; }
+  }
 }
 .ckb-line:hover { background: var(--bg-elev-2); }
 .ckb-item.is-selected > .ckb-line { background: var(--accent-soft); }

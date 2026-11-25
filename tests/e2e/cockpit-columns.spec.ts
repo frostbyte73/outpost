@@ -198,8 +198,10 @@ seededTest('at a 360px column, expanded bodies never overflow sideways', async (
   expect(colWidth).toBeLessThan(400);
 
   await sessionRow(page).locator('.ckb-caret').click();
-  await page.locator(`.ckb-item[data-row-key="job:${GATE_JOB}"] .ckb-act button`).click();
-  await page.locator(`.ckb-item[data-row-key="job:${DRAFT_JOB}"] .ckb-act button`).click();
+  for (const job of [GATE_JOB, DRAFT_JOB]) {
+    await page.locator(`.ckb-item[data-row-key="job:${job}"] .ckb-title`).click();
+    await page.keyboard.press('a');
+  }
   for (const key of [`session:${SESSION}`, `job:${GATE_JOB}`, `job:${DRAFT_JOB}`]) {
     const body = page.locator(`.ckb-item[data-row-key="${key}"] .ckb-body`);
     await expect(body).toBeVisible();

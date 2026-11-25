@@ -89,7 +89,7 @@ describe('job rows', () => {
     expect(r.tone).toBe('you');
     expect(r.status).toEqual({ text: 'Spec ready', tone: 'you' });
     expect(r.actions.map((a: any) => a.kind)).toEqual(['gate']);
-    expect(r.actionLabel).toBe('Review spec');
+    expect(r.actionLabel).toBeNull();
   });
 
   it('streaming plus a dispatch draft stays live but says your move', () => {
@@ -117,7 +117,6 @@ describe('job rows', () => {
     ];
     const r = board({ jobs: [job({ steps })] }).started[0];
     expect(r.status.text).toBe('2 need you');
-    expect(r.actionLabel).toBe('Review');
   });
 
   it('a failed job offers retry', () => {

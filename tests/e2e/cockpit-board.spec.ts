@@ -65,7 +65,9 @@ seededTest('approving a spec from the cockpit collapses the row', async ({ outpo
   await expect(row).toHaveAttribute('data-tone', 'you');
   await expect(row.locator('.ckb-status')).toContainText('Spec ready');
 
-  await row.locator('.ckb-act button').click();
+  // Click selects the row (and opens its history); `a` narrows that to just what's waiting on you.
+  await row.locator('.ckb-title').click();
+  await outpostPage.keyboard.press('a');
   const body = row.locator('.ckb-body');
   await expect(body).toBeVisible();
   await expect(body.locator('.tl-gate-body')).toContainText('UNKNOWN flaps');
