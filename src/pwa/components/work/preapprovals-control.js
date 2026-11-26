@@ -8,7 +8,7 @@ export const WRITES = [
   ['push', 'Commit + push', 'Any commit and push to the step’s own branch'],
   ['openPr', 'Open the PR', 'Opening the PR from the step’s branch onto its base'],
   ['replies', 'Reply to comments', 'Replies on the step’s own PR'],
-  ['merge', 'Merge', 'Merging the PR once it’s approved, green and at the same head'],
+  ['merge', 'Merge', 'Merging the PR once review clears, it’s green and at the same head'],
   ['syncBase', 'Merge base in', 'Committing and pushing a merge of origin/<base> — conflict fixes included'],
   ['rerunCi', 'Re-run CI', 'Re-running a failed CI run on the step’s branch, once per run'],
 ];
@@ -36,6 +36,11 @@ export function renderPreapprovalsControl(value, { name, loosened = [] } = {}) {
           ${WRITES.map(([k, l, hint]) => `<label${flag(k)} title="${escapeHtml(hint)}"><input type="checkbox" data-pre="${k}"${e[k] ? ' checked' : ''}> ${escapeHtml(l)}</label>`).join('')}
         </div>
       </div>
+      <div class="o-preapprovals-row"><span class="k">Review</span>
+        <div class="o-preapprovals-writes">
+          <label${flag('requireApproval')} title="Off: a repo that asks for no review can merge once green"><input type="checkbox" data-pre="requireApproval"${e.requireApproval ? ' checked' : ''}> Require PR approval</label>
+        </div>
+      </div>
       <label class="o-preapprovals-row"${flag('landing')}><span class="k">Done when</span>
         <select data-pre="landing">${options(LANDING_LABELS, e.landing)}</select>
       </label>
@@ -52,6 +57,7 @@ export function readPreapprovalsControl(fieldset) {
     merge: get('merge').checked,
     syncBase: get('syncBase').checked,
     rerunCi: get('rerunCi').checked,
+    requireApproval: get('requireApproval').checked,
     landing: get('landing').value,
   };
 }

@@ -6,6 +6,7 @@ import type {
 } from '../work/work-types.js';
 import { PR_URL_RE, parsePrUrl } from '../work/pr-url.js';
 import { gitRemoteBranchHead } from '../git/git-ops.js';
+import { reviewClears } from '../work/preapprovals.js';
 import { runGh as defaultRunGh, type RunGh } from './gh-cli.js';
 
 export type RemoteHead = (cwd: string, branch: string) => Promise<string | undefined>;
@@ -18,6 +19,8 @@ export interface PrWatcherOpts {
   remoteHead?: RemoteHead;
   // Unset leaves `hasUnpushedWork` untracked
   unpushedWork?: UnpushedWork;
+  // Unset treats every step as requiring an approval
+  requireApproval?: (jobId: string, stepId: string) => boolean;
 }
 
 interface GhPrView {
@@ -174,13 +177,13 @@ function commentsFrom(view: GhPrView, inline: GhInlineComment[]): PrComment[] {
 // Is this CI result one the controller's ladder has a row for? `pending` is not: row 9 needs a
 // SETTLED failure and row 13 needs success, so a wake carrying "CI started" can only re-arm the
 // same wait — and it is the controller's own fix-ci push that causes it. Plain green is not
-// either, until review has approved: row 13 is the only row reading `success`, and it reads
-// `reviewState` alongside it. Suppressing green *with* an approval would strand the step, since
+// either, until review clears: row 16 is the only row reading `success`, and it reads
+// `reviewState` alongside it. Suppressing green once review clears would strand the step, since
 // nothing moves afterwards to carry the news, which is why this asks about both.
-function ciWorthWaking(prev: PrFacts, next: Partial<PrFacts>): boolean {
+function ciWorthWaking(prev: PrFacts, next: Partial<PrFacts>, requireApproval: boolean): boolean {
   if (next.ciState === 'failure') return true;
   if (next.ciState !== 'success') return false;
-  return (next.reviewState ?? prev.reviewState) === 'approved';
+  return reviewClears(next.reviewState ?? prev.reviewState, requireApproval);
 }
 
 // The last check finishing on an already-failing rollup leaves `ciState` unmoved, but it's the settled failure row 9 waits for
@@ -193,11 +196,11 @@ function ciSettledFailing(prev: PrFacts, next: Partial<PrFacts>): boolean {
 // Which watched signals the freshly polled facts actually moved AND are worth a round. This is
 // the whole of what the watcher tells a controller: what changed, never what it means.
 function changedSignals(
-  prev: PrFacts, next: Partial<PrFacts>, actionableComments: boolean,
+  prev: PrFacts, next: Partial<PrFacts>, actionableComments: boolean, requireApproval: boolean,
 ): WatchedEvent[] {
   const moved = <K extends keyof PrFacts>(k: K) => next[k] !== undefined && next[k] !== prev[k];
   const events: WatchedEvent[] = [];
-  if ((moved('ciState') && ciWorthWaking(prev, next)) || ciSettledFailing(prev, next)) events.push('ci');
+  if ((moved('ciState') && ciWorthWaking(prev, next, requireApproval)) || ciSettledFailing(prev, next)) events.push('ci');
   if (moved('reviewState')) events.push('review-state');
   // Mergeability rides on `pr-state`: a PR that just started conflicting is the
   // controller's problem now, and there is no separate signal for it to wait on.
@@ -528,6 +531,7 @@ export class PrWatcher {
     const ours = viewer ? fresh.filter((c) => normalizeLogin(c.author) === viewer).length : 0;
     const events = changedSignals(
       fromKnownUrl ? { ...prev, prUrl } : prev, facts, commentsWorthWaking(fresh, viewer),
+      this.opts.requireApproval?.(jobId, s.id) ?? true,
     );
     if (events.length) {
       this.opts.engine.pushStepInbox(jobId, s.id, {

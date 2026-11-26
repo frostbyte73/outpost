@@ -59,7 +59,7 @@ import {
 } from './write-draft-runner.js';
 import { readMergeReadiness } from './merge-readiness.js';
 import { readRerunReadiness } from './rerun-readiness.js';
-import { clampToCeiling, describePreapprovals, effectivePreapprovals, preapprovedLocalGit } from './preapprovals.js';
+import { clampToCeiling, describePreapprovals, effectivePreapprovals, preapprovedLocalGit, type EffectivePreapprovals } from './preapprovals.js';
 import type { AllowlistConfig } from '../permissions/allowlist.js';
 import { runGh as defaultRunGh, type RunGh } from '../integrations/gh-cli.js';
 import { gitHasUnpushedWork, gitMergingFromBase } from '../git/git-ops.js';
@@ -1978,7 +1978,8 @@ export class WorkEngine {
   private async mergeReadiness(jobId: string, stepId: string, prNumber: number, sha: string): Promise<string | undefined> {
     const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
     if (s?.type !== 'orchestrated' || s.workspace.kind !== 'writable') return 'not a writable PR step';
-    return readMergeReadiness(this.opts.runGh ?? defaultRunGh, s.workspace.repoCwd, prNumber, sha, s.pr?.comments);
+    const { requireApproval } = this.preapprovalsFor(jobId, stepId);
+    return readMergeReadiness(this.opts.runGh ?? defaultRunGh, s.workspace.repoCwd, prNumber, sha, s.pr?.comments, requireApproval);
   }
 
   private async rerunReadiness(jobId: string, stepId: string, runId: string): Promise<string | undefined> {
@@ -2434,13 +2435,15 @@ export class WorkEngine {
   // Orchestrated step control loop — the host binding for orchestrated-runner.ts.
   // ─────────────────────────────────────────────────────────
 
+  preapprovalsFor(jobId: string, stepId: string): EffectivePreapprovals {
+    const j = this.opts.queue.get(jobId);
+    const s = j?.steps.find((x) => x.id === stepId);
+    return effectivePreapprovals(this.opts.preapprovalDefaults?.(), j?.preapprovals, s?.type === 'orchestrated' ? s.preapprovals : undefined);
+  }
+
   private orchestratedHost(): OrchestratedHost {
     return {
-      preapprovalsFor: (jobId, stepId) => {
-        const j = this.opts.queue.get(jobId);
-        const s = j?.steps.find((x) => x.id === stepId);
-        return effectivePreapprovals(this.opts.preapprovalDefaults?.(), j?.preapprovals, s?.type === 'orchestrated' ? s.preapprovals : undefined);
-      },
+      preapprovalsFor: (jobId, stepId) => this.preapprovalsFor(jobId, stepId),
       getStep: (jobId, stepId) => {
         const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
         return s?.type === 'orchestrated' ? s : undefined;

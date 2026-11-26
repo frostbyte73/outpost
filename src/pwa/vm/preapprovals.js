@@ -1,15 +1,15 @@
 // Mirrors src/work/preapprovals.ts; the daemon re-validates everything this produces.
 
-const GATED = { spec: 'gate', push: false, openPr: false, replies: false, merge: false, syncBase: false, rerunCi: false, landing: 'merged' };
-const KEYS = ['spec', 'push', 'openPr', 'replies', 'merge', 'syncBase', 'rerunCi', 'landing'];
+const GATED = { spec: 'gate', push: false, openPr: false, replies: false, merge: false, syncBase: false, rerunCi: false, requireApproval: true, landing: 'merged' };
+const KEYS = ['spec', 'push', 'openPr', 'replies', 'merge', 'syncBase', 'rerunCi', 'requireApproval', 'landing'];
 const SPEC_ORDER = ['gate', 'auto', 'skip'];
 const LANDING_ORDER = ['merged', 'approved', 'direct'];
 const LABELS = { push: 'push', openPr: 'open PR', replies: 'replies', merge: 'merge', syncBase: 'merge base in', rerunCi: 're-run CI' };
 
 export const PRESETS = {
   gated: { ...GATED },
-  routine: { spec: 'skip', push: true, openPr: true, replies: true, merge: false, syncBase: false, rerunCi: true, landing: 'approved' },
-  personal: { spec: 'auto', push: true, openPr: false, replies: false, merge: false, syncBase: false, rerunCi: false, landing: 'direct' },
+  routine: { spec: 'skip', push: true, openPr: true, replies: true, merge: false, syncBase: false, rerunCi: true, requireApproval: true, landing: 'approved' },
+  personal: { spec: 'auto', push: true, openPr: false, replies: false, merge: false, syncBase: false, rerunCi: false, requireApproval: true, landing: 'direct' },
 };
 
 function defined(p) {
@@ -34,6 +34,7 @@ export function loosened(proposed, ...ceiling) {
     if (v === undefined) return false;
     if (k === 'spec') return SPEC_ORDER.indexOf(v) > SPEC_ORDER.indexOf(c.spec);
     if (k === 'landing') return LANDING_ORDER.indexOf(v) > LANDING_ORDER.indexOf(c.landing);
+    if (k === 'requireApproval') return v === false && c.requireApproval;
     return v === true && !c[k];
   });
 }
@@ -45,6 +46,7 @@ export function summaryLabel(p) {
   const parts = [];
   if (e.spec !== 'gate') parts.push(`spec ${e.spec}`);
   for (const k of ['push', 'openPr', 'replies', 'merge', 'syncBase', 'rerunCi']) if (e[k]) parts.push(LABELS[k]);
+  if (!e.requireApproval) parts.push('no approval needed');
   if (e.landing !== 'merged') parts.push(e.landing);
   return parts.join(' · ');
 }

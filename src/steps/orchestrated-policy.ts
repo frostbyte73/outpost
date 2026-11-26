@@ -1,6 +1,6 @@
 import type { NextMove, OrchestratedStep } from '../work/work-types.js';
 import { workspaceError } from '../work/workspace.js';
-import { GATED_PREAPPROVALS, type EffectivePreapprovals } from '../work/preapprovals.js';
+import { GATED_PREAPPROVALS, reviewClears, type EffectivePreapprovals } from '../work/preapprovals.js';
 
 // Counts UNPRODUCTIVE self-rounds in a row — ones that neither moved `phase` nor changed the
 // content of any artifact (see isProductive in orchestrated-runner). A productive round is
@@ -36,7 +36,7 @@ export type PolicyVerdict =
 function unmergedOwnPr(step: OrchestratedStep, pre: EffectivePreapprovals): string | undefined {
   if (step.workspace?.kind !== 'writable') return undefined;
   if (step.boundAction === MERGE_ACTION) return undefined;
-  if (pre.landing === 'approved' && step.pr?.reviewState === 'approved' && step.pr?.ciState === 'success') return undefined;
+  if (pre.landing === 'approved' && reviewClears(step.pr?.reviewState, pre.requireApproval) && step.pr?.ciState === 'success') return undefined;
   const pr = step.pr;
   if (!pr?.prUrl || pr.prState === 'merged' || pr.prState === undefined) return undefined;
   return pr.prUrl;

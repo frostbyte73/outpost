@@ -746,6 +746,7 @@ async function main() {
 
   const prWatcher = new PrWatcher({
     queue: jobQueue, engine, unpushedWork: (stepId) => engine.readUnpushedWork(stepId),
+    requireApproval: (jobId, stepId) => engine.preapprovalsFor(jobId, stepId).requireApproval,
   });
   const prFilePatches = new PrFilePatches();
   const userPrsWatcher = new UserPrsWatcher({

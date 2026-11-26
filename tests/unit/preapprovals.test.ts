@@ -15,7 +15,7 @@ describe('effectivePreapprovals', () => {
       { push: false, openPr: true, landing: 'approved' },
       { openPr: false, spec: 'auto' },
     );
-    expect(e).toEqual({ spec: 'auto', push: false, openPr: false, replies: false, merge: false, syncBase: true, rerunCi: false, landing: 'approved' });
+    expect(e).toEqual({ spec: 'auto', push: false, openPr: false, replies: false, merge: false, syncBase: true, rerunCi: false, requireApproval: true, landing: 'approved' });
   });
 
   it('ignores explicitly-undefined fields instead of re-gating the layer below', () => {

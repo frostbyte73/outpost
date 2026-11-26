@@ -12,13 +12,13 @@ function mount(value: unknown, opts: Record<string, unknown> = {}) {
 
 describe('the pre-approvals control', () => {
   it('reads back exactly what it rendered', () => {
-    const value = { spec: 'auto', push: true, openPr: false, replies: true, merge: false, syncBase: true, rerunCi: true, landing: 'approved' };
+    const value = { spec: 'auto', push: true, openPr: false, replies: true, merge: false, syncBase: true, rerunCi: true, requireApproval: true, landing: 'approved' };
     expect(readPreapprovalsControl(mount(value))).toEqual(value);
   });
 
   it('renders an absent value as fully gated', () => {
     expect(readPreapprovalsControl(mount(undefined))).toEqual({
-      spec: 'gate', push: false, openPr: false, replies: false, merge: false, syncBase: false, rerunCi: false, landing: 'merged',
+      spec: 'gate', push: false, openPr: false, replies: false, merge: false, syncBase: false, rerunCi: false, requireApproval: true, landing: 'merged',
     });
   });
 

@@ -9,17 +9,18 @@ export interface EffectivePreapprovals {
   merge: boolean;
   syncBase: boolean;
   rerunCi: boolean;
+  requireApproval: boolean;
   landing: Landing;
 }
 
 export const GATED_PREAPPROVALS: EffectivePreapprovals = {
-  spec: 'gate', push: false, openPr: false, replies: false, merge: false, syncBase: false, rerunCi: false, landing: 'merged',
+  spec: 'gate', push: false, openPr: false, replies: false, merge: false, syncBase: false, rerunCi: false, requireApproval: true, landing: 'merged',
 };
 
 const SPEC_ORDER: readonly SpecMode[] = ['gate', 'auto', 'skip'];
 const LANDING_ORDER: readonly Landing[] = ['merged', 'approved', 'direct'];
 const BOOL_KEYS = ['push', 'openPr', 'replies', 'merge', 'syncBase', 'rerunCi'] as const;
-const KEYS: ReadonlyArray<keyof Preapprovals> = ['spec', ...BOOL_KEYS, 'landing'];
+const KEYS: ReadonlyArray<keyof Preapprovals> = ['spec', ...BOOL_KEYS, 'requireApproval', 'landing'];
 
 function defined(p: Preapprovals | undefined): Preapprovals {
   const out: Record<string, unknown> = {};
@@ -46,6 +47,12 @@ export function preapprovedLocalGit(e: EffectivePreapprovals, baseBranch: string
   return rules;
 }
 
+// Whether review stands out of the way of a merge: an approval, or, when the user doesn't require
+// one, a repo that asks for none (GitHub reports no decision at all for those)
+export function reviewClears(reviewState: string | undefined, requireApproval: boolean): boolean {
+  return reviewState === 'approved' || (!requireApproval && reviewState === undefined);
+}
+
 function stricter<T>(order: readonly T[], a: T, b: T): T {
   return order[Math.min(order.indexOf(a), order.indexOf(b))]!;
 }
@@ -54,6 +61,7 @@ export function clampToCeiling(proposed: Preapprovals, ceiling: EffectivePreappr
   const out: Preapprovals = {};
   if (proposed.spec !== undefined) out.spec = stricter(SPEC_ORDER, proposed.spec, ceiling.spec);
   for (const k of BOOL_KEYS) if (proposed[k] !== undefined) out[k] = proposed[k]! && ceiling[k];
+  if (proposed.requireApproval !== undefined) out.requireApproval = proposed.requireApproval || ceiling.requireApproval;
   if (proposed.landing !== undefined) out.landing = stricter(LANDING_ORDER, proposed.landing, ceiling.landing);
   return out;
 }
@@ -80,9 +88,9 @@ export function parsePreapprovals(raw: unknown): { ok: true; value: Preapprovals
     } else if (k === 'landing') {
       if (!LANDING_ORDER.includes(v as Landing)) return { ok: false, error: `preapprovals.landing must be one of ${LANDING_ORDER.join('|')}` };
       out.landing = v as Landing;
-    } else if ((BOOL_KEYS as readonly string[]).includes(k)) {
+    } else if ((BOOL_KEYS as readonly string[]).includes(k) || k === 'requireApproval') {
       if (typeof v !== 'boolean') return { ok: false, error: `preapprovals.${k} must be a boolean` };
-      out[k as typeof BOOL_KEYS[number]] = v;
+      out[k as typeof BOOL_KEYS[number] | 'requireApproval'] = v;
     } else {
       return { ok: false, error: `unknown preapprovals field ${JSON.stringify(k)}` };
     }

@@ -57,7 +57,7 @@ cat "$OUTPOST_ENVELOPE"
 | `dispatches` | Every child you have fanned out: `id`, `action`, `brief`, `status`, `output`, `failure`. |
 | `pr` | The PR facts as the watcher last observed them: `prUrl`, `prState`, `ciState`, `ciChecks[]`, `reviewState`, `mergeable`, `headRefOid`, `comments[]`. |
 | `gateApproved` | `true` once the user has approved a `gate` of yours. Absent until then (§3). |
-| `preapprovals` | What the user pre-approved for this step: `spec` (`gate`/`auto`/`skip`), `push`, `openPr`, `replies`, `merge`, `syncBase`, `rerunCi`, and `landing` (`merged`/`approved`/`direct`). Always present; all-gated (`spec: "gate"`, every boolean `false`, `landing: "merged"`) is today's behaviour. See §3b. |
+| `preapprovals` | What the user pre-approved for this step: `spec` (`gate`/`auto`/`skip`), `push`, `openPr`, `replies`, `merge`, `syncBase`, `rerunCi`, `requireApproval`, and `landing` (`merged`/`approved`/`direct`). Always present; all-gated (`spec: "gate"`, every write boolean `false`, `requireApproval: true`, `landing: "merged"`) is today's behaviour. See §3b. |
 | `baseBranch` | The branch your worktree was cut from — the `--base` of any PR you open, and the target of a `direct` landing. |
 | `prReviewers` | Reviewers the user set in Settings, already narrowed to this repo's org. Absent when none apply. Row 8 passes them as `--reviewer`. |
 | `gateFeedback` | Every note the user has attached to a gate, oldest first. |
@@ -154,8 +154,8 @@ as part of its condition.
 | 13 | Comments in `pr.comments` that are not yours, not answered, and not covered by `artifacts.draftedReplies` | the triage round drafts them | `self-round` as `code.triage-pr-comments` | `pr_comments` |
 | 14 | `artifacts.draftedReplies` holds `reply` drafts not listed in `artifacts.postedReplies` | the reply round posts them | `self-round` as `code.reply-pr-comments`, with the exact reply bodies in `note` | `pr_comments` |
 | 15 | `artifacts.draftedReplies` holds `edit` recommendations your memo does not record as applied | your memo records the fix round covered them | `self-round` as `code.fix-pr-comment` | `pr_comments` |
-| 15a | `preapprovals.landing === "approved"`, `pr.reviewState === "approved"`, `pr.ciState === "success"`, no comment in `pr.comments` that is not yours and not answered | — (terminal) | `resolve` with "approved; handed to the repo owner to merge" and the PR URL | `merged` |
-| 16 | `pr.ciState === "success"`, `pr.reviewState === "approved"`, and your memo does **not** record a `code.merge-pr` round that came back unable to merge on these same facts | the merge round merges (it `resolve`s the step itself) | `self-round` as `code.merge-pr` | `pr_open` |
+| 15a | `preapprovals.landing === "approved"`, review clears (§3b), `pr.ciState === "success"`, no comment in `pr.comments` that is not yours and not answered | — (terminal) | `resolve` with "approved; handed to the repo owner to merge" and the PR URL | `merged` |
+| 16 | `pr.ciState === "success"`, review clears (§3b), and your memo does **not** record a `code.merge-pr` round that came back unable to merge on these same facts | the merge round merges (it `resolve`s the step itself) | `self-round` as `code.merge-pr` | `pr_open` |
 | 17 | Nothing above matches | a delivery wakes you | `wait` on `["ci","review-state","pr-state","pr-comments"]` | keep the current `phase` |
 
 Three of these read a fact only *you* can record, so record it:
@@ -228,7 +228,10 @@ user like any other.
   `prReviewers`; anything else makes it a normal draft.
 - **`replies`** — row 14's bound `code.reply-pr-comments` round posts without waiting.
 - **`merge`** — row 16's bound `code.merge-pr` round merges once the daemon re-reads the PR and
-  finds it approved, green, mergeable, at the same head, with nothing unanswered.
+  finds review cleared, green, mergeable, at the same head, with nothing unanswered.
+- **`requireApproval`** — what "review clears" means in rows 15a and 16. `true`: `pr.reviewState
+  === "approved"`. `false`: that, or `pr.reviewState` absent — a repo that asks for no review
+  merges once green. `changes_requested` and `review_required` never clear.
 - **`syncBase`** — row 11's bound `code.resolve-conflicts` round commits and pushes its merge of
   `origin/<baseBranch>` without waiting. `push` covers this too.
 - **`rerunCi`** — row 12's bound `code.fix-ci` round re-runs a flaky run's failed jobs without
@@ -520,8 +523,8 @@ this ladder has a row for — not every time one moves — because every wake co
 Three things deliberately happen without waking you:
 
 - **CI going to `pending`.** Your own `code.fix-ci` push causes it, and no row reads it.
-- **CI going green while review has not approved.** Row 16 is the only row that reads
-  `success`, and it needs the approval too. When the approval lands, `review-state` wakes you
+- **CI going green while review has not cleared.** Row 16 is the only row that reads
+  `success`, and it needs review to clear too. When the approval lands, `review-state` wakes you
   and `pr.ciState` is already green — so read both, never assume the green was announced.
 - **A comment posted by the account this daemon writes as.** Your own replies are not news.
 

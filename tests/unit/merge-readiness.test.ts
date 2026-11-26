@@ -25,6 +25,13 @@ describe('mergeBlocker', () => {
   ])('names %s', (_n, snap, unanswered, re) => {
     expect(mergeBlocker(snap as PrSnapshot, SHA, unanswered as number)).toMatch(re as RegExp);
   });
+  it('lets a repo that asks for no review merge only when approval is not required', () => {
+    const none = { ...ready, reviewDecision: '' };
+    expect(mergeBlocker(none, SHA, 0)).toMatch(/review/);
+    expect(mergeBlocker(none, SHA, 0, false)).toBeUndefined();
+    expect(mergeBlocker({ ...ready, reviewDecision: 'REVIEW_REQUIRED' }, SHA, 0, false)).toMatch(/review/);
+    expect(mergeBlocker({ ...ready, reviewDecision: 'CHANGES_REQUESTED' }, SHA, 0, false)).toMatch(/review/);
+  });
 });
 
 describe('unansweredCount', () => {
@@ -49,7 +56,7 @@ describe('readMergeReadiness', () => {
       calls.push(args);
       return args[0] === 'api' ? JSON.stringify({ login: 'me' }) : JSON.stringify(ready);
     };
-    expect(await readMergeReadiness(runGh, '/tmp', 42, SHA, [])).toBeUndefined();
+    expect(await readMergeReadiness(runGh, '/tmp', 42, SHA, [], true)).toBeUndefined();
     expect(calls.find((a) => a[0] === 'pr')).toEqual(['pr', 'view', '42', '--json', 'reviewDecision,mergeable,headRefOid,statusCheckRollup']);
   });
 });

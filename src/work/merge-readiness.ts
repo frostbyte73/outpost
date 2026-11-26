@@ -9,8 +9,9 @@ export interface PrSnapshot {
   statusCheckRollup?: GhCheckRollup[];
 }
 
-export function mergeBlocker(snap: PrSnapshot, sha: string, unanswered: number): string | undefined {
-  if (snap.reviewDecision !== 'APPROVED') return `review is ${snap.reviewDecision ?? 'not approved'}`;
+export function mergeBlocker(snap: PrSnapshot, sha: string, unanswered: number, requireApproval = true): string | undefined {
+  const decision = snap.reviewDecision || undefined;
+  if (decision !== 'APPROVED' && (requireApproval || decision !== undefined)) return `review is ${decision ?? 'not approved'}`;
   const states = (snap.statusCheckRollup ?? []).map(checkStateOf);
   if (!states.length) return 'no checks have reported';
   if (states.includes('failure')) return 'a check failed';
@@ -28,7 +29,7 @@ export function unansweredCount(comments: PrComment[] | undefined, viewer: strin
 }
 
 export async function readMergeReadiness(
-  runGh: RunGh, cwd: string, prNumber: number, sha: string, comments: PrComment[] | undefined,
+  runGh: RunGh, cwd: string, prNumber: number, sha: string, comments: PrComment[] | undefined, requireApproval: boolean,
 ): Promise<string | undefined> {
   const snap = JSON.parse(await runGh(cwd, [
     'pr', 'view', String(prNumber), '--json', 'reviewDecision,mergeable,headRefOid,statusCheckRollup',
@@ -40,5 +41,5 @@ export async function readMergeReadiness(
   } catch {
     viewer = undefined;
   }
-  return mergeBlocker(snap, sha, unansweredCount(comments, viewer));
+  return mergeBlocker(snap, sha, unansweredCount(comments, viewer), requireApproval);
 }

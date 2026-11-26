@@ -28,6 +28,7 @@ export interface Preapprovals {
   merge?: boolean;
   syncBase?: boolean;
   rerunCi?: boolean;
+  requireApproval?: boolean;
   landing?: Landing;
 }
 
