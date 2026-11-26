@@ -38,8 +38,11 @@ export function prNumberOf(prUrl: string | undefined): number | undefined {
   return m ? Number(m[1]) : undefined;
 }
 
-// `allowed` maps each accepted flag to whether it takes a value; any other flag is a miss.
-function parseFlags(args: string[], allowed: Record<string, boolean>): { flags: Map<string, string>; positional: string[] } | null {
+// `allowed` maps each accepted flag to whether it takes a value; any other flag is a miss. A repeat
+// is a miss too unless `repeatable` names it — the parse keeps only the last value.
+function parseFlags(
+  args: string[], allowed: Record<string, boolean>, repeatable: ReadonlySet<string> = new Set(),
+): { flags: Map<string, string>; positional: string[] } | null {
   const flags = new Map<string, string>();
   const positional: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -49,7 +52,7 @@ function parseFlags(args: string[], allowed: Record<string, boolean>): { flags: 
     const eq = a.indexOf('=');
     const name = eq === -1 ? a : a.slice(0, eq);
     const inline = eq === -1 ? undefined : a.slice(eq + 1);
-    if (!Object.hasOwn(allowed, name) || flags.has(name)) return null;
+    if (!Object.hasOwn(allowed, name) || (flags.has(name) && !repeatable.has(name))) return null;
     if (allowed[name]) {
       const v = inline ?? args[++i];
       if (v === undefined) return null;
@@ -64,7 +67,7 @@ function parseFlags(args: string[], allowed: Record<string, boolean>): { flags: 
 
 function commitShape(rest: string[], ctx: ClassifyContext): Shape {
   if (ctx.mergeFromBase && rest.length === 1 && rest[0] === '--no-edit') return { setting: 'syncBase', expects: [] };
-  const p = parseFlags(rest, { '-m': true, '--message': true, '-F': true, '--file': true });
+  const p = parseFlags(rest, { '-m': true, '--message': true, '-F': true, '--file': true }, new Set(['-m', '--message']));
   if (!p || p.positional.length) return { miss: 'only `git commit -m` / `-F /tmp/…` is pre-approvable' };
   const file = p.flags.get('-F') ?? p.flags.get('--file');
   if (file !== undefined && !isValidTmpFilePath(file)) return { miss: 'commit message file must be under /tmp' };

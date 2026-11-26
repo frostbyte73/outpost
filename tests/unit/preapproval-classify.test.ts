@@ -18,6 +18,7 @@ const call = (bash: string, i = 0): PinnedCall => ({ id: `c${i}`, label: `call $
 const SHA = 'a'.repeat(40);
 const covered = {
   commitM: 'git commit -m "bump ws"',
+  commitMBody: 'git commit -m "Bump ws" -m "Picks up the frame-size fix."',
   commitF: 'git commit -F /tmp/outpost-commit.txt',
   push: 'git push -u origin deps/bump-ws',
   pushHead: 'git push origin HEAD:deps/bump-ws',
