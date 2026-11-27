@@ -30,6 +30,7 @@ describe('plannable scope', () => {
       'meta.wait',
       'read.investigate',
       'write.add-project',
+      'write.create-repo',
       'write.linear-comment',
       'write.linear-issue',
       'write.run-github-workflow',

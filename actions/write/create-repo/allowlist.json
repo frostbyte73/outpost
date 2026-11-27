@@ -1,0 +1,12 @@
+{
+  "alwaysAllow": [],
+  "alwaysAllowBashPatterns": [
+    "^git clone[ \\t]+[\"']?git@github\\.com:frostbyte73/[A-Za-z0-9_.][A-Za-z0-9._-]*\\.git[\"']?[ \\t]+[\"']?(?:~|\\$HOME|\\$\\{HOME\\})?/[A-Za-z0-9._][A-Za-z0-9._/-]*[\"']?[ \\t]*$",
+    "^git clone[ \\t]+[\"']?https://github\\.com/frostbyte73/[A-Za-z0-9_.][A-Za-z0-9._-]*(?:\\.git)?[\"']?[ \\t]+[\"']?(?:~|\\$HOME|\\$\\{HOME\\})?/[A-Za-z0-9._][A-Za-z0-9._/-]*[\"']?[ \\t]*$",
+    "^gh repo clone[ \\t]+[\"']?frostbyte73/[A-Za-z0-9_.][A-Za-z0-9._-]*[\"']?[ \\t]+[\"']?(?:~|\\$HOME|\\$\\{HOME\\})?/[A-Za-z0-9._][A-Za-z0-9._/-]*[\"']?[ \\t]*$",
+    "^mkdir -p[ \\t]+[\"']?(?:~|\\$HOME|\\$\\{HOME\\})?/[A-Za-z0-9._][A-Za-z0-9._/-]*[\"']?[ \\t]*$",
+    "^curl(?:[ \\t]+(?:-[fsSL]+|--(?:silent|fail|show-error|location)))*[ \\t]+(?:-X|--request)(?:[ \\t]+|=)POST[ \\t]+[\"']?(?:\\$OUTPOST_API_URL|\\$\\{OUTPOST_API_URL\\}|http://(?:127\\.0\\.0\\.1|localhost):[0-9]+)/api/projects[\"']?(?:(?:[ \\t]|\\\\\\n)+(?:-H|--header|-d|--data|--data-raw)(?:(?:[ \\t]|\\\\\\n)+|=)(?:\"[^\"$`\\\\\\n]*\"|'[^'\\n]*'|[A-Za-z0-9_./][A-Za-z0-9_./:=@,+-]*))*(?:[ \\t]|\\\\\\n)*$"
+  ],
+  "alwaysAllowMcpPatterns": [],
+  "alwaysAllowPathPatterns": []
+}

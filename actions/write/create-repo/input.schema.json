@@ -1,0 +1,28 @@
+{
+  "type": "object",
+  "required": ["name"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "pattern": "^(?!\\.\\.?$)[A-Za-z0-9_.][A-Za-z0-9._-]{0,99}$",
+      "description": "Repository name. Created as frostbyte73/<name>."
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 350,
+      "pattern": "^[^\"$`\\\\\\u0000-\\u001f]*$",
+      "description": "One-line repo description. No double quotes, $, backticks, backslashes or control characters — it is drafted as a literal."
+    },
+    "visibility": {
+      "enum": ["private", "public"],
+      "default": "private",
+      "description": "Public only when the job explicitly asks for it."
+    },
+    "dest": {
+      "type": "string",
+      "pattern": "^/",
+      "description": "Absolute path to clone into. Derived from the existing project layout when omitted."
+    }
+  }
+}

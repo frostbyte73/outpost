@@ -186,6 +186,7 @@ describe('a push rule matches writes only, never a read', () => {
       'git tag -l',
       'git tag --list',
       'git tag -n',
+      'gh repo view frostbyte73/x --json url',
     ]) expect(gated(c), c).toBe(false);
   });
 
@@ -199,7 +200,33 @@ describe('a push rule matches writes only, never a read', () => {
       'git tag -d v1',
       'git push origin main',
       'gh pr merge 12 --squash',
+      'gh repo create frostbyte73/game --private --add-readme',
     ]) expect(gated(c), c).toBe(true);
+  });
+});
+
+// For `repo create` the owner is the destination, so another owner is unreachable, not warned.
+describe('gh repo create is pinned to the frostbyte73 owner', () => {
+  it('allows creating under frostbyte73', () => {
+    for (const c of [
+      'gh repo create frostbyte73/game --private --add-readme',
+      'gh repo create frostbyte73/game --public --add-readme --description "A small game"',
+    ]) expect(allows(c), c).toBe(true);
+  });
+
+  it('denies another owner, no owner, a flag outside the set, or an expansion', () => {
+    for (const c of [
+      'gh repo create someone-else/x --private',
+      'gh repo create frostbyte73evil/x --private',
+      // gh resolves a bare name to the token's login, which the card cannot show.
+      'gh repo create x --private',
+      'gh repo create frostbyte73/x --private --source=. --push',
+      'gh repo create frostbyte73/x --private --description "$(id)"',
+      // An escaped quote: the regex closes the string where bash doesn't, so the flags look quoted.
+      'gh repo create frostbyte73/x --description "a\\" --description " --source=. --push " --description "b\\" --description "x"',
+      "gh repo create frostbyte73/x --description='x' --source=.",
+      "gh repo create frostbyte73/x --description 'x' --push",
+    ]) expect(allows(c), c).toBe(false);
   });
 });
 

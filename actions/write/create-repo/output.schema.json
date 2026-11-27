@@ -1,0 +1,16 @@
+{
+  "type": "object",
+  "required": ["ok", "repo", "url", "path", "private", "created", "registered", "summary"],
+  "properties": {
+    "ok": { "type": "boolean" },
+    "repo": { "type": "string", "description": "frostbyte73/<name>." },
+    "url": { "type": "string" },
+    "path": { "type": "string", "description": "Absolute path of the checkout; what downstream steps branch from." },
+    "private": { "type": "boolean" },
+    "created": { "type": "boolean", "description": "False when the repo already existed and was reused." },
+    "registered": { "type": "boolean" },
+    "alreadyRegistered": { "type": "boolean" },
+    "defaultBranch": { "type": "string" },
+    "summary": { "type": "string" }
+  }
+}

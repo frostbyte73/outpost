@@ -72,6 +72,7 @@ export const WRITE_PROBES: readonly string[] = [
   'gh run rerun 12345 --failed',
   'gh secret set FOO --body bar',
   'gh repo create org/name --public',
+  'gh repo create frostbyte73/x --private',
   'gh repo delete org/name --yes',
   'gh cache delete 12345',
 ];

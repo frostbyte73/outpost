@@ -32,6 +32,17 @@ const CASES: Array<[string, string]> = [
   ['write.add-project', 'git clone https://github.com/acme/example.git /Users/testuser/acme/example'],
   ['write.add-project', 'mkdir -p /Users/testuser/acme'],
   ['write.add-project', 'git -C /Users/testuser/acme/example log -1 --oneline'],
+  ['write.create-repo', 'git clone git@github.com:frostbyte73/game.git /Users/testuser/github/frostbyte73/game'],
+  ['write.create-repo', 'git clone https://github.com/frostbyte73/game.git /Users/testuser/github/frostbyte73/game'],
+  ['write.create-repo', 'mkdir -p /Users/testuser/github/frostbyte73'],
+  ['write.create-repo', 'curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/user'],
+  ['write.create-repo', 'git -C /Users/testuser/github/frostbyte73/game log -1 --oneline'],
+  ['write.create-repo', 'git -C /Users/testuser/github/frostbyte73/game branch --show-current'],
+  ['write.create-repo', 'git -C /Users/testuser/github/frostbyte73/game remote get-url origin'],
+  ['write.create-repo', 'which gh'],
+  ['write.create-repo', 'gh repo view frostbyte73/game --json nameWithOwner,isPrivate,url,defaultBranchRef'],
+  ['write.create-repo', 'curl -sS -H "Authorization: Bearer $GITHUB_TOKEN" https://api.github.com/repos/frostbyte73/game'],
+  ['write.create-repo', 'curl -fsS -X POST "$OUTPOST_API_URL/api/projects" \\\n  -H \'content-type: application/json\' \\\n  -d \'{"cwd":"/Users/testuser/github/frostbyte73/game"}\''],
   ['write.run-github-workflow', 'gh workflow run "deploy.yml" --ref "main"'],
   ['write.run-github-workflow', 'gh run watch 8123456 --interval 60 --exit-status'],
 ];
@@ -41,5 +52,16 @@ describe('the real substituted form of every documented SKILL command', () => {
     await load;
     const denied = CASES.filter(([a, c]) => !al.allows('Bash', { command: c }, undefined, a));
     expect(denied.map(([a, c]) => `${a}: ${c}`)).toEqual([]);
+  });
+});
+
+// The /api/projects POST is ungated, so its unquoted values must not carry a shell operator.
+describe('write.create-repo register POST', () => {
+  it('denies an unquoted value carrying a shell operator', async () => {
+    await load;
+    const base = 'curl -fsS -X POST "$OUTPOST_API_URL/api/projects"';
+    for (const c of [`${base} -d x;id`, `${base} -H x>y`, `${base} -d x|sh`, `${base} -d x&id`]) {
+      expect(al.allows('Bash', { command: c }, undefined, 'write.create-repo'), c).toBe(false);
+    }
   });
 });
