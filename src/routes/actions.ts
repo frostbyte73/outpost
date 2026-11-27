@@ -39,6 +39,7 @@ import type { EvalOutcome } from '../eval/eval-verdict.js';
 import type { UserVerdict } from '../eval/eval-store.js';
 import type { DaemonConfig } from '../config.js';
 import { ensureActionsInstalled, bundledRepoDir } from '../actions/install.js';
+import { readLocalEdits } from '../actions/bundle-sync.js';
 import { parseJsonObject, parseWindowMs, readJsonBody } from './util.js';
 
 export interface ActionsRoutesDeps {
@@ -687,7 +688,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     // Re-deliver to the runtime, then reload the registry so the new action
     // reaches the catalog in the same actions_changed broadcast clearEdit fires —
     // otherwise the detail pane, still selected on this name, renders "Skill not found".
-    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions); } catch { /* tolerate */ }
+    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions, actionRevisionsStore); } catch { /* tolerate */ }
     try { actionRegistry.load(); } catch (e) { console.warn(`[action-edit] registry reload failed: ${(e as Error).message}`); }
     clearEdit(key);
   }
@@ -802,6 +803,7 @@ export function registerActionsRoutes(server: Server, deps: ActionsRoutesDeps): 
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({
       actions, catalog, skills, edits, denials: denialsStore.all(), autoApplied: recentAutoApplied(Date.now()),
+      localEdits: readLocalEdits(RUNTIME_DIR),
     }));
   });
 

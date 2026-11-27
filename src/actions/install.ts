@@ -1,24 +1,33 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, rmSync, unlinkSync } from 'node:fs';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import type { ActionRevisionsStore } from '../storage/action-revisions-store.js';
+import {
+  STAGING_DIR, bundleHash, matchesPastBundle, readBundleState, replaceDir, writeBundleState,
+} from './bundle-sync.js';
 
 // Copies the bundled actions into the runtime dir, then hands that dir to the runtime to deliver.
 export function ensureActionsInstalled(
   srcRepoDir: string,
   outpostRuntimeDir: string,
   deliver: (actionsDir: string) => void,
+  revisions: ActionRevisionsStore,
 ): void {
-  const dstDir = join(outpostRuntimeDir, 'actions');
-  installActions(join(srcRepoDir, 'actions'), dstDir);
-  deliver(dstDir);
+  installActions(srcRepoDir, outpostRuntimeDir, revisions);
+  deliver(join(outpostRuntimeDir, 'actions'));
 }
 
-// Copies bundled actions into ~/.outpost/actions so users can edit them.
-// Real directories are left alone — user edits survive upgrades. Stale symlinks
-// from the old install pattern are replaced with copies.
-function installActions(srcDir: string, dstDir: string): void {
+// Updates untouched bundled copies, keeps user-edited ones, and reports those the repo has moved past.
+function installActions(srcRepoDir: string, runtimeDir: string, revisions: ActionRevisionsStore): void {
+  const srcDir = join(srcRepoDir, 'actions');
+  const dstDir = join(runtimeDir, 'actions');
   mkdirSync(dstDir, { recursive: true });
   if (!existsSync(srcDir)) return;
   installSharedDocs(srcDir, dstDir);
+  const stagingDir = join(runtimeDir, STAGING_DIR);
+  rmSync(stagingDir, { recursive: true, force: true });
+  mkdirSync(stagingDir, { recursive: true });
+  const baselines = { ...readBundleState(runtimeDir).baselines };
+  const editedLocally: string[] = [];
   for (const category of safeReaddir(srcDir)) {
     const srcCat = join(srcDir, category);
     if (!isDir(srcCat)) continue;
@@ -27,23 +36,24 @@ function installActions(srcDir: string, dstDir: string): void {
     for (const name of safeReaddir(srcCat)) {
       const src = join(srcCat, name);
       if (!isDir(src)) continue;
-      const dst = join(dstCat, name);
-      let existing: ReturnType<typeof lstatSync> | null = null;
-      try { existing = lstatSync(dst); } catch { /* missing */ }
-      if (existing) {
-        if (existing.isSymbolicLink()) {
-          try { unlinkSync(dst); } catch { /* tolerate */ }
-        } else {
-          continue;
-        }
-      }
+      const key = `${category}/${name}`;
       try {
-        cpSync(src, dst, { recursive: true });
-        console.log(`[work] installed action: ${dst}`);
+        const outcome = syncAction(src, join(dstCat, name), key, baselines[key], srcRepoDir, stagingDir, revisions);
+        if (outcome === 'edited') {
+          editedLocally.push(`${category}.${name}`);
+          console.log(`[work] action ${key} edited locally — not updated (repo differs)`);
+        } else if (outcome !== 'kept') {
+          baselines[key] = outcome;
+        }
       } catch (e) {
-        console.warn(`[work] could not install action ${category}/${name}: ${(e as Error).message}`);
+        console.warn(`[work] could not install action ${key}: ${(e as Error).message}`);
       }
     }
+  }
+  try {
+    writeBundleState(runtimeDir, { version: 1, baselines, editedLocally });
+  } catch (e) {
+    console.warn(`[work] could not record installed action bundles: ${(e as Error).message}`);
   }
   // NOTE: we intentionally do NOT prune here. ~/.outpost/actions is the authoritative,
   // user-editable store (the registry reads it), so it holds user-authored actions that
@@ -52,6 +62,49 @@ function installActions(srcDir: string, dstDir: string): void {
   // nuking a just-created action on the next ensureActionsInstalled call. Stale *bundled*
   // actions dropped from the repo are handled by the registry's tolerant load + explicit
   // cleanup instead. pruneStaleActions is kept as a manual utility (see its tests).
+}
+
+// Returns the new baseline hash, or 'edited'/'kept' for a user-edited copy with/without a newer bundle.
+function syncAction(
+  src: string,
+  dst: string,
+  key: string,
+  baseline: string | undefined,
+  srcRepoDir: string,
+  stagingDir: string,
+  revisions: ActionRevisionsStore,
+): string | 'edited' | 'kept' {
+  const repoHash = bundleHash(src);
+  let existing: ReturnType<typeof lstatSync> | null = null;
+  try { existing = lstatSync(dst); } catch { /* missing */ }
+  if (existing?.isSymbolicLink()) {
+    unlinkSync(dst);
+    existing = null;
+  }
+  if (!existing) {
+    replaceDir(src, dst, stagingDir);
+    console.log(`[work] installed action: ${dst}`);
+    return repoHash;
+  }
+  const installedHash = bundleHash(dst);
+  // Before the baseline check, so a crash between the swap and the state write re-seeds, not reports.
+  if (installedHash === repoHash) return repoHash;
+  const unedited = baseline ? installedHash === baseline : matchesPastBundle(srcRepoDir, `actions/${key}`, dst);
+  if (!unedited) return baseline === repoHash ? 'kept' : 'edited';
+  const before = readSkillMd(dst);
+  replaceDir(src, dst, stagingDir);
+  console.log(`[work] updated action: ${dst}`);
+  const after = readSkillMd(dst);
+  try {
+    if (after !== undefined) revisions.noteBundleUpdate({ action: key.replace('/', '.'), before, after });
+  } catch (e) {
+    console.warn(`[work] could not record revision for ${key}: ${(e as Error).message}`);
+  }
+  return repoHash;
+}
+
+function readSkillMd(dir: string): string | undefined {
+  try { return readFileSync(join(dir, 'SKILL.md'), 'utf8'); } catch { return undefined; }
 }
 
 // SHARED-*.md are overwritten every boot, unlike actions: no proposal flow edits them,

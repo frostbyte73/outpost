@@ -145,7 +145,10 @@ function rowHtml(item) {
   return `
     <div class="o-row lib-skill-row" data-name="${escapeHtml(item.name)}" role="button" tabindex="0">
       <span class="o-row-icon lib-cat-dot" data-cat="${escapeHtml(item.category)}" aria-hidden="true">●</span>
-      <div class="o-row-title lib-skill-name">${escapeHtml(item.name)}</div>
+      <div class="o-row-title lib-skill-hdr">
+        <span class="lib-skill-name">${escapeHtml(item.name)}</span>
+        ${item.editedLocally ? '<span class="o-pill warn" title="Has local edits, so the newer bundled version wasn\'t installed">edited locally</span>' : ''}
+      </div>
     </div>
   `;
 }

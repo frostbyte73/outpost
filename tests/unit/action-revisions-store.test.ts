@@ -88,6 +88,23 @@ describe('applyWrite drift', () => {
   });
 });
 
+describe('noteBundleUpdate', () => {
+  it('reconciles a drifted head first, so the next apply records no extra drift', () => {
+    const s = store();
+    s.applyWrite({ action: 'read.investigate', dir: actionDir, body: 'A\n', author: 'user' });
+
+    s.noteBundleUpdate({ action: 'read.investigate', before: 'B\n', after: 'C\n' });
+    writeFileSync(join(actionDir, 'SKILL.md'), 'C\n');
+    s.applyWrite({ action: 'read.investigate', dir: actionDir, body: 'D\n', author: 'user' });
+
+    const events = s.listByAction('read.investigate');
+    expect(events.map((e) => [e.kind, e.author])).toEqual([
+      ['applied', 'user'], ['applied', 'system'], ['drifted', 'external'], ['created', 'user'],
+    ]);
+    expect(s.bodyFor(events[2]!.bodySha)).toBe('B\n');
+  });
+});
+
 describe('revert', () => {
   it('appends a forward event and reuses the existing body blob', () => {
     writeFileSync(join(actionDir, 'SKILL.md'), 'v1\n');

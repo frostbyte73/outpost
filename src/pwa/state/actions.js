@@ -10,6 +10,8 @@ const initial = {
   edits: [],
   // Improver revisions a passing eval installed in the last day — the cockpit's cleared tail.
   autoApplied: [],
+  // Bundled actions whose local edits kept a newer repo version from installing.
+  localEdits: [],
   denials: {},
   // sessionId → { verb, at } — live "doing X right now" indicator for the inline
   // action-builder edit card. Updated by action_edit_activity notifications.
@@ -47,6 +49,7 @@ export const actions = {
         skills: j.skills ?? [],
         edits: j.edits ?? [],
         autoApplied: j.autoApplied ?? [],
+        localEdits: j.localEdits ?? [],
         denials: j.denials ?? {},
         loaded: true,
         loading: false,

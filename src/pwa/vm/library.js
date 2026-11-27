@@ -17,6 +17,7 @@ function catalogByName(state) {
 // detail renderers don't need to branch on origin.
 export function skillCatalog(state) {
   const byName = catalogByName(state);
+  const localEdits = new Set(state.localEdits ?? []);
   const fromActions = (state.actions ?? []).map((a) => {
     const cat = byName.get(a.name);
     return {
@@ -29,6 +30,7 @@ export function skillCatalog(state) {
       permissions: cat?.permissions ?? [],
       sideEffects: cat?.side_effects ?? 'none',
       kind: 'action',
+      editedLocally: localEdits.has(a.name),
     };
   });
   const fromSkills = (state.skills ?? []).map((s) => ({
@@ -41,6 +43,7 @@ export function skillCatalog(state) {
     permissions: [],
     sideEffects: 'none',
     kind: 'skill',
+    editedLocally: false,
   }));
   return [...fromActions, ...fromSkills].sort((a, b) => a.name.localeCompare(b.name));
 }

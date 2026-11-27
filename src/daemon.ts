@@ -342,7 +342,8 @@ async function main() {
   // reads it — user-modified action dirs are left alone, so LiveKit-specific edits
   // survive upgrades and never touch the repo. The registry is rooted at this live
   // copy (NOT the repo) so user-authored/edited actions actually reach the catalog.
-  try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions); }
+  const actionRevisionsStore = new ActionRevisionsStore(join(RUNTIME_DIR, 'action-revisions'));
+  try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions, actionRevisionsStore); }
   catch (e) { console.warn(`[work] seeding actions failed: ${(e as Error).message}`); }
   const actionRegistry = new ActionRegistry(outpostActionsDir, {
     permissionGroups,
@@ -533,7 +534,7 @@ async function main() {
       const kind = manager.getKind(sessionId);
       if (kind === 'action-edit' || kind === 'skill-edit') {
         if (kind === 'action-edit') {
-          try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions); }
+          try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions, actionRevisionsStore); }
           catch (e) { console.warn(`[work] post-edit re-symlink failed: ${(e as Error).message}`); }
           // Drop any action-edit tracking entry so the card stops showing a "review"
           // pill against a dead session. If the user already approved, the entry was
@@ -611,7 +612,6 @@ async function main() {
   const usageLedger = new UsageLedger(join(RUNTIME_DIR, 'usage-ledger.json'));
   const actionRunsStore = new ActionRunsStore(join(RUNTIME_DIR, 'action-runs.jsonl'));
   const denialsStore = new DenialsStore(join(RUNTIME_DIR, 'denials.json'));
-  const actionRevisionsStore = new ActionRevisionsStore(join(RUNTIME_DIR, 'action-revisions'));
   const groupRevisions = new PermissionGroupRevisionsStore(
     join(RUNTIME_DIR, 'permission-group-revisions.jsonl'));
   const runBlobs = new BlobStore(join(RUNTIME_DIR, 'run-snapshots', 'blobs'));
@@ -632,7 +632,7 @@ async function main() {
     }
   })();
   const reloadActions = () => {
-    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions); } catch { /* tolerate */ }
+    try { ensureActionsInstalled(bundledRepoDir(SRC_DIR), RUNTIME_DIR, deliverActions, actionRevisionsStore); } catch { /* tolerate */ }
     try { actionRegistry.load(); } catch (e) { console.warn(`[action-revert] registry reload failed: ${(e as Error).message}`); }
   };
   const actionRunLedger = new ActionRunLedger({

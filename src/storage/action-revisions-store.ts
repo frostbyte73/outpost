@@ -16,8 +16,9 @@ import { join } from 'node:path';
 // The body-changing events for one action form a contiguous chain — each event's "before" is
 // the previous chain entry's body, never a separately stored copy. applyWrite holds that
 // invariant by recording a `drifted` event whenever the on-disk text doesn't match the chain
-// head, which is what turns writes the daemon didn't make (actions/install.ts' cpSync reseed, a
-// hand edit, a worktree/runtime desync) into visible history rather than silent holes.
+// head, which is what turns writes the daemon didn't make (a hand edit, a worktree/runtime
+// desync) into visible history rather than silent holes. Bundled-action updates arrive through
+// noteBundleUpdate instead.
 
 export type ActionEventKind =
   | 'created'
@@ -203,18 +204,13 @@ export class ActionRevisionsStore {
     return event;
   }
 
-  // The only sanctioned way to change an action's SKILL.md.
-  applyWrite(input: ApplyWriteInput): ActionEvent {
-    const { action, dir, body, kind, ...meta } = input;
+  // Records genesis or drift so the head matches onDisk; returns the prior head (undefined if none).
+  private reconcileHead(action: string, onDisk: string | undefined): ActionEvent | undefined {
     const chain = this.chainOf(action);
     const last = chain[chain.length - 1];
     // A deleted action starts a fresh chain — recreating it is a `created`, not drift off the
     // body it had before deletion.
     const head = last && last.kind !== 'deleted' ? last : undefined;
-    const onDisk = readSkillMd(dir);
-
-    // Genesis and drift describe on-disk state already observed, so they hold whether or not
-    // the write below then succeeds. A failed write leaves no phantom `applied`.
     if (!head) {
       if (onDisk !== undefined) {
         this.record({
@@ -225,12 +221,32 @@ export class ActionRevisionsStore {
     } else if (this.bodyFor(head.bodySha) !== onDisk) {
       this.record({ action, kind: 'drifted', author: 'external', body: onDisk ?? '' });
     }
+    return head;
+  }
+
+  // The only sanctioned way to change an action's SKILL.md.
+  applyWrite(input: ApplyWriteInput): ActionEvent {
+    const { action, dir, body, kind, ...meta } = input;
+    const onDisk = readSkillMd(dir);
+    // Genesis and drift describe on-disk state already observed, so they hold whether or not
+    // the write below then succeeds. A failed write leaves no phantom `applied`.
+    const head = this.reconcileHead(action, onDisk);
 
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'SKILL.md'), body);
 
     const terminal: ActionEventKind = kind ?? (!head && onDisk === undefined ? 'created' : 'applied');
     return this.record({ ...meta, action, kind: terminal, body });
+  }
+
+  // A newer bundled copy was installed; `system` keeps it from reading as a user edit.
+  noteBundleUpdate(input: { action: string; before: string | undefined; after: string }): ActionEvent | undefined {
+    if (input.before === input.after) return undefined;
+    this.reconcileHead(input.action, input.before);
+    return this.record({
+      action: input.action, kind: 'applied', author: 'system', body: input.after,
+      rationale: 'bundled action updated from repo',
+    });
   }
 
   noteDeleted(action: string, dir: string): ActionEvent | undefined {

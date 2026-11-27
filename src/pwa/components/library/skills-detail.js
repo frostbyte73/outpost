@@ -163,6 +163,7 @@ function skillHtml(item, libState, state, edit) {
       </div>
     </header>
 
+    ${item.editedLocally ? '<p class="lib-detail-desc">Your copy has local edits, so the newer bundled version wasn\'t installed.</p>' : ''}
     ${edit ? editCardHtml(edit, state) : ''}
     ${denialsSectionHtml(item, state)}
 
