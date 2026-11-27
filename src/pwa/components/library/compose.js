@@ -14,6 +14,9 @@ const CATEGORIES = [
   { id: 'write', label: 'write — external mutations' },
   { id: 'code', label: 'code — repo edits, scripts, tools' },
   { id: 'meta', label: 'meta — plans, orchestration' },
+  { id: 'design', label: 'design — visual/UX language' },
+  { id: 'arch', label: 'arch — architecture & spikes' },
+  { id: 'project', label: 'project — shaping, requirements, roadmap' },
 ];
 
 export function renderComposeForm(mount, opts = {}) {

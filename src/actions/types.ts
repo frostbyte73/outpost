@@ -3,7 +3,7 @@
 
 import type { RuntimeId } from '../runtime/types.js';
 
-export type ActionCategory = 'read' | 'write' | 'code' | 'meta';
+export type ActionCategory = 'read' | 'write' | 'code' | 'meta' | 'design' | 'arch' | 'project';
 export type SideEffects = 'none' | 'gated-write' | 'worktree-edit' | 'external-write';
 export type ActionRunner = 'claude' | 'builtin';
 // 'step-orchestrator' marks a controller: an action that owns an orchestrated step

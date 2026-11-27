@@ -53,4 +53,4 @@ Backend is clustered by concern under `src/`; nothing new goes at the root.
 | `src/git/` | worktrees, git plumbing, diff parsing |
 | `src/storage/` | persisted stores (all atomic-rename) |
 | `src/pwa/` | the static client — plain ES modules, no bundler. `src/pwa/DESIGN.md` is its own orientation doc. |
-| `actions/` | the shipped action catalog (`read` / `write` / `code` / `meta`) |
+| `actions/` | the shipped action catalog (`read` / `write` / `code` / `meta` / `design` / `arch` / `project`) |

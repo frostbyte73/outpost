@@ -203,12 +203,15 @@
    category means the same thing wherever it appears. Declared once here as
    --cat-fg / --cat-bg so every consumer (the Library's list dots + detail
    badge, the plan's type chips) tints from the same source and can't drift. */
-[data-cat="read"]   { --cat-fg: var(--accent);    --cat-bg: var(--accent-soft); }
-[data-cat="write"]  { --cat-fg: var(--warn);      --cat-bg: var(--warn-soft); }
-[data-cat="code"]   { --cat-fg: var(--accent-2);  --cat-bg: var(--accent-2-soft); }
-[data-cat="human"]  { --cat-fg: var(--ok);        --cat-bg: var(--ok-soft); }
-[data-cat="meta"]   { --cat-fg: var(--text-mute); --cat-bg: var(--bg-elev-2); }
-[data-cat="custom"] { --cat-fg: var(--text-dim);  --cat-bg: var(--bg-elev-2); }
+[data-cat="read"]    { --cat-fg: var(--accent);    --cat-bg: var(--accent-soft); }
+[data-cat="write"]   { --cat-fg: var(--warn);      --cat-bg: var(--warn-soft); }
+[data-cat="code"]    { --cat-fg: var(--accent-2);  --cat-bg: var(--accent-2-soft); }
+[data-cat="human"]   { --cat-fg: var(--ok);        --cat-bg: var(--ok-soft); }
+[data-cat="meta"]    { --cat-fg: var(--text-mute); --cat-bg: var(--bg-elev-2); }
+[data-cat="design"]  { --cat-fg: var(--accent-2);  --cat-bg: var(--bg-elev-2); }
+[data-cat="arch"]    { --cat-fg: var(--text);      --cat-bg: var(--bg-elev-2); }
+[data-cat="project"] { --cat-fg: var(--ok);        --cat-bg: var(--bg-elev-2); }
+[data-cat="custom"]  { --cat-fg: var(--text-dim);  --cat-bg: var(--bg-elev-2); }
 
 .o-badge {
   display: inline-flex;

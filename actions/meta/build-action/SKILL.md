@@ -44,7 +44,7 @@ Envelope shape:
 | `mode` | `"new"` (scaffold a new action) or `"edit"` (revise an existing one). |
 | `actionName` | The existing action's name (edit mode). `null` for new mode. |
 | `proposedName` | New mode only — the user's chosen name (kebab-case). Honor it unless it's invalid (then pick a corrected name and explain why). |
-| `proposedCategory` | New mode only — the user's chosen category (`read`/`write`/`code`/`meta`), if they picked one. Honor it; otherwise choose the closest fit yourself. |
+| `proposedCategory` | New mode only — the user's chosen category (`read`/`write`/`code`/`meta`/`design`/`arch`/`project`), if they picked one. Honor it; otherwise choose the closest fit yourself. |
 | `actionDir` | Absolute path to the action's directory (edit mode). |
 | `actionsDir` | Absolute path to the parent actions directory (new mode). |
 | `skillMdBefore` | Current `SKILL.md` text (edit mode). Empty for new mode. |
@@ -91,18 +91,20 @@ name: <category>.<rest>      # must match the directory derivation actions/<cate
 description: <one paragraph> # what the orchestrator reads — describe trigger conditions
 outpost:
   kind: action
-  category: <one of: read, write, code, meta>
+  category: <one of: read, write, code, meta, design, arch, project>
   side_effects: <one of: none, gated-write, worktree-edit, external-write>
   runner: <claude or builtin>
 ---
 ```
 
-`category` MUST be exactly one of `read | write | code | meta` — these are the
-only categories the registry accepts, and they double as the on-disk directory
-(`actions/<category>/<rest>/`). Never invent a new category (e.g. `script`,
-`analyze`, `human`); the daemon rejects any action whose name isn't
-`<read|write|code|meta>.<kebab-slug>`. Pick the closest fit: a script/tool
-runner is `code`, an investigation is `read`, an external mutation is `write`.
+`category` MUST be exactly one of `read | write | code | meta | design | arch |
+project` — these are the only categories the registry accepts, and they double as
+the on-disk directory (`actions/<category>/<rest>/`). Never invent a new category
+(e.g. `script`, `analyze`, `human`); the daemon rejects any action whose name isn't
+`<read|write|code|meta|design|arch|project>.<kebab-slug>`. Pick the closest fit: a
+script/tool runner is `code`, an investigation is `read`, an external mutation is
+`write`, a visual/UX-language action is `design`, an architecture or spike action is
+`arch`, and a shaping, requirements or roadmap action is `project`.
 
 The `description` is the orchestrator's only signal for picking this action. Lead
 with the trigger ("Use when…"), then say what the action produces.
@@ -114,8 +116,9 @@ For **new** mode, scaffold a complete `SKILL.md` from scratch. If the envelope
 includes `proposedName`, use it verbatim (it's what the user typed in the PWA's
 new-action form). Otherwise pick a kebab-case name that matches the user's
 intent. If the envelope includes `proposedCategory`, use it as the category;
-otherwise choose the closest fit from `read | write | code | meta`. The final
-`name:` is always `<category>.<rest>`. Mirror the structure of a reference action.
+otherwise choose the closest fit from `read | write | code | meta | design |
+arch | project`. The final `name:` is always `<category>.<rest>`. Mirror the
+structure of a reference action.
 
 ## Step 4 — Draft allowlist additions
 

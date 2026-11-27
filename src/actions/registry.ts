@@ -9,7 +9,7 @@ import type {
 import { assertNotWriteShaped } from '../permissions/write-shape.js';
 import { isRuntimeId, RUNTIME_ID_HINT } from '../runtime/types.js';
 
-export const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta'];
+export const ACTION_CATEGORIES: readonly ActionCategory[] = ['read','write','code','meta','design','arch','project'];
 // Groups whose grants mean "may propose this write for approval", not "may run it".
 export const GATED_GROUPS: ReadonlySet<string> = new Set(['push']);
 const KINDS: readonly ActionKind[] = ['action','step-orchestrator'];

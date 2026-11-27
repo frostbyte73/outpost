@@ -7,6 +7,9 @@ const ICONS = {
   code: `<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 5L1.5 9L6 13"/><path d="M12 5L16.5 9L12 13"/></svg>`,
   human: `<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="6" r="2.5"/><path d="M3 16c0-3 2.5-5.5 6-5.5s6 2.5 6 5.5"/></svg>`,
   meta: `<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5L16.5 5.5L9 9.5L1.5 5.5L9 1.5z"/><path d="M1.5 9L9 13L16.5 9"/><path d="M1.5 12.5L9 16.5L16.5 12.5"/></svg>`,
+  design: `<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 1.5L14 7L9 16.5L4 7L9 1.5z"/><path d="M9 16.5V9"/><circle cx="9" cy="7.5" r="1.3"/></svg>`,
+  arch: `<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 6L9 2L16.5 6"/><path d="M1.5 16.5H16.5"/><path d="M4 8V14"/><path d="M9 8V14"/><path d="M14 8V14"/></svg>`,
+  project: `<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 16.5V1.5"/><path d="M3.5 2.5H14.5L12 6L14.5 9.5H3.5"/></svg>`,
 };
 
 const FALLBACK = `<svg viewBox="0 0 18 18" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><circle cx="9" cy="9" r="3.5"/></svg>`;

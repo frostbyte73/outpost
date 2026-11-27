@@ -4,7 +4,7 @@
 
 Three primitives; everything else is detail.
 
-- **action** — one atomic unit of work: a `SKILL.md` plus input/output schemas, under `actions/<category>/<name>/`. Categories are `read`, `write`, `code`, `meta`.
+- **action** — one atomic unit of work: a `SKILL.md` plus input/output schemas, under `actions/<category>/<name>/`. Categories are `read`, `write`, `code`, `meta`, `design`, `arch`, `project`.
 - **job** — a running unit of work with an editable plan and a history. Goes `planning → plan_pending_review → executing → done`.
 - **step** — one row of a plan. Either a plain **action** step (spawn a session for one named action, take its output, settle) or an **orchestrated** step, where a *controller* action owns the step end to end and decides its own next move each turn — that's how a PR gets shepherded from spec through merge.
 
