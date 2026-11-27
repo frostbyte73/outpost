@@ -1,6 +1,6 @@
 ---
 name: meta.orchestrate
-description: Use when invoked as `/meta.orchestrate` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set and the envelope's `kind` is `orchestrator`. The top-level orchestrator for Outpost jobs — reads the envelope, categorizes the job (single code change, multi-repo project, investigation, code review, operational task), investigates the job inline to ground its decisions, records a `findings` artifact on the plan, and POSTs a grounded, ordered, typed plan to the daemon in one pass. The plan may still be intentionally partial where later steps depend on findings only execution can produce. Read-only — no Edit/Write/Bash modifications.
+description: Use when invoked as `/meta.orchestrate` in a session spawned by the Outpost work orchestrator, or whenever `$OUTPOST_ENVELOPE` is set and the envelope's `kind` is `orchestrator`. The top-level orchestrator for Outpost jobs — reads the envelope, categorizes the job (single code change, multi-repo change, project, investigation, code review, operational task), investigates the job inline to ground its decisions, records a `findings` artifact on the plan, and POSTs a grounded, ordered, typed plan to the daemon in one pass. The plan may still be intentionally partial where later steps depend on findings only execution can produce. Read-only — no Edit/Write/Bash modifications.
 outpost:
   kind: action
   category: meta
@@ -73,6 +73,19 @@ step's findings.
    new follow-up steps the findings unlocked. This routes through the user's
    plan-approval before anything new runs.
 
+**Project jobs** (see *Project jobs* below) take step 3 at two known points:
+
+- A `project.shape` step resolved with a non-empty `clarifications` in its output → replan:
+  keep every step, and insert ahead of `project.requirements` a manual `meta.wait` whose
+  `reason` lists the questions verbatim and asks for the answers in the resume note, then a
+  second `project.shape` with the same `idea` and `slug` (leave `answers` unset — they arrive
+  through the wait's resume note). Repeat while a shape run still returns clarifications.
+- The step landing the project folder resolved (merged) → replan: keep every step by
+  `keepId` and append the milestone steps exactly as *Project jobs* → "Ready" describes
+  (acceptance IDs in `goal`, holds between milestones, the appended Repo/folder/Acceptance
+  line), built from the `project.decompose` output's `milestones[]` (in `currentSteps`, or `jq` it out of `jobFile`). It matches the merged
+  `roadmap.md`, because the landing wrote it byte for byte.
+
 Load `submit_continue` alongside the others:
 ```
 ToolSearch({ query: "select:mcp__outpost__submit_continue,mcp__outpost__submit_plan,mcp__outpost__submit_journal", max_results: 3 })
@@ -135,7 +148,10 @@ Linear MCP tools work too if you have them — probe via `ToolSearch` first.
 Before composing steps, name the category out loud (you'll print this in Step 6 for the user). The category drives the shape and scope of the plan:
 
 - **Single code change** — one bug fix, one small feature in one repo. → typically one `orchestrated` step with `controller: "code.orchestrate-pr"`. No preamble.
-- **Multi-repo project** — schema/proto change with consumers, or a feature touching service + cloud + dashboard. → multiple `orchestrated` PR steps, sometimes with `parallelGroup` when truly independent. Consider whether an investigation step is needed first to map the blast radius.
+- **Multi-repo change** — schema/proto change with consumers, or a feature touching service + cloud + dashboard. → multiple `orchestrated` PR steps, sometimes with `parallelGroup` when truly independent. Consider whether an investigation step is needed first to map the blast radius.
+- **Project** — a whole product, game, app or multi-feature set built from an idea ("make a video game, here's my idea"), with no single ticket-sized change to make; **or** a job that explicitly asks to start or continue a project folder (`docs/projects/<slug>/`) and is not itself one of its milestones. → shaping steps or `meta.job` milestones, never product code directly; see **Project jobs** below.
+  - **Never a project:** a bug fix, a single feature, a Linear ticket describing one change, a refactor, a dependency bump, a review, an operational task — however big the repo or the ticket's prose. When in doubt, it is not one: turning a bug fix into four stories is the failure this category must never cause, so a one-ticket job keeps the short path above, with no shaping and no folder.
+  - **A milestone job** — its title starts with a milestone ID (`M2 — …`), or its brief says it is a milestone of `docs/projects/<slug>/` — plans as an ordinary job, reading the folder files its brief names.
 - **Staged rollout / infra-as-code** — anything that ships through a repo where merging the PR *is* the deploy (a GitOps config repo, helm charts, Terraform, k8s manifests). → one `orchestrated` PR step **per ring** (staging → canary → prod). Between rings: `read.investigate` produces the health verdict (DD metrics, error rates, restart counts), then `meta.wait` holds the job so the user can *promote* given those findings (resume) or halt (abandon). The deploys themselves are `orchestrated` PR steps; never collapse "open the PR" or "check health" into a `meta.wait`.
 - **Investigation (root-cause unknown)** — a page, a customer-reported symptom, "find what's dropping requests". → investigate inline (Step 4), record what you found in the `findings` artifact on `submit_plan`, and emit the fix/comm steps your findings now ground. Only emit a standalone `read.investigate` step when the investigation must run *during execution* (e.g. a health check between deploy rings) or when a tracked, re-runnable investigation is the deliverable itself.
 - **Investigation with likely follow-up** — same as above and you're confident a fix or comm will follow. Do the investigation inline, capture it in `findings`, and emit the grounded follow-up steps in the same pass — you now have the findings that let you shape them.
@@ -167,6 +183,41 @@ Use the absolute paths from the registered-projects list. If a repo is on disk b
 **Propose pre-approvals only for plainly routine PR steps.** An orchestrated PR step may carry `proposedPreapprovals` — `{spec?: "gate"|"auto"|"skip", push?, openPr?, replies?, merge?, syncBase?, rerunCi?, landing?: "merged"|"approved"|"direct"}`. It is a proposal: the user sees it at plan review, edits it, and only their approval makes it real; on a plan the user pre-approved, it is clamped to the job's own settings and can only make a step stricter. Propose one when the change is mechanical — a dependency bump, a generated-file refresh, a rename the ticket fully specifies — and propose the narrowest set that removes the clicks the user would rubber-stamp (typically `spec: "skip"`, `push`, `openPr`). Never propose `merge` or `landing: "direct"` unless the job description asks for it, and propose nothing for a change that needs design judgment.
 
 **Code review steps resolve the repo from the PR URL, not the ticket prose.** Parse `owner/repo` out of the `https://github.com/<owner>/<repo>/pull/<n>` URL and match it (case-insensitive) against the registered-projects list above. Matched → use that path as `repoCwd`. Unmatched but resolvable (`gh repo view <owner>/<repo>` succeeds) → prepend a `write.add-project` step ahead of the review step, with `inputs: { "repo": "<owner>/<repo>", "dest": "<parent>/<repo>" }` where `<parent>` is the directory hosting the most registered projects (the same convention `write.add-project` itself falls back to; use `$HOME/<owner>/<repo>` if the registry is empty) — pick the path yourself so the review step's `workspace.repoCwd` can point at that exact `dest`. Genuinely unresolvable (a private repo you have no access to, an `owner/repo` that 404s) → keep the existing fallback: don't emit the step, mention it in your final stdout message.
+
+## Project jobs
+
+Only for the **Project** category. Read `cat ~/.outpost/actions/SHARED-project-folder.md` first: it defines the folder, `features.json`, and how the `project.*` actions' `files[]` outputs land.
+
+**Repo and slug.** A registered repo → its path. An existing GitHub repo not on disk → `write.add-project` first (Step 3). No repo yet → `write.create-repo` first, with `inputs.name` and an explicit `inputs.dest` picked by the same parent-directory rule `write.add-project` uses, so later steps' `workspace.repoCwd` can name that path; leave `visibility` at `private` unless the job asks for public. The slug is the one the job names, else a short kebab-case one; one repo can hold several projects, so check `docs/projects/` on the fresh base for an existing match before inventing one.
+
+**Read the folder from the fresh base** (`git fetch origin`, then `git show origin/<base>:docs/projects/<slug>/<file>`, per Step 4a). It is ready to build from when `brief.md`, `features.json` and `roadmap.md` all exist; `progress.md` says which milestones have landed. A repo this plan creates with `write.create-repo` has no folder yet: start at `project.shape` without reading anything.
+
+**Not ready → plan the shaping chain, and stop there.** Start at the first missing file: `project.shape` (`inputs: {idea: <the job's own words>, slug, context}`) → `project.requirements` (`{slug}`) → `project.decompose` (`{slug}`) → one step that lands the folder. The `project.*` steps take `workspace: {"kind":"readonly","repoCwd":<repo>}` and keep `forwardOutput` at its default `true` — the landing step reads their outputs. Emit no milestones yet; step-review adds them once the folder lands (see Step-review mode).
+
+```jsonc
+{
+  "type": "orchestrated",
+  "controller": "code.orchestrate-pr",
+  "title": "Land docs/projects/<slug>/",
+  "goal": "The project folder from the shaping steps is merged.",
+  "inputs": {
+    "approach": "Write every `files[]` entry from the `project.*` outputs in `previousSteps` to its `path`, byte for byte — no rewording, no reformatting; when two outputs name the same path, the later one wins (see `~/.outpost/actions/SHARED-project-folder.md`). Change nothing else."
+  },
+  "proposedPreapprovals": { "spec": "skip", "push": true, "openPr": true },
+  "workspace": { "kind": "writable", "repoCwd": "<repo>", "branch": "docs/project-<slug>" }
+}
+```
+
+**Ready → one `meta.job` per remaining milestone.** For each milestone in `roadmap.md` that `progress.md` doesn't record as landed and that isn't marked dropped, in `Depends on` order, emit:
+
+- a `meta.job` step with `inputs: {title: <the milestone title, which starts with its ID>, brief: <its brief from roadmap.md, verbatim>}`, a `goal` naming its acceptance feature IDs, and `workspace: {"kind":"none"}`;
+- then, unless it is the last milestone, a manual `meta.wait` (no `duration_sec`), `reason` "M<n> landed — check it before the next milestone starts", `workspace: {"kind":"readonly","repoCwd":<repo>}`.
+
+A child's planner sees only its brief. Append one line with whichever of these the brief lacks — `Repo: <owner>/<name> (<abs path>). Project folder: docs/projects/<slug>/. Acceptance: F-003, F-004.` — and otherwise leave it as written.
+
+**Trace every milestone to feature IDs.** Each milestone step names its IDs; shaping steps are exempt, because the IDs don't exist yet. Put the milestone → feature mapping and the folder files you read in `findings`. A feature not marked dropped that no milestone covers is a `risks` line, not something to patch here.
+
+**No product code in a project plan.** Building is the milestone jobs' work.
 
 ## Step 4 — Investigate to confidence
 
@@ -322,7 +373,7 @@ Example replan `submit_plan` payload:
 
 ## Step 6 — Print a preview, then POST immediately
 
-Print the plan in the chat as readable markdown so the spawn log shows what you composed. Lead with one line naming the **category** you chose ("This looks like a multi-repo project — proto change in `protocol` plus two consumers", or "Treating as an investigation — root cause isn't obvious from the ticket"). Then one block per step with type, title, the per-type fields, and any risks.
+Print the plan in the chat as readable markdown so the spawn log shows what you composed. Lead with one line naming the **category** you chose ("This looks like a multi-repo change — proto change in `protocol` plus two consumers", or "Treating as an investigation — root cause isn't obvious from the ticket"). Then one block per step with type, title, the per-type fields, and any risks.
 
 If `mode === "replan"`, explicitly call out the deltas from `currentSteps` — "Keeping step 1 (investigate), adding step 2 (PR step in server), dropping step 3 (no longer needed since findings show the dashboard isn't affected)."
 

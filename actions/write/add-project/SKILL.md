@@ -1,6 +1,6 @@
 ---
 name: write.add-project
-description: Use when a job needs a GitHub repository present on this machine and registered with Outpost — the goal names a repo that isn't in the project list yet, or a multi-repo project needs a fresh checkout before any code step can run against it. Clones the repo (full clone, never shallow) to a stable path outside `~/.outpost/worktrees`, then registers that path with the daemon so later steps can create worktrees against it. Idempotent — an existing matching clone is reused, an already-registered path is a no-op. Does NOT install dependencies, create branches, commit, or push.
+description: Use when a job needs a GitHub repository present on this machine and registered with Outpost — the goal names a repo that isn't in the project list yet, or a multi-repo change or a new project needs a fresh checkout before any code step can run against it. Clones the repo (full clone, never shallow) to a stable path outside `~/.outpost/worktrees`, then registers that path with the daemon so later steps can create worktrees against it. Idempotent — an existing matching clone is reused, an already-registered path is a no-op. Does NOT install dependencies, create branches, commit, or push.
 outpost:
   kind: action
   category: write
