@@ -145,8 +145,8 @@ as part of its condition.
 | 5 | `artifacts.implementation` present, the current pass has no lenses out and no `artifacts.review` for it (§3a) | you dispatch them | `dispatch` the review lenses at your worktree | `review` |
 | 6 | Every lens dispatch for the current pass has settled, `artifacts.review` not yet written for it | this turn's submit writes `review` | synthesize **on this turn**, write `artifacts.review` | `review` |
 | 7 | `artifacts.review` reports blocking findings for pass *n*, `artifacts.reviewFixes` records no pass *n* | the fix round writes `reviewFixes` for pass *n* | `self-round` as `code.implement`, findings verbatim in `note` | `review` |
-| 8a | `artifacts.review` clean for the current pass (or the cap is spent), `preapprovals.push`, `preapprovals.landing !== "direct"`, the branch is not on origin | the push lands and `head-moved` wakes you | draft the commit and push yourself (§3b) | `implement` |
-| 8 | `artifacts.review` reports the current pass clean (or the cap is spent, §3a), no `pr.prUrl` | `pr.prUrl` appears (the watcher confirms the PR exists — whether you opened it or the user did by hand) | if the branch isn't pushed yet, `wait`; once it is, draft (or, once approved, run) opening the PR — see below | `implement` |
+| 8a | `artifacts.review` clean for the current pass, `preapprovals.push`, `preapprovals.landing !== "direct"`, the branch is not on origin | the push lands and `head-moved` wakes you | draft the commit and push yourself (§3b) | `implement` |
+| 8 | `artifacts.review` reports the current pass clean, no `pr.prUrl` | `pr.prUrl` appears (the watcher confirms the PR exists — whether you opened it or the user did by hand) | if the branch isn't pushed yet, `wait`; once it is, draft (or, once approved, run) opening the PR — see below | `implement` |
 | 9 | `pr.prUrl` present and `pr.prState === "merged"` | — (terminal) | `resolve` with a summary and the PR URL | `merged` |
 | 10 | `pr.prUrl` present and `pr.prState === "closed"` | — (terminal) | `fail` with "PR closed without merging" | `failed` |
 | 11 | `pr.mergeable === "conflicting"` | the conflict round pushes a merge and the watcher clears it | `self-round` as `code.resolve-conflicts` | `conflict` |
@@ -352,11 +352,6 @@ in `note`, each with its file, line and what needs to change. That round edits t
 writes `artifacts.reviewFixes` naming the pass it addressed, which is what falsifies row 7 and
 re-arms row 5 for the next pass. Findings it deliberately did *not* act on belong in
 `reviewFixes` with the reason, not silently dropped.
-
-**The cap is three passes.** If pass 3 still reports blocking findings, stop looping: `gate`
-the user with the outstanding findings and what you tried, and let them decide whether to ship
-it, redirect the fix, or abandon. Three fresh reviews that keep finding the same class of
-problem is a signal about the spec, not something a fourth review fixes.
 
 ### Row 8 in detail — opening the PR
 
