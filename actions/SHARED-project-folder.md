@@ -19,7 +19,7 @@ band, and never keep a fact a later job needs anywhere else.
 | `architecture.md` | Components, data flow, key interfaces and where each lives. | ≤ ~150 lines | `arch.*` |
 | `decisions/NNNN-<slug>.md` | One ADR per decision: context, decision, consequences. | ≤ ~40 lines each | whoever decides |
 | `roadmap.md` | Milestones as a dependency graph, each with a standalone `meta.job` brief and its acceptance feature IDs. | ≤ ~1 screen per milestone | `project.decompose` |
-| `progress.md` | Append-only log: date, milestone, what landed (PR link), what's next. | one short entry per landing | each milestone |
+| `progress.md` | Append-only log: date, milestone ID (e.g. `M2`), what landed (PR link), what's next. | one short entry per landing | each milestone |
 
 Budgets are ceilings, not targets. A document nobody reads is worse than a short one.
 
@@ -42,8 +42,10 @@ Budgets are ceilings, not targets. A document nobody reads is worse than a short
 ]
 ```
 
-- `id` is stable and never reused, even after a feature is dropped. Plan steps and roadmap
-  milestones trace to these IDs.
+- `id` is stable and never reused. Plan steps and roadmap milestones trace to these IDs.
+- `dropped` is optional: `true` on a feature the project no longer wants, absent otherwise. A
+  dropped feature is never deleted, so the highest ID ever issued is always visible and the
+  next one can't repeat it.
 - `category` is a free-form grouping within the project, not an action category.
 - `steps` are end-to-end test steps a person (or a browser driver) could follow.
 
@@ -52,7 +54,25 @@ only with end-to-end evidence cited in its PR. Every other action writes `passes
 leaves it there — including an implementer certain the feature works. Self-reported
 completion is exactly what this field exists not to trust.
 
+## How the folder lands
+
+The `project.*` actions are read-only. None of them edits the tree: each returns the files it
+wrote as its step output, and a later `code.orchestrate-pr` step commits them.
+
+- The `output` passed to `submit_step_output` is a JSON string:
+  `{"slug": "<slug>", "files": [{"path": "docs/projects/<slug>/brief.md", "content": "…"}], "summary": "<1–3 lines>", …}`.
+  `path` is relative to the repo root and always under `docs/projects/<slug>/`; `content` is
+  the whole file, never a diff.
+- The step that commits them writes every `files[]` entry **byte for byte** — no rewording,
+  no reformatting. When two earlier steps emitted the same path, the later step wins.
+- **The newest copy of a folder file** is the latest `previousSteps[].output` `files[]` entry
+  for that path; only without one is it the file in the checkout. A chain like shape →
+  requirements → decompose runs before anything is committed, so the checkout is stale.
+
 ## When a file is missing
 
 An action that needs a file the folder doesn't have says so — in its output, or as
-`[NEEDS CLARIFICATION]` in the document it writes — rather than inventing the content.
+`[NEEDS CLARIFICATION]` in the document it writes — rather than inventing the content. When
+the missing file is one the action requires as input (`brief.md` for `project.requirements`;
+`brief.md` and `features.json` for `project.decompose`), it fails the step with
+`submit_step_failed`, naming the path.

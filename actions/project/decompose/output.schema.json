@@ -1,0 +1,40 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "project.decompose output",
+  "description": "Submitted as a JSON string. A later code.orchestrate-pr step writes files[] verbatim (SHARED-project-folder.md); each milestones[] entry becomes a meta.job step.",
+  "type": "object",
+  "required": ["slug", "files", "summary", "milestones"],
+  "properties": {
+    "slug": { "type": "string" },
+    "files": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["path", "content"],
+        "properties": {
+          "path": { "type": "string", "pattern": "^docs/projects/[a-z0-9]+(-[a-z0-9]+)*/[^/.][^/]*(/[^/.][^/]*)*$", "description": "Repo-relative, under docs/projects/<slug>/." },
+          "content": { "type": "string", "description": "The whole file." }
+        },
+        "additionalProperties": false
+      }
+    },
+    "summary": { "type": "string" },
+    "milestones": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "dependsOn", "acceptance", "brief"],
+        "properties": {
+          "id": { "type": "string", "description": "M1, M2, … — stable across re-decompositions." },
+          "title": { "type": "string", "minLength": 1, "description": "Becomes the meta.job step's inputs.title." },
+          "dependsOn": { "type": "array", "items": { "type": "string" }, "description": "Milestone ids that must land first." },
+          "acceptance": { "type": "array", "items": { "type": "string" }, "description": "features.json ids this milestone must pass." },
+          "brief": { "type": "string", "minLength": 1, "description": "Becomes the meta.job step's inputs.brief: Goal, Scope, Out of scope, Read first, Done when." }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}
