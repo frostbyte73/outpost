@@ -124,47 +124,50 @@
   {
     "id": "F-011",
     "category": "hardening",
-    "description": "Resuming a parked wait from the job's step card (work/step-card.js) offers a note field, and the typed note is sent with the resume.",
+    "description": "Marking a meta.session Done from the job's step card (work/step-card.js) offers a note field, and the typed note is sent with Done, on desktop and mobile.",
     "steps": [
-      "Park a job on a meta.wait",
-      "Open the job; the waiting step's card shows a note field beside Resume",
-      "Type 'Audience is me; budget two weekends' and click Resume",
-      "The step settles as resumed and its output shows the note"
+      "Run a job to a meta.session step",
+      "Open the job; the session step's card shows a note field beside Done",
+      "Type 'Audience is me; budget two weekends' and click Done",
+      "The step resolves with output {resumed_by: \"user\", note} carrying that text",
+      "Repeat on mobile: the pushed job screen shows the same field and Done sends the note"
     ],
     "passes": false
   },
   {
     "id": "F-012",
     "category": "hardening",
-    "description": "Resuming a parked wait from the cockpit board (cockpit/bodies.js) offers a note field, and the typed note is sent with the resume.",
+    "description": "Marking a meta.session Done from the desktop cockpit board (cockpit/bodies.js) offers a note field, and the typed note is sent with Done. Desktop only: mobile mounts the inbox, whose rows open the job, where the step card's field (F-011) carries the note.",
     "steps": [
-      "Park a job on a meta.wait",
-      "Open the cockpit; the waiting item shows a note field beside Resume",
-      "Type a note and click Resume",
-      "The step settles as resumed and its output shows the note"
+      "Run a job to a meta.session step",
+      "Open the cockpit on desktop; the session item shows a note field beside Done",
+      "Type a note and click Done",
+      "The step resolves with output {resumed_by: \"user\", note} carrying that text"
     ],
     "passes": false
   },
   {
     "id": "F-013",
     "category": "hardening",
-    "description": "Resuming a parked wait from the tracked focus rail (tracked/focus-rail.js) offers a note field, and the typed note is sent with the resume.",
+    "description": "Marking a meta.session Done from the tracked focus rail (tracked/focus-rail.js) offers a note field, and the typed note is sent with Done, on desktop and mobile.",
     "steps": [
-      "Park a tracked job on a meta.wait",
-      "Open its focus rail; a note field sits beside Resume",
-      "Type a note and click Resume",
-      "The step settles as resumed and its output shows the note"
+      "Run a tracked job to a meta.session step",
+      "Open its focus rail; a note field sits beside Done",
+      "Type a note and click Done",
+      "The step resolves with output {resumed_by: \"user\", note} carrying that text",
+      "Repeat on mobile: the same field is there and Done sends the note"
     ],
     "passes": false
   },
   {
     "id": "F-014",
     "category": "hardening",
-    "description": "A note typed at a resume reaches the next step: the re-run after a clarification hold sees the answers and uses them instead of re-asking.",
+    "description": "The answers in a clarifications session's report reach the re-run: the second run sees them in previousSteps and uses them instead of re-asking.",
     "steps": [
       "Run a project job whose project.shape returns clarifications[]",
-      "At the following hold, answer every question in the note and Resume (from any of the three surfaces)",
-      "Open the second project.shape step's envelope: previousSteps carries the note",
+      "In the following 'Answer clarifications' meta.session, answer every question and ask Claude to report back",
+      "The session step resolves with output {resumed_by: \"report\", …} whose answers holds what was typed",
+      "Open the second project.shape step's envelope: previousSteps carries that output, with the answers in its top-level answers field",
       "Its brief.md reflects each answer, has no marker for an answered question, and its clarifications[] does not repeat them"
     ],
     "passes": false
@@ -172,12 +175,13 @@
   {
     "id": "F-015",
     "category": "hardening",
-    "description": "A project plan holds for content sign-off before the project folder lands: a meta.wait sits after the shaping chain and before the PR that commits it, and shows the user what will land.",
+    "description": "A project plan asks for content sign-off before the project folder lands: a sign-off meta.session sits after the shaping chain and before the PR that commits it, and a correction re-runs the chain instead of committing.",
     "steps": [
       "Run a project job through project.decompose",
-      "The job parks on a meta.wait before any code.orchestrate-pr step that commits docs/projects/<slug>/",
-      "From the hold, the user can read the brief.md, features.json and roadmap.md that will land",
-      "Resuming with a correction note sends the chain back for a re-run instead of committing as is"
+      "The next step is a 'Sign off docs/projects/<slug>/' meta.session, before any code.orchestrate-pr step that commits the folder",
+      "Its prompt lists brief.md, features.json and roadmap.md to read, taken from the project.* step outputs",
+      "Report corrections from the session: the step-review re-runs the affected project.* steps with them and plans another sign-off, and nothing is committed",
+      "Report approval from the second sign-off: the landing code.orchestrate-pr runs next"
     ],
     "passes": false
   },
@@ -196,24 +200,24 @@
   {
     "id": "F-017",
     "category": "hardening",
-    "description": "project.requirements can return clarifications[], and the planner handles them like shape's: a meta.wait, then a second project.requirements that uses the answers.",
+    "description": "project.requirements can return clarifications[], and the planner handles them like shape's: an 'Answer clarifications' meta.session, then a second project.requirements that uses the answers.",
     "steps": [
       "Run a project job whose brief leaves a behaviour ambiguous",
       "The project.requirements output has a matching clarifications[] entry, and the feature's description carries the [NEEDS CLARIFICATION] marker",
-      "The plan has a meta.wait after it and a second project.requirements",
-      "Answer in the resume note: the second run's features.json resolves the marker and keeps every ID"
+      "The plan has an 'Answer clarifications' meta.session after it, whose prompt lists the questions verbatim, and a second project.requirements",
+      "Answer in the session and report back: the second run's features.json resolves the marker and keeps every ID"
     ],
     "passes": false
   },
   {
     "id": "F-018",
     "category": "hardening",
-    "description": "project.decompose can return clarifications[], and the planner handles them like shape's: a meta.wait, then a second project.decompose that uses the answers.",
+    "description": "project.decompose can return clarifications[], and the planner handles them like shape's: an 'Answer clarifications' meta.session, then a second project.decompose that uses the answers.",
     "steps": [
       "Run a project job where the milestone order depends on an open question (e.g. which of two risky unknowns matters more)",
       "The project.decompose output has a clarifications[] entry for it",
-      "The plan has a meta.wait after it and a second project.decompose",
-      "Answer in the resume note: the second roadmap.md orders the milestones accordingly"
+      "The plan has an 'Answer clarifications' meta.session after it, whose prompt lists the questions verbatim, and a second project.decompose",
+      "Answer in the session and report back: the second roadmap.md orders the milestones accordingly"
     ],
     "passes": false
   },
@@ -685,6 +689,59 @@
       "Give the game to someone who hasn't seen it, with no explanation: within 30 seconds they can say what they're trying to do",
       "Show the user the captures without context: they name at least one thing distinctive to this game (a mechanic, art choice or feel)",
       "The user doesn't say it looks like a template or tutorial project"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-060",
+    "category": "hardening",
+    "description": "A settled meta.session always triggers a step-review, whether it settles by submit_session_report or by Done, and a report with corrections, answers or wantsReplan makes the planner re-plan.",
+    "steps": [
+      "Run a job to a meta.session step and click Done with no note",
+      "The job's events show a step-review run for that step, which ends in submit_continue with the plan unchanged",
+      "Run another meta.session and have Claude report back with wantsReplan: true and a correction",
+      "On a job with manual plan review, a step-review runs, sees the report in the step's output, and the job goes to plan review with an amended plan"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-061",
+    "category": "hardening",
+    "description": "An action step's submit_replan_request reaches the planner at once with its reason, and the job is left unfailed.",
+    "steps": [
+      "Run a job whose action step finds a false premise in its inputs and calls submit_replan_request with a reason",
+      "The step shows 'Asked for a replan: <reason>' and is in replan_requested, neither failed nor resolved",
+      "meta.orchestrate starts in replan mode without waiting for the step's parallel group, and its envelope's replanRequest carries the step id, action, reason, evidence and suggestion",
+      "On a job with manual plan review, the amended plan waits for the user's plan approval; the job never shows as failed",
+      "A second replan request from the same step after that amendment fails the step with 'asked for a replan twice'",
+      "In a meta.session, have Claude call submit_replan_request at the user's direction: the step goes to replan_requested and the planner starts in replan mode the same way"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-062",
+    "category": "hardening",
+    "description": "A controller's replan move does the same as an action step's request: the planner runs at once with its reason and the job is left unfailed.",
+    "steps": [
+      "Run a code.orchestrate-pr step whose controller submits next: {kind: \"replan\", reason}",
+      "The step goes to replan_requested and its session closes; the job does not fail",
+      "meta.orchestrate starts in replan mode with the controller's reason in replanRequest",
+      "While a dispatch of that controller is still running, the same move is refused by validateNext",
+      "A dispatched child of the controller that calls submit_replan_request is refused, whether it passes its dispatchId or its dispatch id as stepId, and the controller's step stays as it was"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-063",
+    "category": "hardening",
+    "description": "meta.wait is gone from the catalog and the install dir, and a plan-level delaySec soak holds the step it's set on.",
+    "steps": [
+      "With an unedited installed copy, restart the daemon: ~/.outpost/actions/meta/wait is deleted and meta.wait is not in the planner's action catalog",
+      "With an edited ~/.outpost/actions/meta/wait/SKILL.md, restart the daemon: the dir moves to ~/.outpost/actions/.retired/meta/wait/, an event is logged, and meta.wait is not in the catalog",
+      "Approve a plan with delaySec: 120 on its second step",
+      "After the first step settles, the second shows 'Starts in 2m · Start now' on desktop and mobile and doesn't start early",
+      "It starts on its own once the delay elapses; on another run, Start now starts it at once",
+      "Restart the daemon mid-delay: the step still shows the remaining 'Starts in …' and starts on time"
     ],
     "passes": false
   }

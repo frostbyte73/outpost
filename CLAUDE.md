@@ -21,6 +21,7 @@ Three primitives. Everything else is implementation detail.
 | `src/work/orchestrated-runner.ts`, `src/steps/orchestrated*`, `src/integrations/pr-watcher.ts`, `code.orchestrate-*`, pre-approvals | [`docs/design/controller-loop.md`](docs/design/controller-loop.md) |
 | `meta.orchestrate`, the action catalog / envelope, `src/schedules/`, the run ledger, `meta.improve-actions` | [`docs/design/orchestrator.md`](docs/design/orchestrator.md) |
 | `src/permissions/`, `config/permission-groups*.json`, any `allowlist.json`, the Permissions page | [`docs/design/permissions.md`](docs/design/permissions.md) |
+| `meta.session`, replan requests, a step's `delaySec`, `src/work/wait-session-context.ts` | [`docs/design/step-reports.md`](docs/design/step-reports.md) |
 | anything listed under Gotchas below | [`docs/design/gotchas.md`](docs/design/gotchas.md) |
 | known gaps and what's deliberately not done | [`docs/design/deferred.md`](docs/design/deferred.md) |
 | the full `src/` tree, file by file | [`docs/design/repo-layout.md`](docs/design/repo-layout.md) |

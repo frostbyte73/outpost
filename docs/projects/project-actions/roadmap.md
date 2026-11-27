@@ -15,16 +15,19 @@ Bundled-action sync on daemon start; this project folder; `actions/SHARED-projec
 ## M7 — Harden the planning chain
 
 - **Depends on:** M1
-- **Acceptance:** F-011, F-012, F-013, F-014, F-015, F-016, F-017, F-018, F-019, F-020
+- **Acceptance:** F-011, F-012, F-013, F-014, F-015, F-016, F-017, F-018, F-019, F-020, F-060, F-061, F-062, F-063
 
 ### Goal
 
-Make the M1 planning chain safe to build on: answers typed at a hold reach the re-run, the user signs off the folder content before it lands, and clarifications stay few and are handled the same way at every step.
+Make the M1 planning chain safe to build on: answers given in a session reach the re-run, the user signs off the folder content before it lands, clarifications stay few and are handled the same way at every step, and a step that finds the plan wrong can say so. The design is `docs/design/step-reports.md`.
 
 ### Scope
 
-- Resume with a note (first): the Resume buttons in `work/step-card.js`, `cockpit/bodies.js` and `tracked/focus-rail.js` send only `{gate, stepId}`; add a note field to each and send it.
-- `meta.orchestrate` project category: a content sign-off `meta.wait` before the PR that commits the folder; a final `meta.session` check after the last milestone.
+- The design doc and this acceptance rewrite (first).
+- `meta.session` reports back: `submit_session_report`, Done with a note on `work/step-card.js`, `cockpit/bodies.js` and `tracked/focus-rail.js`, and a step-review after every settled meta.session.
+- Replan requests: `submit_replan_request` for action and meta.session steps, a `replan` move for controllers, the `replan_requested` state, immediate replan-mode routing, two strikes.
+- `meta.wait` removed; a timed soak becomes a plan-level `delaySec` on the step that waits.
+- `meta.orchestrate` project category: a sign-off `meta.session` before the PR that commits the folder, with corrections re-running the chain; an "Answer clarifications" `meta.session` and a second run for each project.* action; a final `meta.session` check after the last milestone.
 - `project.shape`: at most 5 scope/audience/appetite clarifications; other unknowns become assumptions.
 - `clarifications[]` on `project.requirements` and `project.decompose`, handled like shape's.
 - `project.requirements`: checkable `quality` entries (look, feel, not generic) for any project with a UI.
