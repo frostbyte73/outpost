@@ -1,49 +1,72 @@
 # Project actions — brief
 
-Full design: [project-actions-design.md](../../superpowers/specs/2026-11-27-project-actions-design.md).
+## Problem
 
-## Intent
+Every Outpost action assumes one ticket → one PR. Nothing takes a whole project from a
+one-paragraph idea to a finished, good result by shaping, designing, architecting, splitting
+it into ordered child jobs, building them and checking the result. The test case is "make a
+video game, here's my idea". And the UI Outpost (and Claude generally) builds is functional
+but looks bad — generic, inconsistent, poorly laid out — so UI quality is on the critical
+path: a good game needs good visuals and feel.
 
-- Take a whole project from a one-paragraph idea to a finished, good result.
-- Test case: "make a video game, here's my idea".
-- UI quality is on the critical path: a good game needs good visuals and feel.
-- Done = the user judges the delivered game good.
+## Audience
 
-## Goals
+The single Outpost user (frostbyte73), working on this repo and on new browser-game repos.
+They have the daemon, the PWA, `code.orchestrate-pr` / `code.orchestrate-review`, and (since
+M1) bundled-action sync, this folder convention, the `design`/`arch`/`project` categories,
+`write.create-repo`, `project.shape`/`requirements`/`decompose`, the `meta.orchestrate`
+project category, and `meta.session` for hands-on steps.
 
-1. Project-folder convention: `docs/projects/<slug>/`.
-2. A `meta.orchestrate` project category.
-3. Project, design, architecture and verification actions.
-4. A UI quality loop driven by screenshots.
-5. Game support.
-6. An acceptance run.
+## Appetite
 
-## Non-goals
+No time budget: quality over speed, and M6 reruns until the game is good. Still
+proportionate — no milestone cut to reach M6 sooner, and no review fan-out that doesn't
+change outcomes. Each milestone is one `meta.job` child followed by a user hold. Remaining
+scope, in order: (1) harden the planning chain, (2) UI quality loop, (3) design actions,
+(4) architecture and verification, (5) game support, (6) acceptance run — see
+[roadmap.md](roadmap.md).
 
-- Native engines (Unity, Unreal, Godot). Games are browser-based.
-- Replacing `code.orchestrate-pr` / `code.orchestrate-review`. Extend them, don't fork.
-- Heavy spec process for small work.
+## No-gos
 
-## Anti-goals
+- Native/desktop engines (Unity, Unreal, Godot). Games are browser-based.
+- Replacing `code.orchestrate-pr` / `code.orchestrate-review` — extend, don't fork.
+- Heavy spec process for small work: a one-ticket job keeps its short path.
+- Anti-goals that fail the project even if it works: spec waterfall; rubber-stamp review
+  (reviews need fresh context, cited evidence, hard thresholds); premature done (only
+  `project.accept-milestone` flips `passes`, with end-to-end evidence); loosened permissions
+  (anchored whitelists, writes only in `push`); generic AI-looking output.
 
-- Spec waterfall.
-- Rubber-stamp review.
-- Premature done: only the acceptance evaluator flips `passes`.
-- Loosened permissions.
-- Generic AI-looking output.
+## Rabbit holes
 
-## Constraints
+- **Answers can't reach a re-run.** The PWA Resume buttons (`step-card.js`,
+  `cockpit/bodies.js`, `tracked/focus-rail.js`) send only `{gate, stepId}`, though the engine
+  accepts a note. Fix this first; until then, keep clarifications rare.
+- **Planning-chain quality.** A weak early action degrades every later plan. De-risk with a
+  content sign-off `meta.wait` before the shaping chain's folder lands; cap shape's
+  clarifications at ~3–5 scope/appetite questions, the rest recorded as assumptions; give
+  `project.requirements` and `project.decompose` a `clarifications[]` handled like shape's;
+  a checkable quality category (look, feel, not-generic) in `features.json`; and a check
+  `meta.session` on the last milestone.
+- **Screenshots vs. permissions.** Playwright was removed from `edit`. De-risk with a new
+  narrow anchored grant designed in `docs/design/permissions.md`, landed as its own PR.
+- **Visual review that never ends, or rubber-stamps.** No controller round cap: the loop
+  ends when the reviewer says ship or two passes fail to beat the best score, keeping the
+  best round. A calibration hold anchors the rubric; taste disputes go to the user side by
+  side.
+- **Seeing it at a gate.** Step artifacts are markdown, so the PWA must show screenshots.
+- **Game art and sound.** De-risk with `design.source-assets` on a general `read.research`
+  action; its proposal is approved at a hold, and any host or key lands as an anchored-grant
+  PR plus a `~/.outpost/.env` entry.
 
-- Every action exists in both `actions/` and `~/.outpost/actions/`.
-- An action reached only from a controller round, a UI button or a schedule sets `outpost.plannable: false`; controllers list their sub-actions in `outpost.roster`.
-- `code.review-diff` is the only lens a controller runs unprompted, so visual review is requested per step via `inputs.lenses`.
-- Action categories are hard-coded (`src/actions/types.ts`, `src/actions/registry.ts`), so new categories need a code change.
-- Screenshots need a new narrow, anchored grant: playwright was removed from `edit` in `config/permission-groups.default.json`.
-- Step artifacts are markdown (`src/work/work-types.ts`).
-- `write.create-repo` goes through write drafts.
-- Run `npx tsc --noEmit`; `npm test` doesn't typecheck.
-- No controller round cap.
+## Success criteria
 
-## Milestones
+- The user tells Outpost to make a game from a short idea; it runs end to end with only the
+  holds, and the user judges the game good. Nothing short of that counts.
+- On the way: one Outpost screen the user names, rebuilt through the UI loop, is judged
+  better by the user; every new grant lands as an approved PR; `npx tsc --noEmit` passes.
 
-M1 bootstrap the planning chain · M2 UI quality loop · M3 design actions · M4 architecture and verification · M5 game support · M6 acceptance run. See [roadmap.md](roadmap.md).
+Assumptions (left to the builder, not open questions): action names, schemas and SKILL
+text; how screenshots are stored and shown; the game web stack (chosen in `arch.design`,
+with a default documented in M5); rubric wording and thresholds, as long as they need
+evidence and can fail; splitting or merging milestones; builds served over the tailnet for
+playtests.

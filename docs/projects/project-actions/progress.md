@@ -1,22 +1,3 @@
 # Project actions — progress
 
-| Milestone | Status |
-|---|---|
-| M1 Bootstrap the planning chain | in progress |
-| M2–M6 | not started |
-
-## M1 PRs
-
-| PR | Status |
-|---|---|
-| Bundled-action sync on daemon start | merged (`3307710`) |
-| Project folder (`docs/projects/project-actions/`) | in progress |
-| Shared project-folder convention doc | not started |
-| Categories `design`, `arch`, `project` | not started |
-| `meta.orchestrate` project category | not started |
-| `project.shape` | not started |
-| `project.requirements` | not started |
-| `project.decompose` | not started |
-| `write.create-repo` | not started |
-
-The order of the not-started PRs is the planner's call.
+- 2026-11-27 · M1 — Bootstrap the planning chain · landed directly on main, commits [3307710](https://github.com/frostbyte73/outpost/commit/3307710) (bundled-action sync), [cc13e4f](https://github.com/frostbyte73/outpost/commit/cc13e4f) (project folder), [68f4427](https://github.com/frostbyte73/outpost/commit/68f4427) (categories + SHARED-project-folder.md), [a3b8c4f](https://github.com/frostbyte73/outpost/commit/a3b8c4f) (write.create-repo), [86422e5](https://github.com/frostbyte73/outpost/commit/86422e5) (project.shape/requirements/decompose), [2d1eda3](https://github.com/frostbyte73/outpost/commit/2d1eda3) (meta.orchestrate project category), [4924e27](https://github.com/frostbyte73/outpost/commit/4924e27) (meta.session for hands-on steps) · next: M7 — Harden the planning chain

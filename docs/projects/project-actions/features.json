@@ -1,0 +1,691 @@
+[
+  {
+    "id": "F-001",
+    "category": "planning-chain",
+    "description": "On daemon start, a bundled action the user has not edited is brought up to the repo version, and a bundled action missing from ~/.outpost/actions/ is installed, so the daemon never runs a stale copy.",
+    "steps": [
+      "Merge a change to an existing bundled action's SKILL.md (e.g. meta.orchestrate) and add a new bundled action dir, without touching ~/.outpost/actions/ by hand",
+      "Pull main in /Users/dc/github/frostbyte73/outpost and run launchctl kickstart -k gui/$UID/local.outpost.$USER",
+      "Open the Actions page: the edited action shows the merged text and the new action is listed",
+      "diff -r the two actions' repo dirs against ~/.outpost/actions/: no differences"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-002",
+    "category": "planning-chain",
+    "description": "A bundled action whose installed copy the user has edited is left alone on daemon start and reported in the daemon log and on the Actions page.",
+    "steps": [
+      "Edit ~/.outpost/actions/<category>/<name>/SKILL.md for one bundled action",
+      "Merge a different change to the same action in the repo, pull main and restart the daemon",
+      "The installed SKILL.md still holds the user's edit, byte for byte",
+      "The daemon log names the action as user-edited and not updated",
+      "The Actions page marks the same action as user-edited / not synced"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-003",
+    "category": "planning-chain",
+    "description": "A job asking for a whole project (new or existing repo) is planned in meta.orchestrate's project category: shaping steps (project.shape, project.requirements, project.decompose), then milestones as meta.job children whose briefs name docs/projects/<slug>/ and the files to read.",
+    "steps": [
+      "Create a job: 'Make a small browser game: <one-paragraph idea>'",
+      "Open the plan at plan_pending_review: its findings name the project category",
+      "The plan has project.shape, project.requirements and project.decompose steps before any code step",
+      "After decompose, each milestone is a meta.job step whose brief names docs/projects/<slug>/ and lists the files the child must read",
+      "Every code step in the plan traces to at least one feature ID"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-004",
+    "category": "planning-chain",
+    "description": "A one-ticket job keeps its short path: no project category, no shaping steps, no project folder.",
+    "steps": [
+      "Create a job for a one-line bug fix in this repo",
+      "Open the plan at plan_pending_review",
+      "It has no project.* or meta.job steps and creates no docs/projects/ folder; the work is a single code.orchestrate-pr step"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-005",
+    "category": "planning-chain",
+    "description": "project.shape turns an idea into a one-page brief.md (problem, audience, appetite, no-gos, rabbit holes, success criteria), writing [NEEDS CLARIFICATION] instead of guessing and returning those questions as clarifications[]; when there are any, the plan follows it with a meta.wait and a second project.shape.",
+    "steps": [
+      "Create a project job from a deliberately vague idea (no audience, no time budget)",
+      "Open the project.shape output: brief.md has all six sections and fits on one page",
+      "The missing facts appear as [NEEDS CLARIFICATION: ...] markers in brief.md and as entries in clarifications[]",
+      "The plan has a meta.wait after shape and a second project.shape after it"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-006",
+    "category": "planning-chain",
+    "description": "project.requirements writes features.json from brief.md: one entry per user-visible behaviour with end-to-end steps and passes:false; a re-run keeps existing IDs and passes values, numbers new entries above the highest ID, and marks removed features dropped instead of deleting them.",
+    "steps": [
+      "Run a project job through project.requirements and open its output",
+      "Every entry has id, category, description, steps and passes:false; the steps describe what a person does and sees",
+      "No entry covers something the brief lists as a no-go",
+      "Edit the brief to remove one behaviour and add another, then re-run project.requirements",
+      "The removed feature is still present with dropped:true; the new one takes the next F-NNN; every other entry's id and passes are unchanged"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-007",
+    "category": "planning-chain",
+    "description": "project.decompose writes roadmap.md as a milestone dependency graph (thinnest end-to-end slice first, riskiest unknown next), each milestone with a standalone meta.job brief and the feature IDs it must pass, and its milestones[] map straight onto meta.job steps.",
+    "steps": [
+      "Run a project job through project.decompose and open roadmap.md in its output",
+      "Milestone 1 is an end-to-end slice a person can run, not a layer such as 'set up the database'",
+      "Milestone 2 addresses the brief's riskiest rabbit hole",
+      "Each milestone lists its dependencies, a brief readable without the rest of the roadmap, and its feature IDs",
+      "Every non-dropped feature ID appears in at least one milestone",
+      "The plan's following meta.job steps match milestones[] one for one"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-008",
+    "category": "planning-chain",
+    "description": "write.create-repo creates frostbyte73/<name> private by default (public only when the job says so) through an approved write draft, then clones and registers it like write.add-project.",
+    "steps": [
+      "Create a job that needs a new repo, without mentioning visibility",
+      "At the write draft, the exact create command names frostbyte73/<name> and private visibility",
+      "Approve it: github.com/frostbyte73/<name> exists, is private, and has a README on its default branch",
+      "The repo is cloned outside ~/.outpost/worktrees and appears in Outpost's project list",
+      "Repeat with a job that says 'public': the draft asks for public visibility"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-009",
+    "category": "planning-chain",
+    "description": "The repo-create grant is pinned to the frostbyte73 owner: a create under any other owner is refused even after the user approves a draft.",
+    "steps": [
+      "Create a job that asks write.create-repo for someorg/<name>",
+      "The action refuses or the permission gate denies the call; no repo is created under someorg"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-010",
+    "category": "planning-chain",
+    "description": "The files the project.* actions return land in docs/projects/<slug>/ through a code.orchestrate-pr PR byte for byte, the latest step's copy winning when two steps emit the same path.",
+    "steps": [
+      "Run a project job through shape, requirements and decompose, and on to the PR that commits the folder",
+      "For each path, compare the PR's file with the newest previousSteps files[] entry for it: identical bytes",
+      "Where shape ran twice, the PR holds the second shape's brief.md"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-011",
+    "category": "hardening",
+    "description": "Resuming a parked wait from the job's step card (work/step-card.js) offers a note field, and the typed note is sent with the resume.",
+    "steps": [
+      "Park a job on a meta.wait",
+      "Open the job; the waiting step's card shows a note field beside Resume",
+      "Type 'Audience is me; budget two weekends' and click Resume",
+      "The step settles as resumed and its output shows the note"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-012",
+    "category": "hardening",
+    "description": "Resuming a parked wait from the cockpit board (cockpit/bodies.js) offers a note field, and the typed note is sent with the resume.",
+    "steps": [
+      "Park a job on a meta.wait",
+      "Open the cockpit; the waiting item shows a note field beside Resume",
+      "Type a note and click Resume",
+      "The step settles as resumed and its output shows the note"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-013",
+    "category": "hardening",
+    "description": "Resuming a parked wait from the tracked focus rail (tracked/focus-rail.js) offers a note field, and the typed note is sent with the resume.",
+    "steps": [
+      "Park a tracked job on a meta.wait",
+      "Open its focus rail; a note field sits beside Resume",
+      "Type a note and click Resume",
+      "The step settles as resumed and its output shows the note"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-014",
+    "category": "hardening",
+    "description": "A note typed at a resume reaches the next step: the re-run after a clarification hold sees the answers and uses them instead of re-asking.",
+    "steps": [
+      "Run a project job whose project.shape returns clarifications[]",
+      "At the following hold, answer every question in the note and Resume (from any of the three surfaces)",
+      "Open the second project.shape step's envelope: previousSteps carries the note",
+      "Its brief.md reflects each answer, has no marker for an answered question, and its clarifications[] does not repeat them"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-015",
+    "category": "hardening",
+    "description": "A project plan holds for content sign-off before the project folder lands: a meta.wait sits after the shaping chain and before the PR that commits it, and shows the user what will land.",
+    "steps": [
+      "Run a project job through project.decompose",
+      "The job parks on a meta.wait before any code.orchestrate-pr step that commits docs/projects/<slug>/",
+      "From the hold, the user can read the brief.md, features.json and roadmap.md that will land",
+      "Resuming with a correction note sends the chain back for a re-run instead of committing as is"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-016",
+    "category": "hardening",
+    "description": "project.shape asks at most 5 clarifications, all about scope or appetite; anything else it can't answer is recorded in the brief as an assumption.",
+    "steps": [
+      "Create a project job from a one-sentence idea with nearly every detail missing",
+      "Open the project.shape output: clarifications[] has 5 entries or fewer",
+      "Each question is about scope, audience or appetite, not an implementation detail",
+      "brief.md lists the remaining unknowns as assumptions"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-017",
+    "category": "hardening",
+    "description": "project.requirements can return clarifications[], and the planner handles them like shape's: a meta.wait, then a second project.requirements that uses the answers.",
+    "steps": [
+      "Run a project job whose brief leaves a behaviour ambiguous",
+      "The project.requirements output has a matching clarifications[] entry, and the feature's description carries the [NEEDS CLARIFICATION] marker",
+      "The plan has a meta.wait after it and a second project.requirements",
+      "Answer in the resume note: the second run's features.json resolves the marker and keeps every ID"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-018",
+    "category": "hardening",
+    "description": "project.decompose can return clarifications[], and the planner handles them like shape's: a meta.wait, then a second project.decompose that uses the answers.",
+    "steps": [
+      "Run a project job where the milestone order depends on an open question (e.g. which of two risky unknowns matters more)",
+      "The project.decompose output has a clarifications[] entry for it",
+      "The plan has a meta.wait after it and a second project.decompose",
+      "Answer in the resume note: the second roadmap.md orders the milestones accordingly"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-019",
+    "category": "hardening",
+    "description": "A project plan ends with a meta.session check after the last milestone, whose prompt walks the user through verifying the project's success criteria.",
+    "steps": [
+      "Open a project job's plan after project.decompose",
+      "The step after the last milestone's meta.job is a meta.session",
+      "Its prompt names the brief's success criteria and the features to check by hand",
+      "When the step starts, an interactive session opens with that prompt; the step resolves only when the user marks it Done"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-020",
+    "category": "hardening",
+    "description": "For a project with any UI, project.requirements writes checkable quality-category entries (look, feel, not generic) whose steps a person or browser driver can follow.",
+    "steps": [
+      "Run project.requirements on a brief for a project with a UI",
+      "features.json has entries with category 'quality' covering look, feel and not-generic",
+      "Each such entry's steps name a concrete check (a width, a theme, a state, a banned pattern, a threshold), never just 'looks good'"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-021",
+    "category": "ui-loop",
+    "description": "An action can screenshot a locally served page through a new narrow, anchored grant that landed as its own approved PR with docs/design/permissions.md updated; a non-local URL is denied.",
+    "steps": [
+      "Find the PR that added the screenshot grant: it touches the permission config or a pinned script plus docs/design/permissions.md, and nothing unrelated",
+      "Run an action that screenshots the PWA on localhost: the PNG appears in its output",
+      "Make the same action target an external URL: the permission gate denies the call"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-022",
+    "category": "ui-loop",
+    "description": "A deterministic UI check (npm run ui:check or equivalent) reports accessibility violations, overflow/clipping, off-token values, generic-AI patterns and console errors, and exits non-zero on any of them.",
+    "steps": [
+      "Run the check on main: it reports each category and exits 0, or lists the known violations",
+      "Add a hard-coded colour, an overflowing label, an unlabeled button and a console.error to one PWA screen",
+      "Run it again: each seeded problem is reported with its file or selector, and it exits non-zero"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-023",
+    "category": "ui-loop",
+    "description": "code.implement-ui writes a token/layout plan with an ASCII wireframe, checks it against banned defaults, builds only from tokens and existing components, and attaches screenshots of its own work to its report.",
+    "steps": [
+      "Run a UI step through code.implement-ui",
+      "Its report contains the layout plan with an ASCII wireframe and the banned-defaults check result",
+      "Its report includes screenshots of the built screen",
+      "The UI check on its diff reports no off-token values"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-024",
+    "category": "ui-loop",
+    "description": "code.review-visual reviews with fresh context over a fixed screenshot matrix (widths x light/dark x empty, loading, error, long text), scores a rubric citing screenshots, lists at most 5 located fixes, and says ship or don't ship, and does say don't ship on a bad screen.",
+    "steps": [
+      "Run code.review-visual on a change to one PWA screen",
+      "The output contains the full matrix of screenshots",
+      "Every rubric score cites at least one of those screenshots",
+      "There are 5 fixes or fewer, each naming a file or element",
+      "Run it on a deliberately broken screen (clipped text, mixed fonts): the verdict is don't ship"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-025",
+    "category": "ui-loop",
+    "description": "code.orchestrate-pr runs the visual review only when the planner sets inputs.lenses to include 'visual'; a UI diff without it gets only code.review-diff.",
+    "steps": [
+      "Run a UI-touching PR step with inputs.lenses: ['visual']: the controller's rounds include code.review-visual",
+      "Run a UI-touching PR step without lenses: its rounds include code.review-diff and no visual review"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-026",
+    "category": "ui-loop",
+    "description": "The visual loop ends when the reviewer says ship or when two consecutive passes fail to beat the best recorded score, and then keeps the best round, not the last.",
+    "steps": [
+      "Run a visual-lens PR step and open its artifacts: a score is recorded per pass, with the best marked",
+      "In a run where two passes in a row score below the best, the loop stops there",
+      "The branch's final state matches the best-scoring round's screenshots"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-027",
+    "category": "ui-loop",
+    "description": "When reviewer and implementer disagree on taste, the step goes to the user with side-by-side screenshots of the options.",
+    "steps": [
+      "Run a visual-lens PR step until a taste disagreement occurs",
+      "The step parks for the user, showing the competing versions side by side",
+      "Picking one continues the loop with that version"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-028",
+    "category": "ui-loop",
+    "description": "The PWA shows screenshots at a gate on desktop and mobile, viewable full size.",
+    "steps": [
+      "Park a step whose artifacts include screenshots",
+      "On desktop, open the gate: the screenshots render inline and open full size on click",
+      "On a phone, open the same gate: the screenshots render and can be viewed full size"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-029",
+    "category": "ui-loop",
+    "description": "A calibration hold collects the user's good and bad example Outpost screens, and code.review-visual uses them as reference.",
+    "steps": [
+      "At the calibration hold, name a few screens as good and a few as bad",
+      "Run code.review-visual afterwards: its output cites the calibration examples in its comparison"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-030",
+    "category": "ui-loop",
+    "description": "One existing Outpost screen the user names, rebuilt through the UI loop, is judged better than before by the user.",
+    "steps": [
+      "The user names a screen at the M2 hold",
+      "It is rebuilt through a visual-lens PR step",
+      "The user compares before and after screenshots at each matrix cell, then uses the screen on desktop and phone",
+      "The user says it is better"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-031",
+    "category": "design",
+    "description": "design.language writes a short DESIGN.md of checkable rules and banned defaults plus W3C-format tokens (OKLCH colour, type and spacing scales, light and dark), and renders one style tile the user signs off at a gate.",
+    "steps": [
+      "Run design.language on a project",
+      "DESIGN.md is within ~150 lines; each rule can be checked (a value, a ratio, a ban), never just 'be clean'",
+      "The tokens file parses as W3C design tokens, colours are OKLCH, and both light and dark sets exist",
+      "The job parks at a gate showing the rendered style tile; the folder files land only after sign-off"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-032",
+    "category": "design",
+    "description": "design.language in art-bible mode, for a game, produces an art bible (palette, shape language, sprite scale, animation and HUD rules) with a rendered tile the user signs off.",
+    "steps": [
+      "Run design.language on a game project",
+      "The output covers palette, shape language, sprite/tile scale, animation and HUD rules",
+      "The gate shows a rendered tile of sample sprites and HUD; the user signs it off"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-033",
+    "category": "design",
+    "description": "design.ux-flows writes user goals, task flows, navigation, ASCII wireframes, a per-component state list and acceptance criteria phrased as observable UI facts.",
+    "steps": [
+      "Run design.ux-flows on a project",
+      "Its output has each of those sections, with an ASCII wireframe per main screen",
+      "Each component lists its empty, loading, error and populated states",
+      "Each acceptance criterion names something a person can see on screen"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-034",
+    "category": "design",
+    "description": "design.gameplay writes a one-page game design: core loop, mechanics, progression/tuning tables and the vertical-slice definition.",
+    "steps": [
+      "Run design.gameplay on a game project",
+      "The design fits on one page and states the core loop in one or two sentences",
+      "Tuning tables give concrete numbers",
+      "The vertical slice is defined as what a player can do in it"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-035",
+    "category": "design",
+    "description": "code.review-ux reviews the running app with heuristics, task walkthroughs and WCAG 2.2 AA, citing evidence for each finding.",
+    "steps": [
+      "Run code.review-ux against a locally served app",
+      "Its output walks through each task flow step by step",
+      "WCAG 2.2 AA findings name the criterion and the element",
+      "On an app with a seeded contrast failure and a keyboard trap, both are reported"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-036",
+    "category": "arch-verify",
+    "description": "arch.design writes architecture.md (C4 context and container), a stack choice with the alternatives weighed, ADRs for the binding decisions, and fitness functions wired into CI.",
+    "steps": [
+      "Run arch.design on a project",
+      "architecture.md has C4 context and container views within ~150 lines",
+      "The stack choice lists at least two alternatives and why each lost",
+      "decisions/ has numbered ADRs starting at 0001",
+      "The PR adds CI checks for the fitness functions, and violating one makes CI fail"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-037",
+    "category": "arch-verify",
+    "description": "Accepted ADRs are binding: a step whose work conflicts with one stops and proposes a superseding ADR instead of overriding it.",
+    "steps": [
+      "Give a child job a task that contradicts an accepted ADR",
+      "The step stops and the user sees a proposal for a new ADR that supersedes the old one",
+      "The old ADR changes only by a 'Superseded by NNNN' line"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-038",
+    "category": "arch-verify",
+    "description": "arch.spike builds a time-boxed throwaway prototype answering one risky question, and reports the answer with evidence without merging the prototype.",
+    "steps": [
+      "Run arch.spike with one question and a time box",
+      "Its output answers the question with evidence (a measurement, a screenshot, a log)",
+      "The prototype code is not merged into the main branch"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-039",
+    "category": "arch-verify",
+    "description": "arch.review runs a fresh-context pre-mortem and scenario review of the brief, design and architecture, and flags scope creep against the brief.",
+    "steps": [
+      "Run arch.review on a project whose architecture includes something the brief lists as a no-go",
+      "The output includes a pre-mortem (ways the project fails) and scenario walkthroughs",
+      "The no-go item is flagged as scope creep"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-040",
+    "category": "arch-verify",
+    "description": "project.check-readiness returns PASS, CONCERNS or FAIL on whether the plan is buildable, with reasons; FAIL stops the job before building.",
+    "steps": [
+      "Run project.check-readiness on a complete project folder: PASS or CONCERNS, with reasons",
+      "Remove architecture.md and run it again: FAIL, naming the gap",
+      "On FAIL, no build milestone starts"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-041",
+    "category": "arch-verify",
+    "description": "project.accept-milestone evaluates a milestone's features end to end with fresh context and is the only thing that sets passes:true, citing evidence in its PR; a feature with only unit-test evidence stays false.",
+    "steps": [
+      "Finish a milestone and run project.accept-milestone",
+      "For each feature it passes, its PR cites end-to-end evidence (screenshots, logs or a recorded run of the feature's steps)",
+      "A feature whose steps fail in the running app stays passes:false and is reported",
+      "A feature backed only by unit tests stays passes:false",
+      "git log on features.json shows no other action setting passes:true"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-042",
+    "category": "arch-verify",
+    "description": "project.correct-course re-plans a project mid-flight when a milestone shows the roadmap is wrong, keeping finished milestones and reshaping the rest.",
+    "steps": [
+      "Run a project where a finished milestone invalidates a later one",
+      "Trigger correct-course: the updated roadmap keeps the finished milestones verbatim and changes the affected later ones",
+      "The change and its reason are recorded in progress.md or an ADR"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-043",
+    "category": "arch-verify",
+    "description": "project.retro writes a retrospective on a finished project or milestone, naming which actions fell short with evidence.",
+    "steps": [
+      "Run project.retro after a milestone",
+      "Its output names specific actions and runs that fell short, citing steps or PRs",
+      "Each finding proposes a concrete fix to an action"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-044",
+    "category": "game-support",
+    "description": "A game can be played by script and captured as frames or a GIF, so reviewers and the user see motion, not stills.",
+    "steps": [
+      "Run scripted play against a locally served browser game",
+      "The output includes a GIF or frame sequence of the play",
+      "The capture shows the player moving and the game state changing"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-045",
+    "category": "game-support",
+    "description": "Game review checks HUD legibility over busy scenes, feedback/juice, readability of the core loop in the first 30 seconds, and frame rate, each with evidence from captures.",
+    "steps": [
+      "Run the game review on a game build",
+      "Its output scores each of the four criteria and cites a capture for each",
+      "Frame rate is reported as a measured number",
+      "A build with an unreadable HUD gets a failing HUD score"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-046",
+    "category": "game-support",
+    "description": "A playtest hold parks the job with a runnable build served over the tailnet and the captures attached; the user opens the build straight from the Outpost app on their phone.",
+    "steps": [
+      "Reach a playtest hold in a game job",
+      "The hold shows the captures and a link to the build",
+      "Tap the link from the Outpost app on a phone on the tailnet: the game loads and plays",
+      "Resume with notes; the next step sees them"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-047",
+    "category": "game-support",
+    "description": "read.research does web research on a question and returns findings with cited sources that other actions can reuse.",
+    "steps": [
+      "Run read.research with a question (e.g. free licence-clear sound effect packs for a retro arcade game)",
+      "Every claim in its output links a source",
+      "Opening the links confirms the claims"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-048",
+    "category": "game-support",
+    "description": "design.source-assets proposes, per asset type, how to produce a game's art and sound (procedural, asset packs, AI generation or tooling) with licence, cost, quality and needed grants; the user approves it at a hold, and any host or key it needs lands as an anchored-grant PR plus a ~/.outpost/.env entry.",
+    "steps": [
+      "Run design.source-assets on a game with an art bible and gameplay doc",
+      "The proposal has a recommendation per asset type with licence, cost, quality and grants needed, citing read.research sources",
+      "The job parks at a hold showing the proposal",
+      "For a recommendation needing a download host or API key, a separate PR adds an anchored grant and the hold names the ~/.outpost/.env entry to set; nothing downloads before both"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-049",
+    "category": "acceptance",
+    "description": "The user tells Outpost to make a game from a short idea, and the job runs end to end with only the holds: no help beyond resuming, answering and approving drafts.",
+    "steps": [
+      "At the M6 hold, the user gives a short game idea",
+      "A job is created from it and planned in the project category",
+      "It runs through shaping, design, architecture, milestones and acceptance",
+      "The user's only input is at holds, check sessions and write-draft approvals; the user never edits the game's code"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-050",
+    "category": "acceptance",
+    "description": "When the user doesn't judge the game good, a retro runs, the actions that fell short are fixed, and the game job is rerun.",
+    "steps": [
+      "After an M6 run the user judges it not good",
+      "project.retro runs and names the actions that fell short",
+      "PRs fix those actions",
+      "A fresh make-a-game job runs with the fixed actions"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-051",
+    "category": "acceptance",
+    "description": "The user judges the game good.",
+    "steps": [
+      "The user plays the finished game from the Outpost app link",
+      "The user says it is good"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-052",
+    "category": "repo-health",
+    "description": "Every new permission grant in this project landed as its own PR the user approved, as an anchored whitelist pinned to its destination, with writes only in push.",
+    "steps": [
+      "List the PRs that changed config/permission-groups*.json or any allowlist.json during the project",
+      "Each was approved by the user",
+      "Each new network or write rule is anchored and pinned to its destination; no rule tries to forbid a flag",
+      "The daemon loads every action without assertNotWriteShaped refusing one"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-053",
+    "category": "repo-health",
+    "description": "The repo typechecks and its tests pass at the end of every milestone.",
+    "steps": [
+      "Check out main after the milestone's last PR",
+      "npx tsc --noEmit exits 0",
+      "npm test exits 0"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-054",
+    "category": "quality",
+    "description": "Look: the rebuilt Outpost screen is built only from design tokens and existing .o-* components, and holds up at every screenshot-matrix cell with no overflow or clipping.",
+    "steps": [
+      "Run the UI check on the rebuilt screen: no off-token values, no overflow or clipping",
+      "Screenshot it at 375, 768 and 1440 px wide, in light and dark: text never clips or overlaps, and spacing follows the scale",
+      "Fill it with long text (60-character names, 500-character bodies): it wraps or truncates with a way to see the rest, and the layout holds",
+      "Show it empty, loading and in error: each state has copy and a next action, not a blank area"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-055",
+    "category": "quality",
+    "description": "Feel: every interactive element on the rebuilt Outpost screen gives visible hover, focus and pressed feedback, works from the keyboard, and responds without perceptible lag.",
+    "steps": [
+      "Tab through the screen: every control gets a visible focus ring, in a sensible order, with no trap",
+      "Hover and press each control: each shows a distinct state",
+      "Do the screen's main task by keyboard only",
+      "Trigger each action: visible feedback appears within ~100 ms and transitions finish within ~250 ms"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-056",
+    "category": "quality",
+    "description": "Not generic: the rebuilt Outpost screen trips none of the generic-AI patterns and reads as part of Outpost rather than a template.",
+    "steps": [
+      "Run the generic-AI-pattern lint: zero hits",
+      "Check by eye against the banned list: no purple/blue gradient hero, no stack of identical rounded cards, no emoji as icons, no gratuitous shadows or glassmorphism, no flat type with no hierarchy",
+      "Put it beside two screens the user marked good at calibration: it uses the same type scale, spacing and colour roles",
+      "Show it to the user without context: they don't say it looks like a template"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-057",
+    "category": "quality",
+    "description": "Look: the game matches its signed-off art bible in every captured scene, and its HUD stays legible over its busiest scene.",
+    "steps": [
+      "Put captures of the title screen, gameplay and game-over beside the signed-off tile: palette, shape language and sprite scale match",
+      "Capture the busiest gameplay moment: every HUD value is readable at phone width, with text contrast at least 4.5:1 against what's behind it",
+      "No placeholder art (default squares, missing-texture colours, stock tutorial sprites) appears anywhere"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-058",
+    "category": "quality",
+    "description": "Feel: the game responds instantly and gives feedback for every player action, at a steady frame rate.",
+    "steps": [
+      "Press each control during play: the player responds on the next frame, with no perceptible input lag",
+      "Score, hit, pickup and death each have visible feedback (motion, flash, particles or shake) and a sound",
+      "Measure frame rate in the busiest scene in a desktop browser: it stays at or above 55 fps",
+      "Play on a phone over the tailnet: touch controls work and the game stays playable"
+    ],
+    "passes": false
+  },
+  {
+    "id": "F-059",
+    "category": "quality",
+    "description": "Readable and not generic: a new player grasps the game's goal within 30 seconds without instructions, and the game has something distinctive rather than reading as a tutorial clone.",
+    "steps": [
+      "Give the game to someone who hasn't seen it, with no explanation: within 30 seconds they can say what they're trying to do",
+      "Show the user the captures without context: they name at least one thing distinctive to this game (a mechanic, art choice or feel)",
+      "The user doesn't say it looks like a template or tutorial project"
+    ],
+    "passes": false
+  }
+]
