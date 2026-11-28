@@ -12,7 +12,7 @@ export function waitSessionContext(job: JobRecord, stepId: string): string {
 
   const lines = [
     isSession
-      ? 'You are in a session Outpost started for the user as one step of a job; this session IS the step\'s work. The user drives it; there is no envelope to read and nothing to submit.'
+      ? 'You are in a session Outpost started for the user as one step of a job; this session IS the step\'s work. The user drives it.'
       : 'You are in a session the user opened on an Outpost job that is paused at a wait step. The user drives this session; there is no envelope to read and nothing to submit.',
     '',
     `# Job: ${job.title}`,
@@ -33,10 +33,24 @@ export function waitSessionContext(job: JobRecord, stepId: string): string {
     for (const s of earlier) lines.push('', ...earlierStep(s));
   }
 
-  lines.push('', isSession
-    ? 'The user marks this step done in the Outpost PWA, not from this session.'
-    : 'Resuming or abandoning the wait happens in the Outpost PWA, not from this session.');
+  if (isSession) lines.push('', ...reportingBack(job.id, stepId));
+  else lines.push('', 'Resuming or abandoning the wait happens in the Outpost PWA, not from this session.');
   return lines.join('\n');
+}
+
+function reportingBack(jobId: string, stepId: string): string[] {
+  return [
+    '# Reporting back',
+    '',
+    `This is job \`${jobId}\`, step \`${stepId}\`. When the user says they're done, or asks you to report back, call \`mcp__outpost__submit_session_report\` with that jobId and stepId:`,
+    '- summary — one line',
+    '- report — markdown: what was checked, what was found, what the user decided',
+    '- answers — [{question, answer}] when the step asked clarification questions, the user\'s answers verbatim',
+    '- corrections — the changes the user asked for, when this is a sign-off',
+    '- wantsReplan — true when the user decided the plan should change',
+    '',
+    'Submitting resolves the step and the planner reviews it. Don\'t submit on your own judgment that the task looks finished. The user can also mark the step Done in the Outpost PWA instead.',
+  ];
 }
 
 function earlierStep(s: Step): string[] {

@@ -1,18 +1,36 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "meta.session output",
-  "type": "object",
-  "required": ["resumed_by"],
-  "properties": {
-    "resumed_by": {
-      "type": "string",
-      "enum": ["user"],
-      "description": "Always the user — the step resolves only when they mark it done."
+  "oneOf": [
+    {
+      "type": "object",
+      "required": ["resumed_by"],
+      "properties": {
+        "resumed_by": { "const": "user", "description": "The user marked the step Done in the PWA." },
+        "note": { "type": "string", "description": "Optional free-text note the user typed when marking it done." }
+      },
+      "additionalProperties": false
     },
-    "note": {
-      "type": "string",
-      "description": "Optional free-text note the user typed when marking it done."
+    {
+      "type": "object",
+      "required": ["resumed_by", "summary", "report"],
+      "properties": {
+        "resumed_by": { "const": "report", "description": "The session reported back via submit_session_report." },
+        "summary": { "type": "string", "description": "One line." },
+        "report": { "type": "string", "description": "Markdown: what was checked, what was found, what the user decided." },
+        "answers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["question", "answer"],
+            "properties": { "question": { "type": "string" }, "answer": { "type": "string" } },
+            "additionalProperties": false
+          }
+        },
+        "corrections": { "type": "array", "items": { "type": "string" } },
+        "wantsReplan": { "type": "boolean" }
+      },
+      "additionalProperties": false
     }
-  },
-  "additionalProperties": false
+  ]
 }

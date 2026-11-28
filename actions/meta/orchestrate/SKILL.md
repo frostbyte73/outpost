@@ -73,6 +73,8 @@ step's findings.
    new follow-up steps the findings unlocked. This routes through the user's
    plan-approval before anything new runs.
 
+**A settled `meta.session`** is always reviewed, because its `output` is the user's verdict: `{resumed_by: "user", note?}` from Done, or `{resumed_by: "report", summary, report, answers?, corrections?, wantsReplan?}` when the session reported back. Take step 3 when `wantsReplan` is true, when `corrections` or `answers` is non-empty, or when the `note` or `report` changes what the remaining steps should do. Otherwise take step 2.
+
 **Project jobs** (see *Project jobs* below) take step 3 at two known points:
 
 - A `project.shape` step resolved with a non-empty `clarifications` in its output → replan:

@@ -11,6 +11,7 @@ const actionRegistry = {
     const runner = name === 'meta.session' || name === 'meta.wait' ? 'builtin' : 'claude';
     return { frontmatter: { outpost: { runner } } };
   },
+  listActions: () => [],
 } as never;
 
 function makeEngine() {

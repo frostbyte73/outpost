@@ -271,6 +271,35 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'submit_session_report',
+    description:
+      'For a meta.session step only: report back what this session did and what the user decided. '
+      + 'Call it only when the user says they are done or asks you to report back — never because the '
+      + 'task looks finished. Resolves the step; the planner then reviews it, and re-plans when '
+      + 'wantsReplan is true or the report carries answers or corrections.',
+    inputSchema: {
+      type: 'object',
+      required: ['jobId', 'stepId', 'summary', 'report'],
+      properties: {
+        jobId: { type: 'string' },
+        stepId: { type: 'string' },
+        summary: { type: 'string', description: 'One line.' },
+        report: { type: 'string', description: 'Markdown: what was checked, what was found, what the user decided.' },
+        answers: {
+          type: 'array',
+          description: 'The user\'s answers to clarification questions, verbatim.',
+          items: {
+            type: 'object',
+            required: ['question', 'answer'],
+            properties: { question: { type: 'string' }, answer: { type: 'string' } },
+          },
+        },
+        corrections: { type: 'array', items: { type: 'string' }, description: 'Changes the user asked for at a sign-off.' },
+        wantsReplan: { type: 'boolean', description: 'True when the user decided the plan should change.' },
+      },
+    },
+  },
+  {
     name: 'submit_step_progress',
     description:
       'Report this orchestrated step\'s progress and declare your next move. Call exactly once at the '

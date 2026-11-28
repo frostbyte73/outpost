@@ -326,7 +326,11 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           engine.resumeWait(id, payload.stepId, payload.note);
           break;
-        default: res.statusCode = 400; res.end('gate must be plan|wait'); return;
+        case 'session':
+          if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
+          engine.resumeSession(id, payload.stepId, payload.note);
+          break;
+        default: res.statusCode = 400; res.end('gate must be plan|wait|session'); return;
       }
     } catch (e) {
       res.statusCode = 500; res.end(`error: ${(e as Error).message}`); return;

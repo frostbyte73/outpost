@@ -51,6 +51,15 @@ describe('waitSessionContext', () => {
     expect(text).not.toContain('x'.repeat(2001));
   });
 
+  it('tells a meta.session how to report back, and a wait that there is nothing to submit', () => {
+    const steps = [action('s', { action: 'meta.session', state: 'waiting' }), action('w', { action: 'meta.wait', state: 'waiting' })];
+    const session = waitSessionContext(job(steps), 's');
+    expect(session).toContain('job `J`, step `s`');
+    expect(session).toContain('mcp__outpost__submit_session_report');
+    expect(session).not.toContain('nothing to submit');
+    expect(waitSessionContext(job(steps), 'w')).toContain('nothing to submit');
+  });
+
   it('builds for a first-step wait with no reason or preview', () => {
     const text = waitSessionContext(job([action('w', { action: 'meta.wait', state: 'waiting' })]), 'w');
     expect(text).not.toContain('undefined');

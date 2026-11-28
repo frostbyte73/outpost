@@ -31,6 +31,7 @@ import type {
 import { augmentEnvelopeWithLessons, buildActionCatalog, planStepView, updateEnvelopeCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry, type CatalogScope } from './envelope.js';
 import { readonlyView, waitWorkspaceError, workspaceError } from './workspace.js';
 import { waitSessionContext } from './wait-session-context.js';
+import type { SessionReport } from './work-launch.js';
 import { expectRepoOf, parsePrUrl, PR_URL_RE } from './pr-url.js';
 import type { ActionRegistry } from '../actions/index.js';
 import type { ActionDef } from '../actions/types.js';
@@ -1789,7 +1790,45 @@ export class WorkEngine {
 
   // PWA "Resume" action on a parked meta.wait step.
   resumeWait(jobId: string, stepId: string, note?: string): void {
+    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
+    if (step?.type === 'action' && step.action === 'meta.session') {
+      this.resumeSession(jobId, stepId, note);
+      return;
+    }
     this.resolveWaitStep(jobId, stepId, 'user', note?.trim() || undefined);
+  }
+
+  // `reviewed` stays unset: unlike a meta.wait's, a meta.session's output is what the user decided.
+  private resolveSessionStep(
+    jobId: string, stepId: string, output: Record<string, unknown>, who: 'user' | 'session', body: string,
+  ): boolean {
+    let resolved = false;
+    this.mutateStep(jobId, stepId, (s) => {
+      if (s.type !== 'action' || s.action !== 'meta.session' || s.state !== 'waiting' || s.cancelled || s.failure) return s;
+      resolved = true;
+      return this.appendStepEvent({ ...s, state: 'resolved', output: JSON.stringify(output), updatedAt: this.ctx.now() }, 'resolved', who);
+    });
+    if (!resolved) return false;
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'step_resolved', who, stepId, body: `${this.stepLabel(jobId, stepId)} — ${body}`,
+    }));
+    void this.tickOne(jobId);
+    return true;
+  }
+
+  // PWA "Done" on a meta.session step.
+  resumeSession(jobId: string, stepId: string, note?: string): boolean {
+    const n = note?.trim();
+    return this.resolveSessionStep(jobId, stepId, { resumed_by: 'user', ...(n ? { note: n } : {}) }, 'user', 'marked done');
+  }
+
+  onSessionReport(jobId: string, stepId: string, r: SessionReport): boolean {
+    return this.resolveSessionStep(jobId, stepId, {
+      resumed_by: 'report', summary: r.summary, report: r.report,
+      ...(r.answers?.length ? { answers: r.answers } : {}),
+      ...(r.corrections?.length ? { corrections: r.corrections } : {}),
+      ...(r.wantsReplan !== undefined ? { wantsReplan: r.wantsReplan } : {}),
+    }, 'session', `reported back: ${r.summary}`);
   }
 
   // The user's session on a meta.wait: created on the first open while the step is parked,

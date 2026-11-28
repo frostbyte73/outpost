@@ -14,6 +14,8 @@ import { workApi } from '../../net/work.js';
 import { emptyState } from '../shell/placeholder.js';
 import { openSession } from '../../app-bridge.js';
 import { shortName } from '../../utils/formatting.js';
+import { wireAutogrow } from '../../utils/autogrow.js';
+import { isSessionStep, sessionDoneComposerHtml, markSessionDone } from '../work/wait-session.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
 function ago(epochMs) {
@@ -66,7 +68,7 @@ function sessionsListHtml(job) {
 // Scroll targets live inside .tk-shell — the root renderTrackedDetail renders
 // in BOTH layouts (desktop's .o-frame-detail and mobile's .m-tk-mount), so
 // the CTA works wherever the focus card is mounted.
-function runFocusCta(job, cta) {
+function runFocusCta(job, cta, root) {
   if (!cta || cta.action === 'none') return;
   if (cta.action === 'review-plan') {
     const el = document.querySelector('.tk-shell .plan-section');
@@ -78,7 +80,7 @@ function runFocusCta(job, cta) {
     return;
   }
   if (cta.action === 'resume-wait' && cta.stepId) {
-    void work.approve(job.id, { gate: 'wait', stepId: cta.stepId });
+    void (sessionCta(job, cta) ? markSessionDone(job.id, cta.stepId, root) : work.approve(job.id, { gate: 'wait', stepId: cta.stepId }));
     return;
   }
   if (cta.action === 'resume-stalled') {
@@ -109,14 +111,26 @@ function focusLabel(fa) {
 // piece at the top of the Tracked drill-in scroll (mockup: "Focus card at the
 // top of the drill-in replaces the desktop right rail's focus card") without
 // forking the markup — same function backs both call sites (D2).
-function focusCardHtml(fa) {
+function focusCardHtml(job, fa) {
+  let cta = '';
+  if (sessionCta(job, fa.cta)) cta = sessionDoneComposerHtml(fa.cta.stepId, 'data-focus-cta');
+  else if (fa.cta.action !== 'none') cta = `<button type="button" class="o-focus-cta" data-focus-cta>${escapeHtml(fa.cta.label)} →</button>`;
   return `
     <div class="o-focus-card">
       <div class="o-focus-label">◆ ${escapeHtml(focusLabel(fa))}</div>
       <div class="o-focus-title">${escapeHtml(fa.title)}</div>
       <div class="o-focus-desc">${escapeHtml(fa.description)}</div>
-      ${fa.cta.action !== 'none' ? `<button type="button" class="o-focus-cta" data-focus-cta>${escapeHtml(fa.cta.label)} →</button>` : ''}
+      ${cta}
     </div>`;
+}
+
+function sessionCta(job, cta) {
+  return cta?.action === 'resume-wait' && isSessionStep(job.steps?.find((s) => s.id === cta.stepId));
+}
+
+function wireFocusCard(root, job, fa) {
+  root.querySelector('[data-focus-cta]')?.addEventListener('click', () => runFocusCta(job, fa.cta, root));
+  wireAutogrow(root);
 }
 
 // Standalone mount for the mobile Tracked drill-in — same card, no sessions/
@@ -128,8 +142,8 @@ export function renderFocusCard(mount, jobId) {
     if (!job) { setHtmlIfChanged(mount, ''); return; }
     const fa = focusAction(job);
     // Guarded: work-store events for other jobs notify this subscriber too.
-    if (!setHtmlIfChanged(mount, focusCardHtml(fa))) return;
-    mount.querySelector('[data-focus-cta]')?.addEventListener('click', () => runFocusCta(job, fa.cta));
+    if (!setHtmlIfChanged(mount, focusCardHtml(job, fa))) return;
+    wireFocusCard(mount, job, fa);
   };
   paint();
   return work.subscribe(paint);
@@ -211,9 +225,7 @@ export function renderContext(mount) {
     currentJobId = job.id;
 
     const fa = focusAction(job);
-    if (setHtmlIfChanged(dom.card, focusCardHtml(fa))) {
-      dom.card.querySelector('[data-focus-cta]')?.addEventListener('click', () => runFocusCta(job, fa.cta));
-    }
+    if (setHtmlIfChanged(dom.card, focusCardHtml(job, fa))) wireFocusCard(dom.card, job, fa);
     setHtmlIfChanged(dom.sessions, sessionsListHtml(job));
     setHtmlIfChanged(dom.kv, kv(job).map(([k, v]) => `<span class="k">${escapeHtml(k)}</span><span class="v">${v}</span>`).join(''));
 

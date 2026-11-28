@@ -10,7 +10,7 @@ import { isTerminalStep, hasUnapprovedDraft, draftAwaitsUser } from '../../vm/wo
 import { shortName } from '../../utils/formatting.js';
 import { stepFeedHtml } from './wheel-toggle.js';
 import { sessionsApi } from '../../net/sessions.js';
-import { waitSessionLabel, openWaitStepSession, isSessionStep } from './wait-session.js';
+import { waitSessionLabel, openWaitStepSession, isSessionStep, sessionDoneComposerHtml, markSessionDone } from './wait-session.js';
 import { nav } from '../../state/nav.js';
 
 function escapeHtml(s) { return String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;' }[c])); }
@@ -138,7 +138,9 @@ function actionFor(job, s) {
   if (s.type === 'orchestrated') return '';
   // meta.wait hold: let the user release it early (timed) or at all (indefinite).
   if (s.type === 'action' && s.state === 'waiting') {
-    return `<button class="o-btn o-btn--primary" data-step-action="resume">${isSessionStep(s) ? 'Done' : 'Resume now'}</button>`
+    return (isSessionStep(s)
+      ? sessionDoneComposerHtml(s.id, 'data-step-action="resume"')
+      : '<button class="o-btn o-btn--primary" data-step-action="resume">Resume now</button>')
       + waitSessionButton(job, s);
   }
   if (s.type === 'action' && (s.action === 'meta.wait' || isSessionStep(s))) return waitSessionButton(job, s);
@@ -369,7 +371,9 @@ export function wireTimelineStep(el, job, s) {
       if (kind === 'toggle-fold') setFolded(el, s.id, el.getAttribute('data-collapsed') !== 'true');
       else if (kind === 'resolve') void work.resolveStep(job.id, s.id);
       else if (kind === 'launch-now') void work.launchStep(job.id, s.id).catch((err) => alert(`Launch failed: ${err?.message ?? err}`));
-      else if (kind === 'resume') void work.approve(job.id, { gate: 'wait', stepId: s.id });
+      else if (kind === 'resume') {
+        void (isSessionStep(s) ? markSessionDone(job.id, s.id, el) : work.approve(job.id, { gate: 'wait', stepId: s.id }));
+      }
       else if (kind === 'wait-session') openWaitStepSession(job, s);
       else if (kind === 'open-child') nav.select('tracked', btn.getAttribute('data-child-id'));
       else if (kind === 'retry') {

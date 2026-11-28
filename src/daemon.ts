@@ -26,6 +26,7 @@ import { WorkEngine } from './work/engine.js';
 import { sessionGrantRefusal } from './work/preapprovals.js';
 import { checkPlanDiagram } from './work/plan-diagram.js';
 import { LaunchGovernor } from './work/launch-governor.js';
+import { parseSessionReport, resolveWorkSession } from './work/work-launch.js';
 import type { JobRecord } from './work/work-types.js';
 import { ensureActionsInstalled, bundledRepoDir } from './actions/install.js';
 import { ClaudeRuntime } from './runtime/claude/runtime.js';
@@ -844,15 +845,11 @@ async function main() {
     // Reassigned once the action-edit handlers exist further down main().
     recordActionDenial: (denial) => recordActionDenial(denial),
   });
-  function checkWorkLaunch(credential: string | undefined, jobId: string, stepId?: string, dispatchId?: string): string {
-    const job = jobQueue.get(jobId);
-    const step = stepId ? job?.steps.find((s) => s.id === stepId) : undefined;
-    const child = dispatchId && step?.type === 'orchestrated' ? step.dispatches.find((d) => d.id === dispatchId) : undefined;
-    const sessionId = dispatchId
-      ? child?.sessionId
-      : stepId
-        ? step?.sessionId ?? job?.steps.flatMap((s) => s.type === 'orchestrated' ? s.dispatches : []).find((d) => d.id === stepId)?.sessionId
-        : job?.orchestratorSessionId;
+  function checkWorkLaunch(
+    credential: string | undefined, jobId: string, stepId?: string, dispatchId?: string,
+    opts?: { allowManualSession?: boolean },
+  ): string {
+    const sessionId = resolveWorkSession(jobQueue.get(jobId), { stepId, dispatchId, ...opts });
     if (!sessionId || !manager.acceptsWorkSubmission(sessionId, credential)) {
       throw new Error('This runtime launch no longer owns the work session');
     }
@@ -946,6 +943,16 @@ async function main() {
         checkWorkLaunch(credential, a.jobId as string, a.stepId as string);
         noteRoundOutput('submit_step_failed', a);
         engine.onStepFailed(a.jobId as string, a.stepId as string, a.reason as string);
+        return { ok: true };
+      },
+      submit_session_report: async (a) => {
+        checkWorkLaunch(credential, a.jobId as string, a.stepId as string, undefined, { allowManualSession: true });
+        const report = parseSessionReport(a);
+        if (typeof report === 'string') throw new Error(`submit_session_report refused: ${report}`);
+        noteRoundOutput('submit_session_report', a);
+        if (!engine.onSessionReport(a.jobId as string, a.stepId as string, report)) {
+          throw new Error('submit_session_report refused: the step is not waiting for a report');
+        }
         return { ok: true };
       },
       submit_step_progress: async (a) => {
