@@ -1,6 +1,6 @@
 ---
 name: project.shape
-description: Shape a project idea into a one-page brief.md — problem, audience, appetite (time budget), no-gos, rabbit holes, success criteria — for docs/projects/<slug>/. Writes [NEEDS CLARIFICATION] instead of guessing and returns those questions as clarifications[]; when there are any, follow it with a meta.session "Answer clarifications" and a second project.shape. Read-only — the file comes back in the output for a later code.orchestrate-pr step to commit (see SHARED-project-folder.md).
+description: Shape a project idea into a one-page brief.md — problem, audience, appetite (time budget), no-gos, rabbit holes, success criteria, assumptions — for docs/projects/<slug>/. Asks at most 5 [NEEDS CLARIFICATION] questions, about scope, audience or appetite only, records every other unknown as an assumption, and returns those questions as clarifications[]; when there are any, follow it with a meta.session "Answer clarifications" and a second project.shape. Read-only — the file comes back in the output for a later code.orchestrate-pr step to commit (see SHARED-project-folder.md).
 outpost:
   kind: action
   category: project
@@ -33,7 +33,8 @@ cat ~/.outpost/actions/SHARED-project-folder.md
 Also read, newest first per the shared doc:
 
 - An earlier `project.shape` output in `previousSteps` — this run is then a **revision**.
-- A `meta.session` output in `previousSteps` — its `answers` (or its Done `note`) holds the user's answers.
+- A `meta.session` output in `previousSteps` — its `answers`, `corrections` or Done `note`
+  (see *Clarifications* in the shared doc).
 - `docs/projects/<slug>/brief.md` in the workspace, when the repo already has one.
 
 The workspace is `readonly` on the target repo, or `none` for a project with no repo yet. In
@@ -41,7 +42,7 @@ an existing repo, skim its `README.md` and `CLAUDE.md` so the brief doesn't cont
 
 ## Step 2 — Write `brief.md`
 
-One page at most. Six sections, each a few lines:
+One page at most. Seven sections, each a few lines:
 
 - **Problem** — what is wrong or missing today, and for whom.
 - **Audience** — who uses the result and what they already have.
@@ -49,22 +50,22 @@ One page at most. Six sections, each a few lines:
 - **No-gos** — what is deliberately out, so a later step doesn't build it.
 - **Rabbit holes** — the risky unknowns, each with how the project will de-risk it.
 - **Success criteria** — observable outcomes that mean done.
+- **Assumptions** — every unknown you decided rather than asked, one line each, saying what
+  you assumed so a later step can revisit it.
 
-Never guess. Where the idea doesn't settle something a later step would have to decide, write
-`[NEEDS CLARIFICATION: <one specific question>]` in place. On a revision, resolve every marker
-the answers cover and keep the ones they don't.
+Ask only what the user alone can settle: at most 5 `[NEEDS CLARIFICATION: <one specific
+question>]` markers, each about **scope** (what's in or out), **audience** (who it's for) or
+**appetite** (how much time it's worth). Anything else — platform, stack, art style, controls,
+naming — you decide and list under Assumptions. On a revision, resolve and apply what the
+answers and corrections cover, per the shared doc.
 
 ## Step 3 — Clarifications
 
 `clarifications` lists the questions from the markers still in the brief, in order, verbatim.
-It is empty when the brief has none.
-
-**The contract the planner relies on:** when `clarifications` is non-empty, the plan follows
-this step with a `meta.session` "Answer clarifications" whose prompt lists the questions, then a
-second `project.shape` with the same `slug`. The user answers in that session, and the second
-run reads the draft and those answers from `previousSteps`. If the second run still returns
-clarifications, that is the planner's cue to re-plan with another session and shape pair. A
-session that comes back with no answers answers nothing, so the markers stay as they were.
+It is empty when the brief has none. The rest of the contract is *Clarifications* in the
+shared doc; the shape-specific part is that the second run is a `project.shape` with the same
+`idea` and `slug`, and that if it still returns clarifications, the planner adds another
+session and shape pair.
 
 ## Step 4 — Submit
 

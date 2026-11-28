@@ -74,20 +74,40 @@ step's findings.
    new follow-up steps the findings unlocked. This routes through the user's
    plan-approval before anything new runs.
 
-**A settled `meta.session`** is always reviewed, because its `output` is the user's verdict: `{resumed_by: "user", note?}` from Done, or `{resumed_by: "report", summary, report, answers?, corrections?, wantsReplan?}` when the session reported back. Take step 3 when `wantsReplan` is true, when `corrections` or `answers` is non-empty, or when the `note` or `report` changes what the remaining steps should do. Otherwise take step 2.
+**A settled `meta.session`** is always reviewed, because its `output` is the user's verdict: `{resumed_by: "user", note?}` from Done, or `{resumed_by: "report", summary, report, answers?, corrections?, wantsReplan?}` when the session reported back. Take step 3 when `wantsReplan` is true, when `corrections` or `answers` is non-empty, or when the `note` or `report` changes what the remaining steps should do. Otherwise take step 2. The one exception is a project job's "Answer clarifications" session that carries only answers: that is step 2, because its answers feed the re-run already planned after it (see below).
 
-**Project jobs** (see *Project jobs* below) take step 3 at two known points:
+**Project jobs** (see *Project jobs* below) take step 3 at three known points:
 
-- A `project.shape` step resolved with a non-empty `clarifications` in its output → replan:
-  keep every step, and insert ahead of `project.requirements` a `meta.session` "Answer
-  clarifications" whose `inputs.prompt` lists the questions verbatim and asks for the answers,
-  then a second `project.shape` with the same `idea` and `slug` (leave `answers` unset — they
-  arrive through the session's output). Repeat while a shape run still returns clarifications.
+- A `project.shape`, `project.requirements` or `project.decompose` step resolved with a
+  non-empty `clarifications` in its output → replan: keep every step, and insert directly after
+  it a `meta.session` "Answer clarifications" (`workspace` readonly on the repo) whose
+  `inputs.prompt` lists the questions verbatim and numbered, asks the user to answer each, and
+  asks the session to report back with `answers` — one `{question, answer}` per question, the
+  question copied verbatim. Then a second run of the same action with the same inputs (for
+  shape, leave `answers` unset — they arrive through the session's output). Repeat while a run
+  still returns clarifications; an output with no `clarifications` field has none. An
+  "Answer clarifications" session that settles with only answers is step 2, not step 3: they
+  are for the re-run already planned after it. One that also sets `wantsReplan`, reports
+  `corrections`, or says in its note or report that the plan should change falls under the
+  general rule above.
+- A "Sign off docs/projects/<slug>/" session resolved with `corrections`, or with a `note` or
+  `report` asking for changes → replan: keep every step, and insert before the landing step a
+  re-run of the earliest affected `project.*` action and each one after it in the chain —
+  `brief.md` → shape, requirements and decompose; `features.json` → requirements and
+  decompose; `roadmap.md` → decompose — each with the corrections verbatim, one per line,
+  appended to its `inputs.context` rather than replacing what was there (they also read them
+  from `previousSteps`), then another sign-off built
+  like the first. Nothing lands until a sign-off comes back clean: one that reports no
+  corrections, or is marked Done with no note asking for changes, is step 2, and the landing
+  runs next.
 - The step landing the project folder resolved (merged) → replan: keep every step by
   `keepId` and append the milestone steps exactly as *Project jobs* → "Ready" describes
-  (acceptance IDs in `goal`, a check `meta.session` between milestones, the appended Repo/folder/Acceptance
-  line), built from the `project.decompose` output's `milestones[]` (in `currentSteps`, or `jq` it out of `jobFile`). It matches the merged
-  `roadmap.md`, because the landing wrote it byte for byte.
+  (acceptance IDs in `goal`, a check `meta.session` between milestones and the closing
+  "Check the project" one, the appended Repo/folder/Acceptance line), built from the
+  `project.decompose` output's `milestones[]` (in `currentSteps`, or `jq` it out of
+  `jobFile`) — the latest decompose run's, when there were several — and the closing
+  session's success criteria from the merged `brief.md`. Both match the merged folder,
+  because the landing wrote it byte for byte.
 
 Load `submit_continue` alongside the others:
 ```
@@ -208,7 +228,22 @@ Only for the **Project** category. Read `cat ~/.outpost/actions/SHARED-project-f
 
 **Read the folder from the fresh base** (`git fetch origin`, then `git show origin/<base>:docs/projects/<slug>/<file>`, per Step 4a). It is ready to build from when `brief.md`, `features.json` and `roadmap.md` all exist; `progress.md` says which milestones have landed. A repo this plan creates with `write.create-repo` has no folder yet: start at `project.shape` without reading anything.
 
-**Not ready → plan the shaping chain, and stop there.** Start at the first missing file: `project.shape` (`inputs: {idea: <the job's own words>, slug, context}`) → `project.requirements` (`{slug}`) → `project.decompose` (`{slug}`) → one step that lands the folder. The `project.*` steps take `workspace: {"kind":"readonly","repoCwd":<repo>}` and keep `forwardOutput` at its default `true` — the landing step reads their outputs. Emit no milestones yet; step-review adds them once the folder lands (see Step-review mode).
+**Not ready → plan the shaping chain, and stop there.** Start at the first missing file: `project.shape` (`inputs: {idea: <the job's own words>, slug, context}`) → `project.requirements` (`{slug}`) → `project.decompose` (`{slug}`) → a sign-off `meta.session` → one step that lands the folder. The `project.*` steps take `workspace: {"kind":"readonly","repoCwd":<repo>}` and keep `forwardOutput` at its default `true` — the landing step reads their outputs. Emit no milestones yet; step-review adds them once the folder lands, and handles clarifications and sign-off corrections on the way (see Step-review mode).
+
+The sign-off is where the user reads the folder before anything is committed. Its prompt can't carry the files — they don't exist yet at plan time, and the session's earlier-steps context truncates long outputs — so it points at the job file, written literally as an absolute path: your envelope's `jobFile` when it has one, else `<jobs dir>/<jobId>.json` — `$OUTPOST_ENVELOPE` is `<jobs dir>/<jobId>/orchestrator/envelope.json` in every mode:
+
+```jsonc
+{
+  "type": "action",
+  "action": "meta.session",
+  "title": "Sign off docs/projects/<slug>/",
+  "goal": "The user approves brief.md, features.json and roadmap.md, or lists corrections.",
+  "inputs": {
+    "prompt": "Walk me through docs/projects/<slug>/brief.md, features.json and roadmap.md before they are committed. Each file's full content is the newest files[] entry for its path among this job's project.* step outputs in <jobFile>; read it there with jq, since the earlier-steps context truncates long outputs. Each step's output is a JSON string, so reach the files with `jq '.steps[].output | fromjson? | .files[]?' <jobFile>`. Show me each file, then ask whether to approve it or what to change. When I'm done, report back: corrections lists each change I asked for, one per entry, naming the file. No corrections means approved."
+  },
+  "workspace": { "kind": "readonly", "repoCwd": "<repo>" }
+}
+```
 
 ```jsonc
 {
@@ -227,7 +262,8 @@ Only for the **Project** category. Read `cat ~/.outpost/actions/SHARED-project-f
 **Ready → one `meta.job` per remaining milestone.** For each milestone in `roadmap.md` that `progress.md` doesn't record as landed and that isn't marked dropped, in `Depends on` order, emit:
 
 - a `meta.job` step with `inputs: {title: <the milestone title, which starts with its ID>, brief: <its brief from roadmap.md, verbatim>}`, a `goal` naming its acceptance feature IDs, and `workspace: {"kind":"none"}`;
-- then, unless it is the last milestone, a `meta.session` titled "Check M<n>", `workspace: {"kind":"readonly","repoCwd":<repo>}`, whose `inputs.prompt` tells the user how to check that M<n> landed: walk through the test steps of its acceptance feature IDs in `docs/projects/<slug>/features.json` against the repo, and list anything that should change the next milestone's brief. The next milestone starts when the user marks it done.
+- then, unless it is the last milestone, a `meta.session` titled "Check M<n>", `workspace: {"kind":"readonly","repoCwd":<repo>}`, whose `inputs.prompt` tells the user how to check that M<n> landed: walk through the test steps of its acceptance feature IDs in `docs/projects/<slug>/features.json` against the repo, and list anything that should change the next milestone's brief. The next milestone starts when the user marks it done;
+- after the last milestone's `meta.job`, a `meta.session` titled "Check the project", `workspace: {"kind":"readonly","repoCwd":<repo>}`, whose `inputs.prompt` lists `brief.md`'s success criteria verbatim from the merged file (`git show origin/<base>:docs/projects/<slug>/brief.md`), then tells the session to read `docs/projects/<slug>/features.json` when it starts and walk the user through the steps of every entry not marked dropped that is a `quality` entry or is still `passes: false` at that point — not a list you write now, since every feature is still `passes: false` when this is planned — and asks the user to say what doesn't hold. It resolves when the user marks it Done or the session reports back.
 
 A child's planner sees only its brief. Append one line with whichever of these the brief lacks — `Repo: <owner>/<name> (<abs path>). Project folder: docs/projects/<slug>/. Acceptance: F-003, F-004.` — and otherwise leave it as written.
 

@@ -1,6 +1,6 @@
 ---
 name: project.decompose
-description: Break a project (brief.md + features.json in docs/projects/<slug>/) into roadmap.md — milestones as a dependency graph, the thinnest end-to-end slice first and the riskiest unknown next, each with a standalone meta.job brief and the feature IDs it must pass. Its milestones[] output maps straight onto meta.job steps. Read-only — the file comes back in the output for a later code.orchestrate-pr step to commit (see SHARED-project-folder.md).
+description: Break a project (brief.md + features.json in docs/projects/<slug>/) into roadmap.md — milestones as a dependency graph, the thinnest end-to-end slice first and the riskiest unknown next, each with a standalone meta.job brief and the feature IDs it must pass. Its milestones[] output maps straight onto meta.job steps. Returns ordering or scope questions as clarifications[]; when there are any, follow it with a meta.session "Answer clarifications" and a second project.decompose. Read-only — the file comes back in the output for a later code.orchestrate-pr step to commit (see SHARED-project-folder.md).
 outpost:
   kind: action
   category: project
@@ -39,7 +39,10 @@ Take each file's newest copy (a `previousSteps` `files[]` entry, else the checko
   `milestones[]` (Step 4). Never renumber or reuse a milestone ID. Every existing milestone
   keeps its own, and a new one takes the next `M`-number above the highest in `roadmap.md`.
   A milestone this run removes stays in `roadmap.md` marked dropped, never deleted, so its ID
-  is never issued again. A dropped milestone is not in `milestones[]` either.
+  is never issued again. A dropped milestone is not in `milestones[]` either. A re-run within
+  the same job starts from its own earlier output, under the same rules.
+- `meta.session` outputs in `previousSteps` — answers and corrections (*Clarifications* in
+  the shared doc).
 
 ## Step 2 — Order the milestones
 
@@ -51,6 +54,13 @@ Take each file's newest copy (a `previousSteps` `files[]` entry, else the checko
 Every feature in `features.json` not marked `dropped` appears in exactly one milestone's
 `acceptance`, and a finished milestone's acceptance counts. A milestone is sized for one child
 job; if a brief needs more than a screen, split it.
+
+When the order or a milestone's scope hinges on a question the brief and features don't
+settle — which of two rabbit holes is riskier, whether a feature belongs in the first slice —
+write the marker in `roadmap.md` at the affected milestone and list the question in
+`clarifications` (at most 5). Still emit a complete provisional order and `milestones[]`.
+Anything less consequential you decide, and say so in the milestone's brief. A re-run orders by
+the answers, and never renumbers.
 
 ## Step 3 — Write each milestone's brief
 
@@ -84,7 +94,8 @@ name a finished milestone, which is already satisfied.
   "summary": "4 milestones; M2 de-risks the physics engine.",
   "milestones": [
     { "id": "M1", "title": "M1 — Playable empty level", "dependsOn": [], "acceptance": ["F-001", "F-002"], "brief": "## Goal\n…" }
-  ]
+  ],
+  "clarifications": []
 }
 ```
 

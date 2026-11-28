@@ -69,6 +69,31 @@ wrote as its step output, and a later `code.orchestrate-pr` step commits them.
   for that path; only without one is it the file in the checkout. A chain like shape →
   requirements → decompose runs before anything is committed, so the checkout is stale.
 
+## Clarifications
+
+`project.shape`, `project.requirements` and `project.decompose` share one contract for what
+they can't decide.
+
+- **Ask few.** Where a later step would have to guess, write
+  `[NEEDS CLARIFICATION: <one specific question>]` in place in the file you write, and list
+  the questions of the markers still in it as `clarifications[]`, verbatim and in order —
+  **at most 5**. Everything else you decide yourself and record as an assumption: in
+  `brief.md`'s Assumptions section, or in the feature's or milestone's own text. With more
+  than 5 candidates, keep the 5 that most change what gets built and assume the rest.
+- **Where answers come from.** Read every `meta.session` output in `previousSteps`, not only
+  the newest. A report, `{resumed_by: "report", report, answers?, corrections?}`, carries
+  `answers` as `[{question, answer}]` and, after a sign-off, `corrections`: changes the user
+  asked for. A Done, `{resumed_by: "user", note?}`, answers in its free-text `note`. Apply an
+  answer whose question matches one of your markers (by meaning, if the user paraphrased —
+  say so in `summary`), and a correction that concerns your file or one it derives from.
+- **Revise, don't restart.** A re-run starts from the newest copy of its own file. It resolves
+  every answered marker — the answer written in, the marker gone, the question not listed
+  again — keeps the unanswered ones, and never re-asks something already answered. A session
+  with no answers, corrections or note answers nothing.
+- **The planner's side.** A non-empty `clarifications` is followed by a `meta.session`
+  "Answer clarifications" whose prompt lists the questions verbatim, then a second run of the
+  same action. An output with no `clarifications` field has none.
+
 ## When a file is missing
 
 An action that needs a file the folder doesn't have says so — in its output, or as

@@ -3,7 +3,7 @@
   "title": "project.requirements output",
   "description": "Submitted as a JSON string. A later code.orchestrate-pr step writes files[] verbatim (SHARED-project-folder.md).",
   "type": "object",
-  "required": ["slug", "files", "summary", "featureIds"],
+  "required": ["slug", "files", "summary", "featureIds", "clarifications"],
   "properties": {
     "slug": { "type": "string" },
     "files": {
@@ -20,7 +20,13 @@
       }
     },
     "summary": { "type": "string" },
-    "featureIds": { "type": "array", "items": { "type": "string" }, "description": "Every id in the written features.json not marked dropped." }
+    "featureIds": { "type": "array", "items": { "type": "string" }, "description": "Every id in the written features.json not marked dropped." },
+    "clarifications": {
+      "type": "array",
+      "maxItems": 5,
+      "items": { "type": "string" },
+      "description": "The [NEEDS CLARIFICATION] questions still in features.json, in order. Non-empty means the plan needs a meta.session \"Answer clarifications\" and a second project.requirements."
+    }
   },
   "additionalProperties": false
 }

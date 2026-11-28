@@ -3,7 +3,7 @@
   "title": "project.decompose output",
   "description": "Submitted as a JSON string. A later code.orchestrate-pr step writes files[] verbatim (SHARED-project-folder.md); each milestones[] entry becomes a meta.job step.",
   "type": "object",
-  "required": ["slug", "files", "summary", "milestones"],
+  "required": ["slug", "files", "summary", "milestones", "clarifications"],
   "properties": {
     "slug": { "type": "string" },
     "files": {
@@ -34,6 +34,12 @@
         },
         "additionalProperties": false
       }
+    },
+    "clarifications": {
+      "type": "array",
+      "maxItems": 5,
+      "items": { "type": "string" },
+      "description": "The [NEEDS CLARIFICATION] questions still in roadmap.md, in order — ordering or scope that hinges on an open question. Non-empty means the plan needs a meta.session \"Answer clarifications\" and a second project.decompose."
     }
   },
   "additionalProperties": false

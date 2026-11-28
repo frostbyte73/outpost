@@ -22,8 +22,9 @@
     "summary": { "type": "string" },
     "clarifications": {
       "type": "array",
+      "maxItems": 5,
       "items": { "type": "string" },
-      "description": "The [NEEDS CLARIFICATION] questions still in brief.md, in order. Non-empty means the plan needs a meta.session \"Answer clarifications\" and a second project.shape."
+      "description": "At most 5 [NEEDS CLARIFICATION] questions still in brief.md, in order, each about scope, audience or appetite. Non-empty means the plan needs a meta.session \"Answer clarifications\" and a second project.shape."
     }
   },
   "additionalProperties": false
