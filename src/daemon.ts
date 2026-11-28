@@ -29,6 +29,7 @@ import { LaunchGovernor } from './work/launch-governor.js';
 import { parseReplanRequest, parseSessionReport, resolveWorkSession } from './work/work-launch.js';
 import type { JobRecord } from './work/work-types.js';
 import { ensureActionsInstalled, bundledRepoDir } from './actions/install.js';
+import { installScreenshotTool } from './permissions/screenshot/install.js';
 import { ClaudeRuntime } from './runtime/claude/runtime.js';
 import { ClaudeTranscripts } from './runtime/claude/transcripts.js';
 import { codexVersion, resolveCodexBin } from './runtime/codex/bin.js';
@@ -252,6 +253,12 @@ async function main() {
   // learn the port.
   if (config.httpPort !== null) {
     process.env.OUTPOST_API_URL = `http://127.0.0.1:${config.httpPort}`;
+  }
+  // The grant is only as safe as PATH: no read session may write any dir on it, before or after this one.
+  try {
+    process.env.PATH = [installScreenshotTool(RUNTIME_DIR, bundledRepoDir(SRC_DIR)), process.env.PATH].filter(Boolean).join(':');
+  } catch (e) {
+    console.warn('[daemon] outpost-screenshot not installed, screenshots unavailable:', (e as Error).message);
   }
 
   const secret = randomBytes(32).toString('hex');

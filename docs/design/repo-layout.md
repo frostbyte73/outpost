@@ -61,6 +61,8 @@ src/
     dangerous-writes.ts    # deny-vs-warn for external writes: refusedWrite() feeds allows(),
                            # writeFindings() rides out on the draft for the approval card
     github-token.ts        # where $GITHUB_TOKEN may go: curl's Authorization header to api.github.com, nowhere else
+    screenshot/            # outpost-screenshot: capture.mjs (localhost-only Chromium capture), install.ts
+                           # (rewrites it into <runtimeDir>/bin every boot, out of any session's reach)
   ws/                    # inbound PWA WebSocket frames
     client-messages.ts     # decode + dispatch; isolated because a throw in ws.on('message') kills the daemon
   git/                   # worktree + git ops + diff

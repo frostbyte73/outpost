@@ -14,7 +14,7 @@
     "alwaysAllowPathPatterns": []
   },
   "read": {
-    "description": "Local file reads and git-read-only commands (Read/Glob/Grep/LS, ls/cat/rg/find, git status/log/diff/show/blame/branch/fetch/submodule status, sed restricted to a line-range print, from a file or from stdin).",
+    "description": "Local file reads and git-read-only commands (Read/Glob/Grep/LS, ls/cat/rg/find, git status/log/diff/show/blame/branch/fetch/submodule status, sed restricted to a line-range print, from a file or from stdin). Also outpost-screenshot, a daemon-owned tool in <runtimeDir>/bin, pinned to an http(s)://localhost|127.0.0.1|[::1] URL and a /tmp/<name>.png output; the tool itself holds every request, redirect hop and WebSocket to the captured page's origin and allows only GET/HEAD (see docs/design/permissions.md).",
     "alwaysAllow": [
       "Read",
       "Glob",
@@ -27,7 +27,8 @@
       "^git (-C [^-\\s]\\S* )?(status|log|diff|show|blame|branch|remote -v|remote get-url|config --get|fetch|rev-parse|merge-base|ls-files|ls-tree|cat-file|describe|shortlog|show-ref|grep|tag -l|stash list|worktree list|submodule status|submodule summary)(\\s|$)",
       "^(rg|grep)(\\s|$)",
       "^find(\\s|$)",
-      "^sed -n[ \\t]+(?:'[0-9]+,[0-9]+p'|\"[0-9]+,[0-9]+p\"|[0-9]+,[0-9]+p)(?:[ \\t]+[^-\\s]\\S*)?[ \\t]*$"
+      "^sed -n[ \\t]+(?:'[0-9]+,[0-9]+p'|\"[0-9]+,[0-9]+p\"|[0-9]+,[0-9]+p)(?:[ \\t]+[^-\\s]\\S*)?[ \\t]*$",
+      "^outpost-screenshot(?:[ \\t]+(?:--width[ \\t]+[0-9]{2,5}|--height[ \\t]+[0-9]{2,5}|--color-scheme[ \\t]+(?:light|dark)|--full-page))*[ \\t]+(?:'https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::[0-9]{1,5})?(?:/[^'\\s]*)?'|\"https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::[0-9]{1,5})?(?:/[^\"\\s$`\\\\]*)?\"|https?://(?:localhost|127\\.0\\.0\\.1|\\[::1\\])(?::[0-9]{1,5})?(?:/[A-Za-z0-9._~%/=+,:@-]*)?)(?:[ \\t]+/tmp/[A-Za-z0-9_-][A-Za-z0-9._-]*\\.png)?[ \\t]*$"
     ],
     "alwaysAllowMcpPatterns": [],
     "alwaysAllowPathPatterns": []
