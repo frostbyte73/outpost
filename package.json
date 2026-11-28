@@ -9,7 +9,8 @@
     "test": "npm run test:unit && npm run test:e2e",
     "test:unit": "vitest run",
     "test:unit:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "ui:check": "tsx tests/ui-check/run.ts"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.318",
@@ -28,7 +29,9 @@
     "@types/pg": "^8.23.1",
     "@types/web-push": "^3.6.4",
     "@types/ws": "^8.5.13",
+    "axe-core": "^4.14.1",
     "jsdom": "^29.1.1",
+    "postcss": "^8.5.34",
     "selfsigned": "^2.4.1",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0",
