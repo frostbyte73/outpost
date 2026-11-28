@@ -263,6 +263,17 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   border-radius: 0 var(--r-control) var(--r-control) 0;
   overflow-wrap: anywhere;
 }
+.tl-replan {
+  margin: 2px 0 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--warn-soft);
+  border-left: 2px solid var(--warn);
+  border-radius: 0 var(--r-control) var(--r-control) 0;
+  overflow-wrap: anywhere;
+}
 
 /* Earlier attempts at a step (step-card.js's attemptsHtml). Collapsed by default — the live
    failure above is the one you're acting on; these are what you check before repeating a
@@ -590,6 +601,7 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
 /* declined: terminal but not a failure — neutral like mute, but keeps its ⊘ glyph visible
    (mute is used for cancelled, which shows no glyph at all) rather than reading as "done". */
 .tl-dot[data-tone="declined"] { background: var(--bg-elev-2); border-color: var(--line); color: var(--text-dim); }
+.tl-dot[data-tone="replan"] { background: var(--bg); border-color: var(--warn); color: var(--warn); }
 @keyframes tl-pulse { 50% { opacity: 0.55; } }
 
 .tl-content {

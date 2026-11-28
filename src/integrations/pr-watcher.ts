@@ -376,7 +376,7 @@ export class PrWatcher {
     if ((j.state === 'planning' || j.state === 'plan_pending_review') && !j.steps.some((s) => s.sessionId)) return;
     for (const s of j.steps) {
       if (s.type !== 'orchestrated') continue;
-      if (s.cancelled || s.state === 'resolved' || s.state === 'failed') {
+      if (s.cancelled || s.state === 'resolved' || s.state === 'failed' || s.state === 'replan_requested') {
         // Nothing sweeps this step again, so its backoff entry would sit in the map for the
         // rest of the process's life (same reason the escalation ladder drops its own).
         this.discoveryFailures.delete(`${jobId}:${s.id}`);

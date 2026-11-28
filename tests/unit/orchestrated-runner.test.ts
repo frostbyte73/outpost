@@ -28,6 +28,7 @@ function host(initial: OrchestratedStep, working = false) {
     spawnDispatch: vi.fn(),
     resolveStep: vi.fn(),
     failStep: vi.fn(),
+    requestReplan: vi.fn(),
     scheduleDelivery: vi.fn(),
     actionInfo: {
       sideEffects: (a) => ({

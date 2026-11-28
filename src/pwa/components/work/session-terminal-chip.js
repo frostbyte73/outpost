@@ -6,7 +6,7 @@
 import { escapeHtml } from '../../util.js';
 import { orchestratedRows } from '../../vm/tracked.js';
 
-const TERMINAL_END_KINDS = new Set(['resolved', 'failed', 'cancelled', 'merged']);
+const TERMINAL_END_KINDS = new Set(['resolved', 'failed', 'cancelled', 'merged', 'replan_requested']);
 
 // Timing comes only from the run events (spawned → terminal), which session-mounts
 // derives from the job timeline. Deliberately NO createdAt/updatedAt fallback:
@@ -55,12 +55,13 @@ export function terminalChipVariant(step) {
   // ActionStep-only: the user denied this step's write draft. Terminal, but not a failure —
   // its own variant rather than folding into 'failed'.
   if (step.type === 'action' && step.state === 'declined') return 'declined';
+  if (step.state === 'replan_requested') return 'replan';
   if (step.state === 'resolved') return 'finished';
   return null;
 }
 
-const GLYPH = { finished: '✓', failed: '✗', cancelled: '⊘', declined: '⊘' };
-const LABEL = { finished: 'Finished', failed: 'Failed', cancelled: 'Cancelled', declined: 'Declined' };
+const GLYPH = { finished: '✓', failed: '✗', cancelled: '⊘', declined: '⊘', replan: '↻' };
+const LABEL = { finished: 'Finished', failed: 'Failed', cancelled: 'Cancelled', declined: 'Declined', replan: 'Asked for a replan' };
 
 function chipHtml(variant, text, { tone = null, title = null } = {}) {
   const attrs = (tone ? ` data-tone="${escapeHtml(tone)}"` : '') + (title ? ` title="${escapeHtml(title)}"` : '');

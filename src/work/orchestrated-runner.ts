@@ -17,6 +17,7 @@ export interface OrchestratedHost {
   spawnDispatch(jobId: string, stepId: string, dispatch: Dispatch): void;
   resolveStep(jobId: string, stepId: string, output: string, update?: UpdateRound): void;
   failStep(jobId: string, stepId: string, reason: string, update?: UpdateRound): void;
+  requestReplan(jobId: string, stepId: string, req: { reason: string; evidence?: string; suggestion?: string }, update?: UpdateRound): void;
   // Re-run delivery for this step at `at` (epoch ms). The only thing that ever un-holds a batch
   // parked by the external quiet period: nothing else is guaranteed to come along, since the
   // watcher pushes only when a signal moves and a quiet PR moves nothing. Idempotent per step —
@@ -83,7 +84,7 @@ export function applyMove(host: OrchestratedHost, jobId: string, stepId: string,
   // 'running' — and resumes the controller, resurrecting a step the user just closed out.
   // `.failure` is checked too, not just `state === 'failed'` — some failure paths land
   // `.failure` without (yet) updating `state`, and this must hold even then.
-  if (!step || step.state === 'resolved' || step.state === 'failed' || step.failure) return;
+  if (!step || step.state === 'resolved' || step.state === 'failed' || step.state === 'replan_requested' || step.failure) return;
   // A step parked at a gate is the user's turn. Running a second move here would flip state
   // back to 'running' and strand `step.gate`, which resolveGate then refuses to touch — the
   // user's Approve becomes a silent no-op.
@@ -199,6 +200,14 @@ function runMove(host: OrchestratedHost, jobId: string, stepId: string, move: Ne
 
     case 'fail':
       host.failStep(jobId, stepId, move.reason, update);
+      return;
+
+    case 'replan':
+      host.requestReplan(jobId, stepId, {
+        reason: move.reason,
+        ...(move.evidence ? { evidence: move.evidence } : {}),
+        ...(move.suggestion ? { suggestion: move.suggestion } : {}),
+      }, update);
       return;
   }
 }

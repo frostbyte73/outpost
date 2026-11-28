@@ -82,7 +82,7 @@ function host(step: OrchestratedStep): { host: OrchestratedHost; get: () => Orch
     host: {
       getStep: () => cur, mutateStep: (_j, _s, fn) => { cur = fn(cur); }, sessionWorking: () => false,
       resumeController: () => {}, spawnDispatch: () => {}, resolveStep: () => {}, failStep: () => {},
-      scheduleDelivery: () => {}, actionInfo: info, newId: () => 'i', now: () => 77,
+      requestReplan: () => {}, scheduleDelivery: () => {}, actionInfo: info, newId: () => 'i', now: () => 77,
       preapprovalsFor: () => gated,
     },
   };

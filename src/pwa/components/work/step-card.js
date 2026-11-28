@@ -22,6 +22,7 @@ function stateLabel(s) {
   // it's queued behind earlier steps. Label as "todo" to match the job-level vocabulary.
   if (!s.sessionId && !s.childJobId && s.state === 'running') return 'todo';
   if (s.state === 'gate_pending_approval') return 'needs approval';
+  if (s.state === 'replan_requested') return 'replan requested';
   return s.state;
 }
 function stateTone(s) {
@@ -174,6 +175,7 @@ function dotTone(s) {
   // Terminal but not a failure — its own neutral tone, distinct from both "done" (✓) and
   // "failed" (✗).
   if (s.type === 'action' && s.state === 'declined') return 'declined';
+  if (s.state === 'replan_requested') return 'replan';
   // stateTone's 'gate' only sees the step's own `state`, which a dispatch-raised draft
   // never flips (only the dispatch's own status does) — the same gap Critical 2 named in
   // focusAction/stepWaitPill, here in the timeline's own dot. Without hasUnapprovedDraft, an
@@ -193,6 +195,7 @@ function dotGlyph(tone) {
   if (tone === 'hot') return '!';
   if (tone === 'danger') return '✗';
   if (tone === 'declined') return '⊘';
+  if (tone === 'replan') return '↻';
   if (tone === 'pending') return '◯';
   return ''; // busy — pulsing fill carries the state
 }
@@ -348,6 +351,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
         ${orchestrated ? (foldable ? identRowHtml(s, { folded: true }) : '') : identRowHtml(s, { launch })}
         <div class="tl-body">
           ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
+          ${s.state === 'replan_requested' ? `<div class="tl-replan">Asked for a replan: ${escapeHtml(s.replanRequest?.reason ?? '')}</div>` : ''}
           ${attemptsHtml(s)}
           ${waitBlockHtml(s)}
           ${childJobHtml(s)}

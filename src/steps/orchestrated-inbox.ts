@@ -75,7 +75,7 @@ function prSettled(step: OrchestratedStep): boolean {
 export function shouldDeliver(step: OrchestratedStep, sessionWorking: boolean, now: number): boolean {
   if (sessionWorking) return false;
   if (step.inbox.length === 0) return false;
-  if (step.state === 'resolved' || step.state === 'failed') return false;
+  if (step.state === 'resolved' || step.state === 'failed' || step.state === 'replan_requested') return false;
   // A gated step is the user's turn, not the controller's — except that a message may be the
   // instruction to abandon the gate, and a merged or closed PR leaves the gate nothing to decide
   if (step.state === 'gate_pending_approval') return hasUserMessage(step) || prSettled(step);

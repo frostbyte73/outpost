@@ -300,6 +300,27 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
     },
   },
   {
+    name: 'submit_replan_request',
+    description:
+      'Ask for a replan when the plan as written cannot succeed from this step — a false premise, a '
+      + 'missing prerequisite step, inputs that cannot be right. Never because the work is hard: that is '
+      + 'submit_step_failed. The job goes back to the planner at once and the user approves the amendment. '
+      + 'A second request from the same step after an amendment fails it. Controllers use '
+      + 'submit_step_progress next: {kind:"replan"} instead; dispatched children cannot ask. See '
+      + '~/.outpost/actions/SHARED-replan-requests.md.',
+    inputSchema: {
+      type: 'object',
+      required: ['jobId', 'stepId', 'reason'],
+      properties: {
+        jobId: { type: 'string' },
+        stepId: { type: 'string' },
+        reason: { type: 'string', description: 'Why the plan as written cannot succeed from here.' },
+        evidence: { type: 'string', description: 'Citations: file:line, an output, a URL.' },
+        suggestion: { type: 'string', description: 'The plan change you think it needs.' },
+      },
+    },
+  },
+  {
     name: 'submit_step_progress',
     description:
       'Report this orchestrated step\'s progress and declare your next move. Call exactly once at the '
@@ -313,7 +334,9 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
       + 'fan out to fresh sessions, each seeing only its brief; {kind:"wait",wait:{reason,events?,'
       + 'untilAllDispatchesDone?}} park until the daemon wakes you (you cannot arm a timer of your '
       + 'own — name the events you are waiting for); {kind:"gate",draft,question} '
-      + 'ask the user to approve; {kind:"resolve",output} finish; {kind:"fail",reason} give up. '
+      + 'ask the user to approve; {kind:"resolve",output} finish; {kind:"fail",reason} give up; '
+      + '{kind:"replan",reason,evidence?,suggestion?} the plan itself is wrong — send the job back to the '
+      + 'planner (refused while dispatches are in flight; see SHARED-replan-requests.md). '
       + 'External writes are gated by the daemon whether or not you ask.',
     inputSchema: {
       type: 'object',
@@ -401,6 +424,15 @@ export const OUTPOST_MCP_TOOLS: McpTool[] = [
             {
               type: 'object', required: ['kind', 'reason'], additionalProperties: false,
               properties: { kind: { const: 'fail' }, reason: { type: 'string' } },
+            },
+            {
+              type: 'object', required: ['kind', 'reason'], additionalProperties: false,
+              properties: {
+                kind: { const: 'replan' },
+                reason: { type: 'string', description: 'Why the plan as written cannot succeed from this step.' },
+                evidence: { type: 'string', description: 'Citations: file:line, an output, a URL.' },
+                suggestion: { type: 'string', description: 'The plan change you think it needs.' },
+              },
             },
           ],
         },

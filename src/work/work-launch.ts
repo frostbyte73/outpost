@@ -43,3 +43,24 @@ export function parseSessionReport(a: Record<string, unknown>): SessionReport | 
     ...(wantsReplan !== undefined ? { wantsReplan } : {}),
   };
 }
+
+export type ReplanRequestInput = { reason: string; evidence?: string; suggestion?: string };
+
+// Keyed on `stepId` naming a real step, not on a `dispatchId` argument: resolveWorkSession maps a
+// dispatch id passed as `stepId` to the child's own session, so the argument alone proves nothing.
+export function parseReplanRequest(job: JobRecord | undefined, a: Record<string, unknown>): ReplanRequestInput | string {
+  const step = job?.steps.find((s) => s.id === a.stepId);
+  if (a.dispatchId !== undefined || !step) {
+    return "a dispatched child cannot ask for a replan — whether this step needs one is its controller's call. Report the finding in your output";
+  }
+  if (step.type === 'orchestrated') return 'a controller asks with submit_step_progress next: {kind: "replan"}';
+  const { reason, evidence, suggestion } = a;
+  if (typeof reason !== 'string' || !reason.trim()) return 'reason must be a non-empty string';
+  if (evidence !== undefined && typeof evidence !== 'string') return 'evidence must be a string';
+  if (suggestion !== undefined && typeof suggestion !== 'string') return 'suggestion must be a string';
+  return {
+    reason,
+    ...(evidence ? { evidence: evidence as string } : {}),
+    ...(suggestion ? { suggestion: suggestion as string } : {}),
+  };
+}

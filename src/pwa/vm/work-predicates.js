@@ -7,9 +7,10 @@
 // treating the step as broken. Mirrors isTerminal() in write-draft-runner.ts so the client
 // and server agree on what "this step is done" means — used by step-card.js's Resolve-
 // fallback guard, which would otherwise offer a spurious "Resolve" on an already-settled
-// declined step, and by stepNeedsYou/hasUnapprovedDraft below.
+// declined step, and by stepNeedsYou/hasUnapprovedDraft below. 'replan_requested' (either
+// type) is terminal until an amendment resets it — mirrors isTerminalStep in steps/index.ts.
 export function isTerminalStep(s) {
-  return !!s.failure || !!s.cancelled || s.state === 'resolved'
+  return !!s.failure || !!s.cancelled || s.state === 'resolved' || s.state === 'replan_requested'
     || (s.type === 'action' && s.state === 'declined');
 }
 

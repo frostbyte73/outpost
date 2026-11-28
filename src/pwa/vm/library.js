@@ -94,6 +94,7 @@ const OUTCOME_TONE = {
   gave_up: 'hot',
   abandoned: 'idle',
   interrupted: 'idle',
+  'replan-requested': 'warn',
 };
 
 export function outcomeTone(outcome) {

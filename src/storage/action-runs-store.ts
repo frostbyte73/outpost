@@ -32,7 +32,9 @@ export type ActionRunOutcome =
   // Approved, but only after the user changed the payload.
   | 'edited'
   // Ruled on after the world moved under the draft — evidence neither way.
-  | 'superseded';
+  | 'superseded'
+  // The step judged the plan wrong: evidence against the planner, not this action.
+  | 'replan-requested';
 
 // Outcomes a gate (or the PR) has actually ruled on. A run still sitting at
 // `submitted` is pending, and stays out of every rate's denominator.

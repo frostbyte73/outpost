@@ -93,7 +93,7 @@ export interface DraftedReply {
 // The step's own run bounds, which the job timeline can't give: a plan reconcile
 // bumps every surviving step's updatedAt to the same instant, so createdAt→updatedAt
 // reads as one bogus multi-day duration. Consumed by the inline session's terminal chip.
-export type StepEventKind = 'spawned' | 'resolved' | 'failed' | 'merged';
+export type StepEventKind = 'spawned' | 'resolved' | 'failed' | 'merged' | 'replan_requested';
 
 export interface StepEvent {
   id: string;
@@ -111,6 +111,15 @@ export interface StepAttempt {
   // re-run records no attempt at all — reconcileInterruptedSteps drops the session directly
   // rather than through onStepRetry, and a restart is not an attempt that failed on its merits.
   note?: string;
+  // The attempt ended in a replan request. A second request from a step holding one fails it.
+  kind?: 'replan';
+}
+
+export interface ReplanRequest {
+  reason: string;
+  evidence?: string;
+  suggestion?: string;
+  at: number;
 }
 
 interface StepBase {
@@ -130,6 +139,8 @@ interface StepBase {
   // the only thing that crosses that boundary.
   attempts?: StepAttempt[];
   cancelled?: boolean;
+  // Present while the step is `replan_requested`: why it judged the plan wrong.
+  replanRequest?: ReplanRequest;
   // Set true once a submit_continue step-review has covered this settled step, so
   // the engine doesn't re-review the same group. New steps start unreviewed.
   reviewed?: boolean;
@@ -169,7 +180,9 @@ export interface ActionStep extends StepBase {
   // (→ declined, below).
   // 'declined' is terminal-but-not-a-failure: the user denied this step's write draft. The
   // job orchestrator's step-review gets the reason and re-plans around it.
-  state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed' | 'declined';
+  // 'replan_requested' (both step types): the step judged the plan itself wrong. Neither failed
+  // nor resolved — the job sits in planning until an amendment drops or resets the step.
+  state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed' | 'declined' | 'replan_requested';
   // Epoch ms when a timed meta.wait auto-resumes. Unset for an indefinite manual hold.
   resumeAt?: number;
   // A meta.wait's user-driven session. Not `sessionId`, which every step path reads as the
@@ -231,7 +244,8 @@ export type NextMove =
   | { kind: 'wait'; wait: WaitSpec }
   | { kind: 'gate'; draft: string; question: string }
   | { kind: 'resolve'; output: string }
-  | { kind: 'fail'; reason: string };
+  | { kind: 'fail'; reason: string }
+  | { kind: 'replan'; reason: string; evidence?: string; suggestion?: string };
 
 export interface GateRequest {
   draft: string;
@@ -316,7 +330,7 @@ export interface OrchestratedStep extends StepBase {
   iterations?: IterationRecord[];
   reviewComments?: ReviewComment[];
   draftedReplies?: DraftedReply[];
-  state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed';
+  state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed' | 'replan_requested';
 }
 
 export type Step = ActionStep | OrchestratedStep;
@@ -336,6 +350,7 @@ export type JobEventKind =
   | 'step_failed'
   | 'step_merged'
   | 'step_retried'
+  | 'step_replan_requested'
   | 'session_stalled'
   | 'session_resumed'
   | 'linear_state_written'

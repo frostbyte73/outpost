@@ -113,6 +113,19 @@ export function actionNameForStep(s: Step): string {
   return s.type === 'orchestrated' ? s.controller : s.action;
 }
 
+// The latest of the job's open replan requests; any others still show in currentSteps.
+function replanRequestView(j: JobRecord): OrchestratorEnvelope['replanRequest'] {
+  const asking = j.steps
+    .filter((s) => !s.cancelled && s.state === 'replan_requested' && s.replanRequest)
+    .sort((a, b) => b.replanRequest!.at - a.replanRequest!.at)[0];
+  if (!asking) return undefined;
+  const { reason, evidence, suggestion } = asking.replanRequest!;
+  return {
+    stepId: asking.id, action: actionNameForStep(asking), reason,
+    ...(evidence ? { evidence } : {}), ...(suggestion ? { suggestion } : {}),
+  };
+}
+
 // A step accepts plan-editor patches before it starts, and again once it has FAILED. `sessionId`
 // alone can't be the gate: it is set on the first spawn and never cleared outside onStepRetry, so
 // a controller that validates its inputs and fails on turn 1 (code.orchestrate-review on a bad
@@ -122,7 +135,7 @@ export function actionNameForStep(s: Step): string {
 // live session with NO failure is mid-turn: it has already read the envelope a patch would
 // rewrite, so it stays locked.
 function stepAcceptsEdits(s: Step): boolean {
-  return !s.sessionId || !!s.failure;
+  return !s.sessionId || !!s.failure || s.state === 'replan_requested';
 }
 
 // Appended to the `/action` spawn prompt on a retry, and only then. A retried step cold-spawns
@@ -609,7 +622,7 @@ export class WorkEngine {
     // A parked controller (waiting on an event, or on the user's gate decision) legitimately
     // ends its turn without submitting again until deliverInbox/resolveStepGate resumes it.
     if (step.type === 'orchestrated' && (step.state === 'waiting' || step.state === 'gate_pending_approval')) return undefined;
-    if (step.state === 'resolved' || step.state === 'declined' || step.failure || step.cancelled) return undefined;
+    if (isTerminalStep(step)) return undefined;
     return { jobId: role.jobId, stepId: role.stepId };
   }
 
@@ -1136,8 +1149,7 @@ export class WorkEngine {
       }
       if (j.state === 'done' || j.state === 'abandoned') continue;
       for (const s of j.steps) {
-        if (s.type !== 'orchestrated' || s.cancelled) continue;
-        if (s.state === 'resolved' || s.state === 'failed') continue;
+        if (s.type !== 'orchestrated' || isTerminalStep(s)) continue;
         const round = s.pendingRound;
         if (s.sessionId && s.state === 'running' && round && !round.delivery && !this.opts.interactive?.isInteractive(s.sessionId)) {
           const sessionId = s.sessionId;
@@ -1388,9 +1400,23 @@ export class WorkEngine {
   }
 
   reopenOrchestrator(jobId: string, feedback: string): void {
+    this.routeReplan(
+      jobId,
+      { userFeedback: feedback },
+      (jj) => this.appendEvent({ ...jj, state: 'planning', reviewingStepId: undefined }, { kind: 'orchestrator_reopened', who: 'user', body: feedback }),
+      `User reopened the orchestrator with this feedback:\n\n${feedback}\n\nRe-read $OUTPOST_ENVELOPE (now in mode=replan, with currentSteps and userFeedback). Post an amended plan via submit_plan with mode=replan.`,
+      { userInitiated: true },
+    );
+  }
+
+  private routeReplan(
+    jobId: string, extra: { userFeedback?: string }, toPlanning: (j: JobRecord) => JobRecord,
+    followup: string, opts?: { userInitiated?: boolean },
+  ): void {
     const j = this.opts.queue.get(jobId);
     if (!j) return;
     const actionName = j.orchestratorAction ?? 'meta.orchestrate';
+    const replanRequest = replanRequestView(j);
     const env: OrchestratorEnvelope = {
       kind: 'orchestrator',
       mode: 'replan',
@@ -1400,14 +1426,15 @@ export class WorkEngine {
       actionCatalog: this.buildActionCatalog({ kind: 'plannable' }, j),
       currentSteps: j.steps.map(planStepView),
       jobFile: this.opts.queue.jobFile(jobId),
-      userFeedback: feedback,
+      ...extra,
+      ...(replanRequest ? { replanRequest } : {}),
       rejectedIterations: j.plan?.iterationsRejected,
       recentLessons: this.opts.journalStore?.recent(actionName) ?? [],
     };
     const envelopePath = writeEnvelope(this.ctx.jobsDir, jobId, null, env);
     const midTurn = j.orchestratorSessionId && this.opts.sessionManager.isWorking(j.orchestratorSessionId)
       ? j.orchestratorSessionId : undefined;
-    this.mutate(jobId, (jj) => this.appendEvent({ ...jj, state: 'planning', reviewingStepId: undefined }, { kind: 'orchestrator_reopened', who: 'user', body: feedback }));
+    this.mutate(jobId, toPlanning);
 
     // Resuming an idle planner drags every earlier round of the job along (CS-2041's reached
     // 361k tokens); only one that's mid-turn is resumed, since a second would race it to submit_plan.
@@ -1415,7 +1442,6 @@ export class WorkEngine {
       const current = this.opts.queue.get(jobId);
       const catalog = this.buildActionCatalog({ kind: 'plannable' }, current);
       if (catalog) updateEnvelopeCatalog(envelopePath, catalog);
-      const followup = `User reopened the orchestrator with this feedback:\n\n${feedback}\n\nRe-read $OUTPOST_ENVELOPE (now in mode=replan, with currentSteps and userFeedback). Post an amended plan via submit_plan with mode=replan.`;
       this.opts.sessionManager.sendOrResume(
         midTurn,
         this.orchestratorCwd(),
@@ -1424,7 +1450,7 @@ export class WorkEngine {
       );
       return;
     }
-    void this.spawnOrchestratorSession(jobId, 'replan', envelopePath, actionName, { userInitiated: true });
+    void this.spawnOrchestratorSession(jobId, 'replan', envelopePath, actionName, opts);
   }
 
   onReconciliationApproved(
@@ -1447,7 +1473,9 @@ export class WorkEngine {
         // validateDispositions refuses a patch or a drop against a completed step, but a
         // reconciliation proposed before that guard existed can still be sitting on disk.
         if (cur.state === 'resolved') return cur;
-        const patched = { ...cur, ...kept.patch, updatedAt: this.ctx.now() } as Step;
+        // Kept, patched or not, means re-run: the request's reason reaches it as an attempt.
+        const base = cur.state === 'replan_requested' ? this.resetStep(cur, this.replanAttempt(cur)) : cur;
+        const patched = { ...base, ...kept.patch, updatedAt: this.ctx.now() } as Step;
         const proposal = p.type === 'orchestrated' ? p.proposedPreapprovals : undefined;
         const withProposal = proposal && patched.type === 'orchestrated' ? { ...patched, proposedPreapprovals: proposal } : patched;
         return opts.auto ? this.autoApprovedPreapprovals(j, withProposal) : withUserPreapprovals(withProposal, stepPreapprovals?.[cur.id]);
@@ -1486,7 +1514,9 @@ export class WorkEngine {
   // plan. The record is written before reopenOrchestrator so its envelope carries it.
   onReconciliationDiscarded(jobId: string, feedback?: string): void {
     const j = this.opts.queue.get(jobId);
-    if (!j) return;
+    // A repeat Discard, or one aimed at an amendment a replan request already superseded, must
+    // not pull the job out from under a planner that is still working.
+    if (!j?.pendingReconciliation) return;
     const reason = (feedback ?? '').trim();
     const iter: PlanIteration | null = reason && j.pendingReconciliation
       ? {
@@ -1518,7 +1548,9 @@ export class WorkEngine {
 
     // `iter`, not `reason`: with no amendment on the job there is nothing to reject, and a
     // double-clicked Discard would otherwise send the same session a second followup.
-    if (iter) this.reopenOrchestrator(jobId, reason);
+    if (iter) { this.reopenOrchestrator(jobId, reason); return; }
+    this.failUntakenReplans(jobId, 'replan request not taken: the amendment was discarded');
+    void this.tickOne(jobId);
   }
 
   // Dispatch children are never in job.steps — they live in an orchestrated step's
@@ -1570,6 +1602,8 @@ export class WorkEngine {
     // still owes a submit_step_progress, which is what actually reports its findings.
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (step?.type === 'orchestrated') return;
+    // Its session closes asynchronously and may still submit; the planner owns the step now.
+    if (step?.state === 'replan_requested') return;
     let didResolve = false;
     this.mutateStep(jobId, stepId, (s) => {
       didResolve = true;
@@ -2045,7 +2079,7 @@ export class WorkEngine {
     // settle already closed. resumeControllerRound's own terminal re-check lives inside its
     // submitLaunch `run()`, which only fires AFTER provision() — too late to skip the throw a
     // just-archived worktree would produce there.
-    if (step.state === 'resolved' || step.state === 'failed' || step.failure || step.cancelled) return;
+    if (isTerminalStep(step)) return;
     // `source: 'write-draft'` discriminates this from resolveGate's own gate-resolved delivery
     // (a declined VOLUNTARY gate) — see work-types.ts. Without it, a controller reading a bare
     // `{approved:false, feedback}` can't tell "the write was vetoed outright, pick a different
@@ -2450,6 +2484,57 @@ export class WorkEngine {
     }));
   }
 
+  // The step judged the plan wrong, so the planner runs at once rather than after the group
+  // settles: every sibling still running is running on the plan being questioned.
+  onReplanRequested(
+    jobId: string, stepId: string, req: { reason: string; evidence?: string; suggestion?: string },
+    opts: { updateRound?: (s: OrchestratedStep) => OrchestratedStep } = {},
+  ): void {
+    const j = this.opts.queue.get(jobId);
+    const cur = j?.steps.find((s) => s.id === stepId);
+    if (!j || !cur) throw new Error(`unknown step ${stepId}`);
+    if (isTerminalStep(cur)) throw new Error('the step has already settled');
+    if (cur.attempts?.some((a) => a.kind === 'replan')) {
+      this.onStepFailed(jobId, stepId, `asked for a replan twice: ${req.reason}`, opts);
+      return;
+    }
+    this.mutateStep(jobId, stepId, (s) => {
+      const step = s.type === 'orchestrated' && opts.updateRound ? opts.updateRound(s) : s;
+      return this.appendStepEvent({
+        ...step,
+        state: 'replan_requested',
+        replanRequest: { ...req, at: this.ctx.now() },
+        ...(step.type === 'action' ? { drafts: (step.drafts ?? []).filter((d) => !!d.approvedAt) } : {}),
+      } as Step, 'replan_requested', 'session');
+    });
+    if (cur.type === 'orchestrated') {
+      this.settleOrchestratedStep(jobId, stepId, 'keep');
+    } else if (cur.sessionId) {
+      // A meta.session's manualSession stays open as history, the same as after a report.
+      void this.closeSessions([cur.sessionId]).catch((e) =>
+        console.error(`[work] replan ${stepId.slice(0, 8)}: ${(e as Error).message}`));
+    }
+    this.opts.journalStore?.append({
+      action: j.orchestratorAction ?? 'meta.orchestrate', jobId, stepId, outcome: 'replan-requested',
+      lesson: `${actionNameForStep(cur)} asked for a replan: ${req.reason}`.slice(0, 300),
+    });
+    const label = this.stepLabel(jobId, stepId);
+    this.routeReplan(
+      jobId,
+      {},
+      (jj) => {
+        const superseded = jj.pendingReconciliation
+          ? this.appendEvent(jj, { kind: 'plan_rejected', who: 'system', body: `amendment superseded by ${label}'s replan request` })
+          : jj;
+        return this.appendEvent(
+          { ...superseded, state: 'planning', reviewingStepId: undefined, pendingReconciliation: undefined },
+          { kind: 'step_replan_requested', who: 'session', stepId, body: `${label} — ${req.reason}` },
+        );
+      },
+      `A step asked for a replan:\n\n${req.reason}\n\nRe-read $OUTPOST_ENVELOPE (replanRequest, currentSteps) and post an amended plan via submit_plan with mode=replan.`,
+    );
+  }
+
   // A blocker must always reach the action's journal. It's the only signal
   // meta.improve-actions gets that a skill is mis-specified, and the failure modes that
   // matter most — an allowlist gap, a missing envelope field — recur identically on every
@@ -2506,6 +2591,7 @@ export class WorkEngine {
       },
       resolveStep: (jobId, stepId, output, update) => this.resolveStepByController(jobId, stepId, output, update),
       failStep: (jobId, stepId, reason, updateRound) => this.onStepFailed(jobId, stepId, reason, { updateRound }),
+      requestReplan: (jobId, stepId, req, updateRound) => this.onReplanRequested(jobId, stepId, req, { updateRound }),
       scheduleDelivery: (jobId, stepId, at) => this.scheduleDelivery(jobId, stepId, at),
       actionInfo: {
         sideEffects: (a) => this.opts.actionRegistry?.getAction(a)?.frontmatter.outpost.side_effects,
@@ -2755,7 +2841,7 @@ export class WorkEngine {
         // status re-read in spawnDispatchSession's run().
         if (!currentJob || !cur || cur.type !== 'orchestrated' || cur.cancelled || cur.sessionId !== sessionId
           || cur.pendingRound?.id !== round.id) return false;
-        if (cur.failure || cur.state === 'resolved' || cur.state === 'failed') return false;
+        if (isTerminalStep(cur)) return false;
         if (cur.pendingRound.delivery && !explicitRetry) return false;
         // The job can be abandoned/deleted between the resume and the fire, too.
         if (!this.jobAcceptsStepWork(jobId)) return false;
@@ -2902,6 +2988,9 @@ export class WorkEngine {
     const cur = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     const wsErr = cur ? workspaceError(cur.workspace) : null;
     if (wsErr) throw new Error(`${wsErr}. Edit the step's workspace to repair it — that re-runs it.`);
+    if (cur?.state === 'replan_requested' && !cur.failure) {
+      throw new Error('The step is waiting on a replan; amend or discard the plan instead.');
+    }
     if (cur?.type === 'action' && cur.action === 'meta.job' && cur.childJobId) {
       const child = this.opts.queue.get(cur.childJobId);
       if (child?.state === 'failed') { this.rerunLatest(child.id); return; }
@@ -2921,34 +3010,14 @@ export class WorkEngine {
     if (cur?.sessionId) this.opts.interactive?.set(cur.sessionId, false);
     const trimmed = note?.trim() || undefined;
     this.mutateStep(jobId, stepId, (s) => {
-      const h = handlerFor(s);
       // Recorded even for a retry with no note, and even for one off a step whose failure the
       // daemon never set (rerunLatest picks the tail when nothing failed) — the count itself is
       // what tells the next session it is not the first to try.
-      const attempt: StepAttempt = {
+      return this.resetStep(s, {
         at: this.ctx.now(),
         failure: s.failure?.reason ?? 'no failure recorded',
         ...(trimmed ? { note: trimmed } : {}),
-      };
-      return {
-        ...s, failure: undefined, sessionId: undefined, state: h.initialState,
-        attempts: [...(s.attempts ?? []), attempt],
-        reviewed: undefined, drafts: undefined, updatedAt: this.ctx.now(),
-        // A retried orchestrated step always cold-respawns bound to `s.controller` (see
-        // spawnStepSession), never to a persisted `boundAction` — the same reasoning as
-        // reconcileInterruptedSteps clearing it on a daemon-restart drop above. Left set, a
-        // retry after a failed bound self-round (e.g. `code.merge-pr`) would leave the envelope,
-        // the session binding, and `actionForStep`'s derivation all disagreeing about which
-        // action owns the next draft.
-        //
-        // The round count resets with it: it measures ONE attempt, and this is a new attempt —
-        // a cold spawn with no transcript, which is why `attempts[]` exists to carry the
-        // history instead.
-        ...(s.type === 'orchestrated'
-          ? { boundAction: undefined, roundsSpent: 0, consecutiveSelfRounds: 0 }
-          : {}),
-        ...(s.type === 'action' && s.action === 'meta.job' ? { childJobId: undefined } : {}),
-      } as Step;
+      });
     });
     // If the job settled to a terminal state (done/failed) before the retry, restore
     // it to executing — otherwise decide() early-returns and the retried step never
@@ -2967,6 +3036,37 @@ export class WorkEngine {
       body: trimmed ? `${this.stepLabel(jobId, stepId)} — ${trimmed}` : this.stepLabel(jobId, stepId),
     }));
     void this.tickOne(jobId);
+  }
+
+  private resetStep(s: Step, attempt: StepAttempt): Step {
+    return {
+      ...s, failure: undefined, sessionId: undefined, state: handlerFor(s).initialState,
+      attempts: [...(s.attempts ?? []), attempt],
+      reviewed: undefined, drafts: undefined, replanRequest: undefined, updatedAt: this.ctx.now(),
+      // A retried orchestrated step always cold-respawns bound to `s.controller` (see
+      // spawnStepSession), never to a persisted `boundAction` — the same reasoning as
+      // reconcileInterruptedSteps clearing it on a daemon-restart drop above. Left set, a
+      // retry after a failed bound self-round (e.g. `code.merge-pr`) would leave the envelope,
+      // the session binding, and `actionForStep`'s derivation all disagreeing about which
+      // action owns the next draft.
+      //
+      // The round count resets with it: it measures ONE attempt, and this is a new attempt —
+      // a cold spawn with no transcript, which is why `attempts[]` exists to carry the
+      // history instead.
+      ...(s.type === 'orchestrated'
+        ? { boundAction: undefined, roundsSpent: 0, consecutiveSelfRounds: 0 }
+        : {}),
+      ...(s.type === 'action' && s.action === 'meta.job' ? { childJobId: undefined } : {}),
+    } as Step;
+  }
+
+  private replanAttempt(s: Step): StepAttempt {
+    const r = s.replanRequest;
+    return {
+      at: this.ctx.now(), kind: 'replan',
+      failure: `asked for a replan: ${r?.reason ?? 'no reason recorded'}`,
+      ...(r?.suggestion ? { note: r.suggestion } : {}),
+    };
   }
 
   // Re-runs the step that halted the job — the failed one — falling back to the
@@ -3289,7 +3389,19 @@ export class WorkEngine {
       steps: jj.steps.map((s) =>
         !s.cancelled && handlerFor(s).isResolved(s) ? ({ ...s, reviewed: true } as Step) : s),
     }, { kind: 'orchestrator_reviewed', who: 'orchestrator', body: reason ? `continue: ${reason}` : 'continue' }));
+    this.failUntakenReplans(jobId, 'replan request not taken: the planner kept the plan');
     void this.tickOne(jobId);
+  }
+
+  // A requester the plan didn't change is terminal yet neither resolved nor failed, so it would
+  // hold its group open forever.
+  private failUntakenReplans(jobId: string, reason: string): void {
+    for (const s of this.opts.queue.get(jobId)?.steps ?? []) {
+      if (s.cancelled || s.state !== 'replan_requested') continue;
+      // onStepFailed moves only an orchestrated step's state; an action step would keep reading as asking.
+      this.mutateStep(jobId, s.id, (st) => ({ ...st, state: 'failed', replanRequest: undefined }) as Step);
+      this.onStepFailed(jobId, s.id, reason, { journal: false });
+    }
   }
 
   private async spawnInitialOrchestrator(j: JobRecord, actionName: string, context?: string, opts?: { userInitiated?: boolean }): Promise<void> {

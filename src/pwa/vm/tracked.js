@@ -82,6 +82,10 @@ function failedStep(job) {
   return (job.steps ?? []).find((s) => !s.cancelled && s.failure);
 }
 
+function replanRequestedStep(job) {
+  return (job.steps ?? []).find((s) => !s.cancelled && !s.failure && s.state === 'replan_requested');
+}
+
 // Mirrors AUTH_STOP_ERRORS (src/work/job-liveness.ts): the stalls a sign-in resumes on its own.
 const AUTH_STOP_ERRORS = new Set(['authentication_failed', 'oauth_org_not_allowed']);
 const STOP_ERROR_LABEL = { rate_limit: 'a rate limit', overloaded: 'an overloaded API', billing_error: 'a billing error' };
@@ -122,6 +126,14 @@ export function focusAction(job) {
       title: 'Review the plan',
       description: `${(job.steps ?? []).length || 'The'} steps are proposed and waiting for your approval.`,
       cta: { label: 'Review plan', action: 'review-plan' },
+    };
+  }
+  const asking = replanRequestedStep(job);
+  if (asking && job.state === 'planning') {
+    return {
+      title: 'Replanning',
+      description: `${asking.title} asked for a replan: ${asking.replanRequest?.reason ?? 'no reason given'}`,
+      cta: { label: 'View', action: 'none' },
     };
   }
 

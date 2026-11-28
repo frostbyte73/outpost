@@ -44,6 +44,7 @@ cat "$OUTPOST_ENVELOPE"
 | `currentSteps` (replan + step-review) | A plan-level view of each existing step: the `id` you need for `keepId`, its state and goal, an action step's `output`, an orchestrated step's `memo`, `pr` and the first line of each artifact. A resolved step's `inputs` are left out. |
 | `jobFile` | The full job record `currentSteps` summarizes. `jq` into its `.steps[]` only for something a view can't answer (a resolved step's whole `artifacts.spec`, say) — it runs to hundreds of KB, so never `cat` it. |
 | `userFeedback` (replan only) | The message the user just sent. Highest-signal context. |
+| `replanRequest` (replan only) | Present when a step asked for this replan: `{stepId, action, reason, evidence?, suggestion?}`. See "Replan requests" below. |
 | `rejectedIterations` | Prior orchestrator outputs the user rejected, with their feedback. |
 | `recentLessons` | Your own memory — short lessons you wrote at the end of past orchestrator runs. Skim before planning; if a lesson conflicts with the envelope's actual instructions, the envelope wins. |
 
@@ -98,6 +99,19 @@ Concrete example (the shape this overhaul fixes): the last step was
 PR should raise it. That is NOT "plan holds" — call `submit_plan` (replan),
 keeping the investigation via `keepId` and appending an `orchestrated` PR step against
 the deployment config repo.
+
+## Replan requests
+
+A step that found the plan itself wrong asked for this replan. It is not a failure: the step judged that the plan as written can't succeed from where it stands, and the daemon ran you straight away rather than waiting for its parallel group (see `~/.outpost/actions/SHARED-replan-requests.md`).
+
+- **Read `replanRequest` first.** `reason` is the step's case, `evidence` is what it cites and `suggestion` is the change it wants. Check the evidence before you act on it: the step can be wrong too.
+- **Every `currentSteps` entry with `state: "replan_requested"` needs a disposition.** Usually that is the one in `replanRequest`, but two steps can ask at once and each carries its own `replanRequest`. Either drop it, or keep it with `keepId`. Keep it patched with what the request said it needed, or unchanged when the fix is a new step you insert before it. A kept step re-runs from scratch, and the request reaches it in `previousAttempts`.
+- **Siblings still running were planned on the same premise.** Decide each one on its merits: keep, patch or drop.
+- **An open PR on the requesting step** shows in its `pr`. Keeping the step keeps the branch, and dropping it abandons the PR's work, so say which in your preview.
+- **`submit_continue` is not an answer.** It keeps the plan as it is, so every step still waiting on a replan fails ("replan request not taken"). If the request is wrong, say so by keeping the step unchanged in a `submit_plan` amendment.
+- **A second request from the same step fails it**, and the job halts for the user. Answer the first one properly rather than planning around it.
+
+The amendment goes through the user's plan approval like any replan, so your Step 6 preview should name the request and what you did about it.
 
 ## Personal-workflow tickets — check before Step 1
 
@@ -357,7 +371,7 @@ For each step you emit, fill the fields the catalog requires for its `type`. Ref
 
 The daemon rejects any submission where a non-cancelled step is neither kept nor dropped, and any submission with overlap (an id both kept and dropped) or unknown ids. There is no implicit cancellation — omission is a bug. The daemon shows a diff (`✓ ~ + ✗`) and the user approves the reconciliation.
 
-**A step with `state: "resolved"` is history — keep it verbatim.** It already ran: its session's work is done, its output is recorded, its PR exists. So for a resolved step you may ONLY emit `keepId` and its `type` — leave every other field out. Rewording its `title`/`goal`/`approach`, swapping its `action`, or putting its id in `drops` is rejected — that would rewrite the record of what actually happened, and the user reads the timeline of those steps to judge your amendment. If resolved work needs revisiting, propose a **new** step for the follow-up; the completed one stays as it is. Steps in `failed` or `declined` state carry no such restriction — replanning around those is the point of an amendment, so patch or drop them freely.
+**A step with `state: "resolved"` is history — keep it verbatim.** It already ran: its session's work is done, its output is recorded, its PR exists. So for a resolved step you may ONLY emit `keepId` and its `type` — leave every other field out. Rewording its `title`/`goal`/`approach`, swapping its `action`, or putting its id in `drops` is rejected — that would rewrite the record of what actually happened, and the user reads the timeline of those steps to judge your amendment. If resolved work needs revisiting, propose a **new** step for the follow-up; the completed one stays as it is. Steps in `failed`, `declined` or `replan_requested` state carry no such restriction — replanning around those is the point of an amendment, so patch or drop them freely.
 
 One replan shape: **keep** the completed investigation step (with its `keepId`) and append new follow-up PR / `write.*` / `meta.wait` steps its findings unlocked; **drops** stays empty.
 

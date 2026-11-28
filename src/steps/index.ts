@@ -17,11 +17,12 @@ export function initialStateForType(type: Step['type']): Step['state'] {
 }
 
 // Is this step done, whatever the outcome — resolved, failed, cancelled, or (ActionStep only)
-// declined, which is a user veto of its write draft rather than a breakage. Mirrored
-// client-side by isTerminalStep in pwa/vm/work-predicates.js; the two must agree.
+// declined, which is a user veto of its write draft rather than a breakage. A replan_requested
+// step is terminal until an amendment resets it, though not resolved. Mirrored client-side
+// by isTerminalStep in pwa/vm/work-predicates.js; the two must agree.
 export function isTerminalStep(step: Step): boolean {
   return !!step.failure || !!step.cancelled || step.state === 'resolved'
-    || step.state === 'failed'
+    || step.state === 'failed' || step.state === 'replan_requested'
     || (step.type === 'action' && step.state === 'declined');
 }
 

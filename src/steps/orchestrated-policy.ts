@@ -93,7 +93,7 @@ export function validateNext(
 ): PolicyVerdict {
   // `.failure` is checked alongside `state` — a failure that arrived without (yet) flipping
   // `state` to 'failed' is still terminal; see the matching guard in applyMove.
-  if (step.state === 'resolved' || step.state === 'failed' || step.failure) {
+  if (step.state === 'resolved' || step.state === 'failed' || step.state === 'replan_requested' || step.failure) {
     return { kind: 'reject', reason: `step is already ${step.failure ? 'failed' : step.state}` };
   }
   if (move.kind === 'resolve') {
@@ -110,6 +110,21 @@ export function validateNext(
     return { kind: 'allow', move };
   }
   if (move.kind === 'fail') return { kind: 'allow', move };
+  // Not subject to unmergedOwnPr: whether to keep a step with an open PR is the planner's call.
+  if (move.kind === 'replan') {
+    if (!move.reason?.trim()) {
+      return { kind: 'reject', reason: 'a replan move needs a reason — why the plan as written cannot succeed from here' };
+    }
+    const live = step.dispatches.filter((d) => d.status === 'queued' || d.status === 'running' || d.status === 'awaiting_approval');
+    if (live.length) {
+      return {
+        kind: 'reject',
+        reason: `${live.length} dispatch(es) still in flight — a replan now would strand them. `
+          + '`wait` with untilAllDispatchesDone and ask on the turn they settle',
+      };
+    }
+    return { kind: 'allow', move };
+  }
 
   if (move.kind === 'self-round') {
     if (!productive && step.consecutiveSelfRounds >= MAX_CONSECUTIVE_SELF_ROUNDS) {

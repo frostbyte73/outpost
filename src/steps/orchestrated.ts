@@ -25,7 +25,7 @@ export const orchestratedHandler: StepHandler<OrchestratedStep> = {
 
   decide(s, job, ctx) {
     if (s.cancelled || s.failure) return null;
-    if (s.state === 'resolved' || s.state === 'failed') return null;
+    if (s.state === 'resolved' || s.state === 'failed' || s.state === 'replan_requested') return null;
     if (!s.sessionId) {
       const envelope = orchestratedHandler.buildEnvelope(s, job, ctx);
       const path = writeEnvelope(ctx.jobsDir, job.id, s.id, envelope);

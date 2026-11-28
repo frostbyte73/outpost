@@ -139,6 +139,7 @@ export interface PlanStepView {
   cancelled?: boolean;
   parallelGroup?: string;
   failure?: Step['failure'];
+  replanRequest?: Step['replanRequest'];
   inputs?: Record<string, unknown>;
   action?: string;
   output?: string;
@@ -162,6 +163,7 @@ export function planStepView(s: Step): PlanStepView {
     ...(s.cancelled ? { cancelled: true } : {}),
     ...(s.parallelGroup ? { parallelGroup: s.parallelGroup } : {}),
     ...(s.failure ? { failure: s.failure } : {}),
+    ...(s.replanRequest ? { replanRequest: s.replanRequest } : {}),
     // Resolved and cancelled steps can't be amended, so their inputs can only be noise
     ...(s.state !== 'resolved' && !s.cancelled && s.inputs ? { inputs: s.inputs } : {}),
   };
@@ -199,6 +201,8 @@ export interface OrchestratorEnvelope {
   jobFile?: string;           // the full step records currentSteps summarizes — artifacts, drafts, dispatches
   completedStepId?: string;   // step-review only: the step whose settling triggered this review
   userFeedback?: string;
+  // replan only: the step that asked for this replan. Other open requests show in currentSteps.
+  replanRequest?: { stepId: string; action: string; reason: string; evidence?: string; suggestion?: string };
   launchContext?: string; // initial only: free-text the user attached when launching
   rejectedIterations?: PlanIteration[];
   recentLessons?: JournalEntry[];

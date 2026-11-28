@@ -12,6 +12,8 @@ export type JobTransition =
   | { kind: 'mark-linear-state'; state: 'inProgress' | 'inReview' | 'done' }
   | { kind: 'link-linear-pr'; prUrl: string };
 
+// A `replan_requested` step is neither resolved nor `.failure`, so the job it sits in neither
+// finishes nor halts: it waits in planning until an amendment drops or resets the step.
 function allStepsResolved(j: JobRecord): boolean {
   if (j.steps.length === 0) return false;
   return j.steps.every((s) => handlerFor(s).isResolved(s) || s.cancelled);

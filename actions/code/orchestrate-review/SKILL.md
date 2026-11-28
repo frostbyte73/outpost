@@ -153,7 +153,7 @@ close enough" comes from.
 
 ## 3. The phase ladder
 
-Your six moves:
+Your seven moves:
 
 | Move | Payload | What the daemon does |
 |---|---|---|
@@ -163,6 +163,12 @@ Your six moves:
 | `gate` | `{kind:"gate", draft, question}` | Parks the step for the user. **You never need this one** — see below. |
 | `resolve` | `{kind:"resolve", output}` | Step done. `output` is the summary the job keeps. |
 | `fail` | `{kind:"fail", reason}` | Step failed. Only when nothing else can move it forward. |
+| `replan` | `{kind:"replan", reason, evidence?, suggestion?}` | The *plan* is wrong — the step parks and the job goes back to the planner at once. Refused while dispatches are in flight. |
+
+**`replan` is for a plan that can't succeed from this step** — the PR the step names isn't the
+one the goal describes, or the review needs something no step provides. Never for "this is
+hard". A kept step re-runs from scratch with your request in `previousAttempts`; a second
+request fails it. See `~/.outpost/actions/SHARED-replan-requests.md`.
 
 **Never open your own `gate` in front of a write.** `code.post-pr-review` and
 `code.submit-pr-verdict` are external-writes that gate *themselves*: each runs unattended,

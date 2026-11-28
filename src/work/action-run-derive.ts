@@ -123,6 +123,8 @@ function stepEvents(prev: Step | undefined, next: Step | undefined, jobId: strin
       out.push({ t: 'close', key, outcome: 'failed', at, failureReason: next.failure.reason });
     } else if ((next.cancelled && !prev!.cancelled) || (job.state === 'abandoned' && prevJob?.state !== 'abandoned')) {
       out.push({ t: 'close', key, outcome: 'abandoned', at });
+    } else if (next.state === 'replan_requested' && prev!.state !== 'replan_requested') {
+      out.push({ t: 'close', key, outcome: 'replan-requested', at });
     } else {
       out.push({ t: 'close', key, outcome: closeOutcome(prevRound), at });
     }

@@ -111,12 +111,20 @@ function prNumber(url) {
   return /\/pull\/(\d+)/.exec(url ?? '')?.[1] ?? null;
 }
 
+function replanText(j) {
+  if (j.state !== 'planning') return null;
+  const asking = (j.steps ?? []).find((s) => !s.cancelled && !s.failure && s.state === 'replan_requested');
+  return asking ? `Asked for a replan: ${asking.replanRequest?.reason ?? ''}` : null;
+}
+
 function idleText(j, feeds) {
   if (feeds.length) {
     const step = (j.steps ?? []).find((s) => !s.cancelled && feeds.some((f) => f.stepId === s.id));
-    if (!step) return 'Planning';
+    if (!step) return replanText(j) ?? 'Planning';
     return (step.type === 'orchestrated' && phaseLabelOf(step)) || step.title;
   }
+  const replan = replanText(j);
+  if (replan) return replan;
   if (!planIsLive(j)) return j.orchestratorSessionId ? 'Planning' : 'Not launched';
   const step = (j.steps ?? []).find((s) => !s.cancelled && !isTerminalStep(s));
   if (!step) return 'Waiting';

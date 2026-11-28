@@ -26,7 +26,7 @@ import { WorkEngine } from './work/engine.js';
 import { sessionGrantRefusal } from './work/preapprovals.js';
 import { checkPlanDiagram } from './work/plan-diagram.js';
 import { LaunchGovernor } from './work/launch-governor.js';
-import { parseSessionReport, resolveWorkSession } from './work/work-launch.js';
+import { parseReplanRequest, parseSessionReport, resolveWorkSession } from './work/work-launch.js';
 import type { JobRecord } from './work/work-types.js';
 import { ensureActionsInstalled, bundledRepoDir } from './actions/install.js';
 import { ClaudeRuntime } from './runtime/claude/runtime.js';
@@ -953,6 +953,16 @@ async function main() {
         if (!engine.onSessionReport(a.jobId as string, a.stepId as string, report)) {
           throw new Error('submit_session_report refused: the step is not waiting for a report');
         }
+        return { ok: true };
+      },
+      submit_replan_request: async (a) => {
+        const jobId = a.jobId as string;
+        const stepId = a.stepId as string;
+        checkWorkLaunch(credential, jobId, stepId, undefined, { allowManualSession: true });
+        const req = parseReplanRequest(jobQueue.get(jobId), a);
+        if (typeof req === 'string') throw new Error(`submit_replan_request refused: ${req}`);
+        noteRoundOutput('submit_replan_request', a);
+        engine.onReplanRequested(jobId, stepId, req);
         return { ok: true };
       },
       submit_step_progress: async (a) => {

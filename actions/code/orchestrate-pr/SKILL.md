@@ -99,7 +99,7 @@ and no `action`, which resumes you under your own hat for the next decision turn
 
 ## 3. The phase ladder
 
-Your six moves:
+Your seven moves:
 
 | Move | Payload | What the daemon does |
 |---|---|---|
@@ -109,6 +109,14 @@ Your six moves:
 | `gate` | `{kind:"gate", draft, question}` | Parks the step for the user, showing `draft` as the thing being approved. |
 | `resolve` | `{kind:"resolve", output}` | Step done — **the PR merged** (or, under `landing: "approved"`, approved and green). `output` is the summary the job keeps. Refused while `pr.prUrl` is set and `pr.prState` is not `merged` (§ Budgets), except for that landing. |
 | `fail` | `{kind:"fail", reason}` | Step failed. Only when nothing else can move it forward. |
+| `replan` | `{kind:"replan", reason, evidence?, suggestion?}` | The *plan* is wrong, not your work: the step parks and the job goes back to the planner at once. Refused while dispatches are in flight. |
+
+**`replan` is for a plan that can't succeed from this step** — a false premise in `goal` or
+`inputs`, a prerequisite no step does. It is never for "this is hard" (keep going, or `fail`),
+and never a way out of an open PR you could land. An open PR doesn't block it, though: the
+planner sees it and decides whether to keep the step. A kept step re-runs from scratch with
+your request in `previousAttempts`, and a second request from it fails the step. See
+`~/.outpost/actions/SHARED-replan-requests.md`.
 
 **Dispatched children are read-only; edits happen on your rounds.** The branch belongs to you
 and your worktree is the only checkout holding it, so a child gets a detached checkout of that

@@ -50,6 +50,10 @@ function reportingBack(jobId: string, stepId: string): string[] {
     '- wantsReplan — true when the user decided the plan should change',
     '',
     'Submitting resolves the step and the planner reviews it. Don\'t submit on your own judgment that the task looks finished. The user can also mark the step Done in the Outpost PWA instead.',
+    '',
+    '# Asking for a replan',
+    '',
+    'If you and the user find that the plan itself is wrong and this step\'s work can\'t go ahead (a false premise, a missing prerequisite step), call `mcp__outpost__submit_replan_request` with the same jobId and stepId instead of reporting. Pass `reason`, plus `evidence` and `suggestion` when you have them. The step doesn\'t resolve: the planner runs now and the user approves its amendment. Never use it because the task is hard. See `~/.outpost/actions/SHARED-replan-requests.md`.',
   ];
 }
 
