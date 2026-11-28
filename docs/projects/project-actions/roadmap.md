@@ -2,7 +2,7 @@
 
 - Each milestone is one `meta.job` child, followed by a user hold. They run one at a time, in the order below — never in parallel (they collide on `src/work/engine.ts` and `meta.orchestrate`).
 - IDs are stable and never renumbered: M7 (hardening) was added after M1 and runs before M2.
-- Each child's brief is the section below, opened by a header naming the repo (frostbyte73/outpost, `/Users/dc/github/frostbyte73/outpost`) and this folder.
+- Each child's brief is the section below, opened by a header naming the repo (frostbyte73/outpost, `~/github/frostbyte73/outpost`) and this folder.
 
 ## M1 — Bootstrap the planning chain (landed)
 

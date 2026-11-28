@@ -5,7 +5,7 @@
     "description": "On daemon start, a bundled action the user has not edited is brought up to the repo version, and a bundled action missing from ~/.outpost/actions/ is installed, so the daemon never runs a stale copy.",
     "steps": [
       "Merge a change to an existing bundled action's SKILL.md (e.g. meta.orchestrate) and add a new bundled action dir, without touching ~/.outpost/actions/ by hand",
-      "Pull main in /Users/dc/github/frostbyte73/outpost and run launchctl kickstart -k gui/$UID/local.outpost.$USER",
+      "Pull main in ~/github/frostbyte73/outpost and run launchctl kickstart -k gui/$UID/local.outpost.$USER",
       "Open the Actions page: the edited action shows the merged text and the new action is listed",
       "diff -r the two actions' repo dirs against ~/.outpost/actions/: no differences"
     ],

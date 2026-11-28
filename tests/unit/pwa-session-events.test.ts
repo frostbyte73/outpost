@@ -8,7 +8,7 @@ describe('itemToEntries tool results', () => {
       type: 'tool_call', id: 't1', rawName: 'Bash', tool: 'shell', input: { command: 'ls' },
       resultText: 'Shell allowlist is empty',
     });
-    expect(entries.map((m) => m.role)).toEqual(['tool_use']);
+    expect(entries.map((m: { role: string }) => m.role)).toEqual(['tool_use']);
   });
 
   it('keeps a real result next to its call', () => {
@@ -16,7 +16,7 @@ describe('itemToEntries tool results', () => {
       type: 'tool_call', id: 't1', rawName: 'Bash', tool: 'shell', input: { command: 'ls' },
       resultText: 'Shell allowlist is empty\nsrc',
     });
-    expect(entries.map((m) => m.role)).toEqual(['tool_use', 'tool_result']);
+    expect(entries.map((m: { role: string }) => m.role)).toEqual(['tool_use', 'tool_result']);
     expect(entries[1].text).toBe('src');
   });
 });

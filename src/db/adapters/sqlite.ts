@@ -53,7 +53,10 @@ function sqliteConn(db: DatabaseSync): SqlConn {
         stmt = db.prepare(sql.replace(/\$(\d+)/g, '?$1'));
         statements.set(sql, stmt);
       }
-      return stmt.all(...params.map((p) => (p ?? null) as SQLInputValue));
+      // Node 23's node:sqlite refuses positional args for ?N placeholders; bind by position number instead.
+      const bound: Record<string, SQLInputValue> = {};
+      for (let i = 0; i < params.length; i++) bound[String(i + 1)] = (params[i] ?? null) as SQLInputValue;
+      return stmt.all(bound);
     },
     async exec(sql) { db.exec(sql); },
   };
@@ -68,7 +71,10 @@ function sqliteConn(db: DatabaseSync): SqlConn {
         db.exec('COMMIT');
         return result;
       } catch (err) {
-        if (db.isTransaction) db.exec('ROLLBACK');
+        // isTransaction is undefined on Node 23; there, roll back and ignore "no transaction is active".
+        if (db.isTransaction !== false) {
+          try { db.exec('ROLLBACK'); } catch {}
+        }
         throw err;
       }
     }),
