@@ -8,8 +8,7 @@ import type { ActionStep, JobRecord, WorkspaceRef } from '../../src/work/work-ty
 
 const actionRegistry = {
   getAction(name: string) {
-    if (name === 'meta.wait') return { frontmatter: { outpost: { runner: 'builtin' } } };
-    return { frontmatter: { outpost: { runner: 'claude' } } };
+    return { frontmatter: { outpost: { runner: name === 'meta.session' ? 'builtin' : 'claude' } } };
   },
 } as never;
 
@@ -43,10 +42,11 @@ function makeEngine() {
   return { engine, queue, spawned, provisioned, prompts };
 }
 
-function waitStep(extra: Partial<ActionStep> = {}): ActionStep {
+// A parked meta.session whose session isn't open yet — what a step looks like before its first open.
+function sessionStep(extra: Partial<ActionStep> = {}): ActionStep {
   return {
-    id: 'w', type: 'action', title: 'Hold for deploy', description: '', goal: 'g',
-    action: 'meta.wait', inputs: { reason: 'prod deploy' }, state: 'waiting',
+    id: 's', type: 'action', title: 'Promote prod?', description: '', goal: 'g',
+    action: 'meta.session', inputs: { prompt: 'p', reason: 'prod deploy' }, state: 'waiting',
     workspace: { kind: 'none' }, createdAt: 1000, updatedAt: 1000, ...extra,
   };
 }
@@ -66,9 +66,9 @@ async function statusOf(p: Promise<unknown>): Promise<number | undefined> {
 describe('WorkEngine.openWaitSession', () => {
   it('creates an unbound session with context on first open and spawns nothing', async () => {
     const { engine, queue, spawned, prompts } = makeEngine();
-    const jobId = seed(queue, engine, waitStep());
+    const jobId = seed(queue, engine, sessionStep());
 
-    const opened = await engine.openWaitSession(jobId, 'w', '/repo');
+    const opened = await engine.openWaitSession(jobId, 's', '/repo');
 
     expect(opened.cwd).toBe('/repo');
     expect(stepOf(queue, jobId).manualSession).toEqual({ id: opened.sessionId, cwd: '/repo' });
@@ -77,49 +77,49 @@ describe('WorkEngine.openWaitSession', () => {
     expect(engine.interactiveTarget(opened.sessionId)).toBeUndefined();
   });
 
-  it('returns the same session on reopen, including concurrent opens and after resume', async () => {
+  it('returns the same session on reopen, including concurrent opens and after Done', async () => {
     const { engine, queue } = makeEngine();
-    const jobId = seed(queue, engine, waitStep());
+    const jobId = seed(queue, engine, sessionStep());
 
     const [a, b] = await Promise.all([
-      engine.openWaitSession(jobId, 'w', '/repo'),
-      engine.openWaitSession(jobId, 'w', '/repo'),
+      engine.openWaitSession(jobId, 's', '/repo'),
+      engine.openWaitSession(jobId, 's', '/repo'),
     ]);
     expect(b).toEqual(a);
 
-    engine.resumeWait(jobId, 'w');
+    engine.resumeSession(jobId, 's');
     expect(stepOf(queue, jobId).state).toBe('resolved');
-    expect(await engine.openWaitSession(jobId, 'w')).toEqual(a);
+    expect(await engine.openWaitSession(jobId, 's')).toEqual(a);
   });
 
   it('provisions a readonly workspace and opens in it', async () => {
     const { engine, queue, provisioned } = makeEngine();
     const ws: WorkspaceRef = { kind: 'readonly', repoCwd: '/src/cloud-config', ref: 'origin/main' };
-    const jobId = seed(queue, engine, waitStep({ workspace: ws }));
+    const jobId = seed(queue, engine, sessionStep({ workspace: ws }));
 
-    const opened = await engine.openWaitSession(jobId, 'w');
+    const opened = await engine.openWaitSession(jobId, 's');
 
-    expect(provisioned).toEqual([{ key: 'w', ws }]);
+    expect(provisioned).toEqual([{ key: 's', ws }]);
     expect(opened.cwd).toBe('/wt/readonly');
   });
 
-  it('refuses a first open that is not a parked wait or has no cwd', async () => {
+  it('refuses a first open that is not a parked meta.session or has no cwd', async () => {
     const { engine, queue } = makeEngine();
-    expect(await statusOf(engine.openWaitSession(seed(queue, engine, waitStep({ state: 'running' })), 'w', '/repo'))).toBe(409);
-    expect(await statusOf(engine.openWaitSession(seed(queue, engine, waitStep({ action: 'read.investigate' })), 'w', '/repo'))).toBe(409);
-    expect(await statusOf(engine.openWaitSession(seed(queue, engine, waitStep()), 'w'))).toBe(400);
-    expect(await statusOf(engine.openWaitSession('nope', 'w', '/repo'))).toBe(404);
+    expect(await statusOf(engine.openWaitSession(seed(queue, engine, sessionStep({ state: 'running' })), 's', '/repo'))).toBe(409);
+    expect(await statusOf(engine.openWaitSession(seed(queue, engine, sessionStep({ action: 'read.investigate' })), 's', '/repo'))).toBe(409);
+    expect(await statusOf(engine.openWaitSession(seed(queue, engine, sessionStep()), 's'))).toBe(400);
+    expect(await statusOf(engine.openWaitSession('nope', 's', '/repo'))).toBe(404);
   });
 
-  it('refuses a writable workspace on a meta.wait at the plan boundary and in the editor', () => {
+  it('refuses a writable workspace on a meta.session at the plan boundary and in the editor', () => {
     const { engine, queue } = makeEngine();
     const writable: WorkspaceRef = { kind: 'writable', repoCwd: '/repo', branch: 'x' };
     const job = engine.createJob({ source: 'manual', title: 't', description: 'd' });
     expect(() => engine.onPlanReady(job.id, 'initial', [{
-      type: 'action', title: 'hold', description: '', goal: 'g', action: 'meta.wait', workspace: writable,
-    } as never])).toThrow(/meta\.wait/);
+      type: 'action', title: 'check', description: '', goal: 'g', action: 'meta.session', workspace: writable,
+    } as never])).toThrow(/meta\.session/);
 
-    const jobId = seed(queue, engine, waitStep());
-    expect(() => engine.editStepManually(jobId, 'w', { workspace: writable })).toThrow(/meta\.wait/);
+    const jobId = seed(queue, engine, sessionStep());
+    expect(() => engine.editStepManually(jobId, 's', { workspace: writable })).toThrow(/meta\.session/);
   });
 });

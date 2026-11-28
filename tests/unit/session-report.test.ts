@@ -60,14 +60,11 @@ describe('meta.session settles into a step-review', () => {
     expect(queue.get(jobId)!.reviewingStepId).toBe('s');
   });
 
-  it.each([
-    ['Done', (e: WorkEngine, id: string) => e.resumeSession(id, 's', '  two weekends ')],
-    ['the legacy wait gate', (e: WorkEngine, id: string) => e.resumeWait(id, 's', '  two weekends ')],
-  ])('%s carries the note and owes a review', (_name, settle) => {
+  it('Done carries the note and owes a review', () => {
     const { engine, queue } = makeEngine();
     const jobId = seed(queue, engine, [sessionStep()]);
 
-    settle(engine, jobId);
+    engine.resumeSession(jobId, 's', '  two weekends ');
 
     const step = stepOf(queue, jobId);
     expect(JSON.parse(step.output!)).toEqual({ resumed_by: 'user', note: 'two weekends' });

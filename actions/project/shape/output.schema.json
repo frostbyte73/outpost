@@ -23,7 +23,7 @@
     "clarifications": {
       "type": "array",
       "items": { "type": "string" },
-      "description": "The [NEEDS CLARIFICATION] questions still in brief.md, in order. Non-empty means the plan needs a meta.wait and a second project.shape."
+      "description": "The [NEEDS CLARIFICATION] questions still in brief.md, in order. Non-empty means the plan needs a meta.session \"Answer clarifications\" and a second project.shape."
     }
   },
   "additionalProperties": false

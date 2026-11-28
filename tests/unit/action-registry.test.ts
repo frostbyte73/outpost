@@ -167,12 +167,12 @@ describe('ActionRegistry — permission groups', () => {
   });
 
   it('does NOT grant core to builtin-runner actions', () => {
-    writeAction('meta', 'wait', {
-      frontmatter: defaultActionFrontmatter('meta', 'wait').replace('runner: claude', 'runner: builtin'),
+    writeAction('meta', 'session', {
+      frontmatter: defaultActionFrontmatter('meta', 'session').replace('runner: claude', 'runner: builtin'),
     });
     const reg = new ActionRegistry(actionsDir, { permissionGroups: groups });
     reg.load();
-    const a = reg.getAction('meta.wait')!;
+    const a = reg.getAction('meta.session')!;
     expect(a.allowlist.alwaysAllow).not.toContain('ToolSearch');
     expect(a.allowlist.alwaysAllow.length).toBe(0);
   });

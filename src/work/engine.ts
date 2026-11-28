@@ -29,7 +29,7 @@ import type {
   SessionStall,
 } from './work-types.js';
 import { augmentEnvelopeWithLessons, buildActionCatalog, planStepView, updateEnvelopeCatalog, writeEnvelope, STEP_TYPE_CATALOG, type OrchestratorEnvelope, type ActionCatalogEntry, type CatalogScope } from './envelope.js';
-import { readonlyView, waitWorkspaceError, workspaceError } from './workspace.js';
+import { readonlyView, sessionWorkspaceError, workspaceError } from './workspace.js';
 import { waitSessionContext } from './wait-session-context.js';
 import type { SessionReport } from './work-launch.js';
 import { expectRepoOf, parsePrUrl, PR_URL_RE } from './pr-url.js';
@@ -197,10 +197,35 @@ export function decide(j: JobRecord, ctx: HandlerCtx): Action[] {
   if (j.reviewingStepId) return [];
   const actions: Action[] = [];
   for (const s of activeGroup(j)) {
+    const delay = startDelayAction(s, j, ctx);
+    if (delay !== undefined) { if (delay) actions.push(delay); continue; }
     const a = handlerFor(s).decide(s, j, ctx);
     if (a) actions.push(a);
   }
   return actions;
+}
+
+// undefined: no delay holds the step. null: held, nothing to do. An Action: stamp its startAt now.
+function startDelayAction(s: Step, j: JobRecord, ctx: HandlerCtx): Action | null | undefined {
+  if (!s.delaySec || s.cancelled || s.failure || stepHasBegun(s)) return undefined;
+  if (s.startAt == null) return { kind: 'arm-start-delay', jobId: j.id, stepId: s.id };
+  return s.startAt > ctx.now() ? null : undefined;
+}
+
+// A delay only ever holds a step before entry; one already under way keeps going.
+function stepHasBegun(s: Step): boolean {
+  if (s.sessionId || s.state !== handlerFor(s).initialState) return true;
+  return s.type === 'action' && !!(s.manualSession || s.childJobId);
+}
+
+const MAX_DELAY_SEC = 7 * 24 * 3600;
+
+// Plan-boundary check for a proposed step's delaySec.
+export function delaySecError(v: unknown): string | null {
+  if (v === undefined) return null;
+  return Number.isInteger(v) && (v as number) >= 0 && (v as number) <= MAX_DELAY_SEC
+    ? null
+    : `delaySec must be a whole number of seconds between 0 (no delay) and ${MAX_DELAY_SEC}`;
 }
 
 export interface WorkEngineOpts {
@@ -261,12 +286,10 @@ export class WorkEngine {
   // consumeStaleTurnStop() lets the Stop handler drop it instead of failing the live step.
   private readonly owedStaleStops = new Map<string, number>();
   private readonly waitSessionOpens = new Map<string, Promise<{ sessionId: string; cwd: string }>>();
-  // Live soak timers for parked meta.wait steps, keyed `${jobId}:${stepId}`. Set when a
-  // step enters a timed wait, cleared on resume/resolve/abandon, and rebuilt at boot by
-  // reconcileWaits (setTimeout does not survive a daemon restart).
-  private readonly waitTimers = new Map<string, NodeJS.Timeout>();
+  // Start-delay and legacy controller `resumeAt` wakes, re-armed at boot by reconcileStartDelays.
+  private readonly startDelayTimers = new Map<string, NodeJS.Timeout>();
   // Per orchestrated step: the pending re-check that ends an external quiet period. Same
-  // restart story as waitTimers — see scheduleDelivery.
+  // restart story as startDelayTimers — see scheduleDelivery.
   private readonly deliveryTimers = new Map<string, NodeJS.Timeout>();
   // Per step session: a pending "ended without submitting" check, armed at the Stop hook
   // and cancelled by further activity on the session. A turn boundary is not proof the
@@ -659,7 +682,7 @@ export class WorkEngine {
   // no timer is armed — so it gets the same treatment: clearing sessionId cold-spawns a fresh
   // controller, which reads phase/memo/artifacts/pr off its envelope and picks up where the
   // dead round left off. A `waiting` controller is NOT touched: whatever it parked on (a
-  // watcher event, a dispatch, the user, a soak timer re-armed by reconcileWaits) resumes it,
+  // watcher event, a dispatch, the user, a legacy `resumeAt` re-armed by reconcileStartDelays) resumes it,
   // and sendOrResume respawns the dead session with --resume rather than losing it.
   reconcileInterruptedSteps(): void {
     for (const j of this.opts.queue.list()) {
@@ -877,11 +900,8 @@ export class WorkEngine {
       case 'spawn-orchestrator':
         await this.spawnOrchestratorSession(a.jobId, a.mode, a.envelopePath, 'meta.orchestrate');
         break;
-      case 'enter-wait':
-        this.enterWait(a.jobId, a.stepId, a.durationSec);
-        break;
-      case 'resolve-wait':
-        this.resolveWaitStep(a.jobId, a.stepId, 'timer');
+      case 'arm-start-delay':
+        this.armStartDelay(a.jobId, a.stepId);
         break;
       case 'start-session':
         await this.startSessionStep(a.jobId, a.stepId);
@@ -1240,9 +1260,7 @@ export class WorkEngine {
     // (which does the same via onSessionExit; turnEnded is idempotent).
     for (const sid of sessionIds) this.opts.governor?.turnEnded(sid);
     await this.closeSessions(sessionIds);
-    // Drop any armed meta.wait soak timers so an abandoned/deleted job doesn't keep a
-    // stale wake pending (the resolve would no-op anyway, but don't leak the timer).
-    for (const s of j.steps) this.clearWaitTimer(j.id, s.id);
+    for (const s of j.steps) this.clearStartTimer(j.id, s.id);
     // Worktrees are keyed by stepId (see worktreePathForSession comment). Reap every
     // step's — readonly/detached steps own worktrees too, and skipping them was the
     // original orphan source; archiveWorktreeFor no-ops when there is none. A dispatch's
@@ -1291,7 +1309,9 @@ export class WorkEngine {
     // can act on. Past the plan boundary it is unrecoverable: the step materializes, then fails
     // at provision on every dispatch and retry.
     proposed.forEach((p, i) => {
-      const err = workspaceError(p.workspace) ?? waitWorkspaceError(p.type === 'action' ? p.action : undefined, p.workspace);
+      const err = workspaceError(p.workspace)
+        ?? sessionWorkspaceError(p.type === 'action' ? p.action : undefined, p.workspace)
+        ?? delaySecError(p.delaySec);
       if (err) throw new Error(`step ${i + 1} ("${p.title}"): ${err}`);
     });
     // The summary is the plan's one always-visible line in the PWA. Checked here because the MCP
@@ -1476,6 +1496,11 @@ export class WorkEngine {
         // Kept, patched or not, means re-run: the request's reason reaches it as an attempt.
         const base = cur.state === 'replan_requested' ? this.resetStep(cur, this.replanAttempt(cur)) : cur;
         const patched = { ...base, ...kept.patch, updatedAt: this.ctx.now() } as Step;
+        // A new delay on a step that hasn't started re-stamps when it is next.
+        if ('delaySec' in kept.patch && !stepHasBegun(base) && (base.startAt == null || base.startAt > this.ctx.now())) {
+          patched.startAt = undefined;
+          this.clearStartTimer(jobId, cur.id);
+        }
         const proposal = p.type === 'orchestrated' ? p.proposedPreapprovals : undefined;
         const withProposal = proposal && patched.type === 'orchestrated' ? { ...patched, proposedPreapprovals: proposal } : patched;
         return opts.auto ? this.autoApprovedPreapprovals(j, withProposal) : withUserPreapprovals(withProposal, stepPreapprovals?.[cur.id]);
@@ -1737,41 +1762,58 @@ export class WorkEngine {
   }
 
   // ─────────────────────────────────────────────────────────
-  // meta.wait — daemon-side hold between steps.
+  // Start delays — a plan's `delaySec` hold before a step starts.
   // ─────────────────────────────────────────────────────────
 
-  // A meta.wait step just became active. Park it in `waiting` (no session spawned).
-  // With duration_sec, stamp `resumeAt` and arm a soak timer that ticks the job when it
-  // elapses; without one, hold indefinitely until the user resumes.
-  private enterWait(jobId: string, stepId: string, durationSec?: number): void {
+  private armStartDelay(jobId: string, stepId: string): void {
     const now = this.ctx.now();
-    const resumeAt = durationSec != null && durationSec > 0 ? now + durationSec * 1000 : undefined;
-    let entered = false;
+    let at: number | undefined;
+    let sec = 0;
     this.mutateStep(jobId, stepId, (s) => {
-      if (s.type !== 'action' || s.state !== 'running') return s;
-      entered = true;
-      return { ...s, state: 'waiting', resumeAt, updatedAt: now };
+      if (s.startAt != null || !s.delaySec) return s;
+      sec = s.delaySec;
+      at = now + sec * 1000;
+      return { ...s, startAt: at, updatedAt: now };
     });
-    if (!entered) return;
+    if (at == null) return;
     this.mutate(jobId, (j) => this.appendEvent(j, {
       kind: 'state_changed', who: 'orchestrator', stepId,
-      body: resumeAt != null
-        ? `${this.stepLabel(jobId, stepId)} — waiting ${formatWait(durationSec!)} before continuing`
-        : `${this.stepLabel(jobId, stepId)} — waiting for you to resume`,
+      body: `${this.stepLabel(jobId, stepId)} — starts in ${formatDelay(sec)}`,
     }));
-    if (resumeAt != null) this.scheduleWaitWake(jobId, stepId, resumeAt - now);
+    this.scheduleStartWake(jobId, stepId, at - now);
   }
 
-  private scheduleWaitWake(jobId: string, stepId: string, delayMs: number): void {
+  // PWA "Start now" on a delayed step. One not yet next starts the moment it becomes next.
+  startStepNow(jobId: string, stepId: string): void {
+    const job = this.opts.queue.get(jobId);
+    const s = job?.steps.find((x) => x.id === stepId);
+    if (!job || !s) throw new WaitSessionError(404, 'step not found');
+    if (job.state !== 'executing' && job.state !== 'failed') throw new WaitSessionError(409, `the job is ${job.state}`);
+    const now = this.ctx.now();
+    if (!s.delaySec || s.cancelled || s.failure || stepHasBegun(s) || (s.startAt != null && s.startAt <= now)) {
+      throw new WaitSessionError(409, 'this step is not waiting to start');
+    }
+    this.clearStartTimer(jobId, stepId);
+    this.mutateStep(jobId, stepId, (x) => ({ ...x, startAt: now, updatedAt: now }));
+    const when = job.state === 'failed' ? 'will start once the job resumes'
+      : activeGroup(job).some((x) => x.id === stepId) ? 'started early' : 'will start as soon as it is next';
+    this.mutate(jobId, (j) => this.appendEvent(j, {
+      kind: 'state_changed', who: 'user', stepId,
+      body: `${this.stepLabel(jobId, stepId)} — ${when}`,
+    }));
+    void this.tickOne(jobId);
+  }
+
+  private scheduleStartWake(jobId: string, stepId: string, delayMs: number): void {
     const key = `${jobId}:${stepId}`;
-    const existing = this.waitTimers.get(key);
+    const existing = this.startDelayTimers.get(key);
     if (existing) clearTimeout(existing);
-    // setTimeout caps at ~24.8 days; longer soaks fire early, land back in `waiting`
-    // (decide() sees now < resumeAt), and reconcileWaits/next tick re-arms the remainder.
+    // setTimeout caps at ~24.8 days; a longer wait fires early, decide() still sees
+    // now < startAt, and reconcileStartDelays re-arms the remainder on the next boot.
     const clamped = Math.min(Math.max(0, delayMs), 2_147_483_647);
-    const t = setTimeout(() => { this.waitTimers.delete(key); void this.tick(jobId); }, clamped);
+    const t = setTimeout(() => { this.startDelayTimers.delete(key); void this.tick(jobId); }, clamped);
     if (typeof t.unref === 'function') t.unref();
-    this.waitTimers.set(key, t);
+    this.startDelayTimers.set(key, t);
   }
 
   // Re-run delivery once a step's external quiet period lapses. Ticking the job is enough: the
@@ -1790,49 +1832,13 @@ export class WorkEngine {
     this.deliveryTimers.set(key, t);
   }
 
-  private clearWaitTimer(jobId: string, stepId: string): void {
+  private clearStartTimer(jobId: string, stepId: string): void {
     const key = `${jobId}:${stepId}`;
-    const t = this.waitTimers.get(key);
-    if (t) { clearTimeout(t); this.waitTimers.delete(key); }
+    const t = this.startDelayTimers.get(key);
+    if (t) { clearTimeout(t); this.startDelayTimers.delete(key); }
   }
 
-  // Resolve a parked meta.wait — the soak timer elapsed (`by: 'timer'`) or the user
-  // resumed (`by: 'user'`). Stores the schema-shaped output and ticks so the next step
-  // dispatches. No-op unless the step is still `waiting` (guards double-fire).
-  private resolveWaitStep(jobId: string, stepId: string, by: 'timer' | 'user', note?: string): void {
-    this.clearWaitTimer(jobId, stepId);
-    let resolved = false;
-    this.mutateStep(jobId, stepId, (s) => {
-      if (s.type !== 'action' || s.state !== 'waiting') return s;
-      resolved = true;
-      const output = JSON.stringify({ resumed_by: by, ...(note ? { note } : {}) });
-      // reviewed:true so owesStepReview skips it — a hold has no output worth an
-      // orchestrator reflection, and we don't want a Claude session spawned between
-      // the wait and the step it's gating. The gated step's own settle still reviews.
-      return this.appendStepEvent(
-        { ...s, state: 'resolved', resumeAt: undefined, output, reviewed: true, updatedAt: this.ctx.now() },
-        'resolved', by === 'user' ? 'user' : 'orchestrator',
-      );
-    });
-    if (!resolved) return;
-    this.mutate(jobId, (j) => this.appendEvent(j, {
-      kind: 'step_resolved', who: by === 'user' ? 'user' : 'orchestrator', stepId,
-      body: `${this.stepLabel(jobId, stepId)} — resumed by ${by}`,
-    }));
-    void this.tickOne(jobId);
-  }
-
-  // PWA "Resume" action on a parked meta.wait step.
-  resumeWait(jobId: string, stepId: string, note?: string): void {
-    const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
-    if (step?.type === 'action' && step.action === 'meta.session') {
-      this.resumeSession(jobId, stepId, note);
-      return;
-    }
-    this.resolveWaitStep(jobId, stepId, 'user', note?.trim() || undefined);
-  }
-
-  // `reviewed` stays unset: unlike a meta.wait's, a meta.session's output is what the user decided.
+  // `reviewed` stays unset: a meta.session's output is what the user decided, so its settle is reviewed.
   private resolveSessionStep(
     jobId: string, stepId: string, output: Record<string, unknown>, who: 'user' | 'session', body: string,
   ): boolean {
@@ -1865,8 +1871,8 @@ export class WorkEngine {
     }, 'session', `reported back: ${r.summary}`);
   }
 
-  // The user's session on a meta.wait: created on the first open while the step is parked,
-  // returned as-is on every later one. Spawns nothing — the PWA's attach does, with this cwd.
+  // The user's session on a meta.session step: created on the first open while the step is
+  // parked, returned as-is on every later one. Spawns nothing — the PWA's attach does, with this cwd.
   async openWaitSession(jobId: string, stepId: string, cwd?: string): Promise<{ sessionId: string; cwd: string }> {
     const key = `${jobId}:${stepId}`;
     const inflight = this.waitSessionOpens.get(key);
@@ -1879,12 +1885,12 @@ export class WorkEngine {
   private async createWaitSession(jobId: string, stepId: string, pickedCwd?: string): Promise<{ sessionId: string; cwd: string }> {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (!step) throw new WaitSessionError(404, 'step not found');
-    if (step.type !== 'action' || (step.action !== 'meta.wait' && step.action !== 'meta.session')) {
-      throw new WaitSessionError(409, 'not a meta.wait or meta.session step');
+    if (step.type !== 'action' || step.action !== 'meta.session') {
+      throw new WaitSessionError(409, 'not a meta.session step');
     }
     if (step.manualSession) return { sessionId: step.manualSession.id, cwd: step.manualSession.cwd };
-    if (step.state !== 'waiting' || step.cancelled || step.failure) throw new WaitSessionError(409, 'the wait is not parked');
-    if (step.workspace.kind === 'none' && !pickedCwd) throw new WaitSessionError(400, 'cwd required for a wait with no workspace');
+    if (step.state !== 'waiting' || step.cancelled || step.failure) throw new WaitSessionError(409, 'the session step is not parked');
+    if (step.workspace.kind === 'none' && !pickedCwd) throw new WaitSessionError(400, 'cwd required for a session step with no workspace');
     const cwd = await this.manualSessionCwd(step, pickedCwd ?? '');
 
     const job = this.opts.queue.get(jobId)!;
@@ -1899,7 +1905,7 @@ export class WorkEngine {
 
   private async manualSessionCwd(step: ActionStep, noneCwd: string): Promise<string> {
     if (step.workspace.kind === 'none') return noneCwd;
-    const err = workspaceError(step.workspace) ?? waitWorkspaceError(step.action, step.workspace);
+    const err = workspaceError(step.workspace) ?? sessionWorkspaceError(step.action, step.workspace);
     if (err) throw new WaitSessionError(409, err);
     const ws = await this.opts.worktreeManager.provision(step.id, step.workspace);
     if (!ws.path) throw new WaitSessionError(409, 'workspace provisioned no checkout');
@@ -1952,24 +1958,33 @@ export class WorkEngine {
     });
   }
 
-  // Called once at daemon startup: soak timers don't survive a restart. Re-arm every
-  // parked meta.wait — resolve immediately if its deadline already passed, otherwise
-  // schedule a fresh wake for the remaining time. Indefinite holds (no resumeAt) just
-  // stay parked until the user resumes. Orchestrated waits carrying `resumeAt` are re-armed
-  // the same way (a due one fires on the next macrotask rather than resolving the step —
-  // the tick is what delivers it; see syncOrchestratedWake).
-  reconcileWaits(): void {
+  // Startup: cancels leftover meta.wait steps (decide() would spawn a session for an action the
+  // registry no longer has), then re-arms the timers a restart dropped.
+  reconcileStartDelays(): void {
     const now = this.ctx.now();
     for (const j of this.opts.queue.list()) {
-      if (j.state !== 'executing' && j.state !== 'failed') continue;
-      for (const s of j.steps) {
-        if (s.cancelled || s.failure || s.state !== 'waiting') continue;
-        if (s.type === 'orchestrated') { this.syncOrchestratedWake(j.id, s.id); continue; }
-        if (s.type !== 'action' || s.resumeAt == null) continue;
-        if (now >= s.resumeAt) this.resolveWaitStep(j.id, s.id, 'timer');
-        else this.scheduleWaitWake(j.id, s.id, s.resumeAt - now);
+      if (j.state === 'done' || j.state === 'abandoned') continue;
+      const swept = this.sweepRetiredWaits(j);
+      if (j.state === 'executing' || j.state === 'failed') {
+        for (const s of j.steps) {
+          if (s.cancelled || s.failure) continue;
+          if (s.type === 'orchestrated' && s.state === 'waiting') { this.syncOrchestratedWake(j.id, s.id); continue; }
+          if (s.startAt != null && s.startAt > now) this.scheduleStartWake(j.id, s.id, s.startAt - now);
+        }
       }
+      if (swept) void this.tickOne(j.id);
     }
+  }
+
+  private sweepRetiredWaits(j: JobRecord): boolean {
+    const stale = j.steps.filter((s) => s.type === 'action' && s.action === 'meta.wait' && !s.cancelled && s.state !== 'resolved');
+    for (const s of stale) {
+      this.mutate(j.id, (jj) => this.appendEvent(
+        { ...jj, steps: jj.steps.map((x) => x.id === s.id ? { ...x, cancelled: true, updatedAt: this.ctx.now() } : x) },
+        { kind: 'plan_reconciled', who: 'system', stepId: s.id, body: `${s.title || 'meta.wait'} — meta.wait was removed; step cancelled, the plan continues without it` },
+      ));
+    }
+    return stale.length > 0;
   }
 
   // A parked controller has nothing else that would ever tick it: the daemon runs no periodic
@@ -1981,8 +1996,8 @@ export class WorkEngine {
     const s = this.opts.queue.get(jobId)?.steps.find((x) => x.id === stepId);
     if (s?.type !== 'orchestrated') return;
     const at = !s.cancelled && !s.failure && s.state === 'waiting' ? s.waitingOn?.resumeAt : undefined;
-    if (at == null) { this.clearWaitTimer(jobId, stepId); return; }
-    this.scheduleWaitWake(jobId, stepId, at - this.ctx.now());
+    if (at == null) { this.clearStartTimer(jobId, stepId); return; }
+    this.scheduleStartWake(jobId, stepId, at - this.ctx.now());
   }
 
   // ─────────────────────────────────────────────────────────
@@ -2689,9 +2704,9 @@ export class WorkEngine {
     const step = this.opts.queue.get(jobId)?.steps.find((s) => s.id === stepId);
     if (step?.type !== 'orchestrated') return;
     this.opts.governor?.cancelStep(jobId, stepId);
-    // A soak armed by a `wait` outlives the step otherwise. Firing it would only tick a job
-    // whose decide() ignores a terminal step, but there is no reason to hold the timer.
-    this.clearWaitTimer(jobId, stepId);
+    // A wake armed by a legacy `wait` outlives the step otherwise. Firing it would only tick a
+    // job whose decide() ignores a terminal step, but there is no reason to hold the timer.
+    this.clearStartTimer(jobId, stepId);
     this.mutateStep(jobId, stepId, (s) => {
       if (s.type !== 'orchestrated') return s;
       const next: OrchestratedStep = {
@@ -3220,8 +3235,8 @@ export class WorkEngine {
     // says so. An unchanged workspace is not a repoint: the plan editor re-sends every field
     // it renders, so refusing on presence alone would re-lock the step it just unlocked.
     const nextAction = step.type === 'action' ? patch.action ?? step.action : undefined;
-    const waitErr = waitWorkspaceError(nextAction, patch.workspace ?? step.workspace);
-    if (waitErr) throw new Error(waitErr);
+    const sessionErr = sessionWorkspaceError(nextAction, patch.workspace ?? step.workspace);
+    if (sessionErr) throw new Error(sessionErr);
     if (step.type === 'action' && step.action === 'meta.job' && step.childJobId && nextAction !== 'meta.job') {
       throw new Error(`this step already started job ${step.childJobId} — cancel it instead of changing its action`);
     }
@@ -3598,7 +3613,7 @@ export class WorkEngine {
   private materialize(p: ProposedStep, job: JobRecord): Step {
     const id = this.ctx.newId();
     const now = this.ctx.now();
-    const wsErr = workspaceError(p.workspace) ?? waitWorkspaceError(p.type === 'action' ? p.action : undefined, p.workspace);
+    const wsErr = workspaceError(p.workspace) ?? sessionWorkspaceError(p.type === 'action' ? p.action : undefined, p.workspace);
     if (wsErr) throw new Error(wsErr);
     const bound = p.type === 'action' ? p.action : p.type === 'orchestrated' ? p.controller : undefined;
     const refusal = bound && this.runtimeRefusal(bound, this.runtimeFor(bound, job));
@@ -3637,8 +3652,8 @@ function withUserPreapprovals(s: Step, value: Preapprovals | undefined): Step {
 
 // Everything else on a step is daemon or user state; letting a plan seed it grants what nobody approved.
 const PROPOSABLE: Record<Step['type'], readonly string[]> = {
-  action: ['type', 'title', 'description', 'parallelGroup', 'workspace', 'goal', 'inputs', 'approach', 'risks', 'action', 'forwardOutput'],
-  orchestrated: ['type', 'title', 'description', 'parallelGroup', 'workspace', 'goal', 'inputs', 'approach', 'risks', 'controller', 'proposedPreapprovals'],
+  action: ['type', 'title', 'description', 'parallelGroup', 'workspace', 'goal', 'inputs', 'approach', 'risks', 'action', 'forwardOutput', 'delaySec'],
+  orchestrated: ['type', 'title', 'description', 'parallelGroup', 'workspace', 'goal', 'inputs', 'approach', 'risks', 'controller', 'proposedPreapprovals', 'delaySec'],
 };
 
 function proposableFields(p: ProposedStep): Record<string, unknown> {
@@ -3646,8 +3661,8 @@ function proposableFields(p: ProposedStep): Record<string, unknown> {
   return Object.fromEntries(PROPOSABLE[p.type].filter((k) => src[k] !== undefined).map((k) => [k, src[k]]));
 }
 
-// Human-friendly soak duration for the wait event body ("1h", "90m", "45s").
-function formatWait(sec: number): string {
+// Human-friendly start delay for the event body ("1h", "90m", "45s").
+function formatDelay(sec: number): string {
   if (sec >= 3600 && sec % 3600 === 0) return `${sec / 3600}h`;
   if (sec >= 3600) return `${Math.round((sec / 3600) * 10) / 10}h`;
   if (sec >= 60 && sec % 60 === 0) return `${sec / 60}m`;
@@ -3664,6 +3679,7 @@ function stepToProposed(s: Step): ProposedStep {
     parallelGroup: s.parallelGroup,
     workspace: s.workspace,
     keepId: s.id,
+    ...(s.delaySec ? { delaySec: s.delaySec } : {}),
   } as Record<string, unknown>;
   switch (s.type) {
     case 'action':

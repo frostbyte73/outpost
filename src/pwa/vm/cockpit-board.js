@@ -67,7 +67,7 @@ function jobActions(j, pendingApprovals, openingWaits) {
     if (s.sessionId && driven.has(s.sessionId)) { out.push({ kind: 'driven', stepId: s.id, sessionId: s.sessionId }); continue; }
     if (s.type === 'orchestrated' && s.gate) out.push({ kind: 'gate', stepId: s.id, phase: s.phase ?? null, question: s.gate.question ?? '' });
     for (const d of s.drafts ?? []) if (draftAwaitsUser(s, d)) out.push({ kind: 'draft', stepId: s.id, draftId: d.id });
-    if (s.type === 'action' && s.state === 'waiting' && s.resumeAt == null) {
+    if (s.type === 'action' && s.state === 'waiting') {
       out.push({
         kind: 'wait', stepId: s.id, reason: s.inputs?.reason ? String(s.inputs.reason) : '',
         session: s.manualSession ?? null, opening: openingWaits.has(`${j.id}:${s.id}`),
@@ -93,7 +93,7 @@ const ACTION_TEXT = {
   gate: (a) => (a.phase === 'spec' ? 'Spec ready' : a.phase === 'plan' ? 'Plan ready' : (a.question || 'Approve move')),
   draft: () => '1 write to approve',
   failed: (a) => `Failed: ${a.reason}`,
-  wait: (a) => (a.reason ? `On hold: ${a.reason}` : 'On hold'),
+  wait: (a) => (a.reason ? `Your session: ${a.reason}` : 'Your session'),
   stall: (a) => (a.auth ? 'Sign in needed' : `Stopped: ${STOP_LABEL[a.error] ?? 'API error'}`),
   push: () => 'Review diff & push',
   approval: (a) => `Approve ${a.toolName}`,

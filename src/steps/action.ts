@@ -29,8 +29,7 @@ export const actionHandler: StepHandler<ActionStep> = {
     if (s.cancelled || s.failure) return null;
 
     // Builtin-runner actions are daemon-implemented — never spawn an action-bound session.
-    // meta.wait is a hold that parks the step until the user resumes or its soak timer
-    // (`resumeAt`) elapses; meta.session parks it behind a session the user drives.
+    // meta.session parks the step behind a session the user drives.
     const runner = ctx.actionRegistry?.getAction(s.action)?.frontmatter.outpost.runner;
     if (runner === 'builtin') {
       if (s.action === 'meta.job') {
@@ -38,14 +37,6 @@ export const actionHandler: StepHandler<ActionStep> = {
       }
       if (s.action === 'meta.session') {
         return s.state === 'running' ? { kind: 'start-session', jobId: job.id, stepId: s.id } : null;
-      }
-      if (s.action !== 'meta.wait') return null;
-      if (s.state === 'running') {
-        const durationSec = typeof s.inputs?.duration_sec === 'number' ? s.inputs.duration_sec : undefined;
-        return { kind: 'enter-wait', jobId: job.id, stepId: s.id, durationSec };
-      }
-      if (s.state === 'waiting' && s.resumeAt != null && ctx.now() >= s.resumeAt) {
-        return { kind: 'resolve-wait', jobId: job.id, stepId: s.id, by: 'timer' };
       }
       return null;
     }

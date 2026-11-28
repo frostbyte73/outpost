@@ -6,7 +6,7 @@ export interface Reconciliation {
   cancelled: string[];
 }
 
-const MUTABLE_FIELDS = ['title', 'description', 'goal', 'approach', 'risks', 'parallelGroup', 'action', 'forwardOutput', 'inputs'] as const;
+const MUTABLE_FIELDS = ['title', 'description', 'goal', 'approach', 'risks', 'parallelGroup', 'action', 'forwardOutput', 'inputs', 'delaySec'] as const;
 
 // Structural, not by reference: `inputs` (and any other object- or array-valued field) arrives
 // fresh off the planner's JSON every time, so `!==` reports a change for a step restated

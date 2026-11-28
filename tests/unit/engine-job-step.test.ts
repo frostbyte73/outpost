@@ -7,7 +7,7 @@ import { JobQueue } from '../../src/work/work-queue.js';
 import { validateDispositions } from '../../src/work/reconcile.js';
 import type { ActionStep, JobRecord, JobState } from '../../src/work/work-types.js';
 
-const BUILTIN = new Set(['meta.session', 'meta.wait', 'meta.job']);
+const BUILTIN = new Set(['meta.session', 'meta.job']);
 const actionRegistry = {
   getAction(name: string) {
     return { frontmatter: { outpost: { runner: BUILTIN.has(name) ? 'builtin' : 'claude' } } };

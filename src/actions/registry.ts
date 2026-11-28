@@ -120,6 +120,8 @@ export class ActionRegistry {
 
   private walkActions(root: string, errors: RegistryLoadError[]): void {
     for (const category of safeReaddir(root)) {
+      // A dot-dir is not a category — `.retired/` holds edited copies of dropped actions.
+      if (category.startsWith('.')) continue;
       const catDir = join(root, category);
       if (!isDir(catDir)) continue;
       for (const name of safeReaddir(catDir)) {

@@ -49,9 +49,9 @@ describe('stepNeedsYou', () => {
     expect(stepNeedsYou(step({ type: 'orchestrated', state: 'gate_pending_approval' }))).toBe(true);
   });
 
-  it('true for an indefinite meta.wait hold, false for a timed soak', () => {
-    expect(stepNeedsYou(step({ type: 'action', state: 'waiting' }))).toBe(true);
-    expect(stepNeedsYou(step({ type: 'action', state: 'waiting', resumeAt: 1 }))).toBe(false);
+  it('true for a parked meta.session, false for a step its delaySec is still holding', () => {
+    expect(stepNeedsYou(step({ type: 'action', action: 'meta.session', state: 'waiting' }))).toBe(true);
+    expect(stepNeedsYou(step({ type: 'action', state: 'running', delaySec: 60, startAt: Date.now() + 60_000 }))).toBe(false);
   });
 
   // A dispatch-raised draft leaves the PARENT step's own `state` at `waiting` (only the

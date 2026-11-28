@@ -14,7 +14,7 @@ const initial = {
   lastLinearSyncAt: null,
   // The governor's app-wide queue (LaunchQueueSummary) — rides GET /api/work/jobs.
   launchQueue: null,
-  // `${jobId}:${stepId}` of meta.wait steps whose session is being provisioned.
+  // `${jobId}:${stepId}` of meta.session steps whose session is being provisioned.
   openingWaits: new Set(),
 };
 
@@ -158,6 +158,7 @@ export const work = {
   // back (just `{launched}`) — the badge update rides the WS work_launch_changed refetch,
   // not a hand-mutate here.
   async launchStep(id, stepId)   { return workApi.launchStep(id, stepId); },
+  async startStepNow(id, stepId) { return workApi.startStepNow(id, stepId); },
   async messageStep(id, stepId, body) { return call(() => workApi.messageStep(id, stepId, body)); },
   async resolveStepGate(id, stepId, approved, feedback) { return call(() => workApi.resolveStepGate(id, stepId, approved, feedback)); },
   async markStepResolved(id, stepId) { return call(() => workApi.markStepResolved(id, stepId)); },

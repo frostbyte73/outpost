@@ -141,6 +141,10 @@ interface StepBase {
   cancelled?: boolean;
   // Present while the step is `replan_requested`: why it judged the plan wrong.
   replanRequest?: ReplanRequest;
+  // Seconds to hold the step once it is next: the plan's hold, never a controller timer.
+  delaySec?: number;
+  // Stamped when a delayed step first becomes next; it won't start before this.
+  startAt?: number;
   // Set true once a submit_continue step-review has covered this settled step, so
   // the engine doesn't re-review the same group. New steps start unreviewed.
   reviewed?: boolean;
@@ -171,8 +175,8 @@ export interface ActionStep extends StepBase {
   inputs?: Record<string, unknown>;
   output?: string;
   forwardOutput?: boolean;
-  // 'waiting' is a builtin-runner-only state: a meta.wait hold. The engine parks the
-  // step here (no session spawned) until the user resumes or `resumeAt` elapses.
+  // 'waiting' is a meta.session parked behind the user's session until they mark it done or
+  // it reports back.
   // 'gate_pending_approval' is the write-draft hold: the session has already spawned and run
   // at least one turn, called `submit_write_draft`, and is parked here — still attached
   // (`s.sessionId` stays set; see actionHandler.decide in steps/action.ts) — until the user
@@ -183,9 +187,7 @@ export interface ActionStep extends StepBase {
   // 'replan_requested' (both step types): the step judged the plan itself wrong. Neither failed
   // nor resolved — the job sits in planning until an amendment drops or resets the step.
   state: 'running' | 'waiting' | 'gate_pending_approval' | 'resolved' | 'failed' | 'declined' | 'replan_requested';
-  // Epoch ms when a timed meta.wait auto-resumes. Unset for an indefinite manual hold.
-  resumeAt?: number;
-  // A meta.wait's user-driven session. Not `sessionId`, which every step path reads as the
+  // A meta.session's user-driven session. Not `sessionId`, which every step path reads as the
   // action's own session. The cwd is kept because a session with no turn yet has no transcript
   // for a later attach to find it by.
   manualSession?: { id: string; cwd: string };
@@ -370,7 +372,7 @@ type ProposedFields<S extends Step> = Omit<
   S,
   'id' | 'state' | 'sessionId' | 'events' | 'failure' | 'createdAt' | 'updatedAt' | 'workspace'
   | 'dispatches' | 'inbox' | 'roundsSpent' | 'consecutiveSelfRounds'
-  | 'preapprovals' | 'baseBranch' | 'specApprovedAt'
+  | 'preapprovals' | 'baseBranch' | 'specApprovedAt' | 'startAt'
 > & {
   keepId?: string;
   workspace?: S['workspace'];

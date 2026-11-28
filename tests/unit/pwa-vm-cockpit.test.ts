@@ -7,8 +7,8 @@ const NOW = 1_000_000_000_000;
 describe('stepWaitPill', () => {
   // Critical 2: `state === 'gate_pending_approval'` alone misses a dispatch-raised draft
   // (submitDraft only flips the DISPATCH's own status, never the parent step's state) — all
-  // three raiser kinds must produce the same approval CTA, not the generic "On hold" a
-  // meta.wait fallback would show.
+  // three raiser kinds must produce the same approval CTA, not the generic "Your turn" a
+  // meta.session's fallback would show.
   it('an ActionStep draft (raisedBy: step) gets Approve write', () => {
     expect(stepWaitPill({
       type: 'action', state: 'gate_pending_approval',
@@ -30,8 +30,8 @@ describe('stepWaitPill', () => {
     })).toEqual({ label: 'Approve move', variant: 'gate' });
   });
 
-  it('an indefinite meta.wait hold (no draft) falls back to On hold', () => {
-    expect(stepWaitPill({ type: 'action', state: 'waiting' })).toEqual({ label: 'On hold', variant: 'gate' });
+  it('a parked meta.session (no draft) falls back to Your turn', () => {
+    expect(stepWaitPill({ type: 'action', action: 'meta.session', state: 'waiting' })).toEqual({ label: 'Your turn', variant: 'gate' });
   });
 });
 

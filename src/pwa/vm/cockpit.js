@@ -11,15 +11,15 @@ import { stepNeedsYou, hasUnapprovedDraft, isTerminalJob } from './work-predicat
 import { implementAwaitingPush, stallText } from './tracked.js';
 
 // stepNeedsYou flags three shapes: a step parked on an explicit voluntary gate, a step (or
-// one of its dispatches) holding an unapproved write draft, and an indefinite meta.wait
-// hold. All three are hard stops the user alone can clear. `state === 'gate_pending_approval'`
+// one of its dispatches) holding an unapproved write draft, and a meta.session the user is
+// working in. All three are hard stops the user alone can clear. `state === 'gate_pending_approval'`
 // alone would miss a dispatch-raised draft — see hasUnapprovedDraft's own doc comment — so
 // it's checked explicitly rather than relying on state.
 export function stepWaitPill(s) {
   if (s.state === 'gate_pending_approval' || hasUnapprovedDraft(s)) {
     return { label: s.type === 'orchestrated' ? 'Approve move' : 'Approve write', variant: 'gate' };
   }
-  return { label: 'On hold', variant: 'gate' };
+  return { label: 'Your turn', variant: 'gate' };
 }
 
 function jobRef(j) {

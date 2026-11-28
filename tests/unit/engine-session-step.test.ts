@@ -8,7 +8,7 @@ import type { ActionStep, JobRecord, WorkspaceRef } from '../../src/work/work-ty
 
 const actionRegistry = {
   getAction(name: string) {
-    const runner = name === 'meta.session' || name === 'meta.wait' ? 'builtin' : 'claude';
+    const runner = name === 'meta.session' ? 'builtin' : 'claude';
     return { frontmatter: { outpost: { runner } } };
   },
   listActions: () => [],
@@ -81,13 +81,12 @@ describe('WorkEngine meta.session', () => {
 
   it('holds the next step until the user marks it done', async () => {
     const { engine, queue } = makeEngine();
-    const next: ActionStep = { ...sessionStep({ id: 'n', action: 'meta.wait', inputs: { reason: 'r' } }) };
-    const jobId = seed(queue, engine, [sessionStep(), next]);
+    const jobId = seed(queue, engine, [sessionStep(), sessionStep({ id: 'n' })]);
 
     await engine.tick(jobId);
     expect(stepOf(queue, jobId, 'n').state).toBe('running');
 
-    engine.resumeWait(jobId, 's');
+    engine.resumeSession(jobId, 's');
     expect(stepOf(queue, jobId).state).toBe('resolved');
     expect(JSON.parse(stepOf(queue, jobId).output!)).toEqual({ resumed_by: 'user' });
   });

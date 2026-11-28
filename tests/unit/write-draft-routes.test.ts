@@ -373,7 +373,7 @@ describe('/approve and /reject: the gate case is gone', () => {
     const port = await startServer(h);
     const res = await post(port, '/api/work/jobs/job-1/approve', { gate: 'gate', stepId: 'g1' });
     expect(res.status).toBe(400);
-    expect(res.body).toContain('plan|wait');
+    expect(res.body).toContain('plan|session');
   });
 
   it('/reject refuses gate:"gate" now that accept/revise moved to their own draft routes', async () => {

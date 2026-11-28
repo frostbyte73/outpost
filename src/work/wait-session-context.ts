@@ -2,30 +2,23 @@ import type { JobRecord, Step } from './work-types.js';
 
 const OUTPUT_CAP = 2000;
 
-// System prompt for the user-driven session on a parked meta.wait or meta.session step: what
-// the job is, what the step is for, and what the steps before it produced.
+// System prompt for the user-driven session on a meta.session step: what the job is, what the
+// step is for, and what the steps before it produced.
 export function waitSessionContext(job: JobRecord, stepId: string): string {
   const idx = job.steps.findIndex((s) => s.id === stepId);
-  const wait = job.steps[idx];
-  if (!wait || wait.type !== 'action') throw new Error(`step ${stepId} is not an action step of job ${job.id}`);
-  const isSession = wait.action === 'meta.session';
+  const step = job.steps[idx];
+  if (!step || step.type !== 'action') throw new Error(`step ${stepId} is not an action step of job ${job.id}`);
 
   const lines = [
-    isSession
-      ? 'You are in a session Outpost started for the user as one step of a job; this session IS the step\'s work. The user drives it.'
-      : 'You are in a session the user opened on an Outpost job that is paused at a wait step. The user drives this session; there is no envelope to read and nothing to submit.',
+    'You are in a session Outpost started for the user as one step of a job; this session IS the step\'s work. The user drives it.',
     '',
     `# Job: ${job.title}`,
   ];
   if (job.description.trim()) lines.push('', job.description.trim());
 
-  lines.push('', `# ${isSession ? 'Step' : 'Wait step'}: ${wait.title}`);
-  const reason = wait.inputs?.reason;
+  lines.push('', `# Step: ${step.title}`);
+  const reason = step.inputs?.reason;
   if (typeof reason === 'string' && reason.trim()) lines.push('', reason.trim());
-  const preview = wait.inputs?.preview;
-  if (preview != null) {
-    lines.push('', '## Preview', '', typeof preview === 'string' ? preview : JSON.stringify(preview, null, 2));
-  }
 
   const earlier = job.steps.slice(0, idx).filter((s) => !s.cancelled);
   if (earlier.length) {
@@ -33,8 +26,7 @@ export function waitSessionContext(job: JobRecord, stepId: string): string {
     for (const s of earlier) lines.push('', ...earlierStep(s));
   }
 
-  if (isSession) lines.push('', ...reportingBack(job.id, stepId));
-  else lines.push('', 'Resuming or abandoning the wait happens in the Outpost PWA, not from this session.');
+  lines.push('', ...reportingBack(job.id, stepId));
   return lines.join('\n');
 }
 

@@ -1564,7 +1564,7 @@ async function main() {
 
   console.log(`[work] actions available: ${loadedActionCount}`);
   engine.reconcileInterruptedSteps();
-  engine.reconcileWaits();
+  engine.reconcileStartDelays();
   engine.reconcilePendingLaunches();
   void engine.tick();
   const queued = jobQueue.list().length;

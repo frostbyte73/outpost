@@ -1,6 +1,6 @@
 ---
 name: meta.session
-description: Hand a step to the user as an ordinary interactive session that starts by sending a given prompt — a hands-on task for the user to do with Claude's help (restart a service and check it, test a build by hand, verify a milestone's acceptance features), or a personal skill invocation like `/investigate-cscu CSCU-123`. Use when a person has to do or check something themselves; a plain hold with nothing to do is meta.wait. Builtin runner — the daemon starts the session as soon as the step begins; the step resolves when the user marks it done or the session reports back, and the planner then reviews it.
+description: Hand a step to the user as an ordinary interactive session that starts by sending a given prompt — a hands-on task for the user to do with Claude's help (restart a service and check it, test a build by hand, verify a milestone's acceptance features, decide whether to promote a deploy ring), or a personal skill invocation like `/investigate-cscu CSCU-123`. Use when a person has to do, check or decide something themselves; a plain wait with nothing to do is `delaySec` on the next step. Builtin runner — the daemon starts the session as soon as the step begins; the step resolves when the user marks it done or the session reports back, and the planner then reviews it.
 outpost:
   kind: action
   category: meta
@@ -18,7 +18,7 @@ Use it whenever a step's work is **a person doing something by hand** — run or
 
 The special case is a ticket type with a dedicated personal skill the user runs interactively (see meta.orchestrate's "Personal-workflow tickets"). There the skill owns the investigation, the approval gates and the write-back, so the `meta.session` that starts it is the job's **only** step.
 
-Do NOT use it for work an action in the catalog already covers. Do NOT use it for a pure hold — a deploy soak, or "resume when you're ready to promote" where the user only decides whether to continue and has nothing to do — that's `meta.wait`.
+Do NOT use it for work an action in the catalog already covers. Do NOT use it for a pure soak where the job only has to let time pass — that's `delaySec` on the step that follows. A promote-or-halt decision after a health verdict IS a `meta.session`.
 
 ## Inputs
 

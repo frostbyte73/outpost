@@ -330,36 +330,6 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
   overflow-y: hidden;
 }
 
-.tl-wait {
-  margin: 2px 0 8px;
-  padding: 8px 12px;
-  font-size: 13px;
-  line-height: 1.5;
-  background: var(--warn-soft, var(--bg-elev-2));
-  border-left: 2px solid var(--warn);
-  border-radius: 0 var(--r-control) var(--r-control) 0;
-}
-.tl-wait-timer {
-  font-weight: 600;
-  color: var(--warn);
-}
-.tl-wait-reason {
-  margin-top: 4px;
-  color: var(--text);
-  overflow-wrap: anywhere;
-}
-.tl-wait-preview {
-  margin: 6px 0 0;
-  padding: 6px 8px;
-  font-size: 12px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  background: var(--bg);
-  border: 1px solid var(--line);
-  border-radius: var(--r-control);
-  color: var(--text-dim);
-}
-
 /* An orchestrated step's VOLUNTARY gate — the controller asking a question before its own
    next move. It's the operator's move, not a failure, so it's warn (DESIGN §2.2). */
 .tl-gate {
@@ -442,7 +412,7 @@ html[data-layout="desktop"] .o-frame-list .o-row.lr-row[hidden] { display: none;
    nothing of its own beyond that, same pattern as .plan-findings-label. */
 /* A re-armed call may already have taken effect — DESIGN §7.7's "say why before offering
    the fix" callout treatment (2px inline rail; §6 reserves 3px for a standalone card like
-   .wd-card above), same family as .tl-failure/.tl-wait, just warn-toned. */
+   .wd-card above), same family as .tl-failure, just warn-toned. */
 .wd-call-released {
   padding: 6px 10px;
   font-size: 12px;

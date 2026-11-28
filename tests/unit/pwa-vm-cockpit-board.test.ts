@@ -113,7 +113,7 @@ describe('job rows', () => {
   it('counts several waiting things as "N need you"', () => {
     const steps = [
       orc({ id: 'a', state: 'gate_pending_approval', gate: { question: 'Merge?' } }),
-      { id: 'b', type: 'action', action: 'meta.wait', title: 'Soak', state: 'waiting', inputs: { reason: 'canary' }, createdAt: NOW, updatedAt: NOW },
+      { id: 'b', type: 'action', action: 'meta.session', title: 'Promote?', state: 'waiting', inputs: { reason: 'canary' }, createdAt: NOW, updatedAt: NOW },
     ];
     const r = board({ jobs: [job({ steps })] }).started[0];
     expect(r.status.text).toBe('2 need you');

@@ -57,6 +57,7 @@ export const workApi = {
   syncJob(id)                      { return request(`${jobPath(id)}/sync`, { method: 'POST', body: '{}' }); },
   openWaitSession(id, stepId, cwd)  { return request(`${stepPath(id, stepId)}/wait-session`, { method: 'POST', body: JSON.stringify(cwd ? { cwd } : {}) }); },
   launchStep(id, stepId)           { return request(`${stepPath(id, stepId)}/launch`, { method: 'POST', body: '{}' }); },
+  startStepNow(id, stepId)         { return request(`${stepPath(id, stepId)}/start-now`, { method: 'POST', body: '{}' }); },
   messageStep(id, stepId, body)    { return request(`${stepPath(id, stepId)}/message`, { method: 'POST', body: JSON.stringify({ body }) }); },
   resolveStepGate(id, stepId, approved, feedback) {
     return request(`${stepPath(id, stepId)}/gate`, { method: 'POST', body: JSON.stringify({ approved, ...(feedback !== undefined ? { feedback } : {}) }) });

@@ -115,9 +115,8 @@ describe('focusAction', () => {
 
   // Critical 2: `step.state === 'gate_pending_approval'` alone misses a dispatch-raised
   // draft (only the dispatch's own status flips — see hasUnapprovedDraft's doc comment in
-  // work-predicates.js), which used to fall through to the meta.wait branch below and offer
-  // "Resume" — a CTA that calls `work.approve(job.id, {gate:'wait', stepId})`, which
-  // `resolveWaitStep` flatly refuses for anything but an ActionStep: 200, nothing changed.
+  // work-predicates.js), which would fall through to the branches below and offer a CTA that
+  // does nothing for the step.
   it('an ActionStep draft (raisedBy: step) -> review-gate, not resume', () => {
     const a = focusAction({ id: 'j1', state: 'executing',
       steps: [{ id: 's1', title: 'Post the comment', type: 'action', state: 'gate_pending_approval',
@@ -148,12 +147,12 @@ describe('focusAction', () => {
     expect(a.title).toBe('Waiting');
   });
 
-  it('an indefinite meta.wait hold -> resume', () => {
+  it('a parked meta.session -> Done', () => {
     const a = focusAction({ id: 'j1', state: 'executing',
-      steps: [{ id: 's1', title: 'Soak', type: 'action', state: 'waiting', inputs: { reason: 'Let the canary bake' } }],
+      steps: [{ id: 's1', title: 'Promote prod?', type: 'action', action: 'meta.session', state: 'waiting', inputs: { reason: 'Canary looks healthy' } }],
       live: live(false, []) });
     expect(a.cta.action).toBe('resume-wait');
-    expect(a.description).toBe('Let the canary bake');
+    expect(a.description).toBe('Canary looks healthy');
   });
 
   it('implement phase with a dead session -> review diff & push', () => {

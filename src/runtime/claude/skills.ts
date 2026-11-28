@@ -1,5 +1,5 @@
 import { homedir } from 'node:os';
-import { lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readlinkSync, symlinkSync, unlinkSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { isDir, safeReaddir } from '../../actions/install.js';
 
@@ -7,7 +7,9 @@ import { isDir, safeReaddir } from '../../actions/install.js';
 export function deliverActionsAsSkills(actionsDir: string): void {
   const skillsDir = join(homedir(), '.claude', 'skills');
   mkdirSync(skillsDir, { recursive: true });
+  pruneDanglingSkillSymlinks(skillsDir, resolve(actionsDir));
   for (const category of safeReaddir(actionsDir)) {
+    if (category.startsWith('.')) continue;
     const catDir = join(actionsDir, category);
     if (!isDir(catDir)) continue;
     for (const name of safeReaddir(catDir)) {
@@ -28,13 +30,37 @@ export function pruneSkillSymlink(skillsDir: string, category: string, name: str
   if (!stat.isSymbolicLink()) return;
   let target = '';
   try { target = readlinkSync(linkPath); } catch { return; }
-  if (resolve(target) !== ownedRoot && !resolve(target).startsWith(ownedRoot + '/')) return;
+  if (!ownedBy(target, ownedRoot)) return;
   try {
     unlinkSync(linkPath);
     console.log(`[work] pruned stale skill symlink: ${linkPath}`);
   } catch (e) {
     console.warn(`[work] could not remove stale skill symlink ${linkPath}: ${(e as Error).message}`);
   }
+}
+
+// A retired or deleted action leaves its link pointing at nothing.
+function pruneDanglingSkillSymlinks(skillsDir: string, ownedRoot: string): void {
+  for (const entry of safeReaddir(skillsDir)) {
+    const linkPath = join(skillsDir, entry);
+    let target: string;
+    try {
+      if (!lstatSync(linkPath).isSymbolicLink()) continue;
+      target = readlinkSync(linkPath);
+    } catch { continue; }
+    if (!ownedBy(target, ownedRoot) || existsSync(linkPath)) continue;
+    try {
+      unlinkSync(linkPath);
+      console.log(`[work] pruned dangling skill symlink: ${linkPath}`);
+    } catch (e) {
+      console.warn(`[work] could not remove dangling skill symlink ${linkPath}: ${(e as Error).message}`);
+    }
+  }
+}
+
+function ownedBy(target: string, root: string): boolean {
+  const t = resolve(target);
+  return t === root || t.startsWith(root + '/');
 }
 
 // Force-resymlinks stale links we own; leaves real dirs alone.

@@ -1,6 +1,6 @@
 ---
 name: project.shape
-description: Shape a project idea into a one-page brief.md — problem, audience, appetite (time budget), no-gos, rabbit holes, success criteria — for docs/projects/<slug>/. Writes [NEEDS CLARIFICATION] instead of guessing and returns those questions as clarifications[]; when there are any, follow it with a meta.wait and a second project.shape. Read-only — the file comes back in the output for a later code.orchestrate-pr step to commit (see SHARED-project-folder.md).
+description: Shape a project idea into a one-page brief.md — problem, audience, appetite (time budget), no-gos, rabbit holes, success criteria — for docs/projects/<slug>/. Writes [NEEDS CLARIFICATION] instead of guessing and returns those questions as clarifications[]; when there are any, follow it with a meta.session "Answer clarifications" and a second project.shape. Read-only — the file comes back in the output for a later code.orchestrate-pr step to commit (see SHARED-project-folder.md).
 outpost:
   kind: action
   category: project
@@ -33,7 +33,7 @@ cat ~/.outpost/actions/SHARED-project-folder.md
 Also read, newest first per the shared doc:
 
 - An earlier `project.shape` output in `previousSteps` — this run is then a **revision**.
-- A `meta.wait` output in `previousSteps` — its `note` holds the user's answers.
+- A `meta.session` output in `previousSteps` — its `answers` (or its Done `note`) holds the user's answers.
 - `docs/projects/<slug>/brief.md` in the workspace, when the repo already has one.
 
 The workspace is `readonly` on the target repo, or `none` for a project with no repo yet. In
@@ -60,11 +60,11 @@ the answers cover and keep the ones they don't.
 It is empty when the brief has none.
 
 **The contract the planner relies on:** when `clarifications` is non-empty, the plan follows
-this step with a `meta.wait` whose `reason` lists the questions, then a second `project.shape`
-with the same `slug`. The user answers in the note they type when resuming, and the second
-run reads the draft and that note from `previousSteps`. If the second run still returns
-clarifications, that is the planner's cue to re-plan with another wait and shape pair. A
-resume with no note answers nothing, so the markers stay as they were.
+this step with a `meta.session` "Answer clarifications" whose prompt lists the questions, then a
+second `project.shape` with the same `slug`. The user answers in that session, and the second
+run reads the draft and those answers from `previousSteps`. If the second run still returns
+clarifications, that is the planner's cue to re-plan with another session and shape pair. A
+session that comes back with no answers answers nothing, so the markers stay as they were.
 
 ## Step 4 — Submit
 

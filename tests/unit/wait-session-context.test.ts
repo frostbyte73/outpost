@@ -22,48 +22,37 @@ const prStep: OrchestratedStep = {
   createdAt: 0, updatedAt: 0,
 };
 
+const session = (id: string, extra: Partial<ActionStep> = {}) => action(id, { action: 'meta.session', state: 'waiting', ...extra });
+
 describe('waitSessionContext', () => {
-  it('carries the job, the wait reason and preview, and earlier steps', () => {
+  it('carries the job, the step reason, earlier steps, and how to report back', () => {
     const text = waitSessionContext(job([
       prStep,
       action('inv', { output: 'all healthy' }),
-      action('w', { action: 'meta.wait', state: 'waiting', title: 'Hold for prod deploy', inputs: { reason: 'Milos deploys', preview: { ring: 'prod' } } }),
+      session('s', { title: 'Promote prod?', inputs: { reason: 'Milos deploys' } }),
       action('after', { title: 'later step' }),
-    ]), 'w');
+    ]), 's');
 
     expect(text).toContain('# Job: Ship egress fix');
     expect(text).toContain('Roll out the fix');
-    expect(text).toContain('# Wait step: Hold for prod deploy');
+    expect(text).toContain('# Step: Promote prod?');
     expect(text).toContain('Milos deploys');
-    expect(text).toContain('"ring": "prod"');
     expect(text).toContain('PR: https://github.com/livekit/cloud-egress/pull/7 (merged)');
     expect(text).toContain('all healthy');
     expect(text).not.toContain('later step');
-    expect(text).toContain('Outpost PWA');
+    expect(text).toContain('job `J`, step `s`');
+    expect(text).toContain('mcp__outpost__submit_session_report');
   });
 
   it('truncates long earlier output', () => {
-    const text = waitSessionContext(job([
-      action('inv', { output: 'x'.repeat(5000) }),
-      action('w', { action: 'meta.wait', state: 'waiting' }),
-    ]), 'w');
+    const text = waitSessionContext(job([action('inv', { output: 'x'.repeat(5000) }), session('s')]), 's');
     expect(text).toContain(`${'x'.repeat(2000)}… [truncated]`);
     expect(text).not.toContain('x'.repeat(2001));
   });
 
-  it('tells a meta.session how to report back, and a wait that there is nothing to submit', () => {
-    const steps = [action('s', { action: 'meta.session', state: 'waiting' }), action('w', { action: 'meta.wait', state: 'waiting' })];
-    const session = waitSessionContext(job(steps), 's');
-    expect(session).toContain('job `J`, step `s`');
-    expect(session).toContain('mcp__outpost__submit_session_report');
-    expect(session).not.toContain('nothing to submit');
-    expect(waitSessionContext(job(steps), 'w')).toContain('nothing to submit');
-  });
-
-  it('builds for a first-step wait with no reason or preview', () => {
-    const text = waitSessionContext(job([action('w', { action: 'meta.wait', state: 'waiting' })]), 'w');
+  it('builds for a first step with no reason', () => {
+    const text = waitSessionContext(job([session('s')]), 's');
     expect(text).not.toContain('undefined');
     expect(text).not.toContain('# Earlier steps');
-    expect(text).not.toContain('## Preview');
   });
 });

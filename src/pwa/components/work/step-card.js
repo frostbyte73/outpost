@@ -6,7 +6,7 @@ import { renderWriteDraft, wireWriteDraft } from './write-draft-card.js';
 import { renderMarkdown } from '../../markdown.js';
 import { stepLaunchBadge } from '../../vm/tracked.js';
 import { launchPillClass } from './ticket-row.js';
-import { isTerminalStep, hasUnapprovedDraft, draftAwaitsUser } from '../../vm/work-predicates.js';
+import { isTerminalStep, hasUnapprovedDraft, draftAwaitsUser, startDelay } from '../../vm/work-predicates.js';
 import { shortName } from '../../utils/formatting.js';
 import { stepFeedHtml } from './wheel-toggle.js';
 import { sessionsApi } from '../../net/sessions.js';
@@ -39,8 +39,8 @@ function stateTone(s) {
   // The hard hold, either kind: a human_gate action before an external write, or an
   // orchestrated step whose controller gated its own move.
   if (s.state === 'gate_pending_approval') return 'gate';
-  // meta.wait hold — a soft gate the user (or a soak timer) releases. An orchestrated
-  // step's `waiting` is on CI/review/dispatches, so it stays active, not a gate.
+  // A meta.session waiting on the user to mark it done. An orchestrated step's `waiting`
+  // is on CI/review/dispatches, so it stays active, not a gate.
   if (s.type === 'action' && s.state === 'waiting') return 'gate';
   return 'active';
 }
@@ -137,14 +137,10 @@ function actionFor(job, s) {
   // An orchestrated step's affordances (gate, message, mark-resolved) all live in its
   // own card, which owns the wiring too.
   if (s.type === 'orchestrated') return '';
-  // meta.wait hold: let the user release it early (timed) or at all (indefinite).
-  if (s.type === 'action' && s.state === 'waiting') {
-    return (isSessionStep(s)
-      ? sessionDoneComposerHtml(s.id, 'data-step-action="resume"')
-      : '<button class="o-btn o-btn--primary" data-step-action="resume">Resume now</button>')
-      + waitSessionButton(job, s);
+  if (isSessionStep(s) && s.state === 'waiting') {
+    return sessionDoneComposerHtml(s.id, 'data-step-action="resume"') + waitSessionButton(job, s);
   }
-  if (s.type === 'action' && (s.action === 'meta.wait' || isSessionStep(s))) return waitSessionButton(job, s);
+  if (isSessionStep(s)) return waitSessionButton(job, s);
   // human_gate: the drafted write itself renders via renderWriteDraft (draftsHtml below),
   // which carries its own Accept/Propose changes/Deny buttons — nothing to add here.
   // Resolve is a manual fallback for action steps whose session subprocess
@@ -234,28 +230,15 @@ function waitSessionButton(job, s) {
   return `<button class="o-btn ${variant}" data-step-action="wait-session">${escapeHtml(label)}</button>`;
 }
 
-// The hold block for a parked meta.wait step: the soak/manual timer, the reason it's
-// paused, and any preview the planner attached (verdict, diff link, drafted body).
 // The countdown is a per-render snapshot — it refreshes whenever the timeline repaints.
-function waitBlockHtml(s) {
-  if (s.type !== 'action' || s.state !== 'waiting') return '';
-  let timer;
-  if (typeof s.resumeAt === 'number') {
-    const ms = s.resumeAt - Date.now();
-    timer = ms > 0 ? `Auto-resumes in ~${humanizeMs(ms)}` : 'Auto-resuming…';
-  } else {
-    timer = 'Waiting for you to resume';
-  }
-  const reason = s.inputs?.reason ? escapeHtml(String(s.inputs.reason)) : '';
-  const preview = s.inputs?.preview != null
-    ? `<pre class="tl-wait-preview">${escapeHtml(typeof s.inputs.preview === 'string' ? s.inputs.preview : JSON.stringify(s.inputs.preview, null, 2))}</pre>`
-    : '';
-  return `
-    <div class="tl-wait">
-      <div class="tl-wait-timer">⏸ ${escapeHtml(timer)}</div>
-      ${reason ? `<div class="tl-wait-reason">${reason}</div>` : ''}
-      ${preview}
-    </div>`;
+function startDelayHtml(job, s) {
+  const d = startDelay(job, s, Date.now());
+  if (!d) return '';
+  const when = d.startAt == null
+    ? `Starts ${humanizeMs(s.delaySec * 1000)} after the previous step`
+    : `Starts in ${humanizeMs(d.startAt - Date.now())}`;
+  return `<span class="o-pill ${launchPillClass('queued')}">${escapeHtml(when)}</span>`
+    + '<button type="button" class="o-btn o-btn--ghost sm" data-step-action="start-now">Start now</button>';
 }
 
 // An ActionStep's own write drafts awaiting a decision — the exact calls it will run
@@ -341,7 +324,7 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
   const action = actionFor(job, s);
   const foldable = stepIsFoldable(s);
   const folded = foldable && !expandedSteps.has(s.id);
-  const launch = launchBadgeHtml(job, s);
+  const launch = launchBadgeHtml(job, s) + startDelayHtml(job, s);
   return `
     <div class="tl-step" data-step-id="${escapeHtml(s.id)}" data-cancelled="${!!s.cancelled}" data-collapsed="${folded}"${groupAttr}>
       <div class="tl-dot" data-tone="${tone}">${dotGlyph(tone)}</div>
@@ -353,7 +336,6 @@ export function renderTimelineStep(job, s, index, groupPos, opts = {}) {
           ${s.failure ? `<div class="tl-failure">${escapeHtml(s.failure.reason ?? 'Step failed')}</div>` : ''}
           ${s.state === 'replan_requested' ? `<div class="tl-replan">Asked for a replan: ${escapeHtml(s.replanRequest?.reason ?? '')}</div>` : ''}
           ${attemptsHtml(s)}
-          ${waitBlockHtml(s)}
           ${childJobHtml(s)}
           ${draftsHtml(s)}
           ${orchestrated ? '' : stepFeedHtml(job, s)}
@@ -375,9 +357,8 @@ export function wireTimelineStep(el, job, s) {
       if (kind === 'toggle-fold') setFolded(el, s.id, el.getAttribute('data-collapsed') !== 'true');
       else if (kind === 'resolve') void work.resolveStep(job.id, s.id);
       else if (kind === 'launch-now') void work.launchStep(job.id, s.id).catch((err) => alert(`Launch failed: ${err?.message ?? err}`));
-      else if (kind === 'resume') {
-        void (isSessionStep(s) ? markSessionDone(job.id, s.id, el) : work.approve(job.id, { gate: 'wait', stepId: s.id }));
-      }
+      else if (kind === 'resume') void markSessionDone(job.id, s.id, el);
+      else if (kind === 'start-now') void work.startStepNow(job.id, s.id).catch((err) => alert(`Start failed: ${err?.message ?? err}`));
       else if (kind === 'wait-session') openWaitStepSession(job, s);
       else if (kind === 'open-child') nav.select('tracked', btn.getAttribute('data-child-id'));
       else if (kind === 'retry') {

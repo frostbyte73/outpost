@@ -112,7 +112,7 @@ export function createInlineMounts() {
       // A driven session gets the full session view (transcript + composer + mode selector) in
       // place of the two-line tail — see wheel-toggle.js.
       const drivenIds = new Set(job.live?.interactiveSessionIds ?? []);
-      // The user's own session on a parked wait — never daemon-driven, and possibly not spawned
+      // The user's own session on a parked meta.session — never daemon-driven, and possibly not spawned
       // yet, so its first attach needs the cwd.
       const waitCwds = new Map();
       for (const s of job.steps ?? []) {

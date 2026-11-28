@@ -27,7 +27,6 @@ describe('plannable scope', () => {
       'code.security-review',
       'meta.job',
       'meta.session',
-      'meta.wait',
       'project.decompose',
       'project.requirements',
       'project.shape',

@@ -1,9 +1,13 @@
-import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, unlinkSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import type { ActionRevisionsStore } from '../storage/action-revisions-store.js';
 import {
   STAGING_DIR, bundleHash, matchesPastBundle, readBundleState, replaceDir, writeBundleState,
 } from './bundle-sync.js';
+
+// Bundled actions the repo dropped. Installing never deletes on its own (see the NOTE in
+// installActions), so these are removed explicitly, or set aside under `.retired/` if edited.
+const RETIRED_ACTIONS = ['meta/wait'] as const;
 
 // Copies the bundled actions into the runtime dir, then hands that dir to the runtime to deliver.
 export function ensureActionsInstalled(
@@ -50,6 +54,7 @@ function installActions(srcRepoDir: string, runtimeDir: string, revisions: Actio
       }
     }
   }
+  retireActions(srcRepoDir, dstDir, baselines);
   try {
     writeBundleState(runtimeDir, { version: 1, baselines, editedLocally });
   } catch (e) {
@@ -101,6 +106,32 @@ function syncAction(
     console.warn(`[work] could not record revision for ${key}: ${(e as Error).message}`);
   }
   return repoHash;
+}
+
+// Same unedited test as syncAction: the recorded baseline, else any version the repo ever shipped.
+function retireActions(srcRepoDir: string, dstDir: string, baselines: Record<string, string>): void {
+  for (const key of RETIRED_ACTIONS) {
+    const dst = join(dstDir, key);
+    try {
+      if (isDir(dst)) {
+        const baseline = baselines[key];
+        const unedited = baseline ? bundleHash(dst) === baseline : matchesPastBundle(srcRepoDir, `actions/${key}`, dst);
+        if (unedited) {
+          rmSync(dst, { recursive: true, force: true });
+          console.log(`[work] retired action ${key}: removed`);
+        } else {
+          const kept = join(dstDir, '.retired', key);
+          rmSync(kept, { recursive: true, force: true });
+          mkdirSync(dirname(kept), { recursive: true });
+          renameSync(dst, kept);
+          console.log(`[work] retired action ${key}: edited locally — moved to .retired/${key}`);
+        }
+      }
+      delete baselines[key];
+    } catch (e) {
+      console.warn(`[work] could not retire action ${key}: ${(e as Error).message}`);
+    }
+  }
 }
 
 function readSkillMd(dir: string): string | undefined {

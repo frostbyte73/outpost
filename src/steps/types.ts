@@ -4,11 +4,8 @@ import type { ActionRegistry } from '../actions/registry.js';
 export type Action =
   | { kind: 'spawn-session'; jobId: string; stepId: string; envelopePath: string }
   | { kind: 'spawn-orchestrator'; jobId: string; mode: 'initial' | 'replan'; envelopePath: string }
-  // meta.wait (builtin runner): park the step in a daemon-side hold rather than spawn a
-  // session. `resolve-wait` fires when the soak timer elapses; the user-resume path calls
-  // engine.resumeWait() directly.
-  | { kind: 'enter-wait'; jobId: string; stepId: string; durationSec?: number }
-  | { kind: 'resolve-wait'; jobId: string; stepId: string; by: 'timer' }
+  // A step with `delaySec` just became next: stamp its `startAt` and arm the wake.
+  | { kind: 'arm-start-delay'; jobId: string; stepId: string }
   // meta.session (builtin runner): park the step and start the user's session on it.
   | { kind: 'start-session'; jobId: string; stepId: string }
   // meta.job (builtin runner): create or link the step's child job.

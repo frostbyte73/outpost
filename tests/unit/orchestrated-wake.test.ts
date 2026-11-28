@@ -76,7 +76,7 @@ describe('orchestrated timed wait', () => {
     // Fresh process: the setTimeout is gone, only the persisted resumeAt survives.
     const { engine, queue, resumed } = bootedEngine(dir);
 
-    engine.reconcileWaits();
+    engine.reconcileStartDelays();
     await settle(30);
 
     const s = queue.get(jobId)!.steps[0] as OrchestratedStep;

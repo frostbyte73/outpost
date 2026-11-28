@@ -322,15 +322,11 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
           engine.onPlanApproved(id, perStep);
           break;
         }
-        case 'wait':
-          if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
-          engine.resumeWait(id, payload.stepId, payload.note);
-          break;
         case 'session':
           if (!payload.stepId) { res.statusCode = 400; res.end('stepId required'); return; }
           engine.resumeSession(id, payload.stepId, payload.note);
           break;
-        default: res.statusCode = 400; res.end('gate must be plan|wait|session'); return;
+        default: res.statusCode = 400; res.end('gate must be plan|session'); return;
       }
     } catch (e) {
       res.statusCode = 500; res.end(`error: ${(e as Error).message}`); return;
@@ -414,6 +410,22 @@ export function registerJobsRoutes(server: Server, deps: JobsRoutesDeps): void {
     res.statusCode = 200;
     res.setHeader('content-type', 'application/json');
     res.end(JSON.stringify({ launched }));
+  });
+
+  // Start a step its plan's `delaySec` is still holding.
+  engagedRoute('POST', '/api/work/jobs/:id/steps/:stepId/start-now', (req, res) => {
+    const m = (req.url ?? '').match(/^\/api\/work\/jobs\/([\w-][\w.-]*)\/steps\/([\w-]+)\/start-now$/);
+    if (!m) { res.statusCode = 404; res.end('not found'); return; }
+    try {
+      engine.startStepNow(m[1]!, m[2]!);
+    } catch (e) {
+      res.statusCode = e instanceof WaitSessionError ? e.status : 500;
+      res.end((e as Error).message);
+      return;
+    }
+    res.statusCode = 200;
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ ok: true }));
   });
 
   server.route('POST', '/api/work/jobs/:id/priority', async (req, res) => {

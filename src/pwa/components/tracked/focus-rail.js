@@ -80,7 +80,7 @@ function runFocusCta(job, cta, root) {
     return;
   }
   if (cta.action === 'resume-wait' && cta.stepId) {
-    void (sessionCta(job, cta) ? markSessionDone(job.id, cta.stepId, root) : work.approve(job.id, { gate: 'wait', stepId: cta.stepId }));
+    void markSessionDone(job.id, cta.stepId, root);
     return;
   }
   if (cta.action === 'resume-stalled') {

@@ -142,8 +142,8 @@ export function focusAction(job) {
     // A dispatch-raised draft never sets the PARENT step's `state` to
     // `gate_pending_approval` (only the dispatch's own `status` flips to
     // `awaiting_approval`) — `hasUnapprovedDraft` is what catches that case; the
-    // state check alone would fall through to the meta.wait branch below and offer
-    // "Resume", which resolveWaitStep flatly refuses for anything but an ActionStep.
+    // state check alone would fall through to the meta.session branch below and offer
+    // "Done", which only a meta.session can take.
     if (step.state === 'gate_pending_approval' || hasUnapprovedDraft(step)) {
       return {
         title: 'Approval required',
@@ -153,8 +153,6 @@ export function focusAction(job) {
         cta: { label: 'Review', action: 'review-gate', stepId: step.id },
       };
     }
-    // The only other thing stepNeedsYou flags is an indefinite hold: a meta.wait, or a
-    // meta.session the user is working in.
     if (step.action === 'meta.session') {
       return {
         title: 'Your session',
@@ -162,10 +160,11 @@ export function focusAction(job) {
         cta: { label: 'Done', action: 'resume-wait', stepId: step.id },
       };
     }
+    // The rest is a session the user took the wheel on: theirs to drive, nothing to click here.
     return {
-      title: 'On hold',
-      description: step.inputs?.reason ? String(step.inputs.reason) : `${step.title} is holding until you resume.`,
-      cta: { label: 'Resume', action: 'resume-wait', stepId: step.id },
+      title: 'Your turn',
+      description: `You took the wheel on ${step.title}.`,
+      cta: { label: 'View', action: 'none' },
     };
   }
 

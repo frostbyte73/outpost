@@ -24,9 +24,9 @@ const WORKSPACE_SHAPE =
 export const STEP_TYPE_CATALOG: StepTypeCatalogEntry[] = [
   {
     type: 'action',
-    description: 'Spawn a named action (skill) for one-shot work — investigation, code review, ops, etc. Pick the action from the catalog passed alongside this entry. Set forwardOutput=true (default) when downstream steps should see this step\'s output; false for ops work that doesn\'t produce findings.',
+    description: 'Spawn a named action (skill) for one-shot work — investigation, code review, ops, etc. Pick the action from the catalog passed alongside this entry. Set forwardOutput=true (default) when downstream steps should see this step\'s output; false for ops work that doesn\'t produce findings. `delaySec` (seconds, either step type) holds the step that long after it becomes next; 0 removes a delay.',
     required: ['title', 'description', 'action', 'goal'],
-    optional: ['workspace', 'forwardOutput', 'parallelGroup'],
+    optional: ['workspace', 'forwardOutput', 'parallelGroup', 'delaySec'],
     workspace: `Defaults to {"kind":"none"} when omitted. ${WORKSPACE_SHAPE}`,
   },
   {
@@ -37,7 +37,7 @@ export const STEP_TYPE_CATALOG: StepTypeCatalogEntry[] = [
       + "someone else's PR. Pick `controller` from the action catalog entries whose kind is "
       + 'step-orchestrator. The controller composes the other actions itself — do not plan its rounds.',
     required: ['title', 'description', 'controller', 'goal'],
-    optional: ['inputs', 'workspace', 'parallelGroup'],
+    optional: ['inputs', 'workspace', 'parallelGroup', 'delaySec'],
     workspace: `Defaults to {"kind":"none"} when omitted. ${WORKSPACE_SHAPE}`,
   },
 ];
@@ -141,6 +141,7 @@ export interface PlanStepView {
   failure?: Step['failure'];
   replanRequest?: Step['replanRequest'];
   inputs?: Record<string, unknown>;
+  delaySec?: number;
   action?: string;
   output?: string;
   forwardOutput?: boolean;
@@ -164,6 +165,7 @@ export function planStepView(s: Step): PlanStepView {
     ...(s.parallelGroup ? { parallelGroup: s.parallelGroup } : {}),
     ...(s.failure ? { failure: s.failure } : {}),
     ...(s.replanRequest ? { replanRequest: s.replanRequest } : {}),
+    ...(s.delaySec ? { delaySec: s.delaySec } : {}),
     // Resolved and cancelled steps can't be amended, so their inputs can only be noise
     ...(s.state !== 'resolved' && !s.cancelled && s.inputs ? { inputs: s.inputs } : {}),
   };

@@ -79,10 +79,19 @@ export function stepNeedsYou(s, drivenIds) {
   // with nothing on the card to act on.
   return s.state === 'gate_pending_approval'
     || hasUnapprovedDraft(s)
-    // An indefinite meta.wait hold only clears when the user resumes; a timed soak
-    // (resumeAt set) auto-resumes, so it's waiting on the clock, not on you. An
-    // orchestrated step's `waiting` is on CI/review/dispatches, never on you.
-    || (s.type === 'action' && s.state === 'waiting' && s.resumeAt == null);
+    // A meta.session waits on the user to finish and mark it done. An orchestrated step's
+    // `waiting` is on CI/review/dispatches, never on you.
+    || (s.type === 'action' && s.state === 'waiting');
+}
+
+// `{ startAt }` while the plan's delaySec holds the step (startAt undefined until it is next), else null.
+export function startDelay(job, s, now) {
+  if (job.state !== 'executing' && job.state !== 'failed') return null;
+  if (!s.delaySec || s.cancelled || s.failure) return null;
+  // Same "has begun" signals as the engine's stepHasBegun: a delay never holds a step under way.
+  if (s.sessionId || s.state !== 'running' || s.manualSession || s.childJobId) return null;
+  if (s.startAt == null) return { startAt: undefined };
+  return s.startAt > now ? { startAt: s.startAt } : null;
 }
 
 // Has any step actually run? Mirrors the `jobInProgress` check in engine.ts — a session was

@@ -33,9 +33,9 @@ describe('deriveRunEvents — action steps', () => {
     ]);
   });
 
-  it('records no run for a meta.wait hold', () => {
-    const parked = action({ action: 'meta.wait', state: 'waiting', sessionId: undefined });
-    expect(deriveRunEvents(job([action({ action: 'meta.wait', sessionId: undefined })]), job([parked]), OPTS)).toEqual([]);
+  it('records no run for a parked meta.session', () => {
+    const parked = action({ action: 'meta.session', state: 'waiting', sessionId: undefined });
+    expect(deriveRunEvents(job([action({ action: 'meta.session', sessionId: undefined })]), job([parked]), OPTS)).toEqual([]);
     expect(deriveRunEvents(undefined, job([parked]), OPTS)).toEqual([]);
   });
 
