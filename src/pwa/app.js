@@ -103,6 +103,7 @@ import { itemToEntries } from './vm/session-events.js';
 import { mountShell, unmountShell } from './components/shell/index.js';
 import { mountMobileShell, unmountMobileShell, repaintMobileShell } from './components/mobile-shell/index.js';
 import { initPalette } from './components/palette/index.js';
+import { installShotViewer } from './components/shot-viewer/index.js';
 import {
   initDiffOverlay,
   openDiffOverlay,
@@ -981,6 +982,8 @@ installTestHooks({
   openSessionInWorkspaceTab,
   refreshSessions: loadSessions,
 });
+
+installShotViewer();
 
 // Install the cross-module callback bridge. Extracted components (session-view,
 // work cards, etc.) can't import from app.js without cycling, so they import

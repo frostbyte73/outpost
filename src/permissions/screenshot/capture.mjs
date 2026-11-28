@@ -9,6 +9,8 @@ const HTTP = new Set(['http:', 'https:']);
 const WS = new Set(['ws:', 'wss:']);
 const MAX_REDIRECTS = 10;
 const OUT_RE = /^\/tmp\/[A-Za-z0-9_-][A-Za-z0-9._-]*\.png$/;
+/** A name resolveOutputPath generates under the screenshots dir: the only files the daemon serves. */
+export const SCREENSHOT_NAME_RE = /^[0-9]{1,16}-[0-9a-f]{8}\.png$/;
 const USAGE = 'usage: outpost-screenshot [--width N] [--height N] [--color-scheme light|dark] [--full-page] <http://localhost…> [/tmp/<name>.png]';
 
 /** A URL, output path or in-page request the tool will not touch. */

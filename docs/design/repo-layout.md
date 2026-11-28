@@ -44,6 +44,7 @@ src/
   routes/                # HTTP route factories: registerXRoutes(server, deps)
     {git,jobs,sessions,projects,push,runs,schedules,meta,util,actions,preferences,update}.ts
     action-revisions.ts, schedule-edits.ts
+    screenshots.ts         # GET /api/screenshots/:name — outpost-screenshot's default outputs, by exact name only
   session/               # session lifecycle
     session-{manager,store}.ts, stream-json.ts, event-log.ts, attachments.ts
   work/                  # job orchestration
@@ -105,6 +106,7 @@ src/
       session-view/          # live transcript + composer — shared core for desktop and mobile
       diff-overlay/, agents-sheet/, push/, work/  # diff review; subagent sheet; push-notif setup;
                                                    # job-detail sub-widgets (step-card, thread-card, ...) used by tracked/
+      shot-viewer/           # full-size <dialog> for any screenshot markdown.js renders; one delegated listener
       ask-card.js, ask-flow.js, tool-use-tile.js, todos-{core,sheet}.js, sheet-utils.js,
       mobile-header.js, approvals-mobile.js, cwd-picker.js, theme-picker.js,
       diff-review-format.js

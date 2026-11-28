@@ -29,7 +29,7 @@ import { LaunchGovernor } from './work/launch-governor.js';
 import { parseReplanRequest, parseSessionReport, resolveWorkSession } from './work/work-launch.js';
 import type { JobRecord } from './work/work-types.js';
 import { ensureActionsInstalled, bundledRepoDir } from './actions/install.js';
-import { installScreenshotTool } from './permissions/screenshot/install.js';
+import { installScreenshotTool, screenshotsDir } from './permissions/screenshot/install.js';
 import { ClaudeRuntime } from './runtime/claude/runtime.js';
 import { ClaudeTranscripts } from './runtime/claude/transcripts.js';
 import { codexVersion, resolveCodexBin } from './runtime/codex/bin.js';
@@ -75,6 +75,7 @@ import { registerProjectsRoutes } from './routes/projects.js';
 import { registerPushRoutes } from './routes/push.js';
 import { registerMetaRoutes, createGroupApplier } from './routes/meta.js';
 import { registerAuthRoutes } from './routes/auth.js';
+import { registerScreenshotRoutes } from './routes/screenshots.js';
 import { McpLoginFlows } from './integrations/mcp-login.js';
 import { ClaudeLoginFlows } from './integrations/claude-login.js';
 import { McpConnectorList } from './integrations/mcp-connectors.js';
@@ -1116,6 +1117,7 @@ async function main() {
     permissionGroupsPath: PERMISSION_GROUPS_PATH, groupRevisions,
   });
   registerAuthRoutes(server, { loginFlows, claudeLogin, connectors: new McpConnectorList(join(RUNTIME_DIR, 'mcp-connectors.json')) });
+  registerScreenshotRoutes(server, { screenshotsDir: screenshotsDir(RUNTIME_DIR) });
   const resolveLoginBin = (r: 'codex' | 'cursor') => (r === 'codex' ? resolveCodexBin() : resolveCursorBin());
   registerRuntimesRoutes(server, {
     runtimes, login: new RuntimeLoginFlows(resolveLoginBin), resolveBin: resolveLoginBin, acpAgentsPath, buildAcpRuntime,

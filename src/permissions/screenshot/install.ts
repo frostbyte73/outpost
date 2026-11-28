@@ -2,10 +2,14 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
+export function screenshotsDir(runtimeDir: string): string {
+  return join(runtimeDir, 'screenshots');
+}
+
 // Always overwritten: a stale or tampered copy must not survive a restart.
 export function installScreenshotTool(runtimeDir: string, repoDir: string): string {
   const bin = join(runtimeDir, 'bin');
-  const shots = join(runtimeDir, 'screenshots');
+  const shots = screenshotsDir(runtimeDir);
   mkdirSync(bin, { recursive: true });
   mkdirSync(shots, { recursive: true, mode: 0o700 });
   const playwright = createRequire(join(repoDir, 'package.json')).resolve('@playwright/test');

@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, resolve as resolvePath, dirname } from 'node:path';
@@ -24,7 +24,7 @@ const QUESTION = 'Merge this PR now?';
 // keeps a gated step the user's turn while its inbox is empty). Approving or declining
 // does not replay any held move — it just delivers the verdict and resumes the controller,
 // which decides its own next move from there.
-function seedJob(repoCwd: string, branch: string) {
+function seedJob(repoCwd: string, branch: string, draft = DRAFT) {
   const now = Date.now();
   return {
     id: JOB_ID,
@@ -47,7 +47,7 @@ function seedJob(repoCwd: string, branch: string) {
         memo: 'Widget is wired in; waiting on review.',
         artifacts: { spec: '# The spec\n\nWhat we agreed.\n', implPlan: '# The plan\n\nHow it lands.\n' },
         gate: {
-          draft: DRAFT,
+          draft,
           question: QUESTION,
           requestedAt: now,
         },
@@ -67,25 +67,58 @@ function seedJob(repoCwd: string, branch: string) {
   };
 }
 
+function makeSeedRepo(): string {
+  const repo = mkdtempSync(join(tmpdir(), 'outpost-e2e-orcgate-'));
+  execFileSync('git', ['init', '-q', '-b', 'main', repo]);
+  execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example']);
+  execFileSync('git', ['-C', repo, 'config', 'user.name', 'Test']);
+  execFileSync('git', ['-C', repo, 'commit', '--allow-empty', '-q', '-m', 'init']);
+  return repo;
+}
+
+async function startSeeded(seedRepo: string, draft?: string): Promise<DaemonHandle> {
+  return startDaemon({
+    fixturePath: FIXTURE,
+    initialProjects: [{ cwd: seedRepo, sessions: [{ id: SESSION_ID, jsonl: SEED_JSONL }] }],
+    initialJobs: [seedJob(seedRepo, 'outpost/orc-step-1', draft)],
+  });
+}
+
 const seededTest = test.extend<{ seedRepo: string; daemon: DaemonHandle }>({
-  seedRepo: async ({}, use) => {
-    const repo = mkdtempSync(join(tmpdir(), 'outpost-e2e-orcgate-'));
-    execFileSync('git', ['init', '-q', '-b', 'main', repo]);
-    execFileSync('git', ['-C', repo, 'config', 'user.email', 'test@example']);
-    execFileSync('git', ['-C', repo, 'config', 'user.name', 'Test']);
-    execFileSync('git', ['-C', repo, 'commit', '--allow-empty', '-q', '-m', 'init']);
-    await use(repo);
-  },
+  seedRepo: async ({}, use) => { await use(makeSeedRepo()); },
   daemon: async ({ seedRepo }, use) => {
-    const handle = await startDaemon({
-      fixturePath: FIXTURE,
-      initialProjects: [{ cwd: seedRepo, sessions: [{ id: SESSION_ID, jsonl: SEED_JSONL }] }],
-      initialJobs: [seedJob(seedRepo, 'outpost/orc-step-1')],
-    });
+    const handle = await startSeeded(seedRepo);
     await use(handle);
     await handle.stop();
   },
 });
+
+// A 1×1 PNG, enough for the browser to decode and report a natural size.
+const PNG_1PX = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+const SHOTS = ['1795000000000-aaaaaaaa.png', '1795000000001-bbbbbbbb.png'];
+const SHOT_DRAFT = `## Pick one\n\n![A — current](/api/screenshots/${SHOTS[0]})\n![B — proposed](/api/screenshots/${SHOTS[1]})\n`;
+
+const shotTest = test.extend<{ seedRepo: string; daemon: DaemonHandle }>({
+  seedRepo: async ({}, use) => { await use(makeSeedRepo()); },
+  daemon: async ({ seedRepo }, use) => {
+    const handle = await startSeeded(seedRepo, SHOT_DRAFT);
+    const dir = join(handle.runtimeDir, 'screenshots');
+    mkdirSync(dir, { recursive: true });
+    for (const name of SHOTS) writeFileSync(join(dir, name), PNG_1PX);
+    await use(handle);
+    await handle.stop();
+  },
+});
+
+async function expectGateShots(page: import('@playwright/test').Page): Promise<import('@playwright/test').Locator> {
+  const figures = page.locator(`.tl-step[data-step-id="${STEP_ID}"] .tl-gate-body .md-shots > figure.md-shot`);
+  await expect(figures).toHaveCount(2);
+  await expect(figures.locator('figcaption')).toHaveText(['A — current', 'B — proposed']);
+  for (const img of await figures.locator('img').all()) {
+    await expect.poll(() => img.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth)).toBe(1);
+  }
+  return figures;
+}
 
 async function openJob(outpostPage: import('@playwright/test').Page): Promise<void> {
   await outpostPage.locator('.o-sidebar-item[data-surface="tracked"]').click();
@@ -299,4 +332,38 @@ seededTest('the message composer wakes the controller with a user message', asyn
     return [...(s.inbox ?? []), ...(s.lastDelivered ?? [])]
       .filter((i: any) => i.kind === 'user-message').map((i: any) => i.body);
   }, { timeout: 5_000 }).toEqual(['Rebase onto main first.']);
+});
+
+shotTest('screenshots in a gate render side by side and open full size', async ({ outpostPage }) => {
+  await openJob(outpostPage);
+  const figures = await expectGateShots(outpostPage);
+
+  const viewer = outpostPage.locator('dialog.shot-viewer');
+  await figures.nth(0).locator('a[data-shot]').click();
+  await expect(viewer).toHaveAttribute('open', '');
+  await expect(viewer.locator('.shot-viewer-frame img')).toHaveAttribute('src', `/api/screenshots/${SHOTS[0]}`);
+  await expect(viewer.locator('.shot-viewer-label')).toHaveText('A — current');
+  await outpostPage.keyboard.press('Escape');
+  await expect(viewer).not.toHaveAttribute('open', '');
+
+  await figures.nth(1).locator('a[data-shot]').click();
+  await expect(viewer.locator('.shot-viewer-label')).toHaveText('B — proposed');
+  await viewer.locator('[data-shot-close]').click();
+  await expect(viewer).not.toHaveAttribute('open', '');
+});
+
+shotTest.describe('on a phone', () => {
+  shotTest.use({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+
+  shotTest('the same gate shows both screenshots in one row and a tap opens one full size', async ({ outpostPage, daemon }) => {
+    await outpostPage.goto(`${daemon.baseUrl}/?job=${JOB_ID}`);
+    const figures = await expectGateShots(outpostPage);
+    const [a, b] = await Promise.all([figures.nth(0).boundingBox(), figures.nth(1).boundingBox()]);
+    expect(a!.y).toBe(b!.y);
+
+    await figures.nth(1).locator('a[data-shot]').tap();
+    const viewer = outpostPage.locator('dialog.shot-viewer');
+    await expect(viewer).toHaveAttribute('open', '');
+    await expect(viewer.locator('.shot-viewer-frame img')).toHaveAttribute('src', `/api/screenshots/${SHOTS[1]}`);
+  });
 });

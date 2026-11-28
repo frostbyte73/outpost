@@ -2,6 +2,8 @@ import type { BrowserType } from '@playwright/test';
 
 export class RefusedError extends Error {}
 
+export const SCREENSHOT_NAME_RE: RegExp;
+
 export interface CaptureOptions {
   url: string;
   out: string;

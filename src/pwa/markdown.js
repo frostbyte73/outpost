@@ -31,6 +31,32 @@ const HTML_ATTRS = {
   details: { open: 'bool' },
 };
 
+const IMG_RE = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+(?:"|&quot;)[^)]*)?\)/g;
+// A \x00 placeholder in an href would be filled with raw HTML after renderInline, outside the escaping.
+const SAFE_HREF_RE = /^(?:https?:\/\/|mailto:|tel:|\/)[^\x00]*$/;
+// Name mirrors capture.mjs's SCREENSHOT_NAME_RE; any dir prefix, so the path the tool prints cites one too.
+const SHOT_SRC_RE = /^(?:.*\/)?screenshots\/([0-9]{1,16}-[0-9a-f]{8}\.png)$/;
+
+function shotLink(cls, label, name) {
+  const src = `/api/screenshots/${name}`;
+  // The label still holds code/HTML placeholders, which renderMarkdown fills in after this runs.
+  const alt = label.replace(/\x00[A-Z]+\d+\x00/g, '');
+  return `<a class="${cls}" href="${src}" data-shot><img src="${src}" alt="${alt}" loading="lazy" decoding="async"></a>`;
+}
+
+function shotFigure(label, name) {
+  const caption = label ? `<figcaption>${label}</figcaption>` : '';
+  return `<figure class="md-shot">${shotLink('md-shot-link', label, name)}${caption}</figure>`;
+}
+
+// A <figure> can't sit in a <p>: a screenshots-only paragraph renders bare, and two or more as a row.
+function renderShotsBlock(text) {
+  const imgs = [...text.matchAll(IMG_RE)];
+  if (!imgs.length || text.replace(IMG_RE, '').trim() || !imgs.every((m) => SHOT_SRC_RE.test(m[2]))) return null;
+  const html = renderInline(text, { figures: true });
+  return imgs.length > 1 ? `<div class="md-shots">${html}</div>` : html;
+}
+
 function isSafeUrl(v) {
   return /^(?:https?:\/\/|mailto:|tel:|#|\/)/i.test(v);
 }
@@ -71,7 +97,8 @@ function sanitizeAttrs(tag, raw) {
 // regardless of how the surrounding backticks pair up.
 export function renderMarkdown(src, { allowHtml = false } = {}) {
   // strip ANSI escapes from tool stdout (claude includes them verbatim)
-  const stripped = String(src).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '');
+  // NUL delimits the renderer's own placeholders, so input must never carry one.
+  const stripped = String(src).replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x00/g, '');
 
   // extract fenced blocks first so inline rules never touch their contents
   const codeBlocks = [];
@@ -207,6 +234,9 @@ function renderBlock(block) {
     return `<ul class="md-list">${items.map((it) => `<li>${renderInline(it)}</li>`).join('')}</ul>`;
   }
 
+  const shots = renderShotsBlock(trimmed);
+  if (shots) return shots;
+
   return `<p class="md-p">${renderInline(trimmed).replace(/\n/g, '<br>')}</p>`;
 }
 
@@ -219,23 +249,38 @@ function renderTable(lines) {
   return `<div class="md-table-wrap"><table class="md-table">${thead}${tbody}</table></div>`;
 }
 
-function renderInline(text) {
+function renderInline(text, { figures = false } = {}) {
   // escape first so transforms below can only produce tags from controlled patterns.
   // inline code is already carved out at the top level (renderMarkdown), so the
   // \x00ICODE\x00 placeholders here pass through untouched.
   let s = escapeHtml(text);
 
+  const links = [];
+  const imageLabels = new Map();
+  // Markdown images render only screenshots, so markdown image syntax never makes the PWA fetch a remote URL.
+  s = s.replace(IMG_RE, (_, label, src) => {
+    const shot = src.match(SHOT_SRC_RE);
+    if (shot) links.push(figures ? shotFigure(label, shot[1]) : shotLink('md-shot-inline', label, shot[1]));
+    else if (SAFE_HREF_RE.test(src)) {
+      imageLabels.set(links.length, label || src);
+      links.push(`<a class="md-link" href="${src}" target="_blank" rel="noopener noreferrer">${label || src}</a>`);
+    } else return label;
+    return `\x00LINK${links.length - 1}\x00`;
+  });
+
   // only http(s) / mailto / tel / root-relative hrefs render as links — anything else
   // falls back to raw text so a malformed href can't smuggle a javascript: URL
-  const links = [];
   s = s.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+&quot;[^)]*&quot;)?\)/g, (full, label, href) => {
-    if (!/^(?:https?:\/\/|mailto:|tel:|\/)/.test(href)) return full;
+    if (!SAFE_HREF_RE.test(href)) return full;
+    // A linked image (a README badge) links to the outer href; a screenshot keeps its own, since anchors can't nest.
+    label = label.replace(/\x00LINK(\d+)\x00/g, (m, i) => imageLabels.get(Number(i)) ?? m);
+    if (label.includes('\x00LINK')) return label;
     links.push(`<a class="md-link" href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`);
     return `\x00LINK${links.length - 1}\x00`;
   });
 
   // bare URL autolinker. Trailing sentence punctuation is shed so "see https://x.com." doesn't include the period
-  s = s.replace(/\bhttps?:\/\/[^\s<]+/g, (url) => {
+  s = s.replace(/\bhttps?:\/\/[^\s<\x00]+/g, (url) => {
     let trail = '';
     while (url.length && /[.,;:!?)\]}'"*_]/.test(url.slice(-1))) {
       trail = url.slice(-1) + trail;

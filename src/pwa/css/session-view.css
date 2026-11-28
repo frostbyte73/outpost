@@ -2448,6 +2448,26 @@ html[data-layout="mobile"] #header .mh-menu-item-danger { color: var(--danger); 
     .md-p { margin: 0 0 10px; }
     .md-p:last-child { margin-bottom: 0; }
 
+    .md-shot { display: inline-flex; flex-direction: column; gap: var(--gap-1); max-width: 100%; margin: var(--gap-2) 0; }
+    .md-shot-link {
+      display: block; overflow: hidden; cursor: zoom-in;
+      border: 1px solid var(--line); border-radius: var(--r-container); background: var(--bg-elev);
+    }
+    .md-shot img { display: block; max-width: 100%; max-height: 320px; height: auto; object-fit: contain; }
+    .md-shot figcaption { font-size: 12px; color: var(--text-dim); }
+    .md-shots {
+      display: grid; gap: var(--gap-3); margin: var(--gap-2) 0;
+      /* 112px keeps a pair side by side in a gate nested inside a phone's step card (~250px wide). */
+      grid-template-columns: repeat(auto-fit, minmax(min(100%, 112px), 1fr));
+    }
+    .md-shots .md-shot { display: flex; margin: 0; }
+    .md-shots .md-shot img { width: 100%; max-height: 240px; }
+    .md-shot-inline { display: inline-block; vertical-align: middle; cursor: zoom-in; }
+    .md-shot-inline img {
+      display: block; max-width: 100%; max-height: 160px;
+      border: 1px solid var(--line); border-radius: var(--r-control);
+    }
+
     .md-h { font-family: var(--font-body); letter-spacing: 0.04em; margin: 18px 0 8px; }
     .md-h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.005em; }
     .md-h2 { font-size: 16px; font-weight: 600; }
