@@ -17,6 +17,22 @@ Review of a working-tree diff by a session that did not write it. Does not modif
 
 ## Inputs
 
+Your inputs are in a JSON file whose path is in `$OUTPOST_ENVELOPE`. Read it before anything
+else, quoted exactly like this — an unquoted `$VAR` anywhere in a command gets the whole call
+denied:
+
+```bash
+cat "$OUTPOST_ENVELOPE"
+```
+
+The fields below live under its `inputs` (and `workspace`). Don't go looking at your cwd first:
+a controller dispatch runs from the main checkout, whose diff is not the one under review.
+
+If the envelope is unset or the read fails, you can't know what to review. Load
+`mcp__outpost__submit_step_failed` through ToolSearch and call it with `jobId` and `stepId`
+from `"$JOB_ID"` / `"$STEP_ID"` and a reason that says the envelope couldn't be read. Never
+end the turn with only a text message: the step has no output then, and nobody hears why.
+
 | Field | Required | Meaning |
 |---|---|---|
 | `workspace.repoCwd` | yes | Parent repo path. |
@@ -43,7 +59,7 @@ git -C <worktreePath> diff
 ```
 
 Both are in the `read` group, so no extra grant is needed. If `git -C <worktreePath> diff` and
-`git -C <worktreePath> status` both come back empty, **say so as a failure** rather than
+`git -C <worktreePath> status` both come back empty, **fail the step with `submit_step_failed`** rather than
 reporting a clean review — an empty diff means the path or the range was wrong, not that the
 code is fine.
 
