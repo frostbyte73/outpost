@@ -34,40 +34,44 @@ const bash = (a: Allowlist, command: string, worktree?: string) =>
 describe('path rules resolve symlinks, not just ..', () => {
   const a = forGroups('read', 'edit'); // edit grants Write:^/tmp/, Edit:^/tmp/, MultiEdit:^/tmp/
   let dir: string;
-  let target: string;
+  let plant: string;
+  let escapeFile: string;
+  let escapeDir: string;
 
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'symlink-escape-'));
     mkdirSync(join(dir, 'real'), { recursive: true });
-    target = join(dir, 'real', 'secret.txt');
+    const target = join(dir, 'real', 'secret.txt');
     writeFileSync(target, 'secret\n');
+    plant = mkdtempSync('/tmp/outpost-escape-');
+    escapeFile = join(plant, 'escape-file');
+    escapeDir = join(plant, 'escape-dir');
     // /tmp/<random>/escape-file -> <dir>/real/secret.txt, i.e. a leaf symlink out of /tmp.
-    symlinkSync(target, '/tmp/outpost-escape-file');
+    symlinkSync(target, escapeFile);
     // /tmp/<random>/escape-dir -> <dir>/real, i.e. an ancestor symlink out of /tmp.
-    symlinkSync(join(dir, 'real'), '/tmp/outpost-escape-dir');
+    symlinkSync(join(dir, 'real'), escapeDir);
   });
 
   afterAll(() => {
-    rmSync('/tmp/outpost-escape-file', { force: true });
-    rmSync('/tmp/outpost-escape-dir', { force: true });
+    rmSync(plant, { recursive: true, force: true });
     rmSync(dir, { recursive: true, force: true });
   });
 
   it('denies a Write through a leaf symlink that leaves the granted prefix', () => {
-    expect(a.allows('Write', { file_path: '/tmp/outpost-escape-file' })).toBe(false);
-    expect(a.allows('Edit', { file_path: '/tmp/outpost-escape-file' })).toBe(false);
-    expect(a.allows('MultiEdit', { file_path: '/tmp/outpost-escape-file' })).toBe(false);
+    expect(a.allows('Write', { file_path: escapeFile })).toBe(false);
+    expect(a.allows('Edit', { file_path: escapeFile })).toBe(false);
+    expect(a.allows('MultiEdit', { file_path: escapeFile })).toBe(false);
   });
 
   it('denies a Write through an ancestor symlink that leaves the granted prefix', () => {
-    expect(a.allows('Write', { file_path: '/tmp/outpost-escape-dir/secret.txt' })).toBe(false);
+    expect(a.allows('Write', { file_path: join(escapeDir, 'secret.txt') })).toBe(false);
     // …including a leaf that does not exist yet, which is the Write case that matters.
-    expect(a.allows('Write', { file_path: '/tmp/outpost-escape-dir/planted.txt' })).toBe(false);
+    expect(a.allows('Write', { file_path: join(escapeDir, 'planted.txt') })).toBe(false);
   });
 
   it('denies the same escape through a shell redirect, which inherits the Write check', () => {
-    expect(bash(a, 'cat /etc/hosts > /tmp/outpost-escape-file')).toBe(false);
-    expect(bash(a, 'cat /etc/hosts > /tmp/outpost-escape-dir/planted.txt')).toBe(false);
+    expect(bash(a, `cat /etc/hosts > ${escapeFile}`)).toBe(false);
+    expect(bash(a, `cat /etc/hosts > ${escapeDir}/planted.txt`)).toBe(false);
   });
 
   it('still allows an ordinary /tmp target', () => {

@@ -10,6 +10,7 @@ const actionRegistry = {
   getAction(name: string) {
     return { frontmatter: { outpost: { runner: name === 'meta.session' ? 'builtin' : 'claude' } } };
   },
+  listActions: () => [],
 } as never;
 
 function makeEngine() {

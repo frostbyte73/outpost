@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, existsSync, symlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -1204,8 +1204,6 @@ function makeRepoWithSubmodule(): { parent: string; subSha: string; subSha2: str
   const subSha2 = execFileSync('git', ['-C', sub, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
 
   const parent = makeGitRepo();
-  // `submodule add` from a local path needs this; harmless in a throwaway fixture.
-  execFileSync('git', ['-C', parent, 'config', 'protocol.file.allow', 'always']);
   execFileSync('git', ['-C', parent, 'submodule', 'add', '-q', sub, 'vendor'], { stdio: 'pipe' });
   execFileSync('git', ['-C', parent, '-C', join(parent, 'vendor'), 'checkout', '-q', subSha], { stdio: 'pipe' });
   execFileSync('git', ['-C', parent, 'add', '-A']);
@@ -1214,6 +1212,22 @@ function makeRepoWithSubmodule(): { parent: string; subSha: string; subSha2: str
 }
 
 describe('WorktreeManager — submodules', () => {
+  // Fixture submodules are local paths; only env-scoped config lets git's child clones use the file transport.
+  const gitEnv = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'protocol.file.allow', GIT_CONFIG_VALUE_0: 'always' };
+  const saved: Record<string, string | undefined> = {};
+  beforeAll(() => {
+    for (const [k, v] of Object.entries(gitEnv)) {
+      saved[k] = process.env[k];
+      process.env[k] = v;
+    }
+  });
+  afterAll(() => {
+    for (const k of Object.keys(gitEnv)) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+  });
+
   it('populates a submodule so the step gets a complete checkout', async () => {
     const { parent, subSha } = makeRepoWithSubmodule();
     const m = new WorktreeManager({ root: newRoot(), projectsRoot: projectsRoot() });

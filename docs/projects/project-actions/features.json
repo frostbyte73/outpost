@@ -226,10 +226,10 @@
     "category": "hardening",
     "description": "A project plan ends with a meta.session check after the last milestone, whose prompt walks the user through verifying the project's success criteria.",
     "steps": [
-      "Open a project job's plan after project.decompose",
+      "Open a project job's plan after the step that lands the project folder merges",
       "The step after the last milestone's meta.job is a meta.session",
-      "Its prompt names the brief's success criteria and the features to check by hand",
-      "When the step starts, an interactive session opens with that prompt; the step resolves only when the user marks it Done"
+      "Its prompt lists the brief's success criteria and tells the session to read features.json and walk the quality and still-failing entries",
+      "When the step starts, an interactive session opens with that prompt; the step resolves when the user marks it Done or the session reports back (submit_session_report)"
     ],
     "passes": false
   },
